@@ -119,11 +119,14 @@ class _TimeoutSession(requests.Session):
 # memory (about 80 ms). One per session and not one for all: truststore holds a context's lock through a whole
 # handshake and Windows' check of the certificate, so a server that stalls would hold up everyone else's connections.
 # Trust stays as it was: Windows decides first (truststore, once use_windows_certificates has run), the bundle is
-# its fallback.
+# its fallback. Filling a context holds Python's lock (the GIL) all along, 30-80 ms in which the window can't answer,
+# and a full sync makes dozens of sessions: a session gone leaves its context to the next one (_spare).
 _ours: "weakref.WeakSet[ssl.SSLContext]" = weakref.WeakSet()
 _ca_lock = threading.Lock()
 _tls_classes: dict[type, type] = {}
 _ca_pem = ""
+_spare: list[ssl.SSLContext] = []         # contexts of sessions gone (no lock: given back from a finalizer)
+SPARE_MAX = 8
 
 
 def _shared_class(base: type) -> type:
@@ -165,13 +168,35 @@ def tls_context() -> ssl.SSLContext:
     return ctx
 
 
+def _session_context() -> ssl.SSLContext:
+    """A spare context (no session uses it any more) or a new one. Only one of the kind tls_context makes now: one
+    made before truststore came in doesn't work after."""
+    import urllib3.util.ssl_ as u3
+
+    kind = _shared_class(u3.SSLContext)
+    while True:
+        try:
+            ctx = _spare.pop()
+        except IndexError:
+            return tls_context()
+        if type(ctx) is kind:
+            return ctx
+
+
+def _give_back(ctx: ssl.SSLContext) -> None:
+    if len(_spare) < SPARE_MAX:
+        _spare.append(ctx)
+
+
 class _Adapter(HTTPAdapter):
     """Connects through the session's own TLS context. Only for the usual case (verify=True, no client certificate,
     no proxy); anything else goes requests' own way. IEUStudia never turns verification off: these contexts always
     require a valid certificate for the host."""
 
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):  # type: ignore[no-untyped-def]
-        pool_kwargs.setdefault("ssl_context", tls_context())
+        if "ssl_context" not in pool_kwargs:
+            ctx = pool_kwargs["ssl_context"] = _session_context()
+            weakref.finalize(self, _give_back, ctx)      # still one per session: never two sessions' at once
         super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
 
     def build_connection_pool_key_attributes(self, request, verify, cert=None):  # type: ignore[no-untyped-def]

@@ -24,6 +24,20 @@ from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_prior
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
+EVENT_GAP_S = 0.15           # the page gets its events at most this often (each time all that came, coalesced)
+_EVENTS_JS = ("(function (a) { var f = window.__lsEvent; if (!f) return; "
+              "for (var i = 0; i < a.length; i++) { try { f(a[i]); } catch (x) { console.error(x); } } })(%s)")
+
+
+def events_script(events: list[dict[str, Any]]) -> str:
+    """One script that hands the page all these events in order (one that fails doesn't stop the others)."""
+    parts = []
+    for e in events:
+        try:
+            parts.append(json.dumps(e, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            log.debug("event not sent: %r", e.get("type"), exc_info=True)
+    return _EVENTS_JS % ("[" + ",".join(parts).replace("</", "<\\/") + "]")
 
 
 def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -234,10 +248,14 @@ class Api:
             self._notify(title, text, target)
 
     def _dispatch(self) -> None:
-        """Deliver events to the page from one thread; coalesce bursts (only the latest job/queue state)."""
+        """Deliver events to the page from one thread; coalesce bursts (only the latest job/queue state) and hand each
+        burst over in one call, at most every EVENT_GAP_S. Every call into the page waits for the window's thread, and
+        that thread needs Python's lock for it: during a full sync (lectures and files downloading, audio decoding)
+        a hundred calls a burst kept the window from answering for seconds."""
+        last = 0.0
         while True:
             batch = [self._events.get()]
-            time.sleep(0.05)
+            time.sleep(max(0.05, last + EVENT_GAP_S - time.monotonic()))
             while True:
                 try:
                     batch.append(self._events.get_nowait())
@@ -264,13 +282,12 @@ class Api:
                 out.append({"type": "courses", "courses": self._course_views()})
             if self._window is None:
                 continue
-            run = getattr(self._window, "run_js", None) or self._window.evaluate_js   # run_js doesn't block
-            for e in out:
-                try:
-                    payload = json.dumps(e, ensure_ascii=False, default=str).replace("</", "<\\/")
-                    run(f"window.__lsEvent && window.__lsEvent({payload})")
-                except Exception:  # noqa: BLE001 - window closing
-                    log.debug("event delivery failed", exc_info=True)
+            run = getattr(self._window, "run_js", None) or self._window.evaluate_js   # (waits for the page too)
+            try:
+                run(events_script(out))
+            except Exception:  # noqa: BLE001 - window closing
+                log.debug("event delivery failed", exc_info=True)
+            last = time.monotonic()
 
     def _toast(self, message: str, level: str = "info") -> None:
         self._push({"type": "toast", "level": level, "message": message})
@@ -858,13 +875,16 @@ class Api:
         return {"ok": True, **summary(needs, self._gpu(), self._s.settings.model)}
 
     @safe
-    def catch_up(self, course_ids: Optional[list[str]] = None, materials: bool = True) -> dict[str, Any]:
+    def catch_up(self, course_ids: Optional[list[str]] = None, materials: bool = True,
+                 include_unknown: Optional[list[str]] = None) -> dict[str, Any]:
         """Sync, then queue every lecture of your sections that is not transcribed yet (newest first) and, if asked,
-        download the materials. ``course_ids``: None = every course. Claude is not involved."""
+        download the materials. ``course_ids``: None = every course; ``include_unknown``: courses whose lectures that
+        match no section are queued too this time (you said so in the dialog). Claude is not involved."""
         from .catchup import course_needs, queue_order
 
         ids = [str(c) for c in course_ids] if course_ids else None
         scope = "all" if ids is None else (ids[0] if len(ids) == 1 else "some")
+        include = [str(c) for c in include_unknown or ()]
 
         def run() -> None:
             self._push({"type": "catchup", "phase": "sync", "scope": scope})
@@ -878,7 +898,7 @@ class Api:
                             "message": t("The sync failed, so nothing was queued.")})
                 return
             try:
-                needs = course_needs(self._s.lib, self._s.settings, ids, self._s.jobs.active_ids())
+                needs = course_needs(self._s.lib, self._s.settings, ids, self._s.jobs.active_ids(), include)
                 order = queue_order(needs)
                 queued = self._s.jobs.enqueue(order, batch=True) if order else 0     # after what you ask for
                 mats = [m for n in needs for m in n.materials] if materials else []
@@ -888,7 +908,8 @@ class Api:
                 self._push(self._s.jobs.queue_event())
                 self._push({"type": "catchup", "phase": "done", "scope": scope, "lectures": queued,
                             "materials": len(mats), "audio_s": round(sum(n.audio_s for n in needs)),
-                            "waiting": [n.code for n in needs if n.needs_section and n.waiting]})
+                            "waiting": [n.code for n in needs if n.needs_section and n.waiting],
+                            "unknown": sum(len(n.unknown) for n in needs)})
             except Exception as exc:  # noqa: BLE001
                 log.exception("catch-up failed")
                 self._push({"type": "catchup", "phase": "error", "scope": scope, "message": str(exc) or t("Failed")})
@@ -899,14 +920,25 @@ class Api:
     # ------------------------------------------------------------------ transcription
     @safe
     def transcribe(self, ids: list[str]) -> dict[str, Any]:
-        """Queue lectures you asked for: they go before a full or course sync's batch."""
-        n = self._s.jobs.enqueue([str(i) for i in ids])
+        """Queue lectures you asked for: they go before a full or course sync's batch. One still being recorded can't
+        be: said when nothing else was asked for."""
+        ids = [str(i) for i in ids]
+        live = [i for i in ids if (r := self._s.lib.get_recording(i)) is not None and r.live]
+        if live and len(live) == len(ids):
+            return {"ok": False, "error": tn(len(live), "This lecture is still being recorded. It can be transcribed "
+                                             "once Panopto has finished it.", "These lectures are still being recorded. "
+                                             "They can be transcribed once Panopto has finished them.")}
+        n = self._s.jobs.enqueue([i for i in ids if i not in live])
         self._courses_dirty.set()
         self._push(self._s.jobs.queue_event())
         return {"ok": True, "queued": n}
 
     @safe
-    def transcribe_day(self, day_key: str) -> dict[str, Any]:
+    def transcribe_day(self, day_key: str, batch: bool = False) -> dict[str, Any]:
+        """Queue a class day's lectures. Where several sections publish and you follow yours, only your section's
+        (as Sync course does): in a ``batch`` (a chat's or study plan's weeks) a day with yours queues those and a
+        day that matches no section nothing; a day you ask for queues all but the other sections', and a batch queues
+        nothing while your section is unknown. ``unknown``: lectures left out for matching no section; ``needs_section``: choose it first."""
         from .catchup import no_sound
         from .sections import available_sections, classify, guess_my_section
 
@@ -917,11 +949,20 @@ class Api:
                and not (0 < r.duration_s < s.min_duration_s) and not no_sound(r, lib.warnings(r.delivery_id))]
         prefs = s.prefs(course.id)
         every = self._s.lib.recordings(course.id)
+        unknown, needs_section = 0, False
         if prefs.show_mode != "all" and len(available_sections(every)) > 1:
-            mine = classify(course, every, prefs.my_section or guess_my_section(course))
-            if any(mine.get(r.delivery_id) is not False for r in recs):   # yours that day: not the other sections'
-                ids = [i for i in ids if mine.get(i) is not False]        # (as Sync course does)
-        return self.transcribe(ids)
+            my_section = prefs.my_section or guess_my_section(course)
+            mine = classify(course, every, my_section)
+            if not my_section:
+                needs_section, ids = batch and bool(ids), ([] if batch else ids)
+            elif batch and any(mine.get(r.delivery_id) is True for r in recs):   # yours that day: not the other
+                unknown = sum(1 for i in ids if mine.get(i) is None)         # sections', nor one that matches none
+                ids = [i for i in ids if mine.get(i) is True]
+            elif batch:                                                      # matches no section (or another's)
+                unknown, ids = sum(1 for i in ids if mine.get(i) is None), []
+            elif any(mine.get(r.delivery_id) is not False for r in recs):    # you asked for this day: not another's
+                ids = [i for i in ids if mine.get(i) is not False]
+        return {**self.transcribe(ids), "unknown": unknown, "needs_section": needs_section}
 
     @safe
     def cancel(self, job_id: Optional[str] = None) -> dict[str, Any]:

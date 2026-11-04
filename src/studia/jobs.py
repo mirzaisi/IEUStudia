@@ -11,6 +11,7 @@ overtake the batch lectures that are already downloaded and waiting for their tu
 from __future__ import annotations
 
 import dataclasses as dc
+import datetime as dt
 import errno
 import hashlib
 import heapq
@@ -61,6 +62,9 @@ _ETA = re.compile(r"\s*·\s*~(\d+)s left")      # the engine's time left: an unt
 
 _STATUS = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
            "writing": "transcribing", "done": "done", "failed": "failed", "processing": "processing"}
+# what a lecture is doing, finer than its stage (the jobs pane draws them as steps): waiting, downloading, decoding,
+# finding speech, waiting for its turn, loading the speech model, transcribing, finishing slides, writing files
+_STEP = {"queued": "wait", "downloading": "download", "transcribing": "transcribe", "writing": "write"}
 
 
 def _no_sound(exc: BaseException) -> bool:
@@ -139,6 +143,16 @@ class Job:
     where: str = ""                  # "dl" waiting to download, "prep" downloading, "gpu" ready, "run" transcribing
     paused_s: float = 0.0            # time paused in the middle of transcribing it (the engine's time left counts it)
     day_key: str = ""                # its class day (the page counts lectures, not their parts)
+    step: str = ""                   # what it does now (see _STEP), and since when each step began (monotonic)
+    steps: list = dc.field(default_factory=list)
+    dl_done: int = 0                 # the audio download: bytes so far, of dl_total, at dl_speed bytes a second
+    dl_total: int = 0
+    dl_speed: float = 0.0
+    dl_mark: tuple = (0.0, 0)        # (when, bytes) the speed was last measured from
+    model: str = ""                  # the speech model it is transcribed with, and where ("cuda" or "cpu")
+    device: str = ""
+    notes: list = dc.field(default_factory=list)     # warnings in plain words (the GPU couldn't be used, quality)
+    anomalies: list = dc.field(default_factory=list)  # something looks wrong with the result: [{"kind", "text"}]
 
     def view(self) -> dict[str, Any]:
         detail, eta = self.detail, None
@@ -148,7 +162,13 @@ class Job:
         return {"id": self.id, "title": self.title, "course_code": self.course_code, "course_id": self.course_id,
                 "stage": self.stage, "progress": round(self.progress, 3), "detail": detail, "eta_s": eta,
                 "error": self.error, "local": self.local_path is not None, "first": self.rank < NOW,
-                "day": self.day_key or self.id, "no_sound": self.no_sound}
+                "day": self.day_key or self.id, "no_sound": self.no_sound,
+                # the jobs pane: its steps (seconds after it was queued), the download, the model, warnings
+                "step": self.step, "steps": [[s, round(at - self.started, 1)] for s, at in self.steps],
+                "age_s": round(time.monotonic() - self.started, 1), "slides": self.slides is not None,
+                "dl": [self.dl_done, self.dl_total, round(self.dl_speed)] if self.dl_total else None,
+                "model": self.model, "device": self.device, "notes": list(self.notes),
+                "anomalies": [dict(a) for a in self.anomalies]}
 
 
 class JobManager:
@@ -212,13 +232,18 @@ class JobManager:
 
     def enqueue(self, ids: list[str], batch: bool = False) -> int:
         """Queue lectures. ``batch``: a full or course sync's; lectures asked for one by one go before those (one
-        already waiting in such a batch moves ahead). Returns how many were queued or moved."""
+        already waiting in such a batch moves ahead). Returns how many were queued or moved.
+
+        Newest lecture first: a batch is ordered by the recordings' start (a later sync's newer lecture goes before
+        the older ones still waiting), and one request's lectures go newest first, after those asked for earlier."""
         n = 0
         with self._lock:
             self._idle_gen += 1          # cancels a pending idle unload
             self._start()
             self._new_batch()
-            for did in ids:
+            recs = {did: self.lib.get_recording(did) for did in dict.fromkeys(ids)}
+            odd = self._anomalies([d for d, r in recs.items() if r is not None and d not in self._jobs])
+            for did in sorted(recs, key=lambda d: recs[d].start if recs[d] else dt.datetime.min, reverse=True):
                 if did in self._jobs:
                     job = self._jobs[did]
                     if not batch and job.rank >= BATCH and not job.finished and job.where != "run":
@@ -227,15 +252,16 @@ class JobManager:
                             self._requeue(job)
                         n += 1
                     continue
-                rec = self.lib.get_recording(did)
+                rec = recs[did]
                 if rec is None:
                     continue
                 course = self.lib.get_course(rec.course_id)
                 code = course.code if course else ""
                 job = Job(id=did, title=f"{code} · {date_short(rec.start.date())} {rec.start:%H:%M}".strip(" ·"),
                           course_id=rec.course_id, course_code=code, prev_status=rec.status,
-                          duration_s=max(0.0, rec.duration_s), rank=BATCH if batch else NOW, seq=next(self._seqs),
-                          day_key=rec.day_key)
+                          duration_s=max(0.0, rec.duration_s), rank=BATCH if batch else NOW,
+                          seq=-int(rec.start.timestamp()) if batch else next(self._seqs), day_key=rec.day_key,
+                          anomalies=odd.get(did, []))
                 self._jobs[did] = job
                 self.lib.set_status(did, "queued")
                 self._put_dl(job)
@@ -247,6 +273,18 @@ class JobManager:
             self._remember()
         self._emit_queue()
         return n
+
+    def _anomalies(self, ids: list[str]) -> dict[str, list[dict[str, str]]]:
+        """What looks odd about these recordings (the jobs pane shows it); never a reason not to queue them."""
+        if not ids:
+            return {}
+        from .anomalies import for_ids
+
+        try:
+            return for_ids(self.lib, ids, min_s=self.settings().min_duration_s)
+        except Exception:  # noqa: BLE001 - only a note
+            self.log.warning("Anomaly checks failed", exc_info=True)
+            return {}
 
     def enqueue_local(self, path: Path) -> str:
         did = "local-" + hashlib.sha1(str(Path(path).resolve()).encode()).hexdigest()[:12]
@@ -345,7 +383,8 @@ class JobManager:
         elapsed = now - b["started"] - b.get("paused", 0.0) - (now - self._paused_at if self.paused() else 0.0)
         work = b["audio_done"] + inflight
         eta = round(left * elapsed / work) if b["audio_done"] > 0 and elapsed > 30 else None
-        return {"finished": b["ended"], "total": b["ended"] + len(jobs), "left_s": eta}
+        return {"finished": b["ended"], "done": b["done"], "failed": b["failed"], "total": b["ended"] + len(jobs),
+                "left_s": eta}
 
     # ------------------------------------------------------------------ what is still to do, across restarts
     def _load_saved(self) -> list[str]:
@@ -533,13 +572,20 @@ class JobManager:
     def _emit_queue(self) -> None:
         self.emit(self.queue_event())
 
-    def _update(self, job: Job, stage: str, progress: float, detail: str, force: bool = False) -> None:
+    def _update(self, job: Job, stage: str, progress: float, detail: str, force: bool = False,
+                step: str = "") -> None:
+        """``step``: what it does now when its stage doesn't say (decoding, finding speech …; see _STEP)."""
         with self._lock:                 # _finish marks a job finished under this lock
             if job.finished:             # e.g. cancelled while its worker was still busy with it: that is final
                 return
             changed = stage != job.stage
             job.stage, job.progress, job.detail = stage, max(0.0, min(1.0, progress)), detail
             now = time.monotonic()
+            step = step or _STEP.get(stage, stage)
+            if step != job.step:         # a new step: the pane shows it at once
+                job.step = step
+                job.steps.append((step, now))
+                force = True
             if not (force or changed) and now - self._last_emit.get(job.id, 0.0) < 0.25:
                 return
             self._last_emit[job.id] = now
@@ -558,7 +604,7 @@ class JobManager:
         if not self._try_place(job):
             try:
                 self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
-                             t("Downloaded — waiting for its turn"), force=True)
+                             t("Downloaded — waiting for its turn"), force=True, step="turn")
                 while not self._try_place(job, 0.5):
                     if job.cancel.is_set():
                         raise Cancelled()
@@ -675,7 +721,7 @@ class JobManager:
                 if job.cancel.is_set():
                     raise Cancelled()
                 self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
-                             t("Downloaded — waiting for its turn"))                           # Cancel ends it at once
+                             t("Downloaded — waiting for its turn"), step="turn")              # Cancel ends it at once
                 self._put_gpu(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
@@ -730,6 +776,9 @@ class JobManager:
             self._update(job, "downloading", 0.5, t("Reading the file"))
             job.audio = decode_audio(job.local_path, job.cancel)
             return
+        rec = self.lib.get_recording(job.id)
+        if rec is not None and rec.live:          # nothing to download yet: Panopto isn't asked
+            raise NotReady(t("This lecture is still being recorded. It can be transcribed once Panopto has finished it."))
         self._update(job, "downloading", 0.0, t("Contacting Panopto"), force=True)
         p, s, info = self._panopto(job)
         job.info = info
@@ -769,6 +818,14 @@ class JobManager:
 
             def prog(done: int, total: int) -> None:
                 frac = done / total if total else 0.0
+                now, (at, was) = time.monotonic(), job.dl_mark
+                if not at or done < was:                  # a new download (another stream)
+                    job.dl_mark, job.dl_speed = (now, done), 0.0
+                elif now - at >= 1.0:                     # the speed over the last second or more, smoothed a little
+                    speed = (done - was) / (now - at)
+                    job.dl_speed = speed if not job.dl_speed else 0.5 * speed + 0.5 * job.dl_speed
+                    job.dl_mark = (now, done)
+                job.dl_done, job.dl_total = done, total if total > 1000 else 0
                 self._update(job, "downloading", frac,
                              t("Downloading audio {done}/{total} MB", done=f"{done / 1e6:.0f}", total=f"{total / 1e6:.0f}")
                              if total > 1000 else t("Downloading audio"))
@@ -783,7 +840,7 @@ class JobManager:
                 continue
             job.audio_path = dest
             self._take_audio_place(job)
-            self._update(job, "downloading", 1.0, t("Decoding audio"), force=True)    # right after the last MB
+            self._update(job, "downloading", 1.0, t("Decoding audio"), force=True, step="decode")    # after the last MB
             try:
                 audio = decode_audio(dest, job.cancel)
             except ValueError as exc:
@@ -825,7 +882,7 @@ class JobManager:
         then waits for its turn as int16."""
         find = self._speech_finder(self.settings())
         if find is not None:
-            self._update(job, "downloading", 1.0, t("Finding speech"), force=True)
+            self._update(job, "downloading", 1.0, t("Finding speech"), force=True, step="speech")
             job.speech = find(job.audio, job.cancel, self._meta(job).get("expected_duration", 0.0))
         job.audio = _to_int16(job.audio)
 
@@ -955,7 +1012,7 @@ class JobManager:
         phase = {"model-download": "download", "model-load": "load"}.get(stage)
         if phase:
             self.emit({"type": "engine", "phase": phase, "progress": round(frac, 3), "message": detail})
-            self._update(job, "transcribing", 0.0, detail)
+            self._update(job, "transcribing", 0.0, detail, step="model")
             return
         paused = job.paused_s             # this message's estimate was made before any pause that starts now
         self._hold(job, count=stage == "transcribe")      # paused: stop between passages (a download never waits)
@@ -965,20 +1022,26 @@ class JobManager:
             # the engine counts the time paused as time spent: take it out of its estimate
             left = max(0, round(int(m.group(1)) - paused * (1 - done) / done))
             detail = f"{detail[:m.start()]} · ~{left}s left{detail[m.end():]}"
-        self._update(job, "transcribing", frac, detail, force=not m)    # a message without a time left is rare: show it
+        self._update(job, "transcribing", frac, detail, force=not m,    # a message without a time left is rare: show it
+                     step="speech" if stage == "vad" else "transcribe")
 
     def _transcribe(self, job: Job) -> None:
         if self.setup_busy():                     # the speech model (or the graphics card's files) are on their way
-            self._update(job, "transcribing", 0.0, t("Waiting for the speech model to finish downloading"), force=True)
+            self._update(job, "transcribing", 0.0, t("Waiting for the speech model to finish downloading"), force=True,
+                         step="model")
             while self.setup_busy():
                 if job.cancel.is_set():
                     raise Cancelled()
                 time.sleep(0.5)
         settings = self.settings()
         engine = self._get_engine(settings)
-        self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True)
+        self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
         engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
         self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
+        info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
+        job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
+        if info.get("warning") and info["warning"] not in job.notes:
+            job.notes.append(info["warning"])
         job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
         found = {"speech": job.speech} if job.speech is not None else {}
         transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel,
@@ -988,16 +1051,18 @@ class JobManager:
         path = store.save_transcript(transcript)
         quality = (transcript.meta or {}).get("quality") or {}
         warnings = quality.get("warnings") or []
+        job.notes += [w["message"] for w in warnings if isinstance(w, dict) and w.get("message")]
         if job.local_path is None:
             self.lib.save_transcript(transcript, path, quality=quality.get("stats"))
             self.lib.set_warnings(job.id, warnings)
         self.note_unwritten(job.id, True)         # until its files are written (closing now writes them next start)
         if job.slides is not None:
-            self._update(job, "writing", 0.97, t("Finishing slides"), force=True)
+            self._update(job, "writing", 0.97, t("Finishing slides"), force=True, step="slides")
             try:
                 job.slides.result(timeout=900)
             except Exception as exc:  # noqa: BLE001 - slides are optional
                 self.log.warning("Slides for %s failed: %s", job.id, exc)
+                job.notes.append(t("The slides couldn't be captured; the transcript is complete."))
         self._update(job, "writing", 0.99, t("Writing files"), force=True)
         try:
             self.write_outputs(job.id)

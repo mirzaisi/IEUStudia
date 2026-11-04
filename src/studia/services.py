@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
 import threading
@@ -125,6 +126,11 @@ class Services:
 
         self.plans = PlanRunner(self)
         self._write_unwritten()
+        self.sync.after_sync = self.move_days
+        try:
+            self.move_days()                       # (also those a tray helper's check found)
+        except Exception:  # noqa: BLE001 - never stop the start for it
+            log.exception("Moving the files of lectures to their class day failed")
         try:
             n = sweep_audio_cache(self.lib, self.settings.keep_audio)
             if n:
@@ -356,6 +362,74 @@ class Services:
                 copied += 1
         self.rebase_output_paths(old_root, new_root)
         return copied
+
+    def move_days(self) -> int:
+        """Transcribed lectures whose class day changed (Panopto's date was when the recording was uploaded, and the
+        date in its name replaced it): their files are written under the new day. The old day is written again
+        without them or, when no transcribed lecture is left there, its files are removed; its AI notes take the new
+        day's name (when that is free) and its AI packs are made again on demand. Slide images stay where they are
+        (the day files link them). The chats holding the old day get the new one. Returns how many lectures moved.
+        A move stays noted until it is done (doing one again is harmless)."""
+        moves = self.lib.day_moves()
+        if not moves:
+            return 0
+        done = self.lib.transcribed_ids()
+        all_courses = self.lib.courses(True)
+        courses: set[str] = set()
+        settled: list[list[str]] = []
+        moved = 0
+        try:
+            for n, (did, old_key) in enumerate(moves):
+                rec = self.lib.get_recording(did)
+                course = self.lib.get_course(old_key.split("|", 1)[0])
+                if rec is None or course is None or did not in done or rec.day_key == old_key:
+                    settled.append([did, old_key])
+                    continue
+                try:
+                    keep = any(r.delivery_id in done for r in self.lib.day_recordings(old_key)) \
+                        or any(k == old_key for _, k in moves[n + 1:])     # (another moves from there next)
+                    self.lib.move_chat_day(old_key, rec.day_key, keep)
+                    self._leave_day(course, all_courses, old_key, rec, done)
+                    self.write_outputs(did, pack=False)
+                except Exception as exc:           # e.g. a file open in another program: tried again next time
+                    log.info("The files of %s can't be moved to its class day yet: %s", did, exc)
+                    continue
+                settled.append([did, old_key])
+                courses.add(rec.course_id)
+                moved += 1
+                log.info("%s moved from %s to %s", did, old_key, rec.day_key)
+        finally:
+            self.lib.drop_day_moves(settled)
+        for cid in courses:
+            try:
+                self.write_course_pack(cid)
+            except OSError as exc:
+                log.info("The study pack of %s can't be written: %s", cid, exc)
+        return moved
+
+    def _leave_day(self, course: Course, all_courses: list[Course], old_key: str, rec: Recording,
+                   done: set[str]) -> None:
+        _, date_s, kind = old_key.split("|")
+        old_date = dt.date.fromisoformat(date_s)
+        folder = course_dir(self.output_root, course, all_courses)
+        stem = day_stem(course, old_date, kind)
+        subs = folder / "subtitles"
+        if self.settings.write_srt and subs.is_dir():    # numbered by part: written again for what is left
+            for f in subs.iterdir():
+                if f.name.startswith(f"{stem} - Part ") and f.suffix == ".srt":
+                    f.unlink()
+        left = [r for r in self.lib.day_recordings(old_key) if r.delivery_id in done]
+        if left:
+            self.write_outputs(left[0].delivery_id, pack=False)
+            return
+        (folder / day_file_name(course, old_date, kind)).unlink(missing_ok=True)
+        new_stem = day_stem(course, rec.start.date(), rec.kind)
+        for note in NOTE_KINDS:
+            old, new = self._notes_path(folder, stem, note), self._notes_path(folder, new_stem, note)
+            if old.is_file() and not new.exists():
+                os.replace(old, new)
+        for ext in ("pdf", "zip"):
+            (folder / "AI packs" / safe_name(f"{stem} - AI pack.{ext}")).unlink(missing_ok=True)
 
     def rewrite_course(self, course_id: str) -> None:
         course = self.lib.get_course(course_id)

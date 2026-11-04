@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import fnmatch
 import functools
 import glob
@@ -234,6 +235,18 @@ def _preload_linux_cuda() -> list[str]:
     return dirs
 
 
+@functools.lru_cache(maxsize=1)
+def _start_cuda_driver() -> bool:
+    """Start NVIDIA's driver through ctypes, which lets go of Python's lock (the GIL) meanwhile. CTranslate2's first
+    call starts it too but keeps the lock: in a full sync that took ~1 s (Windows' loader busy with other libraries),
+    and the window waited all along. Started here, CTranslate2 finds it running. True if it started."""
+    try:
+        lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+        return lib.cuInit(0) == 0
+    except (OSError, AttributeError):            # no NVIDIA driver: CTranslate2 then says so as before
+        return False
+
+
 @functools.lru_cache(maxsize=2)             # both forms (quick for the display and the offline AI)
 def detect_gpu(quick: bool = False) -> dict[str, Any]:
     """{"available": bool, "name": str, "vram_mb": int} for the first NVIDIA GPU usable by CTranslate2.
@@ -242,6 +255,7 @@ def detect_gpu(quick: bool = False) -> dict[str, Any]:
     result: dict[str, Any] = {"available": False, "name": "", "vram_mb": 0}
     if not quick:
         setup_cuda_dlls()
+        _start_cuda_driver()
         try:
             import ctranslate2
 

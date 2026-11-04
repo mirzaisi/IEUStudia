@@ -112,7 +112,8 @@
   }
   function onJob(e) {
     const q = !e.final && (S.queue || []).find((j) => j.id === e.id);
-    if (q) { Object.assign(q, { progress: e.progress, detail: e.detail, eta_s: e.eta_s }); updateQueueBar(q); }
+    if (q) { Object.assign(q, e); updateQueueBar(q); if (S.qpOpen) qpUpdate(q); }
+    if (e.final) qpFinished(e);
     const hit = findRec(e.id);
     if (hit) {
       const r = hit.r;
@@ -301,9 +302,13 @@
     const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
       : S.sync.error ? `${I("alert-circle", "sm")} ${t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
     const up = S.update || {};
+    const app = (S.boot || {}).app || {};          // background checks turned off (the tray menu, or Settings): said calmly
+    const bgOff = app.onboarded && app.tray === false && S.view.name !== "settings"
+      ? `<button class="btn ghost sm bg-off" data-act="bg-settings" title="${t("You get no notifications about new lectures, announcements or coming quizzes. Click to turn them on again in Settings.")}">${I("info", "sm")} ${t("Background checks off")}</button>` : "";
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
       ${Studia.downloadChip ? Studia.downloadChip() : ""}
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
+      ${bgOff}
       <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running ? "disabled" : ""} title="${S.sync.error && !S.sync.running ? t.html("{error} Click to try again.", { error: S.sync.error }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>
       <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="${t("Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)")}">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} ${t("Full sync")}</button>
       ${gpu}
@@ -328,6 +333,7 @@
   }
 
   function go(view) {
+    if (S.qpOpen) closePane();     // a sidebar or toast button: the page is not drawn under the pane
     saveChatScroll();
     if (S.view.name === "day" && view.name !== "day") S.day = null;
     if (!["course", "new", "home"].includes(view.name)) S.selected.clear();
@@ -358,13 +364,19 @@
         if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No sound on Panopto")}</span><span class="detail" title="${esc(r.error || "")}">${t("microphone was off")}</span>`;
         return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}${t("Failed")}</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
       case "processing": return `<span class="pill processing" title="${t("Panopto is still preparing this recording. Try again later.")}">${I("hourglass")}${t("Not ready on Panopto yet")}</span>`;
+      case "live": return `<span class="pill processing" title="${t("It can be transcribed once Panopto has finished it.")}">${I("video")}${t("Being recorded")}</span>`;
     }
     if (r.duplicate) return `<span class="pill">${t("Duplicate")}</span>`;
     if (r.too_short) return `<span class="pill">${t("Too short")}</span>`;
     if (r.is_new) return `<span class="pill new">${I("sparkle")}${t("NEW")}</span>`;
     return `<span class="detail">${t("Not transcribed")}</span>`;
   }
-  function selectable(r) { return !r.duplicate && !r.too_short && !["queued", "downloading", "transcribing"].includes(r.status); }
+  function selectable(r) { return !r.duplicate && !r.too_short && !["queued", "downloading", "transcribing", "live"].includes(r.status); }
+  // what looks off about a recording (anomalies.py): a small mark, its texts shown on hover and focus
+  function oddMark(texts) {
+    const tip = esc((texts || []).join("\n"));
+    return tip ? `<span class="odd-mark" tabindex="0" role="img" data-tip="${tip}" aria-label="${tip}">${I("alert-circle", "sm")}</span>` : "";
+  }
   function recHTML(r, d) {
     const dim = r.duplicate || r.too_short || r.hidden;
     const warn = r.warn_level && r.warn_level !== "info"
@@ -381,15 +393,15 @@
       <span class="part">${r.part ? t("Part {n}", { n: r.part }) : "—"}</span>
       <span class="time">${esc(r.time)}–${esc(r.end_time)}</span>
       <span class="dur">${fmtDur(r.duration_s)}</span>
-      <span class="state">${statusHTML(r)}${warn}</span>
+      <span class="state">${statusHTML(r)}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
       <span class="acts">${acts}</span></div>`;
   }
   function updateRow(r) {
     const row = document.querySelector(`.rec[data-rid="${r.id}"]`);
     if (!row) return;
     const st = row.querySelector(".state");
-    const warn = st.querySelector(".warn-icon");
-    st.innerHTML = statusHTML(r) + (warn ? warn.outerHTML : "");
+    const marks = Array.from(st.querySelectorAll(".warn-icon, .odd-mark"), (el) => el.outerHTML).join("");
+    st.innerHTML = statusHTML(r) + marks;
     const cb = row.querySelector(".check");
     if (cb) { cb.disabled = !selectable(r); if (cb.disabled) { cb.checked = false; S.selected.delete(r.id); } }
     if (r.status === "done" || r.status === "failed") {
@@ -543,6 +555,7 @@
   // ---- day / transcript view
   async function openDay(dayKey, refresh = false) {
     if (!refresh) {
+      if (S.qpOpen) closePane();
       saveChatScroll();
       S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view, scroll: $("#view").scrollTop } }; S.day = null; S.dayFind = "";
       renderTop(); renderSidebar(); $("#view").classList.remove("chat-mode"); $("#view").innerHTML = `<div class="view-inner">${skeleton()}</div>`;
@@ -578,6 +591,11 @@
         <input class="input find" placeholder="${t("Find in transcript  (Ctrl+F)")}" data-act="find" value="${esc(S.dayFind)}"></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
     if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? t("Notes") : t("Transcript quality")}</b><ul>${warns.map((w) => `<li>${t("Part {n}", { n: w.part })}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
+    const odd = new Map();          // each note once, with the parts it is about
+    d.parts.forEach((p) => (p.anomalies || []).forEach((a) => { if (!odd.has(a.text)) odd.set(a.text, []); if (!odd.get(a.text).includes(p.index)) odd.get(a.text).push(p.index); }));
+    const partsLabel = (ns) => ns.length === 1 ? t("Part {n}", { n: ns[0] })
+      : ns.every((n, i) => !i || n === ns[i - 1] + 1) ? t("Parts {a}–{b}", { a: ns[0], b: ns[ns.length - 1] }) : t("Parts {list}", { list: t.list(ns) });
+    if (odd.size) h += `<div class="callout warning">${I("alert-circle")}<div><b>${t("Worth checking")}</b><ul>${[...odd].map(([text, ns]) => `<li>${partsLabel(ns)}: ${esc(text)}</li>`).join("")}</ul></div></div>`;
     h += `<div id="notes-slot">${notesHTML()}</div><div id="marks-slot">${marksHTML()}</div>`;
     if (d.highlights.length) {
       h += `<div class="card hl-card"><h3>${I("star")} ${t("Highlights")} <span class="count">${d.highlights.length}</span></h3>` +
@@ -587,7 +605,7 @@
     for (const p of d.parts) {
       h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
         <span style="flex:1"></span><button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I("play", "sm")} ${t("Watch")}</button></div>`;
-      if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : t("Not transcribed yet.")}</div>`; continue; }
+      if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : p.status === "live" ? t("Being recorded. It can be transcribed once Panopto has finished it.") : t("Not transcribed yet.")}</div>`; continue; }
       let slide = null;
       for (const para of p.paragraphs) {
         if (para.slide_image && para.slide !== slide) {
@@ -1250,6 +1268,7 @@
     const el = $("#chat-items"); if (el) el.innerHTML = chatItemsHTML();
   }
   async function openChat(id) {
+    if (S.qpOpen) closePane();     // a chat in the sidebar
     if (id !== S.chat.id) S.chat.scroll = null;
     S.chat.id = id; S.chat.draft = null;
     if (S.view.name !== "chat" || S.view.chatId !== id) { S.view = { name: "chat", chatId: id }; renderSidebar(); renderTop(); }
@@ -1266,6 +1285,7 @@
     if (S.view.name === "chat") { renderChatMain(); restoreChatScroll(); focusComposer(); }
   }
   function startDraft(d) {
+    if (S.qpOpen) closePane();
     const inChat = S.view.name === "chat" && $("#chat-main");
     S.chat.draft = { tokens: 0, slidesTotal: 0, ...d }; S.chat.id = null; S.chat.data = null; S.chat.scroll = null;
     S.view = { name: "chat" };          // never keep an older chat's id: Back would reopen it instead of this draft
@@ -1410,6 +1430,7 @@
   function renderQueue() {
     const el = $("#queue"); if (!el) return;
     requestAnimationFrame(() => document.body.style.setProperty("--queue-h", el.classList.contains("hidden") ? "0px" : `${el.offsetHeight}px`));
+    renderPane();
     const jobs = S.queue || [];
     const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
     if (!jobs.length && !eng) { el.classList.add("hidden"); el.innerHTML = ""; return; }
@@ -1423,12 +1444,13 @@
     let title = cur ? `${paused ? t("Paused") : label(cur)} · ${esc(cur.title)}` : t("Preparing");
     let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
-    if (eng) { title = eng.phase === "download" ? t("Downloading the speech model (one time)") : t("Loading the speech model"); detail = esc(eng.message || ""); p = eng.progress || 0; }
+    if (eng) { title = engTitle(eng); detail = eng.message && eng.message !== title ? esc(eng.message) : ""; p = eng.progress || 0; }
     const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? t("Hide") : t("+{n} more", { n: jobs.length - 1 })}</button>` : "";
     const b = S.batch || {};
     const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${t("{done} of {total} done", { done: b.finished, total: b.total })}${b.left_s ? " · " + t("about {time} left", { time: fmtDur(b.left_s) }) : ""}</span>` : "";
     el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? t("Your PC may sleep until you continue.") : detail}</div></div>
       ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i class="glide" style="transform:${scaleX(p)}"></i></div>${more}
+      <button class="btn ghost icon sm" data-act="queue-expand" aria-controls="qpane" aria-expanded="${!!S.qpOpen}" title="${esc(t("Show each lecture's steps and details"))}">${I("chevron-up", "sm")}</button>
       ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${esc(paused ? t("Go on transcribing") : t("Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."))}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? t("Continue") : t("Pause")}</span></button>` : ""}
       ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="${esc(t("Cancel everything in the queue"))}">${I("stop", "sm")}<span class="lbl"> ${t("Cancel")}</span></button>` : ""}</div>
       ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
@@ -1447,6 +1469,140 @@
     }
     const item = el.querySelector(`.q-item[data-id="${CSS.escape(j.id)}"] .bar i`);
     if (item) item.style.transform = scaleX(j.progress);
+  }
+
+  // ---- the jobs pane: the queue bar grown into a panel over the page, each lecture with its steps. A queue event
+  // (a lecture starts, ends or moves) draws its lists again; a job's progress changes only that lecture's lines.
+  const QSTEPS = () => [["wait", t("Waiting")], ["download", t("Downloading")], ["decode", t("Decoding")], ["speech", t("Finding speech")],
+    ["turn", t("Waiting for its turn")], ["model", t("Loading the speech model")], ["transcribe", t("Transcribing")], ["slides", t("Slides")], ["write", t("Writing files")]];
+  const stepOf = (j) => j.step || { downloading: "download", transcribing: "transcribe", writing: "write" }[j.stage] || "wait";
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const mbText = (b) => t.num(b / 1e6, b < 1e7 ? 1 : 0, false);
+  function jobWhat(j) {          // course, lecture and part, from the library's lists (a local file has only its name)
+    const hit = findRec(j.id);
+    if (!hit) return { course: j.course_code || "", name: "", lecture: j.course_code ? (j.title || "").replace(`${j.course_code} · `, "") : j.title, part: "" };
+    const { c, d, r } = hit;
+    return { course: c.code, name: c.display_name || "", lecture: [d.label, r.time && r.end_time ? `${r.time}–${r.end_time}` : r.time].filter(Boolean).join(" · "),
+      part: r.part && d.parts > 1 ? t("Part {n}", { n: r.part }) : "" };
+  }
+  const jobName = (j) => { const w = jobWhat(j); return [w.course, w.lecture, w.part].filter(Boolean).join(" · ") || j.title; };
+  function qpStepsHTML(j) {
+    const spent = {}, all = j.steps || [], now = stepOf(j);
+    all.forEach(([s, at], k) => { spent[s] = (spent[s] || 0) + ((k + 1 < all.length ? all[k + 1][1] : j.age_s || at) - at); });
+    const order = QSTEPS().filter(([s]) => s !== "slides" || j.slides), at = order.findIndex(([s]) => s === now);
+    return order.filter(([s], k) => s in spent || s === now || k > at).map(([s, label]) => {
+      const st = s === now ? "now" : s in spent ? "done" : "todo";
+      return `<li class="qp-step ${st}"${st === "now" ? ' aria-current="step"' : ""}>${st === "done" ? I("check", "xs") : ""}${esc(label)}${spent[s] >= 1 ? ` <span class="t">${mmss(spent[s])}</span>` : ""}</li>`;
+    }).join("");
+  }
+  function qpDetail(j) {
+    const s = stepOf(j);
+    if (s === "download" && j.dl) return [t("{done} of {total} MB", { done: mbText(j.dl[0]), total: mbText(j.dl[1]) }), j.dl[2] ? t("{speed} MB/s", { speed: t.num(j.dl[2] / 1e6, 1) }) : ""].filter(Boolean).join(" · ");
+    if (s === "transcribe" && j.progress) return [t("{pct} done", { pct: pctText(j.progress) }), jobDetail(j)].filter(Boolean).join(" · ");
+    return jobDetail(j);
+  }
+  const qpMeta = (j) => [j.age_s >= 1 ? t("{time} so far", { time: mmss(j.age_s) }) : "", j.model ? t("Speech model: {model}", { model: j.model }) : "",
+    j.device === "cuda" ? t("on the graphics card") : j.device === "cpu" ? t("on the processor") : ""].filter(Boolean).join(" · ");
+  const qpNotesHTML = (j) => (j.notes || []).map((n) => `<div class="qp-note">${I("info", "xs")}<span>${esc(n)}</span></div>`).join("")
+    + (j.anomalies || []).map((a) => `<div class="qp-anom">${I("alert", "xs")}<span>${esc(a.text)}</span></div>`).join("");
+  function qpJobHTML(j) {
+    const jobs = S.queue || [], i = jobs.indexOf(j), s = stepOf(j), w = jobWhat(j);
+    const ctl = `${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="${esc(t("Transcribe this one before the others still waiting"))}">${t("Do next")}</button>` : j.first ? `<span class="dim sm">${t("next")}</span>` : ""}
+      <button class="btn ghost icon sm" data-act="cancel" data-id="${esc(j.id)}" title="${esc(t("Cancel this one"))}" aria-label="${esc(t("Cancel this one"))}">${I("x", "sm")}</button>`;
+    const name = `<span class="qp-c">${esc(w.course)}</span>${w.name ? ` <span class="dim">· ${esc(w.name)}</span>` : ""}`;
+    const lec = esc([w.lecture, w.part].filter(Boolean).join(" · "));
+    if (s === "wait") return `<li class="qp-job wait" data-id="${esc(j.id)}" data-step="wait"><span class="qp-n">${name} <span class="dim">· ${lec}</span></span>${ctl}</li>`;
+    return `<li class="qp-job" data-id="${esc(j.id)}" data-step="${s}">
+      <div class="qp-jh"><div class="qp-n">${name}<div class="qp-lec">${lec}</div></div>${ctl}</div>
+      <ol class="qp-steps">${qpStepsHTML(j)}</ol>
+      <div class="qp-now"><div class="bar ${j.progress || s !== "download" && s !== "transcribe" ? "" : "indet"}"><i class="glide" style="transform:${scaleX(j.progress)}"></i></div><span class="qp-det">${esc(qpDetail(j))}</span></div>
+      <div class="qp-meta">${esc(qpMeta(j))}</div><div class="qp-notes">${qpNotesHTML(j)}</div></li>`;
+  }
+  function qpUpdate(j) {         // one lecture's progress: its own lines only (a new step draws the lecture again)
+    const card = $(`#qpane .qp-job[data-id="${CSS.escape(j.id)}"]`); if (!card) return;
+    if (card.dataset.step !== stepOf(j)) {
+      const again = card.contains(document.activeElement) ? focusKey(document.activeElement) : "";
+      card.outerHTML = qpJobHTML(j);
+      const f = again && $(`#qpane .qp-job[data-id="${CSS.escape(j.id)}"] ${again}`); if (f) f.focus({ preventScroll: true });
+      return;
+    }
+    if (card.classList.contains("wait")) return;
+    const bar = card.querySelector(".qp-now .bar");
+    bar.classList.toggle("indet", !j.progress && ["download", "transcribe"].includes(stepOf(j))); bar.firstElementChild.style.transform = scaleX(j.progress);
+    card.querySelector(".qp-det").textContent = qpDetail(j);
+    card.querySelector(".qp-meta").textContent = qpMeta(j);
+    const steps = qpStepsHTML(j), ol = card.querySelector(".qp-steps"); if (ol.innerHTML !== steps) ol.innerHTML = steps;
+    const notes = qpNotesHTML(j), nb = card.querySelector(".qp-notes"); if (nb.innerHTML !== notes) nb.innerHTML = notes;
+  }
+  function qpFinished(e) {       // the lectures finished in this session, newest first
+    if (!["done", "failed", "processing", "cancelled"].includes(e.stage)) return;
+    S.qDone = [{ id: e.id, name: jobName(e), stage: e.stage, error: e.error, kept: e.status === "done", day: e.day, local: e.local }, ...(S.qDone || []).filter((x) => x.id !== e.id)].slice(0, 60);
+  }
+  function qpSummary() {
+    const b = S.batch || {}, jobs = S.queue || [], eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+    const parts = b.total > 1 ? [t("{n} done", { n: b.done != null ? b.done : b.finished }), b.failed ? t("{n} failed", { n: b.failed }) : "", t("{n} left", { n: b.total - b.finished })]
+      : [jobs.length ? t.n(jobs.length, "{n} lecture in the queue", "{n} lectures in the queue") : t("Nothing is waiting.")];
+    if (b.left_s) parts.push(t("ends around {time} ({left})", { time: t.date(new Date(Date.now() + b.left_s * 1000), "time"), left: t.left(b.left_s) }));
+    return esc(parts.filter(Boolean).join(" · ")) + (S.paused ? ` <span class="pill">${t("Paused")}</span>` : "")
+      + (eng ? `<div class="qp-eng">${SPIN()} ${engTitle(eng)}${eng.message && eng.message !== engTitle(eng) ? ` · ${esc(eng.message)}` : ""}</div>` : "");
+  }
+  function engTitle(eng) {       // the engine's message can repeat it (then it is left out)
+    return eng.phase === "download" ? t("Downloading the speech model (one time)") : t("Loading the speech model");
+  }
+  function qpDoneHTML() {
+    const list = S.qDone || [];
+    if (!list.length) return "";
+    return `<h3>${t("Finished in this session")}</h3><ul class="qp-fins">${list.map((x) => {
+      const icon = x.stage === "done" ? "check-circle" : x.stage === "cancelled" ? "x-circle" : "alert-circle";
+      const why = x.stage === "done" ? (x.local ? t("Done") : `<button class="btn ghost sm" data-act="qp-open" data-day="${esc(x.day)}">${I("file-text", "sm")} ${t("Open transcript")}</button>`)
+        : x.stage === "cancelled" ? t("Cancelled")
+        : `<span class="qp-why">${esc(x.error || t("failed"))}${x.kept ? ` ${t("The earlier transcript is kept.")}` : ""}</span>`;
+      return `<li class="qp-fin ${x.stage}">${I(icon, "sm")}<span class="qp-n">${esc(x.name)}</span>${why}</li>`;
+    }).join("")}</ul>`;
+  }
+  function renderPane() {
+    const p = $("#qpane");
+    if (!p) S.qpOpen = false;                     // the page was drawn again (e.g. another profile)
+    if (!p || !S.qpOpen) return;
+    const jobs = S.queue || [], paused = !!S.paused;
+    const again = p.contains(document.activeElement) ? focusKey(document.activeElement) : "";
+    p.querySelector(".qp-ctl").innerHTML = `${jobs.length ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause">${I(paused ? "play" : "pause", "sm")} ${paused ? t("Continue") : t("Pause")}</button>
+      <button class="btn ghost sm" data-act="cancel-all">${I("stop", "sm")} ${t("Cancel")}</button>` : ""}
+      <button class="btn ghost icon sm" data-act="qp-close" title="${esc(t("Close (Esc)"))}" aria-label="${esc(t("Close"))}">${I("x", "sm")}</button>`;
+    p.querySelector(".qp-sum").innerHTML = qpSummary();
+    if (p.drawn !== S.queue || p.drawnDone !== S.qDone) {   // the lists only when they changed (not for the model's progress)
+      p.querySelector(".qp-jobs").innerHTML = jobs.map(qpJobHTML).join("");
+      p.querySelector(".qp-done").innerHTML = qpDoneHTML();
+      p.drawn = S.queue; p.drawnDone = S.qDone;
+    }
+    const f = again && p.querySelector(again);
+    if (again) (f || p.querySelector("[data-act='qp-close']")).focus({ preventScroll: true });   // its control may be gone
+  }
+  function openPane() {
+    let p = $("#qpane");
+    if (!p) {
+      p = document.createElement("section");
+      p.id = "qpane"; p.className = "qpane"; p.setAttribute("aria-label", t("Transcription queue")); p.tabIndex = -1;
+      p.innerHTML = `<div class="qp-head"><h2>${I("list-checks")} ${t("Transcription queue")}</h2><div class="qp-ctl"></div></div>
+        <div class="qp-body"><div class="qp-sum"></div><ol class="qp-jobs"></ol><div class="qp-done"></div></div>`;
+      $(".main").appendChild(p);
+      void p.offsetWidth;                         // drawn closed first, so opening it animates
+    }
+    S.qpOpen = true; S.qpFrom = document.activeElement;
+    p.drawn = null;                               // its lectures moved on while it was closed
+    renderPane();
+    p.classList.add("open");
+    ["#top", "#view", "#queue"].forEach((s) => { const x = $(s); if (x) x.inert = true; });   // Tab stays in the pane (the sidebar and toasts stay live: going elsewhere closes it)
+    p.querySelector("[data-act='qp-close']").focus({ preventScroll: true });
+  }
+  function closePane() {
+    const p = $("#qpane");
+    S.qpOpen = false;
+    ["#top", "#view", "#queue"].forEach((s) => { const x = $(s); if (x) x.inert = false; });
+    if (p) p.classList.remove("open");
+    renderQueue();
+    const back = $("#queue:not(.hidden) [data-act='queue-expand']") || (S.qpFrom && S.qpFrom.isConnected ? S.qpFrom : null);
+    if (back) back.focus({ preventScroll: true });
   }
 
   // ---- sign-in
@@ -1533,19 +1689,30 @@
   function onUpdate(e) {
     const was = (S.update || {}).state;
     S.update = { ...S.update, ...e };
+    if (e.state === "downloading" && was === "downloading") { updateProgress(); return; }   // only the bar moves
     if ($("#update-modal") || e.state === "installing" || (e.state === "downloading" && was !== "downloading")) updateModal();
     else if (e.state === "error") toast(e.error, "error");
     renderTop();
     if (S.view.name === "settings") renderView();
   }
+  const updatePc = (u) => (u.total ? Math.round((u.done / u.total) * 100) : 0);
+  const updateText = (u, pc) => (u.total ? t("Downloading the new version · {pct} of {mb} MB", { pct: t.pct(pc / 100), mb: t.num(Math.round(u.total / 1e6)) }) : t("Downloading the new version…"));
+  // the download goes on: its bar and line change in place (drawing the dialog again replays its opening animation)
+  function updateProgress() {
+    const m = $("#update-modal"), bar = m && m.querySelector(".up-bar"), txt = m && m.querySelector(".up-txt");
+    if (!bar || !txt) return;
+    const u = S.update, pc = updatePc(u);
+    bar.classList.toggle("indet", !u.total); bar.firstElementChild.style.width = `${pc}%`;
+    txt.textContent = updateText(u, pc);
+  }
   function updateModal() {
     const u = S.update || {};
-    const pc = u.total ? Math.round((u.done / u.total) * 100) : 0;
+    const pc = updatePc(u);
     const body = u.state === "installing"
       ? `<div class="callout info">${I("info")}<div>${t("Installing. IEUStudia closes now and opens again by itself in about a minute.")}</div></div>`
       : u.state === "downloading"
-        ? `<div class="bar ${u.total ? "" : "indet"}"><i style="width:${pc}%"></i></div>
-           <div class="dim sm" style="margin-top:6px">${u.total ? t("Downloading the new version · {pct} of {mb} MB", { pct: t.pct(pc / 100), mb: t.num(Math.round(u.total / 1e6)) }) : t("Downloading the new version…")}</div>`
+        ? `<div class="bar up-bar ${u.total ? "" : "indet"}"><i style="width:${pc}%"></i></div>
+           <div class="dim sm up-txt" style="margin-top:6px">${updateText(u, pc)}</div>`
         : `${u.state === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error)}</div></div>` : ""}
            ${u.notes ? `<div class="update-notes md">${mdToHtml(u.notes)}</div>` : ""}`;
     const busy = u.state === "downloading" || u.state === "installing";
@@ -1674,6 +1841,10 @@
     "queue-pause": async () => { const r = await call("queue_pause", !S.paused); if (r.ok) { S.paused = r.paused; renderQueue(); } },
     "queue-first": async (el) => { const r = await call("queue_first", el.dataset.id); if (r.ok) toast(t("Moved to the front of the queue."), "info"); },
     "queue-toggle": () => { $("#queue").classList.toggle("open"); renderQueue(); },
+    "queue-expand": () => (S.qpOpen ? closePane() : openPane()),
+    "qp-close": () => closePane(),
+    "qp-open": (el) => { closePane(); openDay(el.dataset.day); },
+    "bg-settings": () => { go({ name: "settings" }); const c = $("#set-bg"); if (c) c.scrollIntoView({ block: "start" }); },
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
     "open-mat-hit": (el) => call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); }),
@@ -1892,7 +2063,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub,
-    otherSection });
+    otherSection, oddMark });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2014,7 +2185,10 @@
     }
     if (e.key === "Tab") { const m = $("#overlay .modal"); if (m) trapTab(e, m); }
     if (e.ctrlKey && !e.altKey && S.mode === "app" && ["+", "=", "-", "0"].includes(e.key)) { e.preventDefault(); textSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return; }
-    if (e.key === "Escape") { closeMenu(); if ($("#overlay").innerHTML) closeModal(); }
+    if (e.key === "Escape") {
+      const menuOpen = !!$("#menu"); closeMenu();
+      if ($("#overlay").innerHTML) closeModal(); else if (S.qpOpen && !menuOpen) closePane();   // the jobs pane, after a dialog
+    }
     if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) { e.preventDefault(); if (S.mode === "app") A.sync(); }
     if (e.ctrlKey && e.key.toLowerCase() === "f" && S.view.name === "day") { e.preventDefault(); const f = $("[data-act='find']"); if (f) f.focus(); }
   });

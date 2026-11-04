@@ -39,12 +39,20 @@
   "Check IEULearn now": "IEULearn'ü şimdi kontrol et",
   "Pause notifications": "Bildirimleri duraklat",
   "Start with Windows": "Windows açılınca başlat",
-  "Stop background checks": "Arka plan kontrollerini durdur",
   "Transcribed: {title}": "Yazıya döküldü: {title}",
   "Your lecture is transcribed": "Dersin yazıya döküldü",
   "It's ready to read. Click to open it.": "Okumaya hazır. Açmak için tıkla.",
   "{n} lecture transcribed": "{n} ders yazıya döküldü",
   "Transcription finished": "Yazıya dökme bitti",
   "It's ready to read in IEUStudia.": "IEUStudia'da okumaya hazır.",
-  "{n} couldn't be transcribed: the course page says why.": "{n} tanesi yazıya dökülemedi, nedenini ders sayfasında görebilirsin."
+  "{n} couldn't be transcribed: the course page says why.": "{n} tanesi yazıya dökülemedi, nedenini ders sayfasında görebilirsin.",
+  "Uploaded to Panopto on {date}; the date in its name is used": "Panopto'ya {date} tarihinde yüklendi; adındaki tarih kullanılıyor",
+  "Still being recorded": "Hâlâ kaydediliyor",
+  "Panopto is still processing it": "Panopto hâlâ işliyor",
+  "Another recording of this course starts at the very same minute: their order and date may be wrong": "Bu dersin başka bir kaydı da tam aynı dakikada başlıyor: sıraları ve tarihleri yanlış olabilir",
+  "Recorded on a {day}, not one of this course's class days ({days})": "{day} günü kaydedilmiş, bu dersin ders günlerinden biri değil ({days})",
+  "Much shorter than this course's usual {usual}": "Bu dersin olağan süresinden ({usual}) çok daha kısa",
+  "Much longer than this course's usual {usual}": "Bu dersin olağan süresinden ({usual}) çok daha uzun",
+  "Its date is still to come": "Tarihi henüz gelmedi",
+  "No speech was found in it": "İçinde konuşma bulunamadı"
 }

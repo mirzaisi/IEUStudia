@@ -19,6 +19,7 @@ from .. import __version__
 from ..cancel import Cancelled, check
 from ..domain import Segment, Transcript
 from ..i18n import num, t, tn
+from ..nativeload import LOAD_LOCK, import_onnxruntime
 from ..quality import NoSpeech, analyze_audio, analyze_transcript
 from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
                    hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
@@ -145,23 +146,27 @@ class Engine:
                 path = download_model(self.model_name, cb, cancel)
             check(cancel)
             progress("model-load", 0.0, t("Loading the speech model"))
-            setup_cuda_dlls()
-            from faster_whisper import WhisperModel
+            # the speech search's onnxruntime first, then the card's libraries: the two loading at the same time held
+            # up the whole app (nativeload)
+            import_onnxruntime()
+            with LOAD_LOCK:
+                setup_cuda_dlls()
+                from faster_whisper import WhisperModel
 
-            device, compute = resolve_device(self.device_pref)
-            threads = 1 if device == "cuda" else cpu_threads()   # on the card, more threads only spin while waiting
-            t0 = time.monotonic()
-            try:
-                wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
-                if device == "cuda":  # surface missing cuBLAS/cuDNN now rather than mid-job
-                    wm.encode(np.zeros((1, wm.model.n_mels, 3000), dtype=np.float32))
-            except Exception as exc:  # noqa: BLE001
-                if device != "cuda":
-                    raise
-                self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
-                self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
-                device, compute = "cpu", "int8"
-                wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
+                device, compute = resolve_device(self.device_pref)
+                threads = 1 if device == "cuda" else cpu_threads()   # on the card, more threads only spin waiting
+                t0 = time.monotonic()
+                try:
+                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
+                    if device == "cuda":  # surface missing cuBLAS/cuDNN now rather than mid-job
+                        wm.encode(np.zeros((1, wm.model.n_mels, 3000), dtype=np.float32))
+                except Exception as exc:  # noqa: BLE001
+                    if device != "cuda":
+                        raise
+                    self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
+                    self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
+                    device, compute = "cpu", "int8"
+                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
             self._wm, self._device, self._compute = wm, device, compute
             self._oom_batch = 0              # a batch that ran out of GPU memory stays smaller until the model unloads
             self._decoder = UnitDecoder(wm)

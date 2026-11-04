@@ -209,5 +209,13 @@
   "Smaller": "Daha küçük",
   "Normal": "Normal",
   "Larger": "Daha büyük",
-  "Largest": "En büyük"
+  "Largest": "En büyük",
+  "Being recorded": "Kaydediliyor",
+  "It can be transcribed once Panopto has finished it.": "Panopto kaydı bitirince yazıya dökebilirsin.",
+  "Being recorded. It can be transcribed once Panopto has finished it.": "Kaydediliyor. Panopto kaydı bitirince yazıya dökebilirsin.",
+  "Worth checking": "Göz atmakta fayda var",
+  "Parts {a}–{b}": "Bölüm {a}–{b}",
+  "Parts {list}": "Bölüm {list}",
+  "Background checks off": "Arka plan kontrolleri kapalı",
+  "You get no notifications about new lectures, announcements or coming quizzes. Click to turn them on again in Settings.": "Yeni dersler, duyurular ve yaklaşan quizler için bildirim almıyorsun. Ayarlar'dan yeniden açmak için tıkla."
 }

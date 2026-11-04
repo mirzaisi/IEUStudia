@@ -48,9 +48,12 @@
     return L.lang === "tr" ? out : out.replace(/\bSept\b/, "Sep");     // en-GB writes "Sept"; the app (and i18n.py) "Sep"
   };
   // 31,200.5 · 31.200,5; sizes pass group = false and stay as they were: 1012 MB, not 1,012 MB
-  t.num = (x, digits = 0, group = true) => new Intl.NumberFormat(locale(), { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: group }).format(x || 0);
-  t.pct = (f) => new Intl.NumberFormat(locale(), { style: "percent", maximumFractionDigits: 0 }).format(f || 0);   // 45% · %45
-  t.list = (items, type = "conjunction") => new Intl.ListFormat(locale(), { type }).format(items.map(String));      // A, B and C · A, B ve C
+  // each formatter made once per language: making one costs far more than using it (a "job" event's progress
+  // went through t.pct for every row and took up to 0.7 s of the page's time in a full sync)
+  const made = (key, make) => fmts[key] || (fmts[key] = make());
+  t.num = (x, digits = 0, group = true) => made(`${locale()}|num|${digits}|${group}`, () => new Intl.NumberFormat(locale(), { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: group })).format(x || 0);
+  t.pct = (f) => made(`${locale()}|pct`, () => new Intl.NumberFormat(locale(), { style: "percent", maximumFractionDigits: 0 })).format(f || 0);   // 45% · %45
+  t.list = (items, type = "conjunction") => made(`${locale()}|list|${type}`, () => new Intl.ListFormat(locale(), { type })).format(items.map(String));      // A, B and C · A, B ve C
   t.dur = (s) => {                                                                                                  // 1 h 5 min · 1 sa 5 dk
     const m = Math.round((s || 0) / 60);
     if (m < 60) return t("{m} min", { m });

@@ -449,9 +449,13 @@
       const sel = new Set(D.scope.weeks);
       const days = D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.todo_days || []);
       let n = 0;
-      for (const k of days) { const r = await call("transcribe_day", k); if (r.ok) n += r.queued || 0; }
-      toast(n ? t.n(n, "{n} recording queued for transcription — build the plan once they are done, or now with what is there", "{n} recordings queued for transcription — build the plan once they are done, or now with what is there")
-        : t("Nothing left to transcribe there"), n ? "success" : "info");
+      const left = { unknown: 0, needs_section: false };     // only your section's lectures (catchup.js)
+      for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) { n += r.queued || 0; left.unknown += r.unknown || 0; left.needs_section = left.needs_section || !!r.needs_section; } }
+      if (n || !(left.unknown || left.needs_section)) {
+        toast(n ? t.n(n, "{n} recording queued for transcription — build the plan once they are done, or now with what is there", "{n} recordings queued for transcription — build the plan once they are done, or now with what is there")
+          : t("Nothing left to transcribe there"), n ? "success" : "info");
+      }
+      if (St.sectionLeftOut) St.sectionLeftOut((St.findCourse(D.courseId) || {}).code || t("this course"), left);
     },
     "pd-download": async () => {
       readInputs();

@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import requests
 
@@ -44,6 +44,7 @@ class SyncService:
         self._gen = 0                    # + 1 at each sign-in and sign-out
         import_cookies(self._session, secrets_store.load_cookies())
         self._stored: Optional[list] = export_cookies(self._session)   # what secrets.bin has: not written again
+        self.after_sync: Callable[[], Any] = lambda: None   # the app: lectures whose class day changed get their files
 
     # ------------------------------------------------------------------ session helpers
     def http(self) -> requests.Session:
@@ -245,10 +246,11 @@ class SyncService:
         """``full_every`` (the tray helper): each course's Panopto folders are listed in full at least this often; in
         between only when their probe shows a change, so a renamed, moved or deleted older recording (or one
         published with an older date while another is deleted) may wait until then; nothing is marked gone from a
-        probe. Each course keeps its own clock: one that keeps failing doesn't stop the others' probes. None (the
-        app): every folder in full, each time. ``dashboard`` False (the tray helper): the courses come from the small
-        "My courses" list and the profile stays as stored (see _course_list); an expired session is noticed the same
-        way and signs in again with the dashboard. The app always loads the dashboard."""
+        probe. A course with a recording still being recorded (started in the last LIVE_LISTED) is listed in full
+        each time, so its end is noticed. Each course keeps its own clock: one that keeps failing doesn't stop the
+        others' probes. None (the app): every folder in full, each time. ``dashboard`` False (the tray helper): the
+        courses come from the small "My courses" list and the profile stays as stored (see _course_list); an expired
+        session is noticed the same way and signs in again with the dashboard. The app always loads the dashboard."""
         t0 = time.monotonic()
         errors: list[str] = []
         new_ids: list[str] = []
@@ -256,9 +258,11 @@ class SyncService:
             progress(t("Checking IEULearn and Panopto…"))
             listed: dict[str, Optional[list]] = {}
             probing = full_every is not None
+            live = self.lib.live_courses((dt.datetime.now() - self.LIVE_LISTED).isoformat()) if probing else set()
 
             def heads(c: Course) -> Optional[dict]:          # probes only for a course listed in full lately
-                if not probing or self._stale(self.lib.get_meta(f"listed_full:{c.id}") or "", full_every):
+                if (not probing or c.id in live
+                        or self._stale(self.lib.get_meta(f"listed_full:{c.id}") or "", full_every)):
                     return None
                 return self._heads(c.id)
             stored_profile = None if dashboard else self.profile      # (none stored yet: the dashboard has it)
@@ -358,13 +362,19 @@ class SyncService:
             self.log.info("Sync done in %.1fs: %d courses, %d new recordings (%s)", secs, len(courses), len(new_ids),
                           f"{sum(r is not None for r in listed.values())} of {len(listed)} listed after a probe"
                           if probing else "full listing")
-            return SyncResult(self.profile, self.lib.courses(), new_ids, errors, secs)
+            res = SyncResult(self.profile, self.lib.courses(), new_ids, errors, secs)
+        try:
+            self.after_sync()
+        except Exception:  # noqa: BLE001 - the sync itself worked
+            self.log.warning("After the sync: failed", exc_info=True)
+        return res
 
     # ------------------------------------------------------------------ course content
     OVERVIEW_EVERY = dt.timedelta(hours=20)       # outcomes, weekly topics, grading: rarely change
     SYLLABUS_EVERY = dt.timedelta(days=7)
     HELPER_UNITS_EVERY = dt.timedelta(hours=6)    # the tray helper, when it doesn't tell about new files
     HELPER_PANOPTO_EVERY = dt.timedelta(hours=6)  # the tray helper's full Panopto listing (probes in between)
+    LIVE_LISTED = dt.timedelta(hours=12)          # (one "being recorded" for longer is stuck: the 6-hourly listing)
 
     @staticmethod
     def _stale(stamp: str, every: dt.timedelta) -> bool:

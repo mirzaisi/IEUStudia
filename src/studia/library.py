@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS recordings(
   delivery_id TEXT PRIMARY KEY, course_id TEXT, folder_id TEXT, folder_path TEXT, name TEXT, start TEXT,
   duration_s REAL, viewer_url TEXT, session_id TEXT, kind TEXT, section_tag TEXT, is_new INTEGER DEFAULT 0,
   duplicate_of TEXT, hidden INTEGER DEFAULT 0, status TEXT DEFAULT 'available', error TEXT DEFAULT '',
-  first_seen TEXT, last_seen TEXT, gone INTEGER DEFAULT 0, warnings TEXT DEFAULT '[]');
+  first_seen TEXT, last_seen TEXT, gone INTEGER DEFAULT 0, warnings TEXT DEFAULT '[]', live INTEGER DEFAULT 0,
+  uploaded TEXT DEFAULT '');
 CREATE INDEX IF NOT EXISTS ix_rec_course ON recordings(course_id);
 CREATE TABLE IF NOT EXISTS transcripts(
   delivery_id TEXT PRIMARY KEY, created_at TEXT, model TEXT, engine_version TEXT, json_path TEXT,
@@ -63,7 +64,9 @@ CREATE TABLE IF NOT EXISTS marks(
   delivery_id TEXT, t REAL, text TEXT DEFAULT '', note TEXT DEFAULT '', created_at TEXT, PRIMARY KEY(delivery_id, t));
 """
 _REC_COLS = ["delivery_id", "course_id", "folder_id", "folder_path", "name", "start", "duration_s", "viewer_url",
-             "session_id", "kind", "section_tag", "is_new", "duplicate_of", "hidden", "status", "error", "first_seen"]
+             "session_id", "kind", "section_tag", "is_new", "duplicate_of", "hidden", "status", "error", "first_seen",
+             "live", "uploaded"]
+DAY_MOVES_KEY = "day_moves"            # meta: transcribed lectures whose class day changed, files not moved yet
 _COURSE_COLS = ["id", "title", "code", "name", "instructor", "term", "status", "section", "folder_id",
                 "has_panopto", "position", "cover_url", "progress"]
 
@@ -148,7 +151,9 @@ class Library:
 
     def _add_columns(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS leaves old tables as they were)."""
-        for table, col, decl in (("courses", "cover_url", "TEXT DEFAULT ''"), ("courses", "progress", "INTEGER")):
+        for table, col, decl in (("courses", "cover_url", "TEXT DEFAULT ''"), ("courses", "progress", "INTEGER"),
+                                 ("recordings", "live", "INTEGER DEFAULT 0"),
+                                 ("recordings", "uploaded", "TEXT DEFAULT ''")):
             if col not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
@@ -250,8 +255,8 @@ class Library:
     def _rec(row: sqlite3.Row) -> Recording:
         d = {k: row[k] for k in _REC_COLS}
         d["start"] = dt.datetime.fromisoformat(d["start"])
-        d["is_new"], d["hidden"] = bool(d["is_new"]), bool(d["hidden"])
-        d["error"] = d["error"] or ""
+        d["is_new"], d["hidden"], d["live"] = bool(d["is_new"]), bool(d["hidden"]), bool(d["live"])
+        d["error"], d["uploaded"] = d["error"] or "", d["uploaded"] or ""
         return Recording(**d)
 
     def has_recordings(self, course_id: str) -> bool:
@@ -261,14 +266,17 @@ class Library:
     def merge_recordings(self, course_id: str, recs: list[Recording], first_sync: bool,
                          new_after: str = "") -> list[str]:
         """Insert/update a course's recordings; returns ids that are NEW since the last sync. ``new_after``: in a
-        first sync, recordings that started after this time are new all the same."""
+        first sync, recordings that started after this time are new all the same. One still being recorded is new
+        (told about) when it has finished. A transcribed one whose class day changed (its start was the upload time)
+        is noted for the files to follow (see day_moves)."""
         now = _now()
         new_ids: list[str] = []
+        moves: list[list[str]] = []
         with self._lock:
             # what is stored, to write only what changed (last_seen: when it last changed; nothing reads it)
             stored = {r[0]: tuple(r[1:]) for r in self.db.execute(
                 "SELECT delivery_id, folder_id, folder_path, name, start, duration_s, viewer_url, session_id, kind, "
-                "section_tag, gone FROM recordings WHERE course_id=?", (course_id,))}
+                "section_tag, live, uploaded, gone FROM recordings WHERE course_id=?", (course_id,))}
             existing = set(stored)
             fresh = [r.delivery_id for r in recs if r.delivery_id not in existing]
             elsewhere: dict[str, bool] = {}      # in another course: True if it is gone from there
@@ -284,29 +292,40 @@ class Library:
                     if elsewhere[r.delivery_id]:     # gone from there (or that course is gone): it moved here
                         self.db.execute(
                             "UPDATE recordings SET course_id=?, folder_id=?, folder_path=?, name=?, start=?, duration_s=?, "
-                            "viewer_url=?, session_id=?, kind=?, section_tag=?, last_seen=?, gone=0 WHERE delivery_id=?",
+                            "viewer_url=?, session_id=?, kind=?, section_tag=?, live=?, uploaded=?, last_seen=?, gone=0 "
+                            "WHERE delivery_id=?",
                             (course_id, r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url,
-                             r.session_id, r.kind, r.section_tag, now, r.delivery_id))
+                             r.session_id, r.kind, r.section_tag, int(r.live), r.uploaded, now, r.delivery_id))
                     continue                         # listed by both: it stays where it is, and is not "new"
                 if r.delivery_id in existing:
                     row = (r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url, r.session_id, r.kind,
-                           r.section_tag, 0)
-                    if stored[r.delivery_id] == row:
+                           r.section_tag, int(r.live), r.uploaded, 0)
+                    old = stored[r.delivery_id]
+                    if old == row:
                         continue
                     stored[r.delivery_id] = row
                     self.db.execute(
                         "UPDATE recordings SET folder_id=?, folder_path=?, name=?, start=?, duration_s=?, viewer_url=?, "
-                        "session_id=?, kind=?, section_tag=?, last_seen=?, gone=0 WHERE delivery_id=?",
+                        "session_id=?, kind=?, section_tag=?, live=?, uploaded=?, last_seen=?, gone=0 WHERE delivery_id=?",
                         (*row[:-1], now, r.delivery_id))
+                    if old[9] and not r.live:        # finished: it can be downloaded now (a try before said "not ready")
+                        self.db.execute("UPDATE recordings SET status='available', error='' "
+                                        "WHERE delivery_id=? AND status='processing'", (r.delivery_id,))
+                        if self.db.execute("SELECT is_new FROM recordings WHERE delivery_id=?",
+                                           (r.delivery_id,)).fetchone()[0]:
+                            new_ids.append(r.delivery_id)
+                    if (old[3][:10], old[7]) != (start[:10], r.kind) and self.db.execute(
+                            "SELECT 1 FROM transcripts WHERE delivery_id=?", (r.delivery_id,)).fetchone():
+                        moves.append([r.delivery_id, f"{course_id}|{old[3][:10]}|{old[7]}"])
                 else:
                     is_new = 0 if first_sync and not (new_after and start > new_after) else 1
                     cur = self.db.execute(
                         "INSERT OR IGNORE INTO recordings(delivery_id, course_id, folder_id, folder_path, name, start, "
-                        "duration_s, viewer_url, session_id, kind, section_tag, is_new, first_seen, last_seen) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "duration_s, viewer_url, session_id, kind, section_tag, is_new, first_seen, last_seen, live, uploaded) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (r.delivery_id, course_id, r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url,
-                         r.session_id, r.kind, r.section_tag, is_new, now, now))
-                    if is_new and cur.rowcount == 1:
+                         r.session_id, r.kind, r.section_tag, is_new, now, now, int(r.live), r.uploaded))
+                    if is_new and cur.rowcount == 1 and not r.live:
                         new_ids.append(r.delivery_id)
             seen = {r.delivery_id for r in recs}
             if recs:  # an empty listing is more likely an auth hiccup than a wiped folder: keep what we know
@@ -314,8 +333,50 @@ class Library:
                     if not stored[gone][-1]:
                         self.db.execute("UPDATE recordings SET gone=1 WHERE delivery_id=?", (gone,))
             dups = self._mark_duplicates(course_id)
+            if moves:
+                self._note_day_moves(moves)
             self.db.commit()
         return [i for i in new_ids if i not in dups]
+
+    def _note_day_moves(self, moves: list[list[str]]) -> None:
+        row = self.db.execute("SELECT value FROM meta WHERE key=?", (DAY_MOVES_KEY,)).fetchone()
+        try:
+            noted = json.loads(row[0]) if row and row[0] else []
+        except ValueError:
+            noted = []
+        noted += [m for m in moves if m not in noted]
+        self.db.execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (DAY_MOVES_KEY, json.dumps(noted)))
+
+    def day_moves(self) -> list[list[str]]:
+        """The transcribed lectures whose class day changed and whose files have not moved yet: [delivery id, old
+        day key]. They stay noted until drop_day_moves."""
+        with self._lock:
+            row = self.db.execute("SELECT value FROM meta WHERE key=?", (DAY_MOVES_KEY,)).fetchone()
+        try:
+            return [list(m) for m in json.loads(row[0])] if row and row[0] else []
+        except (ValueError, TypeError):
+            return []
+
+    def drop_day_moves(self, moves: list[list[str]]) -> None:
+        """Forget the moves that were done (those noted since are kept)."""
+        if not moves:
+            return
+        with self._lock:
+            row = self.db.execute("SELECT value FROM meta WHERE key=?", (DAY_MOVES_KEY,)).fetchone()
+            try:
+                noted = json.loads(row[0]) if row and row[0] else []
+            except ValueError:
+                noted = []
+            self.db.execute("UPDATE meta SET value=? WHERE key=?",
+                            (json.dumps([m for m in noted if m not in moves]), DAY_MOVES_KEY))
+            self.db.commit()
+
+    def live_courses(self, since: str = "") -> set[str]:
+        """The courses with a recording still being recorded (that started after ``since``)."""
+        with self._lock:
+            return {r[0] for r in self.db.execute(
+                "SELECT DISTINCT course_id FROM recordings WHERE live=1 AND gone=0 AND start>=?", (since,))}
 
     def _mark_duplicates(self, course_id: str) -> set[str]:
         rows = self.db.execute(
@@ -814,6 +875,28 @@ class Library:
         with self._lock:
             self.db.execute(f"UPDATE chats SET {', '.join(f'{k}=?' for k in allowed)} WHERE id=?",
                             [*allowed.values(), chat_id])
+            self.db.commit()
+
+    def move_chat_day(self, old_key: str, new_key: str, keep_old: bool) -> None:
+        """A transcribed lecture's class day changed: the chats holding its old day hold the new day in its place,
+        or right after it when the old day keeps lectures (``keep_old``), so their lecture numbers stay in order."""
+        with self._lock:
+            rows = self.db.execute("SELECT id, scope FROM chats WHERE course_id=?",
+                                   (old_key.split("|", 1)[0],)).fetchall()
+            for cid, raw in rows:
+                try:
+                    scope = json.loads(raw or "{}")
+                    days = [str(k) for k in scope.get("days") or []]
+                except (ValueError, AttributeError):
+                    continue
+                if old_key not in days or (keep_old and new_key in days):
+                    continue
+                at = days.index(old_key)
+                if keep_old:
+                    days.insert(at + 1, new_key)
+                else:
+                    days[at:at + 1] = [] if new_key in days else [new_key]
+                self.db.execute("UPDATE chats SET scope=? WHERE id=?", (json.dumps({**scope, "days": days}), cid))
             self.db.commit()
 
     def get_chat(self, chat_id: str) -> Optional[dict[str, Any]]:

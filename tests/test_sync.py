@@ -296,7 +296,7 @@ def test_a_probe_says_what_a_full_listing_said_with_one_row_per_folder():
     p, heads = Panopto(Session()), {}
     recs = p.list_recordings("a", "root", heads)
     assert [(r.delivery_id, r.folder_path) for r in recs] == [("r2", ""), ("r1", ""), ("s1", "Labs")]
-    assert heads == {"root": [2, "r2"], "sub": [1, "s1"]} and asked == [("root", 250), ("sub", 250)]
+    assert heads == {"root": [2, "r2", None], "sub": [1, "s1", None]} and asked == [("root", 250), ("sub", 250)]
     asked.clear()
     assert p.probe("root") == heads and asked == [("root", 1), ("sub", 1)]
 

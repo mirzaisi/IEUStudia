@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Collection, Iterable, Optional
 
 from . import store
+from .anomalies import course_anomalies
 from .config import Settings
 from .domain import Course, Recording
 from .i18n import date_long, t, weekday
@@ -25,8 +26,9 @@ def _too_short(rec: Recording, settings: Settings) -> bool:
 
 
 def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], part: Optional[int], parts: int,
-                   job: Optional[dict[str, Any]], warnings: list[dict[str, Any]], has_slides: bool) -> dict[str, Any]:
-    status = rec.status
+                   job: Optional[dict[str, Any]], warnings: list[dict[str, Any]], has_slides: bool,
+                   anomalies: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
+    status = "live" if rec.live else rec.status            # (live: still being recorded)
     progress = detail = None
     error = rec.error or None
     if job:
@@ -43,6 +45,7 @@ def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], par
         "warnings": [{"level": w.get("level", "info"), "message": w.get("message", "")} for w in warnings],
         "warn_level": worst_level(warnings), "has_slides": has_slides,
         "no_sound": any(w.get("code") == "no_speech" for w in warnings),
+        "anomalies": anomalies or [],
     }
 
 
@@ -69,13 +72,15 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
     days: dict[str, list[Recording]] = defaultdict(list)
     for r in recs:
         days[r.day_key].append(r)
+    found = course_anomalies(recs, warnings, min_s=settings.min_duration_s)
     day_views = []
     for key, rs in days.items():
         rs.sort(key=lambda r: (r.start, bool(r.duplicate_of), r.delivery_id))
         countable = [r for r in rs if not r.duplicate_of and not r.hidden and not _too_short(r, settings)]
         part_no = {r.delivery_id: i for i, r in enumerate(countable, start=1)}
         rviews = [recording_view(r, settings, mine_map.get(r.delivery_id), part_no.get(r.delivery_id), len(countable),
-                                 jobs.get(r.delivery_id), warnings.get(r.delivery_id, []), r.delivery_id in slides_ids)
+                                 jobs.get(r.delivery_id), warnings.get(r.delivery_id, []), r.delivery_id in slides_ids,
+                                 found.get(r.delivery_id))
                   for r in rs]
         flags = [mine_map.get(r.delivery_id) for r in countable] or [None]
         mine = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
@@ -88,6 +93,9 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
             "duration_s": round(sum(r.duration_s for r in countable)), "parts": len(countable),
             "is_new": any(r.is_new for r in countable),
             "warn_level": worst_level([w for r in countable for w in warnings.get(r.delivery_id, [])]),
+            "live": any(r.live for r in rs if not r.hidden),
+            "ready": any(not r.live and r.status != "done" for r in countable),     # finished parts still to transcribe
+            "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, []))),
             "recordings": rviews,
         })
     day_views.sort(key=lambda d: (d["date"], d["recordings"][0]["start"]), reverse=True)
@@ -273,7 +281,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         n = week_of(dt.date.fromisoformat(d["date"]), first) if first else None
         if n:
             week(n)["days"].append({k: d[k] for k in ("day_key", "date", "label", "kind_label", "parts", "transcribed",
-                                                     "any_done", "is_new", "mine", "duration_s")})
+                                                     "any_done", "is_new", "mine", "duration_s", "live", "ready", "anomalies")})
     alerts = _label_other_sections(course_alerts(lib, course_id, recs), cv["days"])
     for e in alerts.get("plan") or []:              # a week an assessment was announced for, also without a unit
         if e.get("week") and first:
@@ -337,6 +345,7 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
     trans = store.load_transcripts(ids)
     slides = {i: store.load_slides(i) for i in ids}
     warnings = {i: lib.warnings(i) for i in ids}
+    found = course_anomalies(lib.recordings(course_id), warnings, min_s=settings.min_duration_s)
     parts = part_views(recs, trans, slides, warnings)
     shares = language_shares([p.transcript for p in parts if p.transcript])
     marks: dict[str, dict[float, dict[str, Any]]] = defaultdict(dict)       # the student's own marks
@@ -366,7 +375,8 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
                              "text": m["text"], "note": m["note"]})
         out_parts.append({
             "index": p.index, "id": p.rec.delivery_id, "title": t("Part {n}", n=p.index), "time_range": time_range(p.rec),
-            "viewer_url": p.rec.viewer_url, "status": p.rec.status, "paragraphs": paras,
+            "viewer_url": p.rec.viewer_url, "status": "live" if p.rec.live else p.rec.status, "paragraphs": paras,
+            "anomalies": found.get(p.rec.delivery_id, []),
             "slides": len({s.index for s in p.slides}),
             "warnings": [{"level": w.get("level"), "message": w.get("message")} for w in p.warnings],
         })

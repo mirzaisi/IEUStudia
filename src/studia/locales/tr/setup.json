@@ -198,5 +198,8 @@
   "About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. You decide when to update.": "IEUStudia aşağı yukarı günde bir kez, yayımlandığı GitHub'a yeni bir sürüm olup olmadığını sorar. Ne zaman güncelleyeceğine sen karar verirsin.",
   "Background checks are on: the IEUStudia icon is next to the clock, bottom right.": "Arka plan kontrolleri açık: IEUStudia simgesi sağ altta, saatin yanında.",
   "Background checks are off.": "Arka plan kontrolleri kapalı.",
-  "Remove it from this PC? You can download it again later.": "Bu bilgisayardan kaldırılsın mı? Sonra yeniden indirebilirsin."
+  "Remove it from this PC? You can download it again later.": "Bu bilgisayardan kaldırılsın mı? Sonra yeniden indirebilirsin.",
+  "Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.": "Arka plan kontrolleri kapalı; bu yüzden yeni dersler, duyurular ve yaklaşan quizler için bildirim almıyorsun.",
+  "Turn them on": "Aç",
+  "Background checks are on.": "Arka plan kontrolleri açık."
 }

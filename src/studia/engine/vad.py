@@ -20,6 +20,9 @@ def speech_probs(audio: np.ndarray) -> np.ndarray:
     """The speech probability of every 512-sample window: faster-whisper's SileroVADModel(np.pad(audio, ...))."""
     from faster_whisper.vad import get_vad_model
 
+    from ..nativeload import import_onnxruntime
+
+    import_onnxruntime()                        # not while the speech model loads (it holds up the whole app)
     session = get_vad_model().session
     n = len(audio)
     rows = n // WINDOW + 1                      # np.pad always adds 1-512 zeros to the end

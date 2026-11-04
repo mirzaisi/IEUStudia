@@ -32,5 +32,11 @@
   "Download in progress": "İndirme sürüyor",
   "IEUStudia is still downloading what it needs. Quit anyway? Next time the download continues where it stopped.": "IEUStudia hâlâ gerekenleri indiriyor. Yine de çıkılsın mı? Bir sonraki açılışta indirme kaldığı yerden devam eder.",
   "Transcription in progress": "Yazıya dökme sürüyor",
-  "IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer run. IEUStudia opens again. You can also download the new version from its release page.": "IEUStudia güncellemeyi başlatamadı: Windows ya da antivirüsün, kurulum programının çalışmasına izin vermedi. IEUStudia yeniden açılıyor. Yeni sürümü sürüm sayfasından da indirebilirsin."
+  "IEUStudia couldn't start the update: Windows or your antivirus didn't let the installer run. IEUStudia opens again. You can also download the new version from its release page.": "IEUStudia güncellemeyi başlatamadı: Windows ya da antivirüsün, kurulum programının çalışmasına izin vermedi. IEUStudia yeniden açılıyor. Yeni sürümü sürüm sayfasından da indirebilirsin.",
+  "Turn off background checks and notifications…": "Arka plan kontrollerini ve bildirimleri kapat…",
+  "Settings → Background and notifications": "Ayarlar → Arka plan ve bildirimler",
+  "IEUStudia will stop checking IEULearn in the background and won't start with Windows. You get no notifications about new lectures, announcements or coming quizzes until you turn background checks on again in IEUStudia ({where}).": "IEUStudia arka planda IEULearn'ü kontrol etmeyi bırakacak ve Windows ile birlikte açılmayacak. Arka plan kontrollerini IEUStudia'da yeniden açana kadar ({where}) yeni dersler, duyurular ve yaklaşan quizler için bildirim almazsın.",
+  "IEUStudia will stop checking IEULearn in the background and won't start at login. You get no notifications about new lectures, announcements or coming quizzes until you turn background checks on again in IEUStudia ({where}).": "IEUStudia arka planda IEULearn'ü kontrol etmeyi bırakacak ve oturum açtığında başlamayacak. Arka plan kontrollerini IEUStudia'da yeniden açana kadar ({where}) yeni dersler, duyurular ve yaklaşan quizler için bildirim almazsın.",
+  "Turn them off?": "Kapatılsın mı?",
+  "IEUStudia background checks": "IEUStudia arka plan kontrolleri"
 }

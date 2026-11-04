@@ -54,9 +54,11 @@ class Recording:
     is_new: bool = False         # appeared since the previous sync
     duplicate_of: Optional[str] = None  # delivery id of the recording this one duplicates
     hidden: bool = False         # user chose to hide it
-    status: str = "available"    # available|processing|queued|downloading|transcribing|done|failed
+    status: str = "available"    # available|processing|queued|downloading|transcribing|done|failed (see ``live``)
     error: str = ""
     first_seen: str = ""         # ISO timestamp of first sync that saw it
+    live: bool = False           # Panopto hasn't finished it: still being recorded (nothing to download yet)
+    uploaded: str = ""           # Panopto's StartTime (ISO) when that was the upload and the name's date replaced it
 
     @property
     def day_key(self) -> str:

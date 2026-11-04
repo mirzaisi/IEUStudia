@@ -291,19 +291,28 @@ def test_an_exam_week_is_reminded_once_without_a_day():
                                  "on IEULearn has the day.", "EEE 215: Quiz 2 tomorrow (Mon 9 Nov), as announced."]
 
 
-def test_stop_background_checks_in_the_tray_menu_stays_off(monkeypatch):
+def test_stop_background_checks_in_the_tray_menu_asks_first_then_stays_off(monkeypatch):
     import types
 
-    from studia import agent
+    from studia import agent, osutil
 
-    calls = []
+    calls, asked, answer = [], [], [7]                  # IDNO first: a misclick changes nothing
     monkeypatch.setattr(launch, "set_startup", lambda on: calls.append(on))
+    monkeypatch.setattr(osutil.impl(), "message_box", lambda text, title="", flags=0: asked.append((text, flags))
+                        or answer[0])
     appconfig.update({"tray": True, "start_with_windows": True})
-    helper = types.SimpleNamespace(stop=threading.Event(), wake=threading.Event(),
+    helper = types.SimpleNamespace(stop=threading.Event(), wake=threading.Event(), asking=False,
                                    tray=types.SimpleNamespace(stop=lambda: calls.append("tray stopped")))
     agent.Helper._command(helper, agent.CMD_QUIT)
     cfg = appconfig.load()
+    assert cfg.tray and cfg.start_with_windows and calls == [] and not helper.stop.is_set()
+    text, flags = asked[0]
+    assert "Settings" in text and flags & 0xF == 0x4 and flags & 0x100        # Yes/No, with No as the default
+    answer[0] = 6                                       # IDYES
+    agent.Helper._command(helper, agent.CMD_QUIT)
+    cfg = appconfig.load()
     assert not cfg.tray and not cfg.start_with_windows and calls == [False, "tray stopped"] and helper.stop.is_set()
+    assert not helper.asking
 
 
 class _FakeProc:

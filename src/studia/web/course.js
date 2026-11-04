@@ -94,11 +94,11 @@
   }
   function lectureChipHTML(dd) {
     const label = `${dmw(dd.date)} · ${esc(dd.kind_label)}${dd.parts > 1 ? ` · ${t.n(dd.parts, "{n} part", "{n} parts")}` : ""}`;
-    const state = dd.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : dd.any_done ? `<span class="pill">${t("Partly")}</span>` : dd.is_new ? `<span class="pill new">${t("New")}</span>` : "";
+    const state = dd.live && !dd.transcribed ? `<span class="pill processing" title="${t("It can be transcribed once Panopto has finished it.")}">${I("video")}${t("Being recorded")}</span>` : dd.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : dd.any_done ? `<span class="pill">${t("Partly")}</span>` : dd.is_new ? `<span class="pill new">${t("New")}</span>` : "";
     return `<div class="lec ${dd.transcribed ? "done" : ""}">
-      <span class="lec-ico">${I("video", "sm")}</span><span class="lec-name">${label}</span>${state}
+      <span class="lec-ico">${I("video", "sm")}</span><span class="lec-name">${label}</span><span class="lec-state">${St.oddMark(dd.anomalies)}${state}</span>
       <span class="lec-acts">${dd.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(dd.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}
-      ${dd.transcribed ? "" : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
+      ${(dd.live ? !dd.ready : dd.transcribed) ? "" : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
   }
 
   // ------------------------------------------------------------------ heads-up: what the lecturer said
@@ -244,10 +244,12 @@
   }
   async function setSection(cid, patch) {
     const r = await call("set_course_prefs", cid, patch);
-    if (!r.ok) { toast(r.error, "error"); return; }
+    if (!r.ok) { toast(r.error, "error"); return false; }
     St.setCourses(r.courses); renderSidebar(); renderView();
     reloadSoon(cid);                                   // the weeks' lectures depend on it
+    return true;
   }
+  St.setSection = (cid, sec) => setSection(cid, { my_section: sec, show_mode: "mine" });     // also the sync dialog's
 
   // ------------------------------------------------------------------ course page
   function courseHero(c, d) {
@@ -288,7 +290,8 @@
     else if (tab === "announcements") body = announcementsHTML(c, d);
     else body = weeksHTML(c, d);
     const gone = c.inactive ? `<div class="callout info">${I("info")}<div>${t("This course is no longer on your IEULearn dashboard (dropped, or from an earlier term). Its transcripts, files, chats and plans stay here.")}</div></div>` : "";
-    return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${body}</div></div>`;
+    const sq = d && (tab === "weeks" || tab === "overview") ? St.sq.card(c) : "";      // Solvequill, the maker's other app
+    return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${body}</div>${sq}</div>`;
   }
 
   function weeksHTML(c, d) {
@@ -543,7 +546,7 @@
     const stressed = items.filter((a) => a.source === "lecture" && a.category === "important" && inWeeks(a)).slice(0, 6);
     const cv = St.findCourse(c.id) || { days: [] };
     const todo = days.filter((x) => !x.transcribed).flatMap((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || [])
-      .filter((r) => r.part && r.mine !== false && r.status !== "done" && !["queued", "downloading", "transcribing"].includes(r.status)).map((r) => r.id));
+      .filter((r) => r.part && r.mine !== false && r.status !== "done" && !["queued", "downloading", "transcribing", "live"].includes(r.status)).map((r) => r.id));
     const busy = days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => ["queued", "downloading", "transcribing"].includes(r.status)));
     const todoDays = new Set(days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => todo.includes(r.id))).map((x) => x.day_key)).size;
     const marks = (R.marks || []).filter((m) => weeks.some((w) => w.start && m.date >= w.start && m.date <= (w.end || w.start)));
@@ -601,6 +604,7 @@
       ${r.marks.length ? `<div class="rd-sec"><div class="col-title">${I("bookmark", "xs")} ${t("Passages you marked in those weeks")}</div>${r.marks.map((m) => `<button class="alert-item" data-act="alert-open" data-day="${esc(m.day_key)}" data-part="${m.part}" data-t="${m.t}" title="${t("Read it in the transcript")}">
           <span class="alert-main"><span class="alert-text">“${esc(m.text)}”${m.note ? ` <span class="dim">· ${esc(m.note)}</span>` : ""}</span>
           <span class="alert-meta">${I("video", "xs")} ${esc(dmw(m.date))} · ${t("part {n}", { n: m.part })} · ${esc(m.ts)}</span></span><span class="alert-go">${I("chevron-right", "sm")}</span></button>`).join("")}</div>` : ""}
+      ${St.sq.line(c)}
       <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button></div>`;
   }
   function drawReady() {

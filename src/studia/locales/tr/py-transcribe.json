@@ -67,5 +67,6 @@
   "The model files of {repo} were not found on Hugging Face.": "{repo} model dosyaları Hugging Face'te bulunamadı.",
   "Speech model ({name})": "Konuşma tanıma modeli ({name})",
   "NVIDIA graphics card support (from NVIDIA)": "NVIDIA ekran kartı desteği (NVIDIA'dan)",
-  "Offline AI model ({name})": "Çevrimdışı yapay zeka modeli ({name})"
+  "Offline AI model ({name})": "Çevrimdışı yapay zeka modeli ({name})",
+  "The slides couldn't be captured; the transcript is complete.": "Slaytlar alınamadı; ders metni eksiksiz."
 }

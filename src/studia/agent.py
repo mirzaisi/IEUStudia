@@ -260,6 +260,7 @@ class Helper:
         self.screen_on = True
         self.back_at = 0.0               # when the screen last came on or the PC woke up (wall clock)
         self.told_rejected = False       # said once that IEULearn refused the saved password
+        self.asking = False              # "Turn off background checks" asks first; the question is showing
         from .osutil import Tray
 
         self.tray = Tray("IEUStudia", _icon(), self._menu, self._command, self._open, on_power=self._power)
@@ -276,7 +277,7 @@ class Helper:
                 (CMD_STARTUP, t("Start with Windows") if WINDOWS else t("Start at login"), launch.startup_enabled(),
                  True),
                 (0, "", False, False),
-                (CMD_QUIT, t("Stop background checks"), False, True)]
+                (CMD_QUIT, t("Turn off background checks and notifications…"), False, True)]
 
     def _command(self, cmd: int) -> None:
         from . import appconfig, launch
@@ -294,6 +295,17 @@ class Helper:
             launch.set_startup(on)
             appconfig.update({"start_with_windows": on})
         elif cmd == CMD_QUIT:            # off until it's turned on again in Settings, not just until the app opens
+            # it sat right under "Start with Windows", and a misclick turned it off for days: ask first (once, however
+            # often the menu is opened again while the question shows)
+            if getattr(self, "asking", False):
+                return
+            self.asking = True
+            try:
+                if not confirm_stop():
+                    return
+            finally:
+                self.asking = False
+            log.info("Helper: background checks turned off from the tray menu")
             appconfig.update({"tray": False, "start_with_windows": False})
             launch.set_startup(False)
             self.stop.set()
@@ -427,6 +439,23 @@ class Helper:
         self.tray.run()
         self.stop.set()
         self.wake.set()
+
+
+def confirm_stop() -> bool:
+    """Ask before the tray menu turns the background checks off: they stay off, with no icon to turn them on again,
+    until the student does so in Settings."""
+    from .osutil import message_box
+
+    where = t("Settings → Background and notifications")
+    text = (t("IEUStudia will stop checking IEULearn in the background and won't start with Windows. You get no "
+              "notifications about new lectures, announcements or coming quizzes until you turn background checks on "
+              "again in IEUStudia ({where}).", where=where) if WINDOWS else
+            t("IEUStudia will stop checking IEULearn in the background and won't start at login. You get no "
+              "notifications about new lectures, announcements or coming quizzes until you turn background checks on "
+              "again in IEUStudia ({where}).", where=where))
+    # MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 ("No" is the default) | MB_SETFOREGROUND | MB_TOPMOST: IDYES is 6
+    return message_box(text + "\n\n" + t("Turn them off?"), t("IEUStudia background checks"),
+                       0x4 | 0x30 | 0x100 | 0x10000 | 0x40000) == 6
 
 
 def _icon() -> Path:

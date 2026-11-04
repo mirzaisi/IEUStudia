@@ -570,6 +570,8 @@
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t.html("Speech model “{name}”", { name: m.label }), m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t.html("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
     return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}</h3>
+        ${app.tray ? "" : `<div class="callout info bg-hint">${I("info")}<div>${t("Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.")}</div>
+          <button class="btn sm" data-act="bg-on">${t("Turn them on")}</button></div>`}
         ${row(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
         ${row(window.LS_LINUX ? t("Start at login") : t("Start with Windows"), window.LS_LINUX ? t("Start the background checks when you log in.") : t("Start the background checks when you sign in to Windows."), sw("start_with_windows", !app.tray))}
         ${row(t("New lecture recordings"), t("Of your own section."), sw("notify_recordings", !app.tray))}
@@ -592,6 +594,7 @@
             : `<button class="btn ghost sm" data-act="update-check">${I("refresh", "sm")} ${t("Check now")}</button>`)
             + row(t("Look for new versions by itself"), t("About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. You decide when to update."), sw("check_updates"));
         })()}
+        ${St.sq.about()}
         <div class="su-notice-small">${NOTICE()}</div></div>`;
   };
   async function loadStorage() {
@@ -613,8 +616,14 @@
       if (el.dataset.key === "tray" && !el.checked) patch.start_with_windows = false;
       const r = await call("app_config", patch);
       if (!r.ok) { toast(r.error, "error"); return; }
-      S.boot.app = r.app; St.renderView();
+      S.boot.app = r.app; St.renderView(); St.renderTop();
       if (el.dataset.key === "tray") toast(el.checked ? t("Background checks are on: the IEUStudia icon is next to the clock, bottom right.") : t("Background checks are off."), "info");
+    },
+    "bg-on": async () => {          // back as it was before "Turn off background checks" in the tray menu
+      const r = await call("app_config", { tray: true, start_with_windows: true });
+      if (!r.ok) { toast(r.error, "error"); return; }
+      S.boot.app = r.app; St.renderView(); St.renderTop();
+      toast(window.LS_LINUX ? t("Background checks are on.") : t("Background checks are on: the IEUStudia icon is next to the clock, bottom right."), "info");
     },
     "setup-ai": () => { St.startSetup().then(() => go(STEPS.indexOf("ai"))); },
     "del-component": async (el) => {

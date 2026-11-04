@@ -14,9 +14,10 @@ from typing import Iterable, Optional
 from .domain import Course, Recording
 
 _TAG_PATTERNS = [
-    re.compile(r"\bsect?(?:ion)?s?\.?\s*(\d{1,2}(?:\s*[-*,&/]\s*\d{1,2})*)", re.I),   # Section 1, Sections 2-3, Sec 3
+    # Section 1, Sections 2-3, Sec 3, Section-2, Section_2, Section: 2, Sec. #3
+    re.compile(r"\bsect?(?:ion)?s?\.?\s*[-_:#]?\s*(\d{1,2}(?:\s*[-*,&/]\s*\d{1,2})*)", re.I),
     re.compile(r"\b[A-Z]{2,5}\s?\d{3}\s*-\s*(\d{1,2})\b"),                              # EEE215-2
-    re.compile(r"\bşube\s*(\d{1,2}(?:\s*[-*,]\s*\d{1,2})*)", re.I),                      # Şube 1
+    re.compile(r"\bşube\s*[-_:#]?\s*(\d{1,2}(?:\s*[-*,]\s*\d{1,2})*)", re.I),            # Şube 1, Şube-1
 ]
 
 

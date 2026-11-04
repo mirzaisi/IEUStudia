@@ -54,7 +54,66 @@ def _kind(name: str, folder_path: str) -> str:
     return "lab" if re.search(r"\blab", f"{folder_path} {name}", re.I) else "lecture"
 
 
+def _fold(word: str) -> str:
+    return word.translate(str.maketrans("İIıŞşÇçĞğÜüÖö", "iiissccgguuoo")).lower()
+
+
+_MONTHS = {m: i for i, names in enumerate((
+    "january ocak", "february subat", "march mart", "april nisan", "may mayis", "june haziran", "july temmuz",
+    "august agustos", "september eylul", "october ekim", "november kasim", "december aralik"), start=1)
+    for m in names.split()}
+_WEEKDAYS = {d: i for i, names in enumerate((
+    "monday pazartesi", "tuesday sali", "wednesday carsamba", "thursday persembe", "friday cuma",
+    "saturday cumartesi", "sunday pazar")) for d in names.split()}
+_W = r"([^\W\d_]+)"
+_TIME = r",?\s+(?:at\s+|saat\s+)?(\d{1,2})[:_](\d{2})[:_](\d{2})(?:\s*([AP]M)\b)?"
+# (pattern, where its groups have the day, month, year and weekday), the time after them:
+# "4 November 2026 Wednesday at 08:28:43", "Friday, October 23, 2026 at 12:09:42 PM", "Cuma, 23 Ekim 2026 12:09:42"
+_NAME_DATES = (
+    (re.compile(r"\b(\d{1,2})\s+" + _W + r"\s+(\d{4}),?\s+" + _W + _TIME, re.I), (0, 1, 2, 3)),
+    (re.compile(_W + r",?\s+" + _W + r"\s+(\d{1,2}),?\s+(\d{4})" + _TIME, re.I), (2, 1, 3, 0)),
+    (re.compile(_W + r",?\s+(\d{1,2})\s+" + _W + r"\s+(\d{4})" + _TIME, re.I), (1, 2, 3, 0)),
+)
+NAME_DATE_LATE = dt.timedelta(hours=2)       # a start this much after the name's date and time: uploaded later
+NAME_DATE_MAX = dt.timedelta(days=60)        # (a name further back than this is someone's own title, not the upload's)
+
+
+def uploaded_later(start: dt.datetime, named: Optional[dt.datetime]) -> bool:
+    """Whether a recording's StartTime (``start``) is when it was uploaded, its name's date and time (``named``) when
+    it was recorded. A recorder on another time zone names it a whole number of hours off its start, to the minute
+    ("27 Ekim 2026 Salı at 08:16:48" started 11:17:20): that one is not."""
+    if named is None or not NAME_DATE_LATE < start - named <= NAME_DATE_MAX:
+        return False
+    late = (start - named).total_seconds()
+    return not (late <= 14 * 3600 and abs(late - round(late / 3600) * 3600) <= 180)
+
+
+def name_start(name: str) -> Optional[dt.datetime]:
+    """The date and time Panopto puts in a recording's default name ("4 November 2026 Wednesday at 08:28:43", "Friday,
+    October 23, 2026 at 12:09:42 PM"; "_" between the time's parts in an uploaded file's name), in English or Turkish,
+    when the weekday matches the date. None when the name has none."""
+    for pattern, (di, mi, yi, wi) in _NAME_DATES:
+        for m in pattern.finditer(name or ""):
+            g = m.groups()
+            month, wday = _MONTHS.get(_fold(g[mi])), _WEEKDAYS.get(_fold(g[wi]))
+            hour, minute, sec, ampm = int(g[4]), int(g[5]), int(g[6]), (g[7] or "").upper()
+            if month is None or wday is None or (ampm and not 1 <= hour <= 12):
+                continue
+            if ampm:
+                hour = hour % 12 + (12 if ampm == "PM" else 0)
+            try:
+                when = dt.datetime(int(g[yi]), month, int(g[di]), hour, minute, sec)
+            except ValueError:
+                continue
+            if when.weekday() == wday:
+                return when
+    return None
+
+
 def parse_sessions(d: dict[str, Any], course_id: str, folder_path: str) -> list[Recording]:
+    """A page of GetSessions. A recording uploaded later (one recorded on the lecturer's own PC) has the upload time
+    as its StartTime: the date and time in its name are when it was recorded. "Status" 4 is a finished recording; one
+    still being recorded has 2 (and no podcast yet, a growing Duration)."""
     out = []
     for row in d.get("Results") or []:
         did = (row.get("DeliveryID") or "").lower()
@@ -62,13 +121,16 @@ def parse_sessions(d: dict[str, Any], course_id: str, folder_path: str) -> list[
         if not did or start is None:
             continue
         name = (row.get("SessionName") or "").strip() or "Untitled recording"
+        named, uploaded = name_start(name), ""
+        if uploaded_later(start, named):
+            start, uploaded = named, start.replace(microsecond=0).isoformat()
         out.append(Recording(
             delivery_id=did, course_id=str(course_id), folder_id=(row.get("FolderID") or "").lower(),
             folder_path=folder_path, name=name, start=start.replace(microsecond=0),
             duration_s=float(row.get("Duration") or 0.0),
             viewer_url=row.get("ViewerUrl") or f"{BASE}/Panopto/Pages/Viewer.aspx?id={did}",
             session_id=(row.get("SessionID") or "").lower(), kind=_kind(name, folder_path),
-            section_tag=parse_section_tag(name),
+            section_tag=parse_section_tag(name), live=row.get("Status") not in (None, 4), uploaded=uploaded,
         ))
     return out
 
@@ -82,9 +144,10 @@ def _query(folder_id: str, page: int, rows: int = 250) -> dict[str, Any]:
 
 
 def _head(d: dict[str, Any]) -> list[Any]:
-    """A folder's recording count and its newest recording (the list is newest first): [35, "c0e6fe5f-…"]."""
+    """A folder's recording count, its newest recording (the list is newest first) and that one's status (4 when
+    finished, so one still being recorded is noticed when it finishes): [35, "c0e6fe5f-…", 4]."""
     first = (d.get("Results") or [{}])[0]
-    return [int(d.get("TotalNumber") or 0), (first.get("DeliveryID") or "").lower()]
+    return [int(d.get("TotalNumber") or 0), (first.get("DeliveryID") or "").lower(), first.get("Status")]
 
 
 def _mp4_header(session: requests.Session, url: str, limit: int = 64 << 20) -> Optional[bytes]:
@@ -180,7 +243,8 @@ class Panopto:
 
     def probe(self, folder_id: str) -> dict[str, list[Any]]:
         """Each folder's recording count and newest recording, through one-row answers (~5 KB each instead of
-        ~4.4 KB per recording): {folder id: [count, newest delivery id]}. A change means the folder needs listing."""
+        ~4.4 KB per recording): {folder id: [count, newest delivery id, its status]}. A change means the folder needs
+        listing."""
         return {fid: _head(d) for fid, _, d in self._folders(folder_id, 1)}
 
     # ------------------------------------------------------------------ details

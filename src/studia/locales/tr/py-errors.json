@@ -80,5 +80,6 @@
   "The downloaded installer isn't the released file (its checksum doesn't match), so it wasn't run. Nothing changed; try again later.": "İndirilen kurulum dosyası yayımlanan dosya değil (sağlama toplamı tutmuyor), bu yüzden çalıştırılmadı. Hiçbir şey değişmedi, biraz sonra tekrar dene.",
   "Unknown course": "Ders bulunamadı",
   "Unknown class day": "Ders günü bulunamadı",
-  "Transcribe this class day first.": "Önce bu ders gününü yazıya dök."
+  "Transcribe this class day first.": "Önce bu ders gününü yazıya dök.",
+  "This lecture is still being recorded. It can be transcribed once Panopto has finished it.": "Hâlâ kaydediliyor. Panopto kaydı bitirince yazıya dökebilirsin."
 }

@@ -1,6 +1,7 @@
 """JobManager with fake Panopto / audio / engine: statuses, fallbacks, cancel, cleanup."""
 
 import datetime as dt
+import json
 import threading
 import time
 import types
@@ -309,20 +310,21 @@ def test_cancel_queued_then_requeue_keeps_tracking_new_job(env):
 
 
 def test_batch_progress_counts_finished_lectures_and_estimates_time_left(env):
-    FakePanopto.gate = threading.Event()          # hold r1 in "downloading"
+    FakePanopto.gate = threading.Event()          # hold r2 (the newer one goes first) in "downloading"
     jm = env["make"]()
     jm.enqueue(["r1", "r2"])
-    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").stage == "downloading")
+    assert wait_for(lambda: jm.job("r2") is not None and jm.job("r2").stage == "downloading")
     b = jm.batch()
     assert b["finished"] == 0 and b["total"] == 2 and b["left_s"] is None     # no speed measured yet
     queue_events = [e for e in env["events"] if e.get("type") == "queue"]
     assert queue_events and queue_events[-1]["batch"]["total"] == 2
     jm._batch["started"] -= 120                   # pretend the first lecture took two minutes
     FakePanopto.gate.set()
-    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert wait_for(lambda: finals(env["events"], "r2"))
     b = jm.batch()
-    if b:                                         # r2 may already be finished as well
+    if b:                                         # r1 may already be finished as well
         assert b["finished"] == 1 and b["total"] == 2 and b["left_s"] and b["left_s"] > 0
+        assert b["done"] == 1 and b["failed"] == 0
     assert wait_for(lambda: not jm.busy())
     assert jm.batch() == {}                       # idle: no batch
     FakePanopto.gate = threading.Event()          # held again, so it can't finish before it is counted
@@ -505,7 +507,7 @@ class StepEngine(FakeEngine):
 
 
 def test_lectures_asked_for_go_before_a_sync_batch_and_do_next_goes_first(env):
-    _more(env, ["b1", "b2", "b3", "b4", "u1"])
+    _more(env, ["b4", "b3", "b2", "b1", "u1"])                    # the batch goes newest first: b1, b2, b3, b4
     env["state"]["engine"] = engine = StepEngine()
     jm = env["make"](parallel_downloads=1)
     jm.enqueue(["b1", "b2", "b3", "b4"], batch=True)              # a full sync's batch
@@ -527,7 +529,7 @@ def test_lectures_asked_for_go_before_a_sync_batch_and_do_next_goes_first(env):
 
 def test_do_next_beats_a_lecture_that_is_ready_while_it_is_decoded(env):
     """Decoding takes a while: the lecture moved up gets the place that comes free, and the one already ready waits."""
-    _more(env, ["b1", "b2", "b3", "b4", "u1"])
+    _more(env, ["b4", "b3", "b2", "b1", "u1"])
     slow = jobs_mod.decode_audio
 
     def decode(path, cancel=None):
@@ -548,6 +550,48 @@ def test_do_next_beats_a_lecture_that_is_ready_while_it_is_decoded(env):
         engine.steps.release()
     assert wait_for(lambda: not jm.busy(), timeout=15)
     assert engine.started[:2] == ["b1", "b3"] and engine.started.index("b2") > engine.started.index("b4")
+
+
+def test_the_queue_is_newest_lecture_first(env):
+    """A batch goes by the recordings' start, newest first, whichever sync queued it; one request's lectures go newest
+    first too, before the batch, and "Do next" goes before them all."""
+    _more(env, ["o1", "o2"], day=14)                               # 14 Oct 08:00 and 09:00
+    _more(env, ["n1", "n2"], day=16)
+    _more(env, ["h1", "h2"], day=12)                               # a class day's two parts, asked for by hand
+    env["state"]["engine"] = engine = StepEngine()
+    jm = env["make"](parallel_downloads=1)
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: engine.started == ["r1"])
+    jm.enqueue(["o1", "o2"], batch=True)
+    jm.enqueue(["n1", "n2"], batch=True)                           # a later sync's newer lectures go before older ones
+    jm.enqueue(["h1", "h2"])
+    assert [j["id"] for j in jm.snapshot()] == ["r1", "h2", "h1", "n2", "n1", "o2", "o1"]
+    assert jm.enqueue(["o1"]) == 1                                 # asked for by hand: after h1, before the batch
+    assert jm.first("n1")
+    assert [j["id"] for j in jm.snapshot()] == ["r1", "n1", "h2", "h1", "o1", "n2", "o2"]
+    saved = json.loads(env["lib"].get_meta(jobs_mod.QUEUE_KEY))
+    assert saved == ["n1", "r1", "h2", "h1", "o1", "n2", "o2"]     # what is offered again after a restart
+    jm.cancel(None)
+    assert wait_for(lambda: not jm.busy())
+
+
+def test_a_lecture_reports_its_steps_model_and_notes_for_the_jobs_pane(env):
+    class Engine(FakeEngine):
+        model_name = "large-v3-turbo"
+        device_info = {"device": "cpu", "warning": "The graphics card couldn't be used, so it runs on the processor."}
+
+    env["state"]["engine"] = Engine()
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    e = finals(env["events"], "r1")[0]
+    steps = [s for s, _ in e["steps"]]
+    assert steps[0] == "wait" and steps[-1] == "write"
+    assert steps.index("download") < steps.index("decode") < steps.index("model") < steps.index("transcribe")
+    assert [at for _, at in e["steps"]] == sorted(at for _, at in e["steps"]) and e["age_s"] >= e["steps"][-1][1]
+    assert e["model"] == "large-v3-turbo" and e["device"] == "cpu" and e["anomalies"] == []
+    assert e["notes"] == ["The graphics card couldn't be used, so it runs on the processor."]
+    assert e["dl"] is None and e["slides"] is False                # a tiny download: no sizes to show
 
 
 def test_a_lecture_that_ends_as_more_is_queued_is_not_kept(env, monkeypatch):
@@ -607,8 +651,8 @@ def test_pause_stops_between_passages_and_cancel_still_works(env):
     assert wait_for(lambda: not jm.busy())
     assert {f["stage"] for i in ("r1", "r2") for f in finals(env["events"], i)} == {"done"} and not jm.paused()
     # the engine counts the time paused as time spent: it is taken out of its estimates after the pause (the first
-    # message after Continue was estimated before it)
-    after = [e for e in env["events"][resumed_at:] if e.get("type") == "job" and e.get("id") == "r1"
+    # message after Continue was estimated before it). r2, the newer one, went first.
+    after = [e for e in env["events"][resumed_at:] if e.get("type") == "job" and e.get("id") == "r2"
              and "passage" in (e.get("detail") or "") and e.get("eta_s") is not None]
     left = [(e["eta_s"], 40 - int(re.search(r"passage (\d+)", e["detail"]).group(1))) for e in after]
     assert left and left[0][0] == left[0][1] and any(eta < raw for eta, raw in left[1:])
@@ -627,12 +671,12 @@ def test_the_queue_is_kept_when_the_app_closes_and_offered_again(env):
     jm = env["make"]()
     jm.enqueue(["r1", "r3"])
     jm.enqueue(["r4", "r5"], batch=True)
-    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").stage == "transcribing")
-    jm.shutdown()                                                  # the app closes while r1 is being transcribed
+    assert wait_for(lambda: jm.job("r3") is not None and jm.job("r3").stage == "transcribing")   # the newer one
+    jm.shutdown()                                                  # the app closes while r3 is being transcribed
     assert wait_for(lambda: not jm.busy())
     env["lib"].reset_interrupted()
     again = env["make"]()                                          # the next start
-    assert again.leftover() == ["r1", "r3", "r4", "r5"]
+    assert again.leftover() == ["r3", "r1", "r5", "r4"]
     assert again.leftover_view() == {"count": 4, "days": 2, "audio_s": 9600, "courses": ["EEE 215"]}
     env["state"]["engine"] = FakeEngine()
     assert again.resume_leftover() == 4

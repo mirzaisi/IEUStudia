@@ -122,6 +122,10 @@ def decode_keyframe(avcc: bytes, sample: bytes) -> Optional[av.VideoFrame]:
 
     ctx = av.CodecContext.create("h264", "r")
     ctx.extradata = avcc
+    # one thread: the 8 fetching threads already decode side by side, and starting FFmpeg's own threads (one per
+    # core) for every frame kept Python's lock (the GIL) busy: 8 threads decode 200 slide frames in 0.21 s instead of
+    # 0.75, and a thread waiting for the lock (the window's) waits under 1 ms instead of ~14 ms (90th percentile)
+    ctx.thread_count = 1
     frames = list(ctx.decode(av.Packet(sample)))
     frames += list(ctx.decode(None))
     return frames[0] if frames else None

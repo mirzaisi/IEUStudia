@@ -14,15 +14,18 @@ def _rec(did, course, day, name="Lecture", duration=3000, hour=9):
                      start=dt.datetime(2026, 10, day, hour, 0), duration_s=duration, viewer_url=f"https://v/{did}")
 
 
+def _b_recs():
+    return [_rec("b1", "b", 6, "EEE 215 Section 1"), _rec("b2", "b", 6, "EEE 215 Section 3", hour=13),
+            _rec("b3", "b", 13, "EEE 215 Section 1"), _rec("b4", "b", 13, "EEE 215 Section 3", hour=13)]
+
+
 def _lib(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="a", title="2026-1 MATH 240 P 1", code="MATH 240", name="Probability", section="1"),
                         Course(id="b", title="2026-1 EEE 215 0 - 1", code="EEE 215", name="Circuits", section="0 - 1")])
     lib.merge_recordings("a", [_rec("a1", "a", 5), _rec("a2", "a", 12), _rec("a3", "a", 19, duration=60),   # too short
                                _rec("a4", "a", 14)], first_sync=True)
-    lib.merge_recordings("b", [_rec("b1", "b", 6, "EEE 215 Section 1"), _rec("b2", "b", 6, "EEE 215 Section 3", hour=13),
-                               _rec("b3", "b", 13, "EEE 215 Section 1"), _rec("b4", "b", 13, "EEE 215 Section 3", hour=13)],
-                         first_sync=True)
+    lib.merge_recordings("b", _b_recs(), first_sync=True)
     lib.set_status("a4", "done")
     lib.merge_units("a", [Unit("u1", 0, "Hafta 1", dt.date(2026, 10, 5), dt.date(2026, 10, 11), "",
                                [Resource("m1", "Week01", "Week01.pdf", "pdf", "pdf", "u", "d"),
@@ -77,6 +80,92 @@ def test_a_class_day_leaves_out_a_lecture_without_sound_but_one_asked_for_still_
     api._s.jobs.queue_event = lambda: {}
     assert api.transcribe_day(lib.get_recording("a1").day_key)["queued"] == 1 and asked == [["a1"]]
     assert api.transcribe(["a2"])["queued"] == 1 and asked[-1] == ["a2"]
+
+
+def test_a_lecture_that_matches_no_section_is_left_out_unless_you_include_it(tmp_path):
+    lib = _lib(tmp_path)
+    lib.merge_recordings("b", [*_b_recs(), _rec("b5", "b", 9, "Friday 9:01 AM", duration=2400)],   # no tag, and
+                         False)                                                                       # not a class day
+    s = Settings(min_duration_s=300, course_prefs={"b": CoursePrefs(my_section="3")})
+    b = course_needs(lib, s, ["b"])[0]
+    assert [d for d, _ in b.lectures] == ["b4", "b2"] and [d for d, _ in b.unknown] == ["b5"]
+    v = b.view()
+    assert (v["unknown"], v["unknown_audio_s"], v["sections"], v["my_section"]) == (1, 2400, ["1", "3"], "3")
+    assert summary([b], gpu=True)["unknown"] == 1 and queue_order([b]) == ["b4", "b2"]      # not queued
+    b = course_needs(lib, s, ["b"], include_unknown=["b"])[0]                                # you said so, this run
+    assert [d for d, _ in b.lectures] == ["b4", "b5", "b2"] and b.unknown == []
+    s.course_prefs["b"] = CoursePrefs()                                   # yours unknown: nothing, and it's asked
+    b = course_needs(lib, s, ["b"], include_unknown=["b"])[0]
+    assert b.needs_section and b.waiting == 5 and b.lectures == [] and b.view()["sections"] == ["1", "3"]
+    a = course_needs(lib, s, ["a"])[0]                                    # no section tags: one section's folder
+    assert [d for d, _ in a.lectures] == ["a2", "a1"] and a.unknown == [] and a.view()["sections"] == []
+
+
+def _api_with_two_sections(isolated_home):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="b", title="2026-1 EEE 215 0 - 1", code="EEE 215", name="Circuits", section="0 - 1")])
+    lib.merge_recordings("b", [_rec("b1", "b", 6, "EEE 215 Section 1"), _rec("b2", "b", 6, "EEE 215 Section 3", hour=13),
+                               _rec("b4", "b", 13, "EEE 215 Section 3", hour=13),
+                               _rec("b5", "b", 31, "Section-2 Labs 31 Ekim 2026 Cumartesi"),    # parsed: section 2
+                               _rec("b6", "b", 9, "Friday 9:01 AM")], first_sync=True)          # matches none
+    asked = []
+    api._s.jobs.enqueue = lambda ids, batch=False: asked.append(list(ids)) or len(ids)
+    api._s.jobs.queue_event = lambda: {"type": "queue"}
+    return api, asked
+
+
+def test_the_sync_dialog_asks_for_the_section_and_uses_the_answer(isolated_home):
+    import threading
+
+    api, asked = _api_with_two_sections(isolated_home)
+    api._push = lambda evt: None
+    est = api.catch_up_estimate("b")
+    (c,) = est["courses"]
+    assert c["needs_section"] and c["waiting"] == 5 and c["sections"] == ["1", "2", "3"] and c["lectures"] == 0
+    assert est["needs_section"] == ["EEE 215"]
+    assert api.set_course_prefs("b", {"my_section": "3", "show_mode": "mine"})["ok"]          # the dialog's answer
+    assert api._s.settings.prefs("b").my_section == "3"
+    (c,) = api.catch_up_estimate("b")["courses"]
+    assert (c["needs_section"], c["lectures"], c["other_sections"], c["unknown"], c["my_section"]) == (False, 2, 2, 1, "3")
+
+    done = threading.Event()
+    events = []
+    api._push = lambda evt: (events.append(evt), evt.get("phase") in ("done", "error") and done.set())
+
+    def fake_sync(quiet=False):
+        api._sync_lock.release()
+        return True
+    api._run_sync = fake_sync
+    for include, queued in (([], ["b4", "b2"]), (["b"], ["b4", "b6", "b2"])):
+        done.clear()
+        assert api.catch_up(["b"], False, include)["ok"] and done.wait(10)
+        assert asked[-1] == queued and events[-1]["phase"] == "done"
+        assert events[-1]["unknown"] == (0 if include else 1) and events[-1]["waiting"] == []
+
+
+def test_a_chat_or_plan_batch_queues_only_your_section_but_a_day_you_ask_for_runs(isolated_home):
+    api, asked = _api_with_two_sections(isolated_home)
+    api._push = lambda evt: None
+    lib = api._s.lib
+    key = lambda did: lib.get_recording(did).day_key
+    r = api.transcribe_day(key("b6"), True)                 # your section unknown: a batch queues nothing, and asks
+    assert (r["queued"], r["needs_section"]) == (0, True)
+    assert api.transcribe_day(key("b6"))["queued"] == 1        # the day you asked for
+    api.set_course_prefs("b", {"my_section": "3", "show_mode": "mine"})
+    r = api.transcribe_day(key("b6"), True)
+    assert (r["queued"], r["unknown"], r["needs_section"]) == (0, 1, False)
+    assert api.transcribe_day(key("b6"))["queued"] == 1 and asked[-1] == ["b6"]
+    assert api.transcribe_day(key("b2"), True)["queued"] == 1 and asked[-1] == ["b2"]     # yours, not section 1's
+    assert api.transcribe_day(key("b5"), True)["queued"] == 0                              # another section's day
+    # an untagged lecture on a day of yours: a batch leaves it out, a day you ask for queues it with yours
+    lib.merge_recordings("b", lib.recordings("b") + [_rec("b7", "b", 13, "Friday 9:01 AM")], first_sync=False)
+    r = api.transcribe_day(key("b4"), True)
+    assert (r["queued"], r["unknown"]) == (1, 1) and asked[-1] == ["b4"]
+    assert api.transcribe_day(key("b4"))["queued"] == 2 and sorted(asked[-1]) == ["b4", "b7"]
 
 
 def test_summary_estimates(tmp_path):
