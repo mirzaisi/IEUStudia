@@ -37,7 +37,7 @@
     const p = { course: esc(c.code), tag: esc(c.my_section || "") };
     return `<div class="sync-note">${I("alert")}<div>${t.n(c.unknown, "<b>{course}</b>: {n} lecture couldn’t be matched to your section (Section {tag}), so it’s left out.",
       "<b>{course}</b>: {n} lectures couldn’t be matched to your section (Section {tag}), so they’re left out.", p)}
-      <label class="mini-toggle" style="margin:6px 0 0"><input type="checkbox" class="switch sm" data-act="cu-unknown" data-id="${esc(c.course_id)}" ${S.catchup.unknown.has(c.course_id) ? "checked" : ""}>${t.n(c.unknown, "Transcribe it too ({audio})", "Transcribe them too ({audio})", { audio: fmtDur(c.unknown_audio_s) })}</label></div></div>`;
+      <label class="mini-toggle" style="display:flex;margin:6px 0 0"><input type="checkbox" class="switch sm" data-act="cu-unknown" data-id="${esc(c.course_id)}" ${S.catchup.unknown.has(c.course_id) ? "checked" : ""}>${t.n(c.unknown, "Transcribe it too ({audio})", "Transcribe them too ({audio})", { audio: fmtDur(c.unknown_audio_s) })}</label></div></div>`;
   }
 
   function rowHTML(c) {

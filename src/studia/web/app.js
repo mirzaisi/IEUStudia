@@ -304,7 +304,7 @@
     const up = S.update || {};
     const app = (S.boot || {}).app || {};          // background checks turned off (the tray menu, or Settings): said calmly
     const bgOff = app.onboarded && app.tray === false && S.view.name !== "settings"
-      ? `<button class="btn ghost sm bg-off" data-act="bg-settings" title="${t("You get no notifications about new lectures, announcements or coming quizzes. Click to turn them on again in Settings.")}">${I("info", "sm")} ${t("Background checks off")}</button>` : "";
+      ? `<button class="btn ghost sm bg-off" data-act="bg-settings" aria-label="${t("Background checks off")}" title="${t("You get no notifications about new lectures, announcements or coming quizzes. Click to turn them on again in Settings.")}">${I("info", "sm")} <span class="lbl">${t("Background checks off")}</span></button>` : "";
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
       ${Studia.downloadChip ? Studia.downloadChip() : ""}
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
@@ -1844,7 +1844,13 @@
     "queue-expand": () => (S.qpOpen ? closePane() : openPane()),
     "qp-close": () => closePane(),
     "qp-open": (el) => { closePane(); openDay(el.dataset.day); },
-    "bg-settings": () => { go({ name: "settings" }); const c = $("#set-bg"); if (c) c.scrollIntoView({ block: "start" }); },
+    "bg-settings": () => {
+      go({ name: "settings" });
+      const c = $("#set-bg"), nav = $(".set-nav");
+      if (!c) return;
+      if (nav) c.style.scrollMarginTop = `${nav.offsetHeight + 8}px`;     // the tabs wrap onto two rows when narrow
+      c.scrollIntoView({ block: "start" });
+    },
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
     "open-mat-hit": (el) => call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); }),

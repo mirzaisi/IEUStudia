@@ -530,6 +530,7 @@ button.result { display: block; width: 100%; text-align: left; border: 0; border
 .qp-why { color: var(--text-2); font-size: 12.5px; max-width: 50%; }
 @container (max-width: 700px) { .qp-now .bar { width: 110px; } }
 .topbar .bg-off { color: var(--text-3); font-weight: 500; }
+@media (max-width: 1220px) { .topbar .bg-off .lbl { display: none; } }     /* the icon and its tooltip stay */
 .bg-hint { align-items: center; } .bg-hint > div { flex: 1; }
 
 /* ------------------------------------------------------------------ overlays */
