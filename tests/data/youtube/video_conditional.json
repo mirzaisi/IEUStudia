@@ -1,0 +1,89 @@
+{
+ "id": "ibINrxJLvlM",
+ "title": "Intro to Conditional Probability",
+ "thumbnail": "https://i.ytimg.com/vi_webp/ibINrxJLvlM/maxresdefault.webp",
+ "description": "What is the probability of an event A given that event B has occurred? We call this conditional probability, and it is governed by the formula that P(A|B) which reads \"probability of A given B\" is equal to the P(A intersect B)/P(B). We look at an example involving the probability of being an alcoholic given that one is a man. \n\nConditional Probability Formula: P(A|B) = P(A and B)/P(B) \n\n►FULL DISC",
+ "channel_id": "UC9rTsvTxJnx1DNrDA3Rqa6A",
+ "channel_url": "https://www.youtube.com/channel/UC9rTsvTxJnx1DNrDA3Rqa6A",
+ "duration": 373,
+ "view_count": 1731857,
+ "average_rating": null,
+ "age_limit": 0,
+ "webpage_url": "https://www.youtube.com/watch?v=ibINrxJLvlM",
+ "categories": [
+  "Education"
+ ],
+ "tags": [
+  "Education",
+  "Math",
+  "Solution",
+  "Class",
+  "College",
+  "Discrete",
+  "Conditional",
+  "Probability",
+  "Alcoholic",
+  "Men",
+  "chance",
+  "example",
+  "formula"
+ ],
+ "playable_in_embed": true,
+ "live_status": "not_live",
+ "media_type": "video",
+ "release_timestamp": null,
+ "comment_count": 793,
+ "chapters": [
+  {
+   "start_time": 0,
+   "title": "Introduction to conditional probability"
+  },
+  {
+   "start_time": 51,
+   "title": "The formula and sample space"
+  },
+  {
+   "start_time": 147,
+   "title": "Visualizing with Venn diagrams"
+  },
+  {
+   "start_time": 207,
+   "title": "Example calculation and conclusion"
+  }
+ ],
+ "like_count": 23295,
+ "channel": "Dr. Trefor Bazett",
+ "channel_follower_count": 625000,
+ "creators": null,
+ "channel_is_verified": true,
+ "uploader": "Dr. Trefor Bazett",
+ "uploader_id": "@DrTrefor",
+ "uploader_url": "https://www.youtube.com/@DrTrefor",
+ "upload_date": "20171119",
+ "timestamp": 1511052372,
+ "availability": "public",
+ "original_url": "https://www.youtube.com/watch?v=ibINrxJLvlM",
+ "webpage_url_basename": "watch",
+ "webpage_url_domain": "youtube.com",
+ "extractor": "youtube",
+ "extractor_key": "Youtube",
+ "subtitles": {
+  "en": [
+   {
+    "ext": "json3",
+    "url": "https://www.youtube.com/api/timedtext?v=ibINrxJLvlM&lang=en&fmt=json3",
+    "name": "English"
+   }
+  ]
+ },
+ "automatic_captions": {
+  "en-orig": [
+   {
+    "ext": "json3",
+    "url": "https://www.youtube.com/api/timedtext?v=ibINrxJLvlM&lang=en&fmt=json3&kind=asr",
+    "name": "English (Original)"
+   }
+  ]
+ },
+ "formats": []
+}

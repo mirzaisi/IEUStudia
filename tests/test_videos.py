@@ -552,13 +552,13 @@ def test_rank_orders_by_title_length_views_and_channel():
 
     a = hit("a", "Bayes' Theorem explained", "3Blue1Brown", views=1_000_000)
     e = hit("e", "Bayes theorem explained!", views=1_000_000)                  # the same, but not a known channel
-    b = hit("b", "Bayes theorem in 60 seconds", minutes=70 / 60, views=100_000)  # too short
+    b = hit("b", "Bayes theorem in 60 seconds", minutes=70 / 60, views=100_000)  # too short, and a teaser's title
     d = hit("d", "Bayes' theorem: full course", minutes=180, views=10_000)     # too long
     f = hit("f", "Theorem of Bayes")                                            # the words, not the phrase
     c = hit("c", "Probability lecture 7", minutes=20, views=1000, description="we cover Bayes' theorem today")
     g, h = hit("g", "Unrelated video", minutes=0), hit("h", "Unrelated video", minutes=0)
     ranked = rank([g, c, d, b, h, f, e, a], ["Bayes' theorem"])
-    assert [x.id[0] for x in ranked] == ["a", "e", "b", "d", "f", "c", "g", "h"]   # ties keep their order
+    assert [x.id[0] for x in ranked] == ["a", "e", "d", "f", "b", "c", "g", "h"]   # ties keep their order
     assert rank([], ["x"]) == [] and [x.id[0] for x in rank([g, h], [])] == ["g", "h"]
 
 

@@ -109,6 +109,7 @@ def env(tmp_path, monkeypatch):
     FakePanopto.not_ready = False
     FakePanopto.no_sound_header = set()
     monkeypatch.setattr(jobs_mod, "Panopto", FakePanopto)
+    monkeypatch.setattr(jobs_mod, "_memory_gb", lambda: 8.0)     # DECODED_MAX places, whatever this PC has
     monkeypatch.setattr(jobs_mod, "decode_audio", lambda p, cancel=None: np.full(
         16000, 0.0 if open(p).read() == "silent" else 0.5, dtype=np.float32))
     events, written = [], []
@@ -322,9 +323,11 @@ def test_batch_progress_counts_finished_lectures_and_estimates_time_left(env):
     FakePanopto.gate.set()
     assert wait_for(lambda: finals(env["events"], "r2"))
     b = jm.batch()
-    if b:                                         # r1 may already be finished as well
-        assert b["finished"] == 1 and b["total"] == 2 and b["left_s"] and b["left_s"] > 0
+    if b and b["finished"] == 1:
+        assert b["total"] == 2 and b["left_s"] and b["left_s"] > 0
         assert b["done"] == 1 and b["failed"] == 0
+    elif b:                                       # r1 finished as well, while the batch's files are still written
+        assert b["finished"] == 2 and b["total"] == 2 and b["done"] == 2 and b["failed"] == 0
     assert wait_for(lambda: not jm.busy())
     assert jm.batch() == {}                       # idle: no batch
     FakePanopto.gate = threading.Event()          # held again, so it can't finish before it is counted
@@ -518,9 +521,18 @@ def test_lectures_asked_for_go_before_a_sync_batch_and_do_next_goes_first(env):
     assert jm.first("b4") and not jm.first("nope")                 # "Do next"
     snap = jm.snapshot()
     assert [j["id"] for j in snap] == ["b1", "b4", "u1", "b2", "b3"] and [j["first"] for j in snap][:2] == [False, True]
+
+    def waiting_for_a_place():
+        with jm._q:
+            return {j.id for j in jm._place_wait.values()}
+
+    # before a lecture ends, the ones after it have got as far as they can (b2 is ready; the others wait for a place
+    # to decode their audio), so the order doesn't depend on how fast the threads are
+    settled = {1: lambda: {"b3", "u1"} <= waiting_for_a_place(),
+               2: lambda: {"b3", "b4"} <= waiting_for_a_place()}       # b4 moved up: the extra lane downloaded it
     for n in range(1, 6):
         assert wait_for(lambda: len(engine.started) == n)
-        time.sleep(0.25)                                           # downloads settle before the next one starts
+        assert wait_for(settled.get(n, lambda: True))
         engine.steps.release()
     assert wait_for(lambda: not jm.busy())
     assert engine.started == ["b1", "u1", "b4", "b2", "b3"]
@@ -580,18 +592,63 @@ def test_a_lecture_reports_its_steps_model_and_notes_for_the_jobs_pane(env):
         model_name = "large-v3-turbo"
         device_info = {"device": "cpu", "warning": "The graphics card couldn't be used, so it runs on the processor."}
 
+        def transcribe(self, audio, progress, cancel, meta):
+            progress("transcribe", 0.5, "Transcribing passage 3 of 4 · ~5s left")
+            time.sleep(0.2)
+            progress("transcribe", 0.94, "Checking 1 unclear passage again · ~2s left")    # (not a count of passages)
+            return super().transcribe(audio, progress, cancel, meta)
+
     env["state"]["engine"] = Engine()
     jm = env["make"]()
     jm.enqueue(["r1"])
     assert wait_for(lambda: finals(env["events"], "r1"))
     e = finals(env["events"], "r1")[0]
     steps = [s for s, _ in e["steps"]]
-    assert steps[0] == "wait" and steps[-1] == "write"
+    assert steps[0] == "wait" and steps[-1] == "write" and "place" not in steps    # a place was free at once
     assert steps.index("download") < steps.index("decode") < steps.index("model") < steps.index("transcribe")
     assert [at for _, at in e["steps"]] == sorted(at for _, at in e["steps"]) and e["age_s"] >= e["steps"][-1][1]
     assert e["model"] == "large-v3-turbo" and e["device"] == "cpu" and e["anomalies"] == []
     assert e["notes"] == ["The graphics card couldn't be used, so it runs on the processor."]
     assert e["dl"] is None and e["slides"] is False                # a tiny download: no sizes to show
+    # what the pane shows of it once finished: its audio's length, its passages and how long transcribing took
+    assert e["audio_s"] == 1.0 and e["passages"] == [3, 4]
+    at = dict((s, a) for s, a in e["steps"])
+    assert 0.2 <= e["transcribe_s"] <= at["write"] - at["transcribe"] + 0.1 and e["transcribe_s"] <= e["age_s"]
+    assert not any("passages" in x for x in env["events"] if x.get("type") == "job" and not x.get("final"))
+
+
+def test_the_two_waits_are_two_steps(env):
+    """A downloaded lecture waits for a place to decode its audio ("place"); a decoded one waits for the speech model
+    ("turn"). The pane names them apart."""
+    env["mp"].setattr(jobs_mod, "DECODED_MAX", 1)
+    env["state"]["engine"] = engine = BlockingEngine()
+    jm = env["make"](parallel_downloads=2)
+    jm.enqueue(["r1", "r2"])
+    assert wait_for(lambda: engine_running(jm) and any(jm.job(i).step == "place" for i in ("r1", "r2")))
+    waiting = next(i for i in ("r1", "r2") if jm.job(i).step == "place")
+    assert jm.job(waiting).detail == "Downloaded — waiting to prepare the audio"
+    engine.go.set()
+    assert wait_for(lambda: not jm.busy())
+    steps = [s for s, _ in finals(env["events"], waiting)[0]["steps"]]
+    assert steps.index("download") < steps.index("place") < steps.index("decode")
+
+    env["mp"].setattr(jobs_mod, "DECODED_MAX", 2)                 # room for two: the second one waits decoded
+    env["state"]["engine"] = engine = BlockingEngine()
+    _more(env, ["r3", "r4"])
+    jm = env["make"](parallel_downloads=2)
+    jm.enqueue(["r3", "r4"])
+    assert wait_for(lambda: engine_running(jm) and any(jm.job(i).step == "turn" for i in ("r3", "r4")))
+    ready = next(i for i in ("r3", "r4") if jm.job(i).step == "turn")
+    assert jm.job(ready).detail == "Downloaded — waiting to be transcribed" and jm.job(ready).holds_audio
+    engine.go.set()
+    assert wait_for(lambda: not jm.busy())
+    steps = [s for s, _ in finals(env["events"], ready)[0]["steps"]]
+    assert "place" not in steps and steps.index("decode") < steps.index("turn") < steps.index("model")
+
+
+def engine_running(jm):
+    with jm._lock:
+        return any(j.where == "run" for j in jm._jobs.values())
 
 
 def test_a_lecture_that_ends_as_more_is_queued_is_not_kept(env, monkeypatch):
@@ -663,6 +720,59 @@ def test_pause_stops_between_passages_and_cancel_still_works(env):
     jm.cancel("r1")                                                # cancel while paused
     assert wait_for(lambda: len(finals(env["events"], "r1")) == 2)
     assert finals(env["events"], "r1")[-1]["stage"] == "cancelled" and not jm.paused()     # the pause ends with the queue
+
+
+def test_a_paused_lecture_cancelled_while_it_waits_for_its_turn_never_reaches_the_model(env):
+    class Counting(FakeEngine):
+        loads = 0
+
+        def ensure_model(self, progress, cancel=None):
+            Counting.loads += 1
+            super().ensure_model(progress, cancel)
+
+    env["state"]["engine"] = engine = Counting()
+    FakePanopto.gate = gate = threading.Event()
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    jm.pause(True)
+    gate.set()
+    assert wait_for(lambda: jm.job("r1") is not None and jm.job("r1").where == "run")    # its turn, held by the pause
+    time.sleep(0.3)
+    jm.cancel("r1")
+    assert wait_for(lambda: not jm.busy())
+    time.sleep(0.3)
+    assert [f["stage"] for f in finals(env["events"], "r1")] == ["cancelled"]
+    assert Counting.loads == 0 and engine.audio_seen == []
+
+
+def test_no_speed_for_a_lecture_gone_on_from_a_checkpoint_or_sharing_the_card(env):
+    class Resumed(FakeEngine):
+        resumed_passages = 30                       # 30 of its passages came from the checkpoint
+
+    env["state"]["engine"] = Resumed()
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    e = finals(env["events"], "r1")[0]
+    assert e["stage"] == "done" and e["transcribe_s"] is None and e["audio_s"] == 1.0
+    # two lectures on the card at once: neither one's time is its own
+    a, b = jobs_mod.Job(id="a", title="a"), jobs_mod.Job(id="b", title="b")
+    for j in (a, b):
+        j.where, j.step, j.stage = "run", "transcribe", "transcribing"
+        jm._jobs[j.id] = j
+    jm._engine_progress(a, "transcribe", 0.5, "Transcribing passage 8 of 40")
+    assert a.metrics()["transcribe_s"] is None and b.metrics()["transcribe_s"] is None
+    alone = jobs_mod.Job(id="c", title="c")
+    alone.where, alone.step, alone.stage = "run", "transcribe", "transcribing"
+    jm._jobs = {"c": alone}
+    jm._engine_progress(alone, "transcribe", 0.5, "Transcribing passage 8 of 40")
+    assert alone.metrics()["transcribe_s"] is not None
+
+
+def test_the_lecture_on_the_card_comes_before_one_waiting_for_its_slides():
+    j = lambda i, where, stage, seq: types.SimpleNamespace(id=i, where=where, stage=stage, rank=jobs_mod.NOW, seq=seq)  # noqa: E731
+    order = [j("a", "run", "writing", 1), j("b", "run", "transcribing", 2), j("c", "gpu", "queued", 0)]
+    assert [x.id for x in sorted(order, key=jobs_mod.JobManager._order)] == ["b", "a", "c"]
 
 
 def test_the_queue_is_kept_when_the_app_closes_and_offered_again(env):

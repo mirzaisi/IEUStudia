@@ -48,6 +48,24 @@ def cpu_threads() -> int:
     return max(1, min((os.cpu_count() or 4) - 2, 8))
 
 
+# The threads that drive the graphics card run at a normal program's priority while the rest of the app runs below it
+# (winutil.drive_card): the card no longer waits whenever other programs keep the processor busy.
+RAISE_CARD_THREADS = True
+# CTranslate2's workers on the graphics card. With 2, two lectures' batches could run side by side instead of one after
+# the other (see jobs.GPU_WORKERS), but each worker needs a batch's working memory of its own, and running out of it
+# changes the batches (and the transcripts). One: on the owner's 8 GB RTX 4070 Laptop two (with two lectures at once)
+# filled the card to 7.9 GB and made a Full sync of three 16-minute lectures take twice as long (248 s against 124 s).
+CARD_REPLICAS = 1
+
+
+def _drive_card_here() -> None:
+    """This thread prepares the graphics card's next batch: it runs as the card's own threads do (see drive_card)."""
+    if RAISE_CARD_THREADS:
+        from ..osutil import drive_card
+
+        drive_card([threading.get_native_id()])
+
+
 def _ai_on_gpu() -> bool:
     """The offline AI model is loaded on the graphics card (it shares the card's memory with the speech model)."""
     ai = sys.modules.get(f"{__package__.rpartition('.')[0]}.local_llm")      # never imported: no model loaded either
@@ -115,12 +133,24 @@ class Engine:
         self._warning = ""
         self._lock = threading.Lock()
         self._last_dominant = "en"
+        self._mine = threading.local()       # per transcribing thread (two lectures may share the model on the card)
         self._oom_batch = 0
+        self.card_threads: set[int] = set()  # the native threads that drive the graphics card (see drive_card)
 
     # ------------------------------------------------------------------ model lifecycle
     @property
     def loaded(self) -> bool:
         return self._wm is not None
+
+    @property
+    def resumed_passages(self) -> int:
+        """How many passages of this thread's last lecture came from its checkpoint (not transcribed by this run)."""
+        return getattr(self._mine, "resumed", 0)
+
+    @property
+    def device(self) -> str:
+        """Where the loaded model runs ("cuda" or "cpu"); "" before it is loaded."""
+        return self._device if self._wm is not None else ""
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -153,19 +183,31 @@ class Engine:
                 setup_cuda_dlls()
                 from faster_whisper import WhisperModel
 
+                from ..osutil import drive_card, native_thread_ids
+
                 device, compute = resolve_device(self.device_pref)
                 threads = 1 if device == "cuda" else cpu_threads()   # on the card, more threads only spin waiting
                 t0 = time.monotonic()
+                before = native_thread_ids() if device == "cuda" and RAISE_CARD_THREADS else set()
                 try:
-                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads)
+                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=threads,
+                                      num_workers=CARD_REPLICAS if device == "cuda" else 1)
                     if device == "cuda":  # surface missing cuBLAS/cuDNN now rather than mid-job
                         wm.encode(np.zeros((1, wm.model.n_mels, 3000), dtype=np.float32))
+                        if before:
+                            # CTranslate2's worker (and the driver's threads), started by this load: Python's own
+                            # threads started meanwhile (a download's parts) are not among them
+                            self.card_threads = (native_thread_ids() - before
+                                                 - {t.native_id for t in threading.enumerate()})
+                            drive_card(self.card_threads)
                 except Exception as exc:  # noqa: BLE001
                     if device != "cuda":
                         raise
                     self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
                     self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
                     device, compute = "cpu", "int8"
+                    drive_card(self.card_threads, False)
+                    self.card_threads = set()
                     wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
             self._wm, self._device, self._compute = wm, device, compute
             self._oom_batch = 0              # a batch that ran out of GPU memory stays smaller until the model unloads
@@ -173,8 +215,8 @@ class Engine:
             supported = set(getattr(wm, "supported_languages", []) or [])
             if supported:
                 self.languages = tuple(l for l in self.languages if l in supported) or ("en",)
-            self.log.info("Model %s loaded on %s/%s in %.1fs", self.model_name, device, compute,
-                          time.monotonic() - t0)
+            self.log.info("Model %s loaded on %s/%s in %.1fs (%d threads drive the card)", self.model_name, device,
+                          compute, time.monotonic() - t0, len(self.card_threads))
             progress("model-load", 1.0, t("Model ready (GPU)") if device == "cuda" else t("Model ready (CPU)"))
 
     def unload(self) -> None:
@@ -188,6 +230,7 @@ class Engine:
             self._wm = None
             self._decoder = None
             self._oom_batch = 0
+            self.card_threads = set()
 
     find_speech = staticmethod(find_speech)
 
@@ -212,14 +255,15 @@ class Engine:
             audio = np.clip(audio * speech.gain, -1.0, 1.0)
 
         t0 = time.monotonic()
-        decoded, best_conf = self._decode_units(audio, units, progress, cancel)
+        resume = self._checkpoint(str(meta.get("delivery_id") or ""), audio, units, speech.gain)
+        decoded, best_conf = self._decode_units(audio, units, progress, cancel, resume)
         timings["decode"] = time.monotonic() - t0
 
         t0 = time.monotonic()
         progress("finalize", 0.97, t("Cleaning up"))
         segments: list[Segment] = []
         lang_secs: Counter[str] = Counter()
-        dominant = self._last_dominant
+        dominant = getattr(self._mine, "dominant", self._last_dominant)     # this lecture's (see _decode_units)
 
         def unclear(u: Unit, conf: float) -> None:
             if segments and segments[-1].text == UNCLEAR and u.start / SR - segments[-1].end < 3.0:
@@ -250,6 +294,8 @@ class Engine:
         meta["quality"] = {"warnings": warnings + post_warnings, "stats": {**stats, **post_stats}}
         timings["finalize"] = time.monotonic() - t0
         progress("finalize", 1.0, t("Done"))
+        if resume is not None:            # the transcript is whole: nothing to go on from
+            resume.discard()
         info = self.device_info
         return Transcript(
             delivery_id=str(meta.get("delivery_id", "")),
@@ -309,9 +355,36 @@ class Engine:
         progress("transcribe", frac, t("Waiting while the offline AI writes"))
         return wait_for_ai(cancel)
 
+    def _checkpoint(self, delivery_id: str, audio: np.ndarray, units: list[Unit], gain: float) -> Optional[Any]:
+        """The lecture's checkpoint (engine/checkpoint.py), keyed by everything that changes its passages; the
+        decoding options join the key in _decode_units. None without a recording to tie it to."""
+        if not delivery_id or not units:
+            return None
+        from . import checkpoint
+
+        try:
+            t0 = time.monotonic()
+            ct2 = sys.modules.get("ctranslate2")
+            key = checkpoint.make_key(
+                v=checkpoint.VERSION, id=delivery_id, audio=checkpoint.audio_digest(audio), gain=gain,
+                units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, app=__version__,
+                device=self._device, compute=self._compute, languages=list(self.languages),
+                card_workers=CARD_REPLICAS if self._device == "cuda" else 1,     # (how the card's batches run)
+                ct2=getattr(ct2, "__version__", ""),       # the processor's threads, or the graphics card itself
+                where=detect_gpu().get("name", "") if self._device == "cuda" else cpu_threads())
+            self.log.debug("Checkpoint key made in %.2fs", time.monotonic() - t0)
+            return checkpoint.Checkpoint(delivery_id, key)
+        except Exception:  # noqa: BLE001 - only a way to go on later
+            self.log.info("No checkpoint for %s", delivery_id, exc_info=True)
+            return None
+
     def _decode_units(self, audio: np.ndarray, units: list[Unit], progress: Progress,
-                      cancel: Optional[threading.Event]) -> tuple[list[Optional[Decoded]], list[float]]:
+                      cancel: Optional[threading.Event], resume: Optional[Any] = None
+                      ) -> tuple[list[Optional[Decoded]], list[float]]:
+        """``resume``: the lecture's checkpoint (see _checkpoint): batches done before are taken from it, and each
+        batch done now is added to it."""
         n = len(units)
+        self._mine.resumed = 0
         if n == 0:
             return [], []
         langs = list(self.languages)
@@ -331,9 +404,34 @@ class Engine:
         work_total = sum(_work(u) for u in units) or 1.0
         work_done = 0.0
         i = 0
+        if resume is not None:
+            from .checkpoint import make_key
+
+            resume.key = make_key(base=resume.key, opts=dc.asdict(opts), lid=lid)
+            kept = []
+            for idx, got_c, got_p, size in resume.load():
+                if idx != order[i:i + len(idx)] or len(got_c) != len(idx) or len(got_p) != len(idx):
+                    break                         # not this lecture's batches after all: from here on, again
+                for j, c, p in zip(idx, got_c, got_p):
+                    cands[j], priors[j] = list(c), p
+                kept.append((idx, got_c, got_p, size))
+                i += len(idx)
+                work_done += sum(_work(units[j]) for j in idx)
+                # an earlier run out of memory on the graphics card made its batches smaller: the passages left are
+                # batched as they were then (only ever smaller: another lecture may have run out of memory since)
+                if size < opts.batch_size:
+                    self._oom_batch = min(self._oom_batch or size, size)
+            resume.start(kept)
+            done = self._mine.resumed = i
+            if i:
+                self.log.info("Going on from a checkpoint: %d of %d passages were done", i, n)
+                progress("transcribe", 0.05 + 0.88 * work_done / work_total,
+                         t("Going on where it stopped: passage {done} of {n}", done=done, n=n))
+        work_before = work_done            # the time left counts the speed of this run only
         # on the graphics card the processor computes the next batch's features while this batch runs (on the
         # processor itself that would only compete with CTranslate2's threads)
-        ahead = ThreadPoolExecutor(1, thread_name_prefix="features") if self._device == "cuda" else None
+        ahead = (ThreadPoolExecutor(1, thread_name_prefix="features", initializer=_drive_card_here)
+                 if self._device == "cuda" else None)
         nxt: Optional[tuple[list[int], Future]] = None
         try:
             while i < n:
@@ -357,21 +455,27 @@ class Engine:
                         cands[j].append(d)
                 for j, p in zip(idx, got or []):
                     priors[j] = p
+                if resume is not None:            # with the size the next batch has (smaller after out of memory)
+                    resume.add(idx, [cands[j] for j in idx], [priors[j] for j in idx],
+                               min(opts.batch_size, self._oom_batch or opts.batch_size))
                 i += len(idx)
                 done += len(idx)
                 work_done += sum(_work(u) for u in batch)
                 frac = work_done / work_total
                 elapsed = time.monotonic() - started
-                eta = elapsed / frac * (1 - frac) if frac > 0.05 else None
+                ran = (work_done - work_before) / max(1e-9, work_total - work_before)
+                eta = elapsed / ran * (1 - ran) if ran > 0.05 else None
                 # the time left is an untranslated marker that jobs.py takes off (the page says it in its language)
                 progress("transcribe", 0.05 + 0.88 * frac, t("Transcribing passage {done} of {n}", done=done, n=n)
                          + (f" · ~{int(eta)}s left" if eta else ""))
         finally:
             if ahead is not None:
                 ahead.shutdown(wait=True, cancel_futures=True)
+            if resume is not None:            # cancelled or failed: what is done stays for the next run
+                resume.close()
 
         dominant = self._dominant(cands, units)
-        self._last_dominant = dominant
+        self._last_dominant = self._mine.dominant = dominant
         chosen: list[Optional[Decoded]] = [choose(c, units[k].dur, dominant, priors[k]) if c else None
                                            for k, c in enumerate(cands)]
         best_conf = [max((d.conf for d in c if hallucination_score(d, units[k].dur) < 0.75), default=0.0)

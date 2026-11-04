@@ -20,7 +20,8 @@ TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to sh
             "You are my study assistant. Turn the lecture into complete, well-structured study notes.\n\n"
             "1. **Overview** — 3–5 sentences: what was covered and how it connects to the course.\n"
             "2. **Topics, in lecture order** — for each: a heading; a clear explanation; every definition, "
-            "theorem and formula (LaTeX, e.g. $P(A\\mid B)$); the lecturer's worked examples step by step; "
+            "theorem and formula (LaTeX: $P(A\\mid B)$ in a sentence, $$...$$ on lines of their own for a displayed "
+            "formula); the lecturer's worked examples step by step; "
             "and the timestamp where it starts, e.g. (Part 2, 14:05). If slides are attached, refer to them "
             "(\"Slide 7\") and use them to correct formulas.\n"
             "3. **What the lecturer emphasised** — everything marked ⭐ or described as important / likely on "
@@ -50,7 +51,7 @@ TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to sh
         "prompt": (
             "Create 20–30 flashcards from the lecture, covering definitions, formulas, key ideas and the "
             "worked examples. Format each as:\n\nQ: …\nA: …  (Part n, mm:ss)\n\n"
-            "Keep answers short and precise; put formulas in LaTeX. Prefer what the lecturer emphasised (⭐).\n\n"
+            "Keep answers short and precise; put formulas in LaTeX between single dollars ($...$). Prefer what the lecturer emphasised (⭐).\n\n"
         ),
     },
     "plain": {"label": N_("Transcript only"), "prompt": ""},

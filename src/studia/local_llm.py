@@ -1,6 +1,6 @@
 """The offline AI option: a small instruct model (Qwen3, Apache-2.0) run by CTranslate2 — the engine that already runs
 the speech model, so nothing else is installed. Good enough for short study notes, a weekly summary and simple
-questions about a lecture; study plans and prep packs need ChatGPT or Claude.
+questions about a lecture; study plans, review sheets and study packs need ChatGPT or Claude.
 
 Long transcripts are summarised in parts first (the small model keeps a few thousand tokens in view); the summary is
 kept for the other kinds of notes of the same lecture. A chat gets, for each question, the lecture passages that match
@@ -151,15 +151,25 @@ def device_of(key: str) -> str:
     return hit["device"] if hit else ""
 
 
-def _prompt(messages: list[dict[str, str]], template: str) -> str:
-    """ChatML (Qwen). The hybrid Qwen3 gets an empty think block so it answers directly."""
+def _prompt(messages: list[dict[str, str]], template: str, think: bool = False) -> str:
+    """ChatML (Qwen). The hybrid Qwen3 gets an empty think block so it answers directly; ``think``: it begins its own
+    (generate() closes it after a budget of tokens)."""
     out = []
     for m in messages:
         out.append(f"<|im_start|>{m['role']}\n{m['content'].strip()}<|im_end|>\n")
     out.append("<|im_start|>assistant\n")
     if template == "qwen3":
-        out.append("<think>\n\n</think>\n\n")
+        out.append("<think>\n" if think else "<think>\n\n</think>\n\n")
     return "".join(out)
+
+
+THINK_TOKENS = 600            # "Thinking on": what the model may think before it answers (each a few hundredths of
+                              # a second on a graphics card, about a tenth on the processor)
+
+
+def think_budget(key: str, on: bool) -> int:
+    """The thinking tokens of one answer (they take room from the text it reads: the window is small)."""
+    return min(THINK_TOKENS, budget(key) // 3) if on and _preset(key).get("template", "qwen3") == "qwen3" else 0
 
 
 def count_tokens(text: str, key: str) -> int:
@@ -170,24 +180,37 @@ def count_tokens(text: str, key: str) -> int:
 
 
 def generate(messages: list[dict[str, str]], key: str, max_tokens: int = 900,
-             on_text: Optional[Callable[[str], None]] = None, cancel: Optional[threading.Event] = None) -> dict[str, Any]:
+             on_text: Optional[Callable[[str], None]] = None, cancel: Optional[threading.Event] = None,
+             think: int = 0) -> dict[str, Any]:
+    """The model's answer to ``messages``, at most ``max_tokens`` long. ``think``: it first thinks, at most that many
+    tokens (not shown, not part of the answer), then answers."""
     m = _load(key)
     tok, gen = m["tok"], m["gen"]
-    prompt = _prompt(messages, _preset(key).get("template", "qwen3"))
+    prompt = _prompt(messages, _preset(key).get("template", "qwen3"), think=think > 0)
     tokens = tok.encode(prompt).tokens
     ids: list[int] = []
+    thought: list[int] = []
     started = time.monotonic()
     from .engine.core import processor_for_ai
 
-    # on the processor a transcription waits meanwhile: running both made the AI write four times slower
-    with processor_for_ai() if m["device"] != "cuda" else contextlib.nullcontext():
-        for step in gen.generate_tokens(tokens, max_length=max_tokens, sampling_temperature=0.3, sampling_topk=20,
-                                        end_token=["<|im_end|>", "<|endoftext|>"]):
+    def run(prefix: list[str], limit: int, ends: list[str], out: list[int], show: bool) -> None:
+        for step in gen.generate_tokens(prefix, max_length=limit, sampling_temperature=0.3, sampling_topk=20,
+                                        end_token=ends):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
-            ids.append(step.token_id)
-            if on_text and len(ids) % 6 == 0:
-                on_text(tok.decode(ids))
+            out.append(step.token_id)
+            if show and on_text and len(out) % 6 == 0:
+                on_text(tok.decode(out))
+
+    # on the processor a transcription waits meanwhile: running both made the AI write four times slower
+    with processor_for_ai() if m["device"] != "cuda" else contextlib.nullcontext():
+        if think > 0:                  # the thinking, closed after its budget; then the answer after it
+            if on_text:
+                on_text(t("*Thinking…*"))
+            run(tokens, think, ["</think>", "<|im_end|>", "<|endoftext|>"], thought, False)
+            words = tok.decode(thought).replace("</think>", "").strip()
+            tokens = tok.encode(f"{prompt}{words}\n</think>\n\n").tokens
+        run(tokens, max_tokens, ["<|im_end|>", "<|endoftext|>"], ids, True)
     with _lock:
         m["used"] = time.monotonic()
     text = tok.decode(ids).replace("<think>", "").replace("</think>", "").strip()
@@ -345,16 +368,18 @@ def _condense(text: str, key: str, limit: int, cancel: Optional[threading.Event]
 
 
 def one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading.Event] = None,
-             on_text: Optional[Callable[[str], None]] = None, max_tokens: Optional[int] = None) -> dict[str, Any]:
+             on_text: Optional[Callable[[str], None]] = None, max_tokens: Optional[int] = None,
+             think: bool = False) -> dict[str, Any]:
     """One request; a text longer than the model's comfortable size is condensed part by part first. The condensed text
     is kept (in memory and the cache folder) for the other kinds of notes of the same lecture; the same kind asked for
     again ("Generate again") condenses afresh. The answer is asked to end well before its cap and says when it was cut
-    off anyway."""
-    return _with_less_memory(key, lambda: _one_shot(system_prompt, text, key, cancel, on_text, max_tokens))
+    off anyway. ``think``: "Thinking on" (it thinks first; the text it reads is that much shorter)."""
+    return _with_less_memory(key, lambda: _one_shot(system_prompt, text, key, cancel, on_text, max_tokens, think))
 
 
 def _one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threading.Event],
-              on_text: Optional[Callable[[str], None]], max_tokens: Optional[int]) -> dict[str, Any]:
+              on_text: Optional[Callable[[str], None]], max_tokens: Optional[int],
+              think: bool = False) -> dict[str, Any]:
     from .engine.core import processor_for_ai
 
     with contextlib.suppress(Exception):     # loaded first: on a full card it loads on the processor, with its sizes
@@ -368,7 +393,8 @@ def _one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threadin
     # on the processor, held from the first part to the answer: generate() lets go after each part, and a waiting
     # transcription would start a batch in between (generate() holds it as well: the count nests)
     with processor_for_ai() if not gpu else contextlib.nullcontext():
-        limit = budget(key)
+        thinking = think_budget(key, think)
+        limit = budget(key) - thinking
         usage = {"input_tokens": 0, "output_tokens": 0}
         if count_tokens(system, key) + count_tokens(text, key) > limit:
             path = _cache_file(text, key, limit)
@@ -379,7 +405,7 @@ def _one_shot(system_prompt: str, text: str, key: str, cancel: Optional[threadin
             kept = path, entry
             text = entry["text"]
         r = generate([{"role": "system", "content": system}, {"role": "user", "content": text}],
-                     key, cap, on_text, cancel)
+                     key, cap, on_text, cancel, **({"think": thinking} if thinking else {}))
     if r["usage"]["output_tokens"] >= cap:
         r["text"] += "\n\n" + t("*(Cut off here: the offline model reached its length limit.)*")
         if on_text:
@@ -474,8 +500,9 @@ class LocalSession:
     short instructions, the course's announced assessments and, for each question, the lecture passages that match it
     best; earlier turns are kept short."""
 
-    def __init__(self, system_prompt: str, key: str) -> None:
+    def __init__(self, system_prompt: str, key: str, think: bool = False) -> None:
         self.key_name = key
+        self.think = think                    # "Thinking on" (the chat can change it between questions)
         self.model = key
         self.key: Any = None
         head, _, self._lectures = system_prompt.partition("\n\n=== LECTURES ===\n\n")
@@ -505,7 +532,7 @@ class LocalSession:
         fixed = (f"{CHAT_SYSTEM.format(cite=self._cite)}\n{ENGLISH}"
                  + (f"\n\n=== COURSE ===\n{self._course}" if self._course else ""))
         used = count_tokens(fixed, k) + sum(count_tokens(m["content"], k) for m in self._recent())
-        room = max(300, budget(k) - used - count_tokens(question, k) - 50)
+        room = max(300, budget(k) - think_budget(k, self.think) - used - count_tokens(question, k) - 50)
         recent = " ".join(m["content"] for m in self.history[-2:] if m["role"] == "user")    # follow-up questions
         # the other passages are usually short: the lectures give up only what they need, at most a quarter
         share = room - min(count_tokens(extra, k), room // 4) if extra else room
@@ -523,7 +550,8 @@ class LocalSession:
             msgs = [{"role": "system", "content": self._system(question, extra)}]
             msgs += self._recent()
             msgs.append({"role": "user", "content": question})
-            return generate(msgs, self.key_name, 700, on_text, stop)
+            thinking = think_budget(self.key_name, self.think)
+            return generate(msgs, self.key_name, 700, on_text, stop, **({"think": thinking} if thinking else {}))
 
         with self._turn:
             try:

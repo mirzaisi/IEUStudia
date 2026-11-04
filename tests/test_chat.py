@@ -377,3 +377,57 @@ def test_a_chat_without_a_title_or_a_question_is_exported_as_new_chat(env):
     path = env.svc.export(chat["id"])
     assert path.read_text(encoding="utf-8").startswith("# New chat\n")
     assert path.name.endswith(f" - New chat [{chat['id'][:6]}].md")
+
+
+def test_a_chat_keeps_its_reasoning_level(env):
+    made = []
+
+    class Stub:
+        key, last_used, effort = None, 0.0, ""
+
+        def alive(self):
+            return True
+
+        def close(self):
+            pass
+
+        terminate = close
+
+    def new_session(*a, **k):
+        made.append(Stub())
+        made[-1].effort = k.get("effort")
+        return made[-1]
+
+    env.mp.setattr(ai, "new_session", new_session)
+    env.mp.setenv("CODEX_HOME", str(env.tmp))                         # no model list of the Codex CLI either
+    chat = env.svc.create("c", [DAY1], level="high")
+    assert chat["effort"] == "high"
+    first, _ = env.svc._session(env.lib.get_chat(chat["id"]))
+    assert first.effort == "high"
+    assert env.svc.update(chat["id"], {"effort": "max"})["effort"] == "max"
+    second, _ = env.svc._session(env.lib.get_chat(chat["id"]))
+    assert second is not first and second.effort == "max"           # Claude's process keeps its level: a new one
+    appconfig.update({"ai_provider": "chatgpt"})                     # no model list here: low, medium and high
+    gpt, _ = env.svc._session(env.lib.get_chat(chat["id"]))
+    assert gpt.effort == "high"                                      # the nearest level it takes
+    env.svc.update(chat["id"], {"effort": "low", "title": "Quiz"})
+    assert env.svc._session(env.lib.get_chat(chat["id"]))[0] is gpt and gpt.effort == "low"     # the next question's
+    env.svc.update(chat["id"], {"effort": "ultra"})                  # not a level: ignored
+    assert env.lib.get_chat(chat["id"])["scope"]["effort"] == "low"
+    # a ChatGPT chat from before reasoning levels: its "Thorough" stays high
+    env.lib.create_chat("old", "c", {"days": [DAY1], "focus": "full", "slides": False}, "opus")
+    assert env.svc.view("old")["effort"] == "high"
+
+
+def test_a_new_chatgpt_chat_takes_the_settings_level_not_its_model_s(env):
+    env.mp.setenv("CODEX_HOME", str(env.tmp))                         # no model list: low, medium and high
+    appconfig.update({"ai_provider": "chatgpt"})
+    env.svc._s.settings.ai_effort = {"chatgpt.chat": "low"}
+    chat = env.svc.create("c", [DAY1], model="sonnet")                # the dialog's select left alone
+    assert env.lib.get_chat(chat["id"])["scope"]["effort"] == ""       # a chat from now: no old model level
+    assert chat["effort"] == "low"
+    env.svc._s.settings.ai_effort = {"chatgpt.chat": "high"}
+    assert env.svc.view(chat["id"])["effort"] == "high"               # follows Settings until it is given its own
+    env.lib.create_chat("old", "c", {"days": [DAY1], "focus": "full", "slides": False}, "opus")
+    assert env.svc.summary(env.lib.get_chat("old"))["effort"] == "high"   # the chat list shows each chat's level
+    assert env.svc.summary(env.lib.get_chat(chat["id"]))["effort"] == "high"

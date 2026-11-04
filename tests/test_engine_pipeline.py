@@ -28,7 +28,7 @@ def _fake_load(monkeypatch, gpu_fails=False):
     made = []
 
     class WM:
-        def __init__(self, path, device, compute_type, cpu_threads):
+        def __init__(self, path, device, compute_type, cpu_threads, num_workers=1):
             made.append((device, cpu_threads))
             self.model = types.SimpleNamespace(n_mels=128)
 
@@ -156,6 +156,33 @@ def test_an_out_of_memory_batch_stays_smaller_for_the_next_lectures_until_the_mo
     e._wm = None
     e.unload()
     assert e._oom_batch == 0
+
+
+def test_a_checkpoint_never_makes_the_batches_bigger_again(monkeypatch):
+    monkeypatch.setattr(tr, "detect_gpu", lambda *a, **k: {"vram_mb": 8000})
+    units = [Unit(k * SR, k * SR + SR * (1 + k % 5)) for k in range(40)]
+    order = tr.sort_by_duration(units, range(40))
+
+    class Resume:                                # a lecture stopped after one full batch (16), no out of memory
+        key = "k"
+
+        def load(self):
+            idx = order[:16]
+            return [(idx, [[Decoded("en", f"Passage {units[j].start // SR} en.", -0.1, 0.0, 1.2, 6)] for j in idx],
+                     [None] * 16, 16)]
+
+        start = add = lambda self, *a: None
+        close = lambda self: None              # noqa: E731
+
+    e = tr.Engine("large-v3-turbo")
+    e._device, e._decoder = "cuda", FakeDecoder()
+    e._oom_batch = 4                             # another lecture on the card ran out of memory meanwhile
+    chosen, _ = e._decode_units(np.zeros(SR, dtype=np.float32), units, lambda *a: None, None, resume=Resume())
+    assert [d.text for d in chosen] == [f"Passage {k} en." for k in range(40)]
+    assert e._oom_batch == 4 and max(e._decoder.batches) == 4
+    assert e.resumed_passages == 16                # (the jobs pane gives no speed for it)
+    _decode(e)
+    assert e.resumed_passages == 0
 
 
 def test_only_large_v3_turbo_weighs_in_its_language_id_head(monkeypatch):

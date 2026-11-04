@@ -267,9 +267,9 @@
     const rec = U.st.verdict.recommended_llm;
     const llmBody = rec ? `<div class="presets">${loc.map((m) => `<button class="preset ${U.ch.llm === m.id ? "on" : ""}" data-act="su-llm" data-id="${m.id}" ${m.id === "qwen3-4b" && rec !== "qwen3-4b" ? "disabled" : ""}>
         <div class="n">${esc(m.label)} ${m.id === rec ? `<span class="pill now">${t("Fits this PC")}</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? ` · ${t("on this PC")}` : ""}</span></div><div class="d">${esc(m.description)}</div></button>`).join("")}</div>
-        <div class="dim su-note">${t("Runs entirely on this PC. Fine for short notes and simple questions; study plans and prep packs need ChatGPT or Claude.")}${U.st.verdict.gpu ? "" : " " + t("Without an NVIDIA graphics card it writes slowly (notes for a lecture take several minutes).")}</div>`
+        <div class="dim su-note">${t("Runs entirely on this PC. Fine for short notes and simple questions; study plans, review sheets and study packs need ChatGPT or Claude.")}${U.st.verdict.gpu ? "" : " " + t("Without an NVIDIA graphics card it writes slowly (notes for a lecture take several minutes).")}</div>`
       : `<div class="callout warning">${I("alert")}<div>${t("This PC has too little memory for an offline model (8 GB needed).")}</div></div>`;
-    return `<h2>${t("AI help (optional)")}</h2><p class="lead">${t("Study notes, chat about your lectures, video study plans and exam prep packs. Pick what you have — everything else in IEUStudia works without AI.")}</p>
+    return `<h2>${t("AI help (optional)")}</h2><p class="lead">${t("Study notes, chat about your lectures, video study plans, exam review sheets and study packs. Pick what you have — everything else in IEUStudia works without AI.")}</p>
       ${aiCard("chatgpt", "ChatGPT", t("Uses your ChatGPT plan. Plus and Pro work; Free and Go may, with smaller limits."), connectHTML("chatgpt"))}
       ${aiCard("claude", "Claude", t("Needs a Claude Pro or Max subscription."), connectHTML("claude"))}
       ${aiCard("codex", t("ChatGPT through the Codex CLI"), t("Pick this only if you already use OpenAI's Codex CLI (a tool for programmers) with your ChatGPT plan. Otherwise choose ChatGPT above."), connectHTML("codex"))}

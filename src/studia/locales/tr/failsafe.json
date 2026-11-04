@@ -1,0 +1,15 @@
+{
+  "Waiting for the internet connection": "İnternet bağlantısı bekleniyor",
+  "Waiting for the internet connection. The sync goes on by itself.": "İnternet bağlantısı bekleniyor. Eşitleme bağlantı gelince kendiliğinden sürer.",
+  "Waiting for you to sign in": "Giriş yapman bekleniyor",
+  "IEULearn needs you to sign in again. Press Sync to sign in; the downloads then go on by themselves.": "IEULearn yeniden giriş yapmanı istiyor. Giriş yapmak için Eşitle'ye bas; indirmeler sonra kendiliğinden sürer.",
+  "Going on where it stopped: passage {done} of {n}": "Kaldığı yerden sürüyor: parça {done}/{n}",
+  "IEUStudia is still transcribing. Quit anyway? Next time, press Continue on the home page: the lectures go on where they stopped.": "IEUStudia hâlâ yazıya döküyor. Yine de çıkılsın mı? Bir dahaki sefere ana sayfada Devam et'e bas: dersler kaldıkları yerden sürer.",
+  "Close IEUStudia?": "IEUStudia kapatılsın mı?",
+  "Lectures are still being transcribed. If you close IEUStudia now, the work stops here.": "Dersler hâlâ yazıya dökülüyor. IEUStudia'yı şimdi kapatırsan iş burada durur.",
+  "Nothing that's done is lost: next time, press Continue on the home page and it goes on where it stopped.": "Bitenlerin hiçbiri kaybolmaz: bir dahaki sefere ana sayfada Devam et'e bas, iş kaldığı yerden sürsün.",
+  "Don't ask again": "Bir daha sorma",
+  "Keep open": "Açık kalsın",
+  "Ask before closing": "Kapatmadan önce sor",
+  "Asks first when you close IEUStudia while lectures are being transcribed. Either way, they go on where they stopped next time.": "Dersler yazıya dökülürken IEUStudia'yı kapatınca önce sorar. Her durumda dersler bir dahaki sefere kaldıkları yerden sürer."
+}

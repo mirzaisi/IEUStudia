@@ -31,7 +31,10 @@ def save_transcript(t: Transcript) -> Path:
     path = transcript_path(t.delivery_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(t.to_json(), ensure_ascii=False), encoding="utf-8")
+    with open(tmp, "wb") as f:             # on the disk before it takes the old one's place (a power cut then)
+        f.write(json.dumps(t.to_json(), ensure_ascii=False).encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
     with _lock:
         _cache[t.delivery_id] = t

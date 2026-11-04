@@ -145,7 +145,8 @@ def _selftest(out: str) -> int:
         except Exception as exc:  # noqa: BLE001
             report["modules"][mod] = f"FAILED: {exc!r}"
             report["ok"] = False
-    files = ["web/index.html", "web/app.js", "web/setup.js", "web/styles.css", "assets/icon.ico", "assets/logo.svg"]
+    files = ["web/index.html", "web/app.js", "web/setup.js", "web/styles.css", "web/math.js", "web/vendor/katex/katex.min.js",
+             "assets/icon.ico", "assets/logo.svg"]
     if WINDOWS and not report["frozen"]:
         files.append("splash.py")               # a release runs the start-up window from the exe itself
     for rel in files:
@@ -405,16 +406,19 @@ def _main(argv: Optional[list[str]] = None) -> None:
             return True
         # every question first: whoever keeps the window open at the second one has nothing cancelled
         setup = api._setup_running
-        if setup and not window.create_confirmation_dialog(
+        if setup and not api._close_ok and not window.create_confirmation_dialog(     # (asked before the page did)
                 t("Download in progress"), t("IEUStudia is still downloading what it needs. Quit anyway? Next time "
                                              "the download continues where it stopped.")):
             return False
         busy = services is not None and services.jobs.busy()
-        if busy and not window.create_confirmation_dialog(
-                t("Transcription in progress"), t("IEUStudia is still transcribing. Quit anyway? Lectures that aren't "
-                                                  "transcribed yet are kept, and next time IEUStudia offers to go on "
-                                                  "with them.")):
-            return False
+        if busy and not api._close_ok and services.settings.ask_before_closing:
+            if api._ask_close():                  # the page asks, with "Don't ask again" (web/failsafe.js)
+                return False
+            if not window.create_confirmation_dialog(
+                    t("Transcription in progress"), t("IEUStudia is still transcribing. Quit anyway? Next time, press "
+                                                      "Continue on the home page: the lectures go on where they "
+                                                      "stopped.")):
+                return False
         if setup and api._setup_cancel is not None:
             api._setup_cancel.set()
         if busy:

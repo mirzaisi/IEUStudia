@@ -46,7 +46,7 @@
       return `<div class="dg-todo"><span class="dg-code">${esc(item.course)}</span><span class="grow">${esc(item.text)}</span>${act}</div>`;
     }).join("");
     const writing = g.running && g.busyOffset === d.week.offset;
-    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "")}</div><div class="dim">${SPIN()} ${t.html("{ai} is writing…", { ai: St.aiName() })}</div>`
+    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "", { streaming: true })}</div><div class="dim">${SPIN()} ${t.html("{ai} is writing…", { ai: St.aiName() })}</div>`
       : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}) — can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
           ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">${t("open the Markdown file")}</button>` : ""}</div>` : "";
     const sumTitle = !ai.available ? St.aiHint() : g.running && !writing ? t("Another week's summary is being written") : t("A short written summary by {ai}", { ai: St.aiName() });
@@ -55,6 +55,7 @@
         <div class="dg-nav"><button class="btn ghost icon sm" data-act="dg-week" data-d="-1" title="${t("Previous week")}">${I("chevron-left", "sm")}</button>
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>${t("This week")}</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="${t("Next week")}">${I("chevron-right", "sm")}</button>
+          ${ai.available && St.effortInline && St.isChatGPT() ? St.effortInline("dg", "digest") : ""}
           <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} ${t("To do")}</div><div class="card dg-todos">${todo}</div>` : ""}
@@ -78,7 +79,7 @@
   };
   Object.assign(A, {
     "dg-week": (el) => { const d = +el.dataset.d; S.digest.offset = d === 0 ? 0 : S.digest.offset + d; S.digest.data = null; renderView(); load(); },
-    "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.busyOffset = S.digest.offset; S.digest.text = ""; renderView(); } },
+    "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset, St.effortPick && St.isChatGPT() ? St.effortPick("dg") : ""); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.busyOffset = S.digest.offset; S.digest.text = ""; renderView(); } },
     "dg-file": (el) => call("open_output_file", el.dataset.path),
   });
 

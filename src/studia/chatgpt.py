@@ -432,7 +432,7 @@ def _models_cache_clear() -> None:
 
 
 def models(refresh: bool = False) -> list[dict[str, str]]:
-    """The models this account may use, in OpenAI's order: [{"slug", "display_name"}] (cached for a day)."""
+    """The models this account may use, in OpenAI's order: [{"slug", "display_name", "levels"}] (cached for a day)."""
     path = _models_path()
     if not refresh:
         try:
@@ -444,9 +444,10 @@ def models(refresh: bool = False) -> list[dict[str, str]]:
     r = _session().get(f"{API}/models", headers={"Authorization": f"Bearer {access_token()}"}, timeout=30)
     if r.status_code != 200:
         raise _api_failure(r.status_code, _json(r))
-    rows = [{"slug": m["slug"], "display_name": m.get("display_name") or m["slug"]}
+    rows = [{"slug": m["slug"], "display_name": m.get("display_name") or m["slug"],
+             "levels": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if isinstance(x, dict)]}
             for m in (_json(r).get("models") or []) if isinstance(m, dict) and m.get("slug")
-            and m.get("visibility", "list") == "list"]
+            and m.get("visibility", "list") == "list"]           # levels: the reasoning efforts it takes (effort.py)
     path.write_text(json.dumps({"at": time.time(), "models": rows}), encoding="utf-8")
     return rows
 
@@ -508,12 +509,13 @@ def prompt_cache_key(system_prompt: str, content: list[dict[str, Any]]) -> str:
     return "ieustudia-" + hashlib.sha256(f"{system_prompt}\x00{first}".encode("utf-8", "ignore")).hexdigest()[:24]
 
 
-def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "low",
+def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "",
              cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
              timeout_s: float = 900, history: Optional[list[tuple[str, str]]] = None,
              cache_key: str = "") -> dict[str, Any]:
-    """One streamed request on the user's ChatGPT plan: {"text", "usage", "seconds", "model"}. ``model`` is the
-    app's level ("haiku" / "sonnet" / "opus" -> reasoning effort); the ChatGPT model is the one chosen in Settings,
+    """One streamed request on the user's ChatGPT plan: {"text", "usage", "seconds", "model"}. ``effort``: the
+    reasoning level (effort.py; "" = the one the app's old model level meant, "haiku" / "sonnet" / "opus" -> low /
+    medium / high); the ChatGPT model is the one chosen in Settings,
     else the account's first listed one. ``cache_key``: OpenAI's prompt-cache key (default: from how the request
     begins)."""
     import requests
@@ -535,7 +537,7 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
                   {"role": "assistant", "content": [{"type": "output_text", "text": a}]}]
     body: dict[str, Any] = {"model": slug, "instructions": system_prompt,
                             "input": turns + [{"role": "user", "content": _parts(content)}], "store": False,
-                            "stream": True, "reasoning": {"effort": EFFORT.get(model, effort)},
+                            "stream": True, "reasoning": {"effort": effort or EFFORT.get(model, "medium")},
                             "prompt_cache_key": cache_key or prompt_cache_key(system_prompt, content)}
     for name in _turned_down:
         body.pop(name, None)

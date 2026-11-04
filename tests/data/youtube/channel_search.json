@@ -1,0 +1,89 @@
+{
+ "_type": "playlist",
+ "entries": [
+  {
+   "_type": "url",
+   "url": "https://www.youtube.com/channel/UCEWpbFLzoYGPfuWUMFPSaoA",
+   "id": "UCEWpbFLzoYGPfuWUMFPSaoA",
+   "ie_key": "YoutubeTab",
+   "channel": "The Organic Chemistry Tutor",
+   "uploader": "The Organic Chemistry Tutor",
+   "channel_id": "UCEWpbFLzoYGPfuWUMFPSaoA",
+   "channel_url": "https://www.youtube.com/channel/UCEWpbFLzoYGPfuWUMFPSaoA",
+   "title": "The Organic Chemistry Tutor",
+   "uploader_id": "@TheOrganicChemistryTutor",
+   "uploader_url": "https://www.youtube.com/@TheOrganicChemistryTutor",
+   "channel_follower_count": 11100000,
+   "description": "This channel focuses on providing tutorial videos on organic chemistry, general chemistry, physics, algebra, trigonometry, ...",
+   "channel_is_verified": true,
+   "thumbnails": [
+    {
+     "url": "//yt3.googleusercontent.com/ytc/AIdro_lOQikQsmqQS3dG9VBvbJ03Eqqw7NshUvDNorj5UAZL6M0=s88-c-k-c0x00ffffff-no-rj-mo",
+     "height": 88,
+     "width": 88
+    },
+    {
+     "url": "//yt3.googleusercontent.com/ytc/AIdro_lOQikQsmqQS3dG9VBvbJ03Eqqw7NshUvDNorj5UAZL6M0=s176-c-k-c0x00ffffff-no-rj-mo",
+     "height": 176,
+     "width": 176
+    }
+   ]
+  },
+  {
+   "_type": "url",
+   "url": "https://www.youtube.com/channel/UCwHZ0n30IjrGLDEApGSk5lA",
+   "id": "UCwHZ0n30IjrGLDEApGSk5lA",
+   "ie_key": "YoutubeTab",
+   "channel": "Organic Chemistry with Victor",
+   "uploader": "Organic Chemistry with Victor",
+   "channel_id": "UCwHZ0n30IjrGLDEApGSk5lA",
+   "channel_url": "https://www.youtube.com/channel/UCwHZ0n30IjrGLDEApGSk5lA",
+   "title": "Organic Chemistry with Victor",
+   "uploader_id": "@VictortheOrganicChemistryTutor",
+   "uploader_url": "https://www.youtube.com/@VictortheOrganicChemistryTutor",
+   "channel_follower_count": 46500,
+   "description": "Hi, I'm Victor from OrganicChemistryTutor.com, your Organic Chemistry Tutor! I'm a professional PhD chemist (yeah, I actually ...",
+   "channel_is_verified": null,
+   "thumbnails": [
+    {
+     "url": "//yt3.ggpht.com/zX-f0y19khby5xS-8rwiQ6yOMwa0Yh4lRax9Gjs8OXflMufL034bPD_qsmr2y6lUEj_QpsTd=s88-c-k-c0x00ffffff-no-rj-mo",
+     "height": 88,
+     "width": 88
+    },
+    {
+     "url": "//yt3.ggpht.com/zX-f0y19khby5xS-8rwiQ6yOMwa0Yh4lRax9Gjs8OXflMufL034bPD_qsmr2y6lUEj_QpsTd=s176-c-k-c0x00ffffff-no-rj-mo",
+     "height": 176,
+     "width": 176
+    }
+   ]
+  },
+  {
+   "_type": "url",
+   "url": "https://www.youtube.com/channel/UCueu8TZNRIO5dVIAyUgOKNg",
+   "id": "UCueu8TZNRIO5dVIAyUgOKNg",
+   "ie_key": "YoutubeTab",
+   "channel": "The Chemistry Tutor",
+   "uploader": "The Chemistry Tutor",
+   "channel_id": "UCueu8TZNRIO5dVIAyUgOKNg",
+   "channel_url": "https://www.youtube.com/channel/UCueu8TZNRIO5dVIAyUgOKNg",
+   "title": "The Chemistry Tutor",
+   "uploader_id": "@chemistrytutor",
+   "uploader_url": "https://www.youtube.com/@chemistrytutor",
+   "channel_follower_count": 62600,
+   "description": "Chemistry can be challenging, but the right explanation and enough practice can make a huge difference. I'm Jake Byers, ...",
+   "channel_is_verified": null,
+   "thumbnails": [
+    {
+     "url": "//yt3.googleusercontent.com/ytc/AIdro_kRV9ItOQYhTIrPdT99jGKx5rPRBMFP8bG4iHamLDn_0tA=s88-c-k-c0x00ffffff-no-rj-mo",
+     "height": 88,
+     "width": 88
+    },
+    {
+     "url": "//yt3.googleusercontent.com/ytc/AIdro_kRV9ItOQYhTIrPdT99jGKx5rPRBMFP8bG4iHamLDn_0tA=s176-c-k-c0x00ffffff-no-rj-mo",
+     "height": 176,
+     "width": 176
+    }
+   ]
+  }
+ ]
+}

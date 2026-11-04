@@ -89,6 +89,7 @@ def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, m
         monkeypatch.setattr(api._s.jobs, "busy", lambda: True)                        # a transcription runs
         monkeypatch.setattr(api._s.jobs, "cancel", lambda job_id=None: seen.update(jobs_cancelled=True))
         api._setup_running, api._setup_cancel = True, threading.Event()              # and the setup downloads
+        api._ask_close = lambda: False           # a page that can't ask: Windows' own question (see the test below)
         asked = iter(answers)
         w.create_confirmation_dialog = lambda title, text: next(asked)
         w.destroy()
@@ -104,6 +105,48 @@ def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, m
     app._main([])
     assert seen["window"].closing_result == [closes]
     assert seen["download_cancelled"] == closes and seen.get("jobs_cancelled", False) == closes
+
+
+@pytest.mark.parametrize("dont_ask", [False, True])
+def test_closing_while_transcribing_asks_in_the_page_once(isolated_home, monkeypatch, dont_ask):
+    from studia import app, osutil
+
+    winutil = osutil.impl()          # winutil on Windows, linuxutil on Linux
+
+    seen = {}
+    fake = types.ModuleType("webview")
+
+    def create_window(title, url=None, js_api=None, **kw):
+        seen["window"] = FakeWindow(js_api)
+        return seen["window"]
+
+    def start(**kw):
+        w = seen["window"]
+        api = w.api
+        assert api._ready.wait(30)
+        monkeypatch.setattr(api._s.jobs, "busy", lambda: True)                        # a transcription runs
+        monkeypatch.setattr(api._s.jobs, "shutdown", lambda: seen.update(stopped=True))
+        pushed = []
+        api._push = pushed.append
+        w.create_confirmation_dialog = lambda title, text: pytest.fail("asked in a window of its own")
+        w.destroy()                                      # the window's ×: the page asks, nothing stops yet
+        seen["asked"] = [e for e in pushed if e.get("type") == "close-ask"]
+        seen["first"], seen["stopped_first"] = w.closing_result, seen.get("stopped", False)
+        api.close_seen()
+        api.close_now(dont_ask)                          # Close in the page
+        assert w.closed.wait(10)
+        seen["setting"] = api._s.settings.ask_before_closing
+
+    fake.create_window, fake.start = create_window, start
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(winutil, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(app, "set_app_id", lambda *a, **k: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: None)
+    app._main([])
+    assert len(seen["asked"]) == 1 and seen["first"] == [False] and not seen["stopped_first"]
+    assert seen["window"].closing_result == [True] and seen["stopped"]
+    assert seen["setting"] is (not dont_ask)
 
 
 def test_an_update_windows_wont_start_is_said_and_the_app_opens_again(isolated_home, monkeypatch, tmp_path):

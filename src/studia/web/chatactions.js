@@ -21,7 +21,7 @@
     const focus = a.focus ? t("for {focus}", { focus: a.focus }) : "";
     return ({
       video_plan: [t("Video study plan"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
-      prep_pack: [t("Exam prep pack"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
+      prep_pack: [t("Exam review sheet"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
       get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open checklist")],
       transcribe: [t("Transcribe lectures"), `${code} · ${a.date || w || t("missing lectures")}`, t("Transcribe…")],
       download_files: [t("Download files"), `${code} · ${w || t("all weeks")}`, t("Download…")],
@@ -117,7 +117,7 @@
   // the command words are typed, so they stay English; the descriptions are shown (made when drawn, after the table arrives)
   const CMDS = () => [
     ["plan", "video_plan", t("Video study plan for this course (add a quiz name or weeks)")],
-    ["prep", "prep_pack", t("Exam prep pack (add a quiz or exam name)")],
+    ["prep", "prep_pack", t("Exam review sheet (add a quiz or exam name)")],
     ["ready", "get_ready", t("Get-ready checklist for the next quiz or exam")],
     ["notes", "study_notes", t("Study notes for this lecture")],
     ["transcribe", "transcribe", t("Transcribe lectures (add week numbers)")],
@@ -158,7 +158,7 @@
     const cid = chatCourse(); if (!cid) return "";
     const ai = S.system.ai || {};
     const btn = (cmd, ic, label, title) => `<button type="button" class="btn ghost sm" data-act="chat-cmd" data-cmd="${cmd}" title="${esc(title)}">${I(ic, "sm")} ${label}</button>`;
-    return `<div class="chat-tools">${ai.can_plans !== false ? btn("plan", "youtube", t("Video plan"), t("Find videos that teach these weeks, checked through their transcripts")) + btn("prep", "cap", t("Prep pack"), t("A written exam prep pack")) : ""}
+    return `<div class="chat-tools">${St.slidePickHTML ? St.slidePickHTML() : ""}${ai.can_plans !== false ? btn("plan", "youtube", t("Video plan"), t("Find videos that teach these weeks, checked through their transcripts")) + btn("prep", "cap", t("Review sheet"), t("A written exam review sheet: key ideas, formulas and practice")) : ""}
       ${btn("ready", "list-checks", t("Get ready"), t("What to do before the next quiz or exam"))}${btn("sync", "zap", t("Sync course"), t("Transcribe and download what is missing"))}
       <span class="dim sm" style="align-self:center">${t("or type / for more")}</span></div>`;
   };

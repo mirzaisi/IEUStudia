@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .transcriber import ENGINE_VERSION, UNCLEAR, Engine  # noqa: F401
 
-_SUBMODULES = ("core", "models", "stub", "transcriber")
+_SUBMODULES = ("checkpoint", "core", "models", "stub", "transcriber")
 
 
 def __getattr__(name: str) -> Any:

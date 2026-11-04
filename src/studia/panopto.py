@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import dataclasses as dc
 import datetime as dt
+import hashlib
+import json
 import logging
+import os
 import re
 import struct
 import threading
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -38,6 +41,16 @@ class MediaSource:
     kind: str                 # "audio_podcast" | "video_podcast" | "hls"
     url: str
     est_bytes: Optional[int] = None
+
+
+def _write_marker(path: Path, data: dict[str, Any]) -> None:
+    """A camera-stream download's marker, whole or not at all (a power cut leaves the one before)."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def parse_dotnet_date(value: str) -> Optional[dt.datetime]:
@@ -324,8 +337,21 @@ class Panopto:
         if len(files) == 1:  # single fragmented MP4 addressed with byte ranges: just fetch the file
             return httpdl.download(files[0], dest, session=self.s, progress=progress, cancel=cancel, parts=6)
         tmp = dest.with_name(dest.name + ".part")
-        with open(tmp, "wb") as out:
-            for i, u in enumerate(files):
+        # resumable: the segments written so far are noted next to them (by their paths: the links' tokens change
+        # from one request to the next), so a download cut off (the app closed, no connection) goes on from there
+        marker = dest.with_name(dest.name + ".hls.json")
+        key = hashlib.sha1("\n".join(urlsplit(u).path for u in files).encode()).hexdigest()
+        start, size = 0, 0
+        try:
+            got = json.loads(marker.read_text(encoding="utf-8"))
+            if got.get("key") == key and tmp.stat().st_size >= int(got["size"]):
+                start, size = int(got["n"]), int(got["size"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        with open(tmp, "r+b" if start else "wb") as out:
+            out.truncate(size)                   # a segment half written when it stopped: written again
+            out.seek(size)
+            for i, u in enumerate(files[start:], start):
                 check(cancel)
                 for attempt in range(4):
                     try:
@@ -336,6 +362,10 @@ class Panopto:
                     except requests.RequestException:
                         if attempt == 3:
                             raise
+                out.flush()
+                os.fsync(out.fileno())           # on the disk before the marker says so (a power cut: no zeros)
+                _write_marker(marker, {"key": key, "n": i + 1, "size": out.tell()})
                 progress(i + 1, len(files))
         tmp.replace(dest)
+        marker.unlink(missing_ok=True)
         return dest

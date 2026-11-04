@@ -13,7 +13,7 @@
   const scaleX = (p) => `scaleX(${Math.round((p || 0) * 100) / 100})`;   // the queue's bars: the same, as a transform
   const pctText = (p) => t.pct(Math.round((p || 0) * 100) / 100);   // 45% · %45, rounded like the width
   const leftText = t.left;
-  const jobDetail = (j) => [j.detail, leftText(j.eta_s)].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left"
+  const jobDetail = (j) => [j.detail, leftText(etaNow(j))].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left" (counting down)
   const rel = t.ago;
   const initials = (n) => t.upper((n || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join(""));   // in Turkish i → İ
 
@@ -70,11 +70,19 @@
         else if (["course", "new"].includes(S.view.name)) renderView();
         break;
       case "job": onJob(e); break;
-      case "queue": S.queue = e.jobs || []; S.batch = e.batch || {}; S.paused = !!e.paused; renderQueue(); break;
+      case "queue": {
+        const had = new Map((S.queue || []).map((j) => [j.id, j]));
+        if (S.paused && !e.paused && S.pausedAt) had.forEach((j) => { if (j._etaAt) j._etaAt += performance.now() - S.pausedAt; });   // the time left stood still while paused
+        S.queue = e.jobs || []; S.queue.forEach((j) => stamp(j, had.get(j.id)));
+        S.batch = e.batch || {}; S.batch._at = performance.now();
+        if (!!e.paused !== !!S.paused) S.pausedAt = e.paused ? performance.now() : 0;
+        S.paused = !!e.paused; renderQueue(); break;
+      }
       case "engine": S.engine = e.phase === "ready" ? null : e; renderQueue(); break;
       case "sync": onSync(e); break;
       case "system":
         S.system = { ...S.system, ...e }; if (S.view.name === "settings") renderView(); renderTop();
+        renderSidebar();                                    // "Ask {ai}": the start-up snapshot may name another AI
         if (S.view.name === "day") renderDayActions();
         if (S.view.name === "chat" && !$("#chat-input")) renderView();   // Claude availability is now known
         break;
@@ -112,7 +120,7 @@
   }
   function onJob(e) {
     const q = !e.final && (S.queue || []).find((j) => j.id === e.id);
-    if (q) { Object.assign(q, e); updateQueueBar(q); if (S.qpOpen) qpUpdate(q); }
+    if (q) { const old = { eta_s: q.eta_s, _etaAt: q._etaAt }; Object.assign(q, e); stamp(q, old); updateQueueBar(q); if (S.qpOpen) qpUpdate(q); }
     if (e.final) qpFinished(e);
     const hit = findRec(e.id);
     if (hit) {
@@ -314,7 +322,23 @@
       ${gpu}
       <button class="btn ghost icon sm" data-act="menu-more" title="${t("More")}">${I("more")}</button>`;
   }
-  setInterval(() => { if (!S.sync.running) renderTop(); }, 30000);
+  setInterval(() => { if (!S.sync.running) renderTop(); refreshAppConfig(); }, 30000);
+  // Background checks turned off (or on) in the tray helper's menu while this window is open: when the window comes
+  // back (and every 30 s while it is seen), the machine-wide settings are read again (a small file) and the top bar's
+  // chip and Settings follow.
+  let appCfgAt = 0;
+  async function refreshAppConfig() {
+    if (S.mode !== "app" || !S.boot || document.hidden || performance.now() - appCfgAt < 3000) return;
+    appCfgAt = performance.now();
+    const r = await call("app_config");
+    if (!r.ok || !r.app || JSON.stringify(r.app) === JSON.stringify(S.boot.app || {})) return;
+    S.boot.app = r.app; renderTop();
+    if (S.view.name !== "settings") return;
+    if (document.querySelector(":active")) document.addEventListener("pointerup", () => setTimeout(renderView, 0), { once: true });   // the click lands first
+    else renderView();
+  }
+  window.addEventListener("focus", refreshAppConfig);
+  document.addEventListener("visibilitychange", refreshAppConfig);
 
   // ------------------------------------------------------------------ views
   function renderView() {
@@ -330,6 +354,7 @@
     el.classList.toggle("chat-mode", v.name === "chat");
     syncChecks();
     if (Studia.after[v.name]) Studia.after[v.name](v);
+    if (Studia.views[v.name] && Studia.renderMath) Studia.renderMath(el);   // formulas in plans, review sheets, study packs, course pages
   }
 
   function go(view) {
@@ -678,7 +703,7 @@
       <button class="btn ghost sm" data-act="ai-cancel">${t("Stop")}</button>` : `<span class="pill done">${I("check")}${t("Saved")}</span>${kinds}
       ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="${t("One card at a time: think of the answer, then check it")}">${I("list-checks", "sm")} ${t("Practise {n} cards", { n: cards })}</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} ${t("Open file")}</button>`}</h3>
-      <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
+      <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true, streaming: writing }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
   }
   function renderNotes() { const el = $("#notes-slot"); if (el) el.innerHTML = notesHTML(); renderDayActions(); }
   function marksHTML() {   // the passages you marked, in the lecture's order
@@ -721,140 +746,9 @@
     return true;
   }
 
-  // ---- LaTeX → HTML for formulas in answers/notes: a small best-effort renderer (no library needed).
-  // Text is escaped; unknown commands are shown as written.
-  const TEX_SYM = {
-    alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ϵ", varepsilon: "ε", zeta: "ζ", eta: "η", theta: "θ", vartheta: "ϑ",
-    iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π", varpi: "ϖ", rho: "ρ", varrho: "ϱ", sigma: "σ",
-    varsigma: "ς", tau: "τ", upsilon: "υ", phi: "ϕ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω", Gamma: "Γ", Delta: "Δ",
-    Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ", Upsilon: "Υ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
-    cdot: "·", times: "×", div: "÷", pm: "±", mp: "∓", le: "≤", leq: "≤", ge: "≥", geq: "≥", ne: "≠", neq: "≠", approx: "≈",
-    equiv: "≡", sim: "∼", simeq: "≃", cong: "≅", propto: "∝", infty: "∞", partial: "∂", nabla: "∇", sum: "∑", prod: "∏",
-    int: "∫", iint: "∬", oint: "∮", cap: "∩", cup: "∪", bigcap: "⋂", bigcup: "⋃", in: "∈", notin: "∉", ni: "∋", subset: "⊂",
-    subseteq: "⊆", supset: "⊃", supseteq: "⊇", setminus: "∖", emptyset: "∅", varnothing: "∅", forall: "∀", exists: "∃",
-    neg: "¬", lnot: "¬", land: "∧", wedge: "∧", lor: "∨", vee: "∨", to: "→", rightarrow: "→", leftarrow: "←", gets: "←",
-    Rightarrow: "⇒", implies: "⇒", Leftarrow: "⇐", iff: "⇔", Leftrightarrow: "⇔", leftrightarrow: "↔", mapsto: "↦",
-    longrightarrow: "⟶", uparrow: "↑", downarrow: "↓", mid: "∣", parallel: "∥", perp: "⊥", angle: "∠", circ: "∘",
-    degree: "°", ldots: "…", dots: "…", cdots: "⋯", vdots: "⋮", ddots: "⋱", prime: "′", star: "⋆", ast: "∗", bullet: "•",
-    oplus: "⊕", otimes: "⊗", odot: "⊙", langle: "⟨", rangle: "⟩", lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉",
-    vert: "|", lvert: "|", rvert: "|", Vert: "‖", lVert: "‖", rVert: "‖", "|": "‖", hbar: "ℏ", ell: "ℓ", Re: "ℜ", Im: "ℑ",
-    aleph: "ℵ", therefore: "∴", because: "∵", top: "⊤", bot: "⊥", quad: "\u2003", qquad: "\u2003\u2003", ",": "\u2009",
-    ";": "\u2005", ":": "\u2005", ">": "\u2005", "!": "", " ": " ", "{": "{", "}": "}", "%": "%", "&": "&", "_": "_", "#": "#", "$": "$",
-  };
-  const TEX_FN = new Set(["log", "ln", "lg", "exp", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh",
-    "cosh", "tanh", "max", "min", "sup", "inf", "lim", "limsup", "liminf", "det", "dim", "ker", "deg", "gcd", "arg", "Pr", "hom", "mod", "bmod"]);
-  const TEX_ACCENT = { hat: "̂", widehat: "̂", tilde: "̃", widetilde: "̃", dot: "̇", ddot: "̈", vec: "⃗", check: "̌", acute: "́", grave: "̀", breve: "̆" };
-  const TEX_BB = { R: "ℝ", N: "ℕ", Z: "ℤ", Q: "ℚ", C: "ℂ", P: "ℙ", E: "𝔼", F: "𝔽" };
-  const TEX_ENV = { pmatrix: "paren", bmatrix: "brack", Bmatrix: "brace", vmatrix: "vbar", Vmatrix: "vbar", matrix: "", smallmatrix: "", cases: "cases", array: "", aligned: "aligned", align: "aligned", "align*": "aligned", gathered: "aligned", split: "aligned", gather: "aligned" };
-  const TEX_REL = new Set(["le", "leq", "ge", "geq", "ne", "neq", "approx", "equiv", "sim", "simeq", "cong", "propto", "in", "notin", "ni", "subset",
-    "subseteq", "supset", "supseteq", "to", "rightarrow", "leftarrow", "gets", "Rightarrow", "Leftarrow", "implies", "iff", "Leftrightarrow",
-    "leftrightarrow", "mapsto", "longrightarrow", "mid", "parallel", "perp"]);
-  const TEX_BIN = new Set(["cdot", "times", "div", "pm", "mp", "cap", "cup", "setminus", "oplus", "otimes", "odot", "circ", "wedge", "vee", "land", "lor", "ast", "star", "bullet"]);
-  const TEX_OPEN = new Set(["{", "langle", "lfloor", "lceil"]);
-  function texToHtml(s) {
-    let i = 0;
-    const skipSpace = () => { while (/\s/.test(s[i] || "")) i++; };
-    const rawArg = () => {
-      skipSpace();
-      if (s[i] !== "{") return s[i++] || "";
-      let depth = 0; const start = i + 1;
-      for (; i < s.length; i++) { if (s[i] === "{") depth++; else if (s[i] === "}" && !--depth) break; }
-      return s.slice(start, i++);
-    };
-    const arg = () => { skipSpace(); return i < s.length ? atom() : ""; };
-    function environment(env) {
-      if (env === "array") rawArg();                      // column spec
-      const end = `\\end{${env}}`, j = s.indexOf(end, i);
-      const body = j < 0 ? s.slice(i) : s.slice(i, j);
-      i = j < 0 ? s.length : j + end.length;
-      const rows = body.split(/\\\\/).map((r) => r.trim()).filter(Boolean).map((r) => r.split("&").map((c) => texToHtml(c.trim())));
-      const n = Math.max(1, ...rows.map((r) => r.length));
-      return `<span class="mat ${TEX_ENV[env] || ""}" style="grid-template-columns:repeat(${n},auto)">${rows.map((r) => r.map((c) => `<span>${c}</span>`).join("") + "<span></span>".repeat(n - r.length)).join("")}</span>`;
-    }
-    function command() {   // -> [html, kind]; kind: ord | bin | rel | open | null (spacing, no effect)
-      i++;
-      let name = "";
-      if (/[A-Za-z]/.test(s[i] || "")) { while (/[A-Za-z*]/.test(s[i] || "")) name += s[i++]; } else name = s[i++] || "";
-      if (["frac", "dfrac", "tfrac", "cfrac"].includes(name)) { const a = arg(), b = arg(); return [`<span class="frac"><span>${a}</span><span>${b}</span></span>`, "ord"]; }
-      if (["binom", "dbinom", "tbinom"].includes(name)) { const a = arg(), b = arg(); return [`(<span class="frac binom"><span>${a}</span><span>${b}</span></span>)`, "ord"]; }
-      if (name === "boxed") return [`<span class="boxed">${arg()}</span>`, "ord"];
-      if (name === "underbrace" || name === "overbrace") return [`<span class="${name === "underbrace" ? "ubrace" : "obrace"}">${arg()}</span>`, "ord"];
-      if (name === "overset" || name === "stackrel" || name === "underset") {
-        const a = arg(), b = arg();
-        return [name === "underset" ? `${b}<sub>${a}</sub>` : `<span class="frac binom"><span class="small">${a}</span><span>${b}</span></span>`, "ord"];
-      }
-      if (name === "sqrt") {
-        let idx = "";
-        if (s[i] === "[") { const j = s.indexOf("]", i); idx = s.slice(i + 1, j < 0 ? s.length : j); i = j < 0 ? s.length : j + 1; }
-        return [`${idx ? `<sup>${esc(idx)}</sup>` : ""}√<span class="sqrt">${arg()}</span>`, "ord"];
-      }
-      if (["text", "textrm", "mathrm", "operatorname", "textit", "mbox", "textnormal"].includes(name)) return [`<span class="up">${esc(rawArg())}</span>`, "ord"];
-      if (["textbf", "mathbf", "boldsymbol", "bm"].includes(name)) return [`<b>${name === "textbf" ? esc(rawArg()) : arg()}</b>`, "ord"];
-      if (name === "mathit") return [`<i>${arg()}</i>`, "ord"];
-      if (name === "mathbb") return [esc([...rawArg()].map((ch) => TEX_BB[ch] || ch).join("")), "ord"];
-      if (name === "mathcal" || name === "mathscr" || name === "mathsf" || name === "mathtt") return [arg(), "ord"];
-      if (name === "overline" || name === "bar") return [`<span class="ovl">${arg()}</span>`, "ord"];
-      if (name === "underline") return [`<u>${arg()}</u>`, "ord"];
-      if (TEX_ACCENT[name]) return [arg() + TEX_ACCENT[name], "ord"];
-      if (/^(left|right|[bB]igg?[lr]?|displaystyle|textstyle|limits|nolimits)$/.test(name)) { if ((name === "left" || name === "right") && s[i] === ".") i++; return ["", null]; }
-      if (name === "begin") return [environment(rawArg()), "ord"];
-      if (name === "end") { rawArg(); return ["", null]; }
-      if (name === "\\") return ["<br>", null];
-      if (TEX_FN.has(name)) return [`<span class="up fn">${name === "bmod" ? "mod" : name}</span>`, "ord"];
-      if (Object.prototype.hasOwnProperty.call(TEX_SYM, name)) {
-        const sym = esc(TEX_SYM[name]);
-        if (/^[\s\u2003\u2009\u2005]*$/.test(TEX_SYM[name])) return [sym, null];
-        return [sym, TEX_REL.has(name) ? "rel" : TEX_BIN.has(name) ? "bin" : TEX_OPEN.has(name) ? "open" : "ord"];
-      }
-      let raw = "\\" + name;                       // unknown: show it as written, braces included
-      while (s[i] === "{") raw += `{${rawArg()}}`;
-      return [esc(raw), "ord"];
-    }
-    function atom() {   // one argument: a {group} or a single token
-      const c = s[i];
-      if (c === "{") { i++; const h = seq("}"); i++; return h; }
-      if (c === "\\") return command()[0];
-      i++;
-      return /[A-Za-z]/.test(c) ? `<i>${c}</i>` : c === "-" ? "−" : esc(c);
-    }
-    function seq(stop) {   // spaces in the source are ignored; relations and binary operators get math spacing
-      let out = "", prev = null;
-      const put = (html, kind) => {
-        if (kind === "bin" && (prev === null || prev === "bin" || prev === "rel" || prev === "open")) kind = "ord";   // unary
-        out += kind === "rel" || kind === "bin" ? `\u2005${html}\u2005` : html;
-        prev = kind;
-      };
-      while (i < s.length && s[i] !== stop) {
-        const c = s[i];
-        if (/\s/.test(c)) { i++; continue; }
-        if (c === "^" || c === "_") {
-          i++;
-          const a = arg();
-          skipSpace();
-          if (s[i] === (c === "^" ? "_" : "^")) {          // both limits: stack them (∑, ∫, x_i^2)
-            i++;
-            const b = arg();
-            out += `<span class="subsup"><sup>${c === "^" ? a : b}</sup><sub>${c === "^" ? b : a}</sub></span>`;
-          } else out += c === "^" ? `<sup>${a}</sup>` : `<sub>${a}</sub>`;
-          prev = "ord"; continue;
-        }
-        if (c === "{") { i++; const h = seq("}"); i++; put(h, "ord"); continue; }
-        if (c === "\\") { const [h, k] = command(); if (k) put(h, k); else out += h; continue; }
-        i++;
-        if (/[A-Za-z]/.test(c)) put(`<i>${c}</i>`, "ord");
-        else if (c === "'") put("′", "ord");
-        else if ("=<>".includes(c)) put(esc(c), "rel");
-        else if (c === "+" || c === "-" || c === "*") put(c === "-" ? "−" : c === "*" ? "∗" : "+", "bin");
-        else if (c === "(" || c === "[") put(c, "open");
-        else if (c === ",") { out += ",\u2009"; prev = "open"; }
-        else put(esc(c), "ord");
-      }
-      return out;
-    }
-    try { return seq(null); } catch (e) { return esc(s); }
-  }
-  const unesc = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
-  const mathSpan = (escaped) => `<span class="math">${texToHtml(unesc(escaped))}</span>`;
+  // ---- formulas in answers and notes: KaTeX, through math.js (window.StudiaMath); without it they stay as written
+  const MathR = () => window.StudiaMath;
+  const texToHtml = (s, display) => MathR() ? MathR().tex(s, display) : esc(s);
 
   // ---- Markdown (Claude's answers and notes): escaped first, then our own tags only
   // Citations: "[P2 14:05]", "[L2 P1 05:10]", "[P1 00:18, 06:26; P2 03:00]", "[P1 37:31–37:55]", "(Part 2, 14:05)".
@@ -881,11 +775,9 @@
   function mdInline(s, opts) {
     const keep = [];
     const hold = (html) => `\u0000${keep.push(html) - 1}\u0000`;
-    let out = esc(s);
-    out = out.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
-    out = out.replace(/\$\$([^$\n]+)\$\$/g, (_, c) => hold(mathSpan(c)));
-    out = out.replace(/\\\((.+?)\\\)/g, (_, c) => hold(mathSpan(c)));
-    out = out.replace(/(^|[^\\$\w])\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?![\w$])/g, (_, pre, c) => pre + hold(mathSpan(c)));
+    // `code` first (formulas are never looked for in it), then the formulas ($…$, \(…\), $$…$$, \[…\]); the rest is escaped
+    let out = String(s).split(/(`[^`\n]+`)/).map((x, k) => k % 2 ? hold(`<code>${esc(x.slice(1, -1))}</code>`)
+      : MathR() ? MathR().split(x).map((p) => typeof p === "string" ? esc(p) : hold(MathR().html(p))).join("") : esc(x)).join("");
     const emph = (x) => x.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/__([^_\n]+)__/g, "<b>$1</b>")
       .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*?[^*\s])?)\*(?![\w*])/g, "$1<i>$2</i>")
       .replace(/(^|[^\w])_([^_\s](?:[^_\n]*?[^_\s])?)_(?!\w)/g, "$1<i>$2</i>")
@@ -897,6 +789,7 @@
     return out;
   }
   function mdToHtml(md, opts = {}) {
+    if (opts.streaming && MathR()) md = MathR().settled(md);           // a formula still being written shows once it is closed
     try { return mdRender(md, opts); } catch (e) { console.error(e); return `<p>${esc(md).replace(/\n/g, "<br>")}</p>`; }
   }
   function mdRender(md, opts) {
@@ -917,20 +810,27 @@
         for (i++; i < lines.length && !lines[i].trim().startsWith(m[1]); i++) buf.push(lines[i]);
         out += `<pre><code>${esc(buf.join("\n"))}</code></pre>`; i++; continue;
       }
-      if ((m = line.match(/^\s*(\$\$|\\\[)/))) {                       // display math: $$ … $$ or \[ … \]
-        const close = m[1] === "$$" ? "$$" : "\\]";
-        const first = line.trim().slice(2), j = first.indexOf(close);
-        const tail = j >= 0 ? first.slice(j + 2).trim() : "";
-        if (j < 0 || /^[.,;:!?]?$/.test(tail)) {                       // a block (text after it on that line = plain text)
-          flushAll();
-          let buf = j >= 0 ? first.slice(0, j) : first, after = "";
-          if (j < 0) {
-            for (i++; i < lines.length && !lines[i].includes(close); i++) buf += "\n" + lines[i];
-            if (i < lines.length) { const k = lines[i].indexOf(close); buf += "\n" + lines[i].slice(0, k); after = lines[i].slice(k + 2).trim(); }
-          }
-          out += `<div class="math-block">${texToHtml(buf.trim().replace(/\n/g, " "))}</div>`;
+      if ((m = line.match(/^\s*(\$\$|\\\[|\\begin\{((?:equation|align|alignat|gather|multline)\*?|aligned|gathered|cases|[pbBvV]?matrix)\})/))) {
+        // display math: $$ … $$, \[ … \] or an environment, on one line or several (also inside a list item)
+        const env = m[2], close = env ? `\\end{${env}}` : m[1] === "$$" ? "$$" : "\\]";
+        const first = line.trim().slice(env ? 0 : 2), j = first.indexOf(close, env ? m[1].length : 0);
+        const cut = (x, k) => x.slice(0, env ? k + close.length : k);       // an environment keeps its \begin … \end
+        let body = null, after = "", k = i;
+        if (j >= 0) { body = cut(first, j); after = first.slice(j + close.length).trim(); }
+        else for (k = i + 1; k < lines.length; k++) {
+          const q = lines[k].indexOf(close);
+          if (q >= 0) { body = [first, ...lines.slice(i + 1, k), cut(lines[k], q)].join("\n"); after = lines[k].slice(q + close.length).trim(); break; }
+        }
+        const inList = lists.length && /^\s/.test(raw);
+        if (body == null && opts.streaming) {                           // still being written: drawn once it is closed
+          if (inList) flushPara(); else flushAll();
+          out += `<div class="math-block pending"></div>`; i = lines.length; continue;
+        }
+        if (body != null && (j < 0 || !after || /^[.,;:!?]$/.test(after))) {   // (text after it on that line: an inline formula)
+          if (inList) flushPara(); else flushAll();
+          out += `<div class="math-block">${texToHtml(body, true)}</div>`;
           if (after && !/^[.,;:!?]$/.test(after)) para.push(after);
-          i++; continue;
+          i = k + 1; continue;
         }
       }
       if (!line.trim()) {                                             // blank: a list may continue after it
@@ -954,7 +854,8 @@
         flushAll();
         const buf = [];
         for (; i < lines.length && (m = lines[i].replace(/\s+$/, "").match(/^\s*>\s?(.*)$/)); i++) buf.push(m[1]);
-        out += `<blockquote>${buf.map(inline).join("<br>")}</blockquote>`; continue;
+        // its own Markdown inside (a worked solution: lines, display formulas, lists)
+        out += `<blockquote>${mdRender(buf.join("\n"), { ...opts, streaming: opts.streaming && i >= lines.length })}</blockquote>`; continue;
       }
       if ((m = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/))) {         // list item (nested by indentation)
         flushPara();
@@ -1015,6 +916,7 @@
       (m.length ? `<div class="section-title">${I("layers")} ${t("In your course files")} <span class="dim sm">${m.length}</span></div><div class="card" style="margin-bottom:18px">` + m.map((x) => `<button class="result" data-act="open-mat-hit" data-id="${esc(x.resource_id)}" title="${t("Open the file")}">
       <span class="where"><b>${esc(x.course_code)}</b> ${esc(x.title)} · ${t("page {n}", { n: x.page })}</span>
       <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "");
+    if (Studia.renderMath) Studia.renderMath(el);                       // formulas in course files' text
   }
 
   // ---- settings
@@ -1029,7 +931,7 @@
     const row = (title, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
     const sw = (key) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""}>`;
     const profs = S.profiles.length ? S.profiles : [{ id: "main", main: true, active: true, has_login: true, ...p }];
-    const sections = [["set-profiles", t("Profiles")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")],
+    const sections = [["set-profiles", t("Profiles")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")], ...(Studia.yt ? [["set-yt", "YouTube"]] : []),
       ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ["set-look", t("Appearance")]];
     return `<div class="view-inner" style="max-width:820px">
       <nav class="set-nav">${sections.map(([id, l]) => `<button class="btn ghost sm" data-act="set-jump" data-id="${id}">${l}</button>`).join("")}</nav>
@@ -1051,6 +953,7 @@
           `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: t("Automatic"), cuda: t("Graphics card"), cpu: t("Processor only") }[v]}</option>`).join("")}</select>`)}
         ${row(t("Languages"), t("English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR]."), `<span class="chip">${t("English + Turkish")}</span>`)}
         ${row(t("Capture slides"), t("Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture)."), sw("capture_slides"))}
+        ${row(t("Ask before closing"), t("Asks first when you close IEUStudia while lectures are being transcribed. Either way, they go on where they stopped next time."), sw("ask_before_closing"))}
         ${row(t("Hide very short recordings"), t("Recordings shorter than this (usually started by mistake) are greyed out."), `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? t("{n} s", { n: v }) : t("{m} min", { m: v / 60 })}</option>`).join("")}</select>`)}
       </div>
       <div class="card set-card" id="set-files"><h3>${t("Files")}</h3>
@@ -1060,17 +963,7 @@
       </div>
       <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}</h3>
         ${Studia.settingsAI ? Studia.settingsAI() : ""}
-        ${(() => {
-          const ai = sys.ai || {};
-          if (!ai.available || ai.provider === "local") return "";
-          const pick = (key, opts) => `<select class="input" style="width:220px" data-act="set-sel" data-key="${key}">${opts.map(([v, l]) => `<option value="${v}" ${s[key] === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
-          const M = isChatGPT(ai) ? [["haiku", t("Quick")], ["sonnet", t("Standard (recommended)")], ["opus", t("Thorough")]]
-            : [["haiku", t("Haiku (lightest)")], ["sonnet", t("Sonnet (recommended)")], ["opus", t("Opus (best, heavy)")]];
-          return row(t("Chat and study notes"), t("Ask, study notes, exam focus and flashcards."), pick("ai_model", M))
-            + row(t("Study plans and prep packs"), t("Works out what to learn from your material and builds the plan or writes the pack."), pick("plan_model", [["", t("Same as chat")], ...M]))
-            + row(t("Checking videos"), t("Reads candidate videos' captions against the course — many small requests, so a light setting is plenty."), pick("verify_model", M.slice(0, 2)))
-            + row(t("Weekly digest"), t("The short written summary of your week."), pick("ai_model_light", M.slice(0, 2)));
-        })()}
+        ${Studia.aiLevelsHTML ? Studia.aiLevelsHTML(sys, s) : ""}
       </div>
       ${Studia.settingsMore ? Studia.settingsMore() : ""}
       <div class="card set-card" id="set-look"><h3>${t("Appearance")}</h3>
@@ -1112,12 +1005,11 @@
   const aiHint = () => { const ai = S.system.ai || {};   // why an AI button is greyed out
     return ai.provider === "local" ? t("Download the offline model in Settings → AI to use this")
       : ai.label ? t("Connect {ai} in Settings → AI to use this", { ai: ai.label }) : t("Turn on AI in Settings → AI to use this"); };
-  // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons
+  // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons (effort.js)
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
   const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu";    // does the graphics card transcribe?
   const gpuFits = (g) => !!g && g.available && (g.fits != null ? g.fits : (g.vram_mb || 0) >= 3500);   // what the setup asks of a card
-  const REASONING = () => [["haiku", t("Quick"), t("light reasoning")], ["sonnet", t("Standard"), t("recommended")], ["opus", t("Thorough"), t("slowest, uses the most")]];
-  const modelsFor = () => (isChatGPT() ? REASONING() : MODELS());
+  const modelsFor = () => (isChatGPT() ? [] : MODELS());
   const dec = (x, digits) => t.num(+x.toFixed(digits), digits);    // rounded as toFixed rounds, written the language's way: 11.4 · 11,4
   const fmtK = (n) => (n >= 1000 ? t("{n}k", { n: dec(n / 1000, n >= 100000 ? 0 : 1) }) : t.num(Math.round(n || 0)));   // 31.2k · 31,2 bin
   const shortDate = (iso) => t.date(iso, "short");      // Wed 14 Oct · 14 Eki Çar
@@ -1162,7 +1054,7 @@
     if (!l.length) return `<div class="chat-none">${t("Your chats appear here.")}</div>`;
     return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
       <span class="t">${c.running ? SPIN() : ""}${esc(c.title || t("New chat"))}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
-      <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : levelLabel(c.model))}</span></button>`).join("");
+      <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : isChatGPT() && Studia.effortName ? Studia.effortName(c.effort) : levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
@@ -1183,6 +1075,7 @@
       <div class="chat-scroll" id="chat-msgs"><div class="chat-msgs-inner" id="chat-msgs-inner">${chatMsgsHTML()}</div></div>
       <form class="composer" data-form="chat">${Studia.chatToolsHTML ? Studia.chatToolsHTML() : ""}<div class="composer-inner">
         <textarea id="chat-input" rows="1" placeholder="${esc(composerPlaceholder())}">${esc(S.chat.input)}</textarea>
+        ${Studia.effortChip ? Studia.effortChip() : ""}
         <span id="composer-btn">${composerBtnHTML()}</span></div>
         <div class="composer-note">${t.html("Enter to send · Shift+Enter for a new line · uses {plan} · AI can make mistakes", { plan: aiPlan() })}</div></form>`;
   }
@@ -1192,7 +1085,7 @@
     const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(t("{day} — open the transcript", { day: day.long || day.label }))}">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
       + (days.length > 6 ? `<span class="dim">${t("+{n} more", { n: days.length - 6 })}</span>` : "");
     const model = x.model || "sonnet";
-    const sel = `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
+    const sel = isChatGPT() ? "" : `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
     const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(Math.min(d.slidesTotal, 60) * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: Math.min(d.slidesTotal, 60) })}</label>` : "")
       : (c.slides ? `<span class="pill">${I("monitor", "sm")}${t.n(c.images, "{n} slide", "{n} slides")}</span>` : "");
     const focus = x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}${t("Highlights only")}</span>`
@@ -1221,7 +1114,7 @@
     if (m.role === "user") return `<div class="msg user" data-seq="${m.seq}"><div class="bubble">${esc(m.text)}</div></div>`;
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
-    const body = acts.text ? mdToHtml(acts.text, { cites: true }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
+    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
     const foot = streaming ? `<span class="dim">${SPIN()} ${t.html("{ai} is answering…", { ai: aiName() })}</span>`
       : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
@@ -1295,7 +1188,7 @@
   }
   async function estimateDraft() {
     const d = S.chat.draft; if (!d) return;
-    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides);
+    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides, d.send);
     if (r.ok && S.chat.draft === d) { d.tokens = r.tokens; d.slidesTotal = r.slides_total; renderChatHead(); }
   }
   async function sendChat(textArg) {
@@ -1311,7 +1204,7 @@
     let id = S.chat.id;
     if (S.chat.draft) {
       const d = S.chat.draft;
-      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model);
+      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model, d.effort || "", d.send);
       if (S.chat.draft !== d) { S.chat.sending = false; return; }          // navigated away meanwhile
       if (!r.ok) { S.chat.sending = false; renderComposerBtn(); toast(r.error, "error"); return; }
       S.chat.draft = null; S.chat.id = id = r.chat.id; S.chat.data = r.chat;
@@ -1382,7 +1275,8 @@
           : `<div class="field"><label class="cp-label">${t("Class days")} <span class="dim sm">${t("{n} of {total} picked", { n: st.sel.size, total: days.length })}</span><span class="cp-tools"><button type="button" class="btn ghost sm" data-act="cp-last">${t("Last 3")}</button><button type="button" class="btn ghost sm" data-act="cp-all">${t("All")}</button><button type="button" class="btn ghost sm" data-act="cp-none">${t("None")}</button></span></label>${list}</div>`}
         <div class="cp-opts">
           ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} ${t("Offline model")}</div><div class="d">${t("Runs on this PC. For each question it reads the parts of these lectures that match it.")}</div></div>`
-            : `<div class="cp-opt"><div class="t">${isChatGPT(ai) ? t("Reasoning") : t("Model")}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
+            : isChatGPT(ai) ? "" : `<div class="cp-opt"><div class="t">${t("Model")}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
+          ${Studia.effortField ? Studia.effortField("cp", "chat", preset && preset.effort, { big: ai.provider === "local" ? "" : Studia.effortBig.chat(tot, whole()) }) : ""}
           ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(60, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(Math.min(60, sc) * 800) }) : t("No slides were captured for these days.")}</div></div>
             <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}</div>
         ${over ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
@@ -1420,44 +1314,64 @@
         closeModal();
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
           labels: list.map((d, i) => ({ key: d.day_key, n: i + 1, label: d.label, kind: d.kind_label, long: d.label })),
-          focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model });
+          focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "" });
       },
     };
     await load();
   }
 
   // ---- queue bar
+  // A queue event while a button in the bar (or the pane) is pressed would swap it for a new one and the click would
+  // be lost ("Hide" did nothing): the bar is drawn again once the button is let go.
+  function whilePressed(box, redraw) {
+    if (!box.querySelector(":active")) return false;
+    if (!box.held) {
+      box.held = true;
+      const go = () => { if (!box.held) return; box.held = false; ["pointerup", "pointercancel", "keyup"].forEach((k) => document.removeEventListener(k, later)); redraw(); };
+      const later = () => setTimeout(go, 0);                       // after the click
+      ["pointerup", "pointercancel", "keyup"].forEach((k) => document.addEventListener(k, later));
+    }
+    return true;
+  }
   function renderQueue() {
     const el = $("#queue"); if (!el) return;
+    if (whilePressed(el, renderQueue)) return;
     requestAnimationFrame(() => document.body.style.setProperty("--queue-h", el.classList.contains("hidden") ? "0px" : `${el.offsetHeight}px`));
     renderPane();
+    qpClock();
     const jobs = S.queue || [];
     const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
-    if (!jobs.length && !eng) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+    if (jobs.length < 2) S.qList = false;         // the list of lectures: shut with the last but one (the next batch starts small)
+    if (!jobs.length && !eng) { el.classList.add("hidden"); el.classList.remove("open"); el.innerHTML = ""; return; }
     el.classList.remove("hidden");
-    const cur = jobs.find((j) => ["transcribing", "writing"].includes(j.stage)) || jobs.find((j) => j.stage === "downloading") || jobs[0];
+    const again = el.contains(document.activeElement) ? focusKey(document.activeElement) : "";
+    const cur = jobs.find((j) => j.stage === "transcribing") || jobs.find((j) => j.stage === "writing") || jobs.find((j) => j.stage === "downloading") || jobs[0];   // the one on the card, not one waiting for its slides
     S.queueShown = eng ? null : cur && cur.id;
     const label = (j) => ({ queued: t("Waiting"), downloading: t("Downloading"), transcribing: t("Transcribing"), writing: t("Finishing") }[j.stage] || j.stage);
-    const open = el.classList.contains("open");
+    const open = !!S.qList;
+    el.classList.toggle("open", open);
     const paused = !!S.paused;
     el.classList.toggle("paused", paused);
     let title = cur ? `${paused ? t("Paused") : label(cur)} · ${esc(cur.title)}` : t("Preparing");
     let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
     if (eng) { title = engTitle(eng); detail = eng.message && eng.message !== title ? esc(eng.message) : ""; p = eng.progress || 0; }
-    const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle">${open ? t("Hide") : t("+{n} more", { n: jobs.length - 1 })}</button>` : "";
+    const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle" aria-expanded="${open}">${open ? t("Hide") : t("+{n} more", { n: jobs.length - 1 })}</button>` : "";
     const b = S.batch || {};
-    const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${t("{done} of {total} done", { done: b.finished, total: b.total })}${b.left_s ? " · " + t("about {time} left", { time: fmtDur(b.left_s) }) : ""}</span>` : "";
+    const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${esc(qBatchText(b))}</span>` : "";
     el.innerHTML = `<div class="q-main"><div class="q-icon">${paused ? I("pause") : SPIN()}</div><div class="q-text"><div class="q-title">${title}</div><div class="q-detail">${paused ? t("Your PC may sleep until you continue.") : detail}</div></div>
       ${batch}<div class="bar ${p || paused ? "" : "indet"}"><i class="glide" style="transform:${scaleX(p)}"></i></div>${more}
       <button class="btn ghost icon sm" data-act="queue-expand" aria-controls="qpane" aria-expanded="${!!S.qpOpen}" title="${esc(t("Show each lecture's steps and details"))}">${I("chevron-up", "sm")}</button>
       ${cur && !eng ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause" title="${esc(paused ? t("Go on transcribing") : t("Pause: the lecture being transcribed stops after the passages it is on. Nothing is lost."))}">${I(paused ? "play" : "pause", "sm")}<span class="lbl"> ${paused ? t("Continue") : t("Pause")}</span></button>` : ""}
       ${cur ? `<button class="btn ghost sm" data-act="cancel-all" title="${esc(t("Cancel everything in the queue"))}">${I("stop", "sm")}<span class="lbl"> ${t("Cancel")}</span></button>` : ""}</div>
-      ${open && jobs.length > 1 ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
+      ${open ? `<div class="q-list">${jobs.map((j, i) => `<div class="q-item" data-id="${esc(j.id)}"><span class="n">${esc(j.title)}</span><span class="pill">${label(j)}</span>
         <div class="bar"><i class="glide" style="transform:${scaleX(j.progress)}"></i></div>
         ${j.stage === "queued" && !j.local && i > 1 ? `<button class="btn ghost sm" data-act="queue-first" data-id="${esc(j.id)}" title="${esc(t("Transcribe this one before the others still waiting"))}">${t("Do next")}</button>` : j.first ? `<span class="dim sm">${t("next")}</span>` : ""}
         <button class="btn ghost icon sm" data-act="cancel" data-id="${j.id}" title="${esc(t("Cancel this one"))}">${I("x", "sm")}</button></div>`).join("")}</div>` : ""}`;
+    if (again) { const f = el.querySelector(again) || el.querySelector("[data-act='queue-expand']"); if (f) f.focus({ preventScroll: true }); }   // its button was drawn again
   }
+
+  const qBatchText = (b) => t("{done} of {total} done", { done: b.finished, total: b.total }) + (batchLeft(b) ? " · " + t("about {time} left", { time: fmtDur(batchLeft(b)) }) : "");
 
   // A job's progress between stage changes: only the text and the bars change, the buttons stay where they are.
   function updateQueueBar(j) {
@@ -1473,10 +1387,37 @@
 
   // ---- the jobs pane: the queue bar grown into a panel over the page, each lecture with its steps. A queue event
   // (a lecture starts, ends or moves) draws its lists again; a job's progress changes only that lecture's lines.
-  const QSTEPS = () => [["wait", t("Waiting")], ["download", t("Downloading")], ["decode", t("Decoding")], ["speech", t("Finding speech")],
-    ["turn", t("Waiting for its turn")], ["model", t("Loading the speech model")], ["transcribe", t("Transcribing")], ["slides", t("Slides")], ["write", t("Writing files")]];
+  // The steps in the order they happen. "offline" / "signin": not downloaded yet, waiting for the internet connection
+  // or a new sign-in; "place": downloaded, waiting for room to decode its audio; "turn": decoded, waiting for the
+  // speech model (the graphics card, or the processor on a PC without a usable one).
+  const QORDER = ["wait", "offline", "signin", "download", "place", "decode", "speech", "turn", "model", "transcribe", "slides", "write"];
+  function qStepLabel(s, j) {
+    if (s === "turn") {
+      // the device setting, also as Python last reported it (gpu.used follows a change made elsewhere)
+      const g = S.system.gpu, dev = j.device || (S.settings.device === "cpu" || (g && g.used === false) ? "cpu" : g == null ? "" : gpuUsed(g) ? "cuda" : "cpu");
+      return dev === "cuda" ? t("Waiting for the graphics card") : dev === "cpu" ? t("Waiting for the processor") : t("Waiting to be transcribed");
+    }
+    return { wait: t("Waiting"), offline: t("Waiting for the internet connection"), signin: t("Waiting for you to sign in"), download: t("Downloading"), place: t("Waiting to prepare the audio"), decode: t("Decoding"), speech: t("Finding speech"),
+      model: t("Loading the speech model"), transcribe: t("Transcribing"), slides: t("Slides"), write: t("Writing files") }[s] || s;
+  }
   const stepOf = (j) => j.step || { downloading: "download", transcribing: "transcribe", writing: "write" }[j.stage] || "wait";
-  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const mmss = (s) => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
+  // Live times, from the snapshot and the page's clock (never a call to Python): an event's times are as old as the
+  // event (_at, when it came; _etaAt, when the engine's time left last changed); a time left stands still while paused.
+  const since = (at, still) => (at ? ((still && S.paused && S.pausedAt ? Math.max(at, S.pausedAt) : performance.now()) - at) / 1000 : 0);
+  const ageNow = (j) => (j.age_s || 0) + since(j._at);
+  const etaNow = (j) => (j.eta_s == null ? null : Math.max(0, j.eta_s - since(j._etaAt, true)));
+  const batchLeft = (b) => (b && b.left_s ? Math.max(0, b.left_s - since(b._at, true)) : 0);
+  function stamp(j, old) {       // a job's snapshot just came (old: what the page had of it)
+    const now = performance.now();
+    j._at = now; j._etaAt = old && old.eta_s === j.eta_s && old._etaAt ? old._etaAt : now;
+  }
+  function stepTimes(j, end) {   // seconds in each step (a step it came back to adds up), the steps in the order first seen
+    const all = j.steps || [], spent = {}, seen = [];
+    if (end == null) end = ageNow(j);
+    all.forEach(([s, at], k) => { spent[s] = (spent[s] || 0) + Math.max(0, (k + 1 < all.length ? all[k + 1][1] : end) - at); if (!seen.includes(s)) seen.push(s); });
+    return { spent, seen };
+  }
   const mbText = (b) => t.num(b / 1e6, b < 1e7 ? 1 : 0, false);
   function jobWhat(j) {          // course, lecture and part, from the library's lists (a local file has only its name)
     const hit = findRec(j.id);
@@ -1486,13 +1427,18 @@
       part: r.part && d.parts > 1 ? t("Part {n}", { n: r.part }) : "" };
   }
   const jobName = (j) => { const w = jobWhat(j); return [w.course, w.lecture, w.part].filter(Boolean).join(" · ") || j.title; };
-  function qpStepsHTML(j) {
-    const spent = {}, all = j.steps || [], now = stepOf(j);
-    all.forEach(([s, at], k) => { spent[s] = (spent[s] || 0) + ((k + 1 < all.length ? all[k + 1][1] : j.age_s || at) - at); });
-    const order = QSTEPS().filter(([s]) => s !== "slides" || j.slides), at = order.findIndex(([s]) => s === now);
-    return order.filter(([s], k) => s in spent || s === now || k > at).map(([s, label]) => {
+  // The steps it went through in the order it did them (with their times), the one it is on (its time live), then
+  // those still to come. A wait it may skip (for a place, for the speech model, for the connection or a sign-in)
+  // shows once it waits there.
+  function qpStepsHTML(j, ended) {
+    const now = ended ? "" : stepOf(j), { spent, seen } = stepTimes(j, ended ? j.age_s || 0 : null);
+    const after = (s) => QORDER.indexOf(s) > QORDER.indexOf(now) && !(s in spent) && !["place", "turn", "offline", "signin"].includes(s)
+      && (s !== "download" || !j.local) && (s !== "slides" || j.slides);
+    const list = ended ? seen : [...seen.filter((s) => s !== now), now, ...QORDER.filter(after)];
+    return list.map((s) => {
       const st = s === now ? "now" : s in spent ? "done" : "todo";
-      return `<li class="qp-step ${st}"${st === "now" ? ' aria-current="step"' : ""}>${st === "done" ? I("check", "xs") : ""}${esc(label)}${spent[s] >= 1 ? ` <span class="t">${mmss(spent[s])}</span>` : ""}</li>`;
+      const time = st === "now" ? ` <span class="t">${mmss(spent[s] || 0)}</span>` : spent[s] >= 1 ? ` <span class="t">${mmss(spent[s])}</span>` : "";
+      return `<li class="qp-step ${st}"${st === "now" ? ' aria-current="step"' : ""}>${st === "done" ? I("check", "xs") : ""}${esc(qStepLabel(s, j))}${time}</li>`;
     }).join("");
   }
   function qpDetail(j) {
@@ -1501,8 +1447,9 @@
     if (s === "transcribe" && j.progress) return [t("{pct} done", { pct: pctText(j.progress) }), jobDetail(j)].filter(Boolean).join(" · ");
     return jobDetail(j);
   }
-  const qpMeta = (j) => [j.age_s >= 1 ? t("{time} so far", { time: mmss(j.age_s) }) : "", j.model ? t("Speech model: {model}", { model: j.model }) : "",
-    j.device === "cuda" ? t("on the graphics card") : j.device === "cpu" ? t("on the processor") : ""].filter(Boolean).join(" · ");
+  const deviceText = (d) => (d === "cuda" ? t("on the graphics card") : d === "cpu" ? t("on the processor") : "");
+  const qpAge = (j) => t("{time} so far", { time: mmss(ageNow(j)) });
+  const qpMeta = (j) => [j.model ? t("Speech model: {model}", { model: j.model }) : "", deviceText(j.device)].filter(Boolean).join(" · ");
   const qpNotesHTML = (j) => (j.notes || []).map((n) => `<div class="qp-note">${I("info", "xs")}<span>${esc(n)}</span></div>`).join("")
     + (j.anomalies || []).map((a) => `<div class="qp-anom">${I("alert", "xs")}<span>${esc(a.text)}</span></div>`).join("");
   function qpJobHTML(j) {
@@ -1511,12 +1458,13 @@
       <button class="btn ghost icon sm" data-act="cancel" data-id="${esc(j.id)}" title="${esc(t("Cancel this one"))}" aria-label="${esc(t("Cancel this one"))}">${I("x", "sm")}</button>`;
     const name = `<span class="qp-c">${esc(w.course)}</span>${w.name ? ` <span class="dim">· ${esc(w.name)}</span>` : ""}`;
     const lec = esc([w.lecture, w.part].filter(Boolean).join(" · "));
-    if (s === "wait") return `<li class="qp-job wait" data-id="${esc(j.id)}" data-step="wait"><span class="qp-n">${name} <span class="dim">· ${lec}</span></span>${ctl}</li>`;
+    if (s === "wait") return `<li class="qp-job wait" data-id="${esc(j.id)}" data-step="wait"><span class="qp-n">${name} <span class="dim">· ${lec}</span></span><span class="qp-wt">${esc(t("{time} waiting", { time: mmss(stepTimes(j).spent.wait || 0) }))}</span>${ctl}</li>`;
+    const meta = qpMeta(j);
     return `<li class="qp-job" data-id="${esc(j.id)}" data-step="${s}">
       <div class="qp-jh"><div class="qp-n">${name}<div class="qp-lec">${lec}</div></div>${ctl}</div>
       <ol class="qp-steps">${qpStepsHTML(j)}</ol>
       <div class="qp-now"><div class="bar ${j.progress || s !== "download" && s !== "transcribe" ? "" : "indet"}"><i class="glide" style="transform:${scaleX(j.progress)}"></i></div><span class="qp-det">${esc(qpDetail(j))}</span></div>
-      <div class="qp-meta">${esc(qpMeta(j))}</div><div class="qp-notes">${qpNotesHTML(j)}</div></li>`;
+      <div class="qp-meta"><span class="qp-age">${esc(qpAge(j))}</span><span class="qp-mm">${meta ? ` · ${esc(meta)}` : ""}</span></div><div class="qp-notes">${qpNotesHTML(j)}</div></li>`;
   }
   function qpUpdate(j) {         // one lecture's progress: its own lines only (a new step draws the lecture again)
     const card = $(`#qpane .qp-job[data-id="${CSS.escape(j.id)}"]`); if (!card) return;
@@ -1530,45 +1478,117 @@
     const bar = card.querySelector(".qp-now .bar");
     bar.classList.toggle("indet", !j.progress && ["download", "transcribe"].includes(stepOf(j))); bar.firstElementChild.style.transform = scaleX(j.progress);
     card.querySelector(".qp-det").textContent = qpDetail(j);
-    card.querySelector(".qp-meta").textContent = qpMeta(j);
+    card.querySelector(".qp-age").textContent = qpAge(j);
+    const meta = qpMeta(j); card.querySelector(".qp-mm").textContent = meta ? ` · ${meta}` : "";
     const steps = qpStepsHTML(j), ol = card.querySelector(".qp-steps"); if (ol.innerHTML !== steps) ol.innerHTML = steps;
     const notes = qpNotesHTML(j), nb = card.querySelector(".qp-notes"); if (nb.innerHTML !== notes) nb.innerHTML = notes;
   }
-  function qpFinished(e) {       // the lectures finished in this session, newest first
-    if (!["done", "failed", "processing", "cancelled"].includes(e.stage)) return;
-    S.qDone = [{ id: e.id, name: jobName(e), stage: e.stage, error: e.error, kept: e.status === "done", day: e.day, local: e.local }, ...(S.qDone || []).filter((x) => x.id !== e.id)].slice(0, 60);
+  // The queue's clock: once a second while there is a queue (the bar or the pane) and the window is seen, only the
+  // times that move change (each lecture's time so far and its step's time, the waiting rows, the times left);
+  // nothing is drawn again.
+  let qpTimer = 0;
+  function qpClock() {
+    const on = (!!S.qpOpen || !!(S.queue || []).length) && !document.hidden;
+    if (on && !qpTimer) qpTimer = setInterval(qpTick, 1000);
+    else if (!on && qpTimer) { clearInterval(qpTimer); qpTimer = 0; }
   }
-  function qpSummary() {
-    const b = S.batch || {}, jobs = S.queue || [], eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+  const setText = (el, s) => { if (el && el.textContent !== s) el.textContent = s; };
+  function qpTick() {
+    if (!(S.qpOpen || (S.queue || []).length) || document.hidden) { qpClock(); return; }
+    const byId = new Map((S.queue || []).map((j) => [j.id, j])), p = S.qpOpen && $("#qpane");
+    if (p) qpTickPane(p, byId);
+    const q = $("#queue"), cur = S.queueShown && byId.get(S.queueShown);   // the bar (under the pane: right when it closes)
+    if (q && cur && !S.paused) setText(q.querySelector(".q-main .q-detail"), jobDetail(cur));
+    if (q && (S.batch || {}).total > 1) setText(q.querySelector(".q-batch"), qBatchText(S.batch));
+  }
+  function qpTickPane(p, byId) {
+    p.querySelectorAll(".qp-jobs > .qp-job").forEach((card) => {
+      const j = byId.get(card.dataset.id); if (!j) return;
+      if (card.classList.contains("wait")) { setText(card.querySelector(".qp-wt"), t("{time} waiting", { time: mmss(stepTimes(j).spent.wait || 0) })); return; }
+      setText(card.querySelector(".qp-step.now .t"), mmss(stepTimes(j).spent[stepOf(j)] || 0));
+      setText(card.querySelector(".qp-age"), qpAge(j));
+      if (j.eta_s != null) setText(card.querySelector(".qp-det"), qpDetail(j));
+    });
+    setText(p.querySelector(".qp-sumt"), qpSumText());
+  }
+  document.addEventListener("visibilitychange", () => { qpClock(); if (!document.hidden) qpTick(); });
+
+  function qpFinished(e) {       // the lectures finished in this session, newest first, with what they took
+    if (!["done", "failed", "processing", "cancelled"].includes(e.stage)) return;
+    const keep = ["id", "stage", "error", "day", "local", "age_s", "steps", "audio_s", "passages", "transcribe_s", "model", "device", "notes", "anomalies", "slides"];
+    const x = Object.fromEntries(keep.map((k) => [k, e[k]]));
+    S.qDone = [{ ...x, name: jobName(e), kept: e.status === "done", ended: new Date() }, ...(S.qDone || []).filter((y) => y.id !== e.id)].slice(0, 60);
+  }
+  function qpSumText() {
+    const b = S.batch || {}, jobs = S.queue || [], left = batchLeft(b);
     const parts = b.total > 1 ? [t("{n} done", { n: b.done != null ? b.done : b.finished }), b.failed ? t("{n} failed", { n: b.failed }) : "", t("{n} left", { n: b.total - b.finished })]
       : [jobs.length ? t.n(jobs.length, "{n} lecture in the queue", "{n} lectures in the queue") : t("Nothing is waiting.")];
-    if (b.left_s) parts.push(t("ends around {time} ({left})", { time: t.date(new Date(Date.now() + b.left_s * 1000), "time"), left: t.left(b.left_s) }));
-    return esc(parts.filter(Boolean).join(" · ")) + (S.paused ? ` <span class="pill">${t("Paused")}</span>` : "")
+    if (left) parts.push(t("ends around {time} ({left})", { time: t.date(new Date(Date.now() + left * 1000), "time"), left: t.left(left) }));
+    return parts.filter(Boolean).join(" · ");
+  }
+  function qpSummary() {
+    const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+    return `<span class="qp-sumt">${esc(qpSumText())}</span>` + (S.paused ? ` <span class="pill">${t("Paused")}</span>` : "")
       + (eng ? `<div class="qp-eng">${SPIN()} ${engTitle(eng)}${eng.message && eng.message !== engTitle(eng) ? ` · ${esc(eng.message)}` : ""}</div>` : "");
   }
   function engTitle(eng) {       // the engine's message can repeat it (then it is left out)
     return eng.phase === "download" ? t("Downloading the speech model (one time)") : t("Loading the speech model");
   }
+  const qpSpeed = (x) => (x.stage === "done" && x.audio_s > 0 && x.transcribe_s >= 1 ? x.audio_s / x.transcribe_s : 0);
+  function qpFinLine(x) {        // the short line: what came of it, how long it took, how fast
+    const total = mmss(x.age_s || 0), speed = qpSpeed(x);
+    if (x.stage === "cancelled") return t("Cancelled after {time}", { time: total });
+    if (x.stage !== "done") return t("{time} in all", { time: total });
+    return [t("{time} in all", { time: total }), x.audio_s ? t("{audio} of audio", { audio: fmtDur(x.audio_s) }) : "",
+      speed ? t("{x}× real time", { x: t.num(speed, 1) }) : ""].filter(Boolean).join(" · ");
+  }
+  function qpFinDetailHTML(x) {  // everything it took, step by step
+    const row = (k, v) => (v ? `<dt>${k}</dt><dd>${v}</dd>` : "");
+    const speed = qpSpeed(x), dev = deviceText(x.device);
+    const result = x.stage === "done" ? t("Done") : x.stage === "cancelled" ? t("Cancelled")
+      : `${x.stage === "processing" ? t("Not ready on Panopto yet") : t("Failed")}${x.error ? `: ${esc(x.error)}` : ""}${x.kept ? ` ${t("The earlier transcript is kept.")}` : ""}`;
+    return `<ol class="qp-steps">${qpStepsHTML(x, true)}</ol><dl class="qp-dl">
+      ${row(t("Result"), result)}
+      ${row(t("Total time"), esc(mmss(x.age_s || 0)))}
+      ${row(t("Audio length"), x.audio_s ? esc(fmtDur(x.audio_s)) : "")}
+      ${row(t("Speed"), speed ? esc(t("{x}× real time", { x: t.num(speed, 1) }) + " · " + t("transcribing took {time}", { time: mmss(x.transcribe_s) })) : "")}
+      ${row(t("Speech model"), x.model ? esc([x.model, dev].filter(Boolean).join(" · ")) : "")}
+      ${row(t("Passages"), x.passages ? esc(t("{done} of {n}", { done: x.passages[0], n: x.passages[1] })) : "")}
+      ${row(t("Finished"), esc(t.date(x.ended, "time")))}</dl>
+      <div class="qp-notes">${qpNotesHTML(x)}</div>`;
+  }
   function qpDoneHTML() {
-    const list = S.qDone || [];
+    const list = S.qDone || [], open = S.qFinOpen || (S.qFinOpen = new Set());
     if (!list.length) return "";
-    return `<h3>${t("Finished in this session")}</h3><ul class="qp-fins">${list.map((x) => {
+    return `<h3>${t("Finished in this session")}</h3><ul class="qp-fins">${list.map((x, k) => {
       const icon = x.stage === "done" ? "check-circle" : x.stage === "cancelled" ? "x-circle" : "alert-circle";
-      const why = x.stage === "done" ? (x.local ? t("Done") : `<button class="btn ghost sm" data-act="qp-open" data-day="${esc(x.day)}">${I("file-text", "sm")} ${t("Open transcript")}</button>`)
-        : x.stage === "cancelled" ? t("Cancelled")
+      const why = x.stage === "done" ? (x.local ? "" : `<button class="btn ghost sm" data-act="qp-open" data-day="${esc(x.day)}">${I("file-text", "sm")} ${t("Open transcript")}</button>`)
+        : x.stage === "cancelled" ? ""
         : `<span class="qp-why">${esc(x.error || t("failed"))}${x.kept ? ` ${t("The earlier transcript is kept.")}` : ""}</span>`;
-      return `<li class="qp-fin ${x.stage}">${I(icon, "sm")}<span class="qp-n">${esc(x.name)}</span>${why}</li>`;
+      const on = open.has(x.id);
+      return `<li class="qp-fin ${x.stage}${on ? " open" : ""}"><div class="qp-fh">${I(icon, "sm")}<span class="qp-n">${esc(x.name)}<span class="qp-fs">${esc(qpFinLine(x))}</span></span>${why}
+        <button class="btn ghost icon sm qp-more" data-act="qp-fin" data-id="${esc(x.id)}" aria-expanded="${on}" aria-controls="qpf-${k}" title="${esc(t("Details"))}" aria-label="${esc(t("Details: {name}", { name: x.name }))}">${I("chevron-down", "sm")}</button></div>
+        <div class="qp-fd" id="qpf-${k}"${on ? "" : " hidden"}>${on ? qpFinDetailHTML(x) : ""}</div></li>`;
     }).join("")}</ul>`;
+  }
+  function qpFinToggle(el) {     // a finished lecture's details: opened in place (the list isn't drawn again)
+    const li = el.closest(".qp-fin"), box = li && li.querySelector(".qp-fd"), x = (S.qDone || []).find((y) => y.id === el.dataset.id);
+    if (!box || !x) return;
+    const on = !S.qFinOpen.has(x.id);
+    if (on) { S.qFinOpen.add(x.id); box.innerHTML = qpFinDetailHTML(x); } else S.qFinOpen.delete(x.id);
+    box.hidden = !on; li.classList.toggle("open", on); el.setAttribute("aria-expanded", String(on));
   }
   function renderPane() {
     const p = $("#qpane");
     if (!p) S.qpOpen = false;                     // the page was drawn again (e.g. another profile)
-    if (!p || !S.qpOpen) return;
+    if (!p || !S.qpOpen || whilePressed(p, renderPane)) return;
     const jobs = S.queue || [], paused = !!S.paused;
     const again = p.contains(document.activeElement) ? focusKey(document.activeElement) : "";
-    p.querySelector(".qp-ctl").innerHTML = `${jobs.length ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause">${I(paused ? "play" : "pause", "sm")} ${paused ? t("Continue") : t("Pause")}</button>
+    // its buttons only when they change; the last one takes it back down to the bar (the bar's own button is under it)
+    const ctl = `${jobs.length ? `<button class="btn ${paused ? "primary" : "ghost"} sm" data-act="queue-pause">${I(paused ? "play" : "pause", "sm")} ${paused ? t("Continue") : t("Pause")}</button>
       <button class="btn ghost sm" data-act="cancel-all">${I("stop", "sm")} ${t("Cancel")}</button>` : ""}
-      <button class="btn ghost icon sm" data-act="qp-close" title="${esc(t("Close (Esc)"))}" aria-label="${esc(t("Close"))}">${I("x", "sm")}</button>`;
+      <button class="btn ghost icon sm" data-act="qp-close" title="${esc(t("Minimize (Esc)"))}" aria-label="${esc(t("Minimize"))}" aria-controls="qpane" aria-expanded="true">${I("chevron-down", "sm")}</button>`;
+    if (p.ctl !== ctl) { p.querySelector(".qp-ctl").innerHTML = ctl; p.ctl = ctl; }
     p.querySelector(".qp-sum").innerHTML = qpSummary();
     if (p.drawn !== S.queue || p.drawnDone !== S.qDone) {   // the lists only when they changed (not for the model's progress)
       p.querySelector(".qp-jobs").innerHTML = jobs.map(qpJobHTML).join("");
@@ -1592,6 +1612,7 @@
     p.drawn = null;                               // its lectures moved on while it was closed
     renderPane();
     p.classList.add("open");
+    qpClock();
     ["#top", "#view", "#queue"].forEach((s) => { const x = $(s); if (x) x.inert = true; });   // Tab stays in the pane (the sidebar and toasts stay live: going elsewhere closes it)
     p.querySelector("[data-act='qp-close']").focus({ preventScroll: true });
   }
@@ -1600,6 +1621,7 @@
     S.qpOpen = false;
     ["#top", "#view", "#queue"].forEach((s) => { const x = $(s); if (x) x.inert = false; });
     if (p) p.classList.remove("open");
+    qpClock();
     renderQueue();
     const back = $("#queue:not(.hidden) [data-act='queue-expand']") || (S.qpFrom && S.qpFrom.isConnected ? S.qpFrom : null);
     if (back) back.focus({ preventScroll: true });
@@ -1683,6 +1705,8 @@
     $("#overlay").innerHTML = "";
     if (had && modalFrom && modalFrom.isConnected) modalFrom.focus({ preventScroll: true });
     modalFrom = null;
+    const hook = Studia.onModalClose; Studia.onModalClose = null;   // a dialog waiting for an answer: closed = "no"
+    if (hook) hook();
   }
 
   // ---- a new version (the top bar's button, Settings → About, or the tray helper's notification)
@@ -1750,11 +1774,12 @@
       const e = est.ok ? est.estimate : { input: 0, output: 0, images: 0 };
       const have = (d.notes || []).find((n) => n.kind === tpl);
       const how = local ? `<div><b>${t("Offline model")}</b><span>${t("runs on this PC")}</span></div>`
-        : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${isChatGPT(ai) ? t("reasoning (Settings → AI)") : t("model (Settings → AI)")}</span></div>`;
+        : isChatGPT(ai) ? "" : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${t("model (Settings → AI)")}</span></div>`;
       modal(`<h2>${I("ai")} ${t.html("Study notes with {ai}", { ai: aiName() })}</h2>
         <p class="lead">${t.html("Uses {plan}. Nothing runs until you press Generate. AI can make mistakes — check the notes against the lecture.", { plan: aiPlan() })}</p>
         <div class="field"><label>${t("What should it write?")}</label><div class="seg">
           ${NOTE_KINDS().map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
+        ${Studia.effortField ? `<div class="cp-opts">${Studia.effortField("notes", "chat", "", { big: local ? "" : Studia.effortBig.notes(e.input) })}</div>` : ""}
         ${images ? `<div class="set-row" style="border:0;padding:6px 0"><div class="txt"><div class="t">${t("Include slide images")}</div><div class="d">${t("Lets the AI read the slides and board (more accurate formulas, uses more of your plan).")}</div></div>
           <input type="checkbox" class="switch" data-act="cl-slides" ${slides ? "checked" : ""} ${d.parts.some((p) => p.slides) ? "" : "disabled"}></div>` : ""}
         <div class="est">${local ? "" : `<div><b>~${t("{n}k", { n: dec(e.input / 1000, 1) })}</b><span>${t("tokens it reads")}</span></div><div><b>~${t("{n}k", { n: dec(e.output / 1000, 1) })}</b><span>${t("tokens it writes")}</span></div>`}${how}</div>
@@ -1769,7 +1794,7 @@
     };
     window.__cl = { set tpl(v) { tpl = v; draw(); }, set slides(v) { slides = v; draw(); },
       open: () => { closeModal(); S.notesKind = tpl; renderNotes(); const el = $("#notes-slot"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); },
-      go: () => { closeModal(); call("ai_notes", d.day_key, tpl, slides && images).then((r) => { if (!r.ok) toast(r.error, "error"); }); } };
+      go: () => { closeModal(); call("ai_notes", d.day_key, tpl, slides && images, Studia.effortPick ? Studia.effortPick("notes") : "").then((r) => { if (!r.ok) toast(r.error, "error"); }); } };
     await draw();
   }
 
@@ -1840,10 +1865,11 @@
     },
     "queue-pause": async () => { const r = await call("queue_pause", !S.paused); if (r.ok) { S.paused = r.paused; renderQueue(); } },
     "queue-first": async (el) => { const r = await call("queue_first", el.dataset.id); if (r.ok) toast(t("Moved to the front of the queue."), "info"); },
-    "queue-toggle": () => { $("#queue").classList.toggle("open"); renderQueue(); },
+    "queue-toggle": () => { S.qList = !S.qList; renderQueue(); },
     "queue-expand": () => (S.qpOpen ? closePane() : openPane()),
     "qp-close": () => closePane(),
     "qp-open": (el) => { closePane(); openDay(el.dataset.day); },
+    "qp-fin": (el) => qpFinToggle(el),
     "bg-settings": () => {
       go({ name: "settings" });
       const c = $("#set-bg"), nav = $(".set-nav");
@@ -2069,7 +2095,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub,
-    otherSection, oddMark });
+    otherSection, oddMark, renderChatHead });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2207,9 +2233,9 @@
     const b = await call("get_bootstrap");
     clearTimeout(slow);
     if (!b.ok) { startupError(b.error || t("IEUStudia could not start.")); return; }
-    S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.lastSync = b.last_sync;
+    S.boot = b; S.settings = b.settings || {}; S.profile = b.profile; setCourses(b.courses); S.queue = b.queue || []; S.queue.forEach((j) => stamp(j)); S.lastSync = b.last_sync;
     S.profiles = b.profiles || []; S.profileId = b.profile_id || "main";
-    S.limits = b.limits || {}; S.update = b.update || {}; S.paused = !!b.paused; S.resume = b.resume || null;
+    S.limits = b.limits || {}; S.update = b.update || {}; S.paused = !!b.paused; S.pausedAt = S.paused ? performance.now() : 0; S.resume = b.resume || null;
     if (b.downloading && Studia.setup) Studia.setup.running = true;            // the setup's download goes on
     if (b.system) S.system = { ...S.system, ...b.system };
     applyTheme();
@@ -2379,7 +2405,7 @@
       });
     }
     return {
-      get_bootstrap: () => { setTimeout(() => emit({ type: "system", gpu: { available: true, name: "NVIDIA GeForce RTX 4070 Laptop GPU", vram_mb: 8188, libraries: true, used: true, fits: true }, ai: { available: true, version: "2.1.287", provider: "claude", label: "Claude", can_plans: true, can_images: true },
+      get_bootstrap: () => { setTimeout(() => emit({ type: "system", gpu: { available: true, name: "NVIDIA GeForce RTX 4070 Laptop GPU", vram_mb: 8188, libraries: true, used: true, fits: true }, ai: { available: true, version: "2.1.287", provider: (location.hash.match(/ai=(\w+)/) || [])[1] || "claude", label: { chatgpt: "ChatGPT", codex: "ChatGPT", local: "Offline model" }[(location.hash.match(/ai=(\w+)/) || [])[1]] || "Claude", can_plans: !location.hash.includes("ai=local"), can_images: !location.hash.includes("ai=local") },
         presets: [{ id: "large-v3-turbo", label: "Fast & accurate", description: "Nearly the best quality, and fast with an NVIDIA graphics card.", size_mb: 1620, downloaded: true },
           { id: "large-v3", label: "Maximum accuracy", description: "The best quality for hard audio and long Turkish passages; the slowest, even with an NVIDIA graphics card.", size_mb: 3090, downloaded: true },
           { id: "medium", label: "Medium", description: "More accurate than Small, but very slow without an NVIDIA GPU (hours per lecture). With one, Fast & accurate is both quicker and more accurate.", size_mb: 1530, downloaded: false },
@@ -2390,7 +2416,7 @@
         const me = profs.find((x) => x.active) || profs[0];
         return { ok: true, version: "1.1.0", signed_in: signed, first_run: false, profile: { name: me.name, student_number: me.student_number, username: me.username },
           profiles: profs, profile_id: me.id,
-          settings: { output_dir: "C:\\Users\\student\\Documents\\IEUStudia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
+          settings: { output_dir: "C:\\Users\\student\\Documents\\IEUStudia", model: "large-v3-turbo", device: "auto", theme: location.hash.includes("dark") ? "dark" : "light", capture_slides: true, write_srt: true, keep_audio: false, ask_before_closing: true, min_duration_s: 60, ai_model: "sonnet", first_run_done: true },
           last_sync: new Date(Date.now() - 120000).toISOString(), courses: signed ? courses : [], queue: [],
           resume: location.hash.includes("resume") ? { count: 3, days: 2, audio_s: 7800, courses: ["EEE 215", "MATH 250"] } : null,
           update: Mock.update_check() };
@@ -2451,11 +2477,11 @@
       chat_estimate: (cid, days, focus, slides) => ({ ok: true, tokens: (focus === "highlights" ? 2100 : 23800) * days.length + 700 + (slides ? 2400 : 0), images: slides ? 3 : 0, slides_total: 3, days: days.length }),
       chat_list: () => ({ ok: true, chats: Object.values(chats).filter((c) => c.messages.length).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(summary), limits }),
       chat_get: (id) => (chats[id] ? { ok: true, chat: view(chats[id]) } : { ok: false, error: "This chat no longer exists." }),
-      chat_create: (cid, days, focus, slides, model) => {
+      chat_create: (cid, days, focus, slides, model, effort) => {
         const id = "m" + Math.random().toString(36).slice(2, 8);
         const known = scope[cid] || [];
         const ds = days.map((k, i) => { const d = known.find((x) => x.day_key === k) || { label: "Wed 14 Oct", kind_label: "Lecture" }; return { key: k, n: i + 1, label: d.label, kind: d.kind_label, long: d.label, gone: false }; });
-        chats[id] = { id, course_id: cid, course_code: "MATH 240", title: "", days: ds, focus, slides, model: model || "sonnet", tokens: 23800 * days.length, messages: [], updated_at: now() };
+        chats[id] = { id, course_id: cid, course_code: "MATH 240", title: "", days: ds, focus, slides, model: model || "sonnet", effort: effort || "", tokens: 23800 * days.length, messages: [], updated_at: now() };
         return { ok: true, chat: view(chats[id]) };
       },
       chat_send: (id, text) => {
@@ -2476,7 +2502,7 @@
         if (m && m.status === "streaming") { clearInterval(timers[id]); m.status = "stopped"; emit({ type: "chat", chat_id: id, seq: m.seq, state: "stopped", text: m.text, usage: {} }); }
         return { ok: true };
       },
-      chat_update: (id, patch) => { Object.assign(chats[id], patch.title != null ? { title: patch.title } : {}, patch.model ? { model: patch.model } : {}); return { ok: true, chat: view(chats[id]) }; },
+      chat_update: (id, patch) => { Object.assign(chats[id], patch.title != null ? { title: patch.title } : {}, patch.model ? { model: patch.model } : {}, patch.effort ? { effort: patch.effort } : {}); return { ok: true, chat: view(chats[id]) }; },
       chat_delete: (id) => { delete chats[id]; return { ok: true }; },
       chat_export: () => ({ ok: true, path: "chat.md" }),
     };

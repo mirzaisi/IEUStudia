@@ -53,6 +53,37 @@ def test_a_burst_of_events_reaches_the_page_in_one_call(isolated_home):
     assert win.calls[1][0] - win.calls[0][0] >= EVENT_GAP_S - 0.01
 
 
+def _events(script):
+    return json.loads(script[script.index("})([") + 3:-1].replace("<\\/", "</"))
+
+
+def test_the_courses_go_once_a_burst_and_the_newest_wins(isolated_home):
+    api = Api()
+    built = []
+    api._course_views = lambda: built.append(1) or [{"id": "fresh"}]
+    win = api._window = _Window()
+    api._push({"type": "courses", "courses": [{"id": "old"}]})      # a sync's early list, then its full one
+    api._push({"type": "courses", "courses": [{"id": "newer"}]})
+    api._push({"type": "sync", "phase": "done"})
+    assert _wait(lambda: win.calls)
+    time.sleep(0.1)
+    assert [(e["type"], e.get("courses")) for e in _events(win.calls[0][1])] == [
+        ("courses", [{"id": "newer"}]), ("sync", None)]                # where the last one was (before "done")
+
+    api._push({"type": "courses", "courses": [{"id": "stale"}]})
+    api._push({"type": "toast", "level": "info", "message": "x"})
+    api._courses_dirty.set()                                           # a job ended meanwhile: built once, here
+    assert _wait(lambda: len(win.calls) == 2)
+    assert [(e["type"], e.get("courses")) for e in _events(win.calls[1][1])] == [
+        ("courses", [{"id": "fresh"}]), ("toast", None)]
+    assert len(built) == 1
+
+    api._courses_dirty.set()                                           # nothing pushed: it comes last, as before
+    api._push({"type": "toast", "level": "info", "message": "y"})
+    assert _wait(lambda: len(win.calls) == 3)
+    assert [e["type"] for e in _events(win.calls[2][1])] == ["toast", "courses"]
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
 def test_the_page_gets_every_event_in_order_even_when_one_fails():
     script = events_script([{"type": "a"}, {"type": "boom"}, {"type": "b", "text": "</div>"}])

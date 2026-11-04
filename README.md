@@ -69,8 +69,11 @@ stay in the language of the lecture, and in a chat the AI answers in the languag
 
 **Use AI with your own subscription.** With ChatGPT or Claude you can chat about your lectures (answers point to the
 exact moment they come from), write study notes or flashcards (and practise them one at a time), put together an exam
-prep pack, or make a video study plan: YouTube videos for your weeks, each one checked through its captions against
-what your course actually covers. All of this is optional, see [AI features](#ai-features).
+review sheet, have a study pack written (a PDF that teaches everything in the files and lectures you pick, with worked
+examples, diagrams and your slides), make a cheatsheet (every formula, definition and method of what you pick, compact:
+a few weeks fit on one or two A4 pages, a whole term on a few more), or make a video study plan: YouTube videos for your
+weeks, each one checked through its captions against what your course actually covers. All of this is optional, see
+[AI features](#ai-features).
 
 <table>
   <tr>
@@ -172,7 +175,7 @@ AI is optional. Transcripts, heads-ups, search and everything else work without 
 
 | Choice | What you need | What you get |
 |---|---|---|
-| ChatGPT | A ChatGPT account whose plan apps may use: Plus and Pro can; for Free and Go, OpenAI decides | Everything: chat, notes, flashcards, prep packs, video study plans. |
+| ChatGPT | A ChatGPT account whose plan apps may use: Plus and Pro can; for Free and Go, OpenAI decides | Everything: chat, notes, flashcards, review sheets, study packs, cheatsheets, video study plans. |
 | Claude | A Claude Pro or Max subscription | The same features. |
 | ChatGPT through the Codex CLI | A ChatGPT plan with Codex (Free and Go have smaller limits) | The same features, for people who already use OpenAI's Codex CLI. |
 | Offline model | Nothing to pay for, but at least 8 GB of memory | Short notes and simple questions, on your PC (Qwen3 1.7B or 4B). No study plans. |
@@ -214,9 +217,10 @@ quotes behind every video they recommend.
 - There's no IEUStudia server, no account, no analytics and no tracking.
 - IEUStudia connects to IEULearn and Panopto (your courses and recordings), the public İEÜ syllabus pages, Hugging Face
   (to download the speech model and the offline AI model, once), PyPI (NVIDIA's GPU libraries, once, only if you have
-  an NVIDIA card), YouTube (search and captions, only for video study plans), and Anthropic or OpenAI (only when you
-  use an AI feature; the lecture text you chose is sent to them under your account), and GitHub (see below). Setting
-  up Claude downloads Claude Code from claude.ai; signing in with ChatGPT happens on auth.openai.com.
+  an NVIDIA card), YouTube (search, captions and channel pictures, only for video study plans and the channel lists in
+  Settings), and Anthropic or OpenAI (only when you use an AI feature; the lecture text you chose is sent to them under
+  your account), and GitHub (see below). Setting up Claude downloads Claude Code from claude.ai; signing in with ChatGPT
+  happens on auth.openai.com.
 - An installed copy looks at IEUStudia's newest release on GitHub about once a day, so it can tell you about a new
   version. The request says which IEUStudia version is asking and nothing about you or your courses. You can turn it
   off in *Settings → About*. When you choose to update, the installer is downloaded from GitHub and checked against

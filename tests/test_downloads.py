@@ -203,6 +203,7 @@ def test_slides_of_several_streams_share_numbers_and_duplicates(tmp_path, monkey
     monkeypatch.setattr(slides, "thumb", lambda f: np.full((4, 4), f, dtype=np.float32))
     monkeypatch.setattr(slides, "changed_fraction", lambda a, b: float(abs(a - b).mean() > 0))
     monkeypatch.setattr(slides, "is_blank", lambda t: False)
+    monkeypatch.setattr(slides, "added_only", lambda a, b: False)
     monkeypatch.setattr(slides, "save_jpeg", lambda frame, path, max_width=1600: path.write_bytes(b"%d" % frame))
     session = types.SimpleNamespace(get=lambda url: types.SimpleNamespace(content=b""))
     seen = []

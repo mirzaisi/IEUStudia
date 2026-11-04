@@ -10,7 +10,7 @@ import queue
 import subprocess
 import threading
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -408,6 +408,78 @@ def background_work() -> Iterator[None]:
         set_low_priority(False)
 
 
+# ----------------------------------------------------------------------------- the threads that drive the graphics card
+# While IEUStudia transcribes, its process runs below normal, threads included. The thread that hands the graphics card
+# its work (CTranslate2's worker: thousands of small steps per batch, each waiting for the card) then waits for a free
+# processor behind every program at normal priority, and the card sits idle meanwhile: with other programs busy, a
+# lecture took 3.5-5.4x as long as the same Full sync's others. These few threads run as normal programs do instead
+# (THREAD_PRIORITY_HIGHEST in a below-normal process is the priority of a normal program's thread), and Windows doesn't
+# move them to its slower, power-saving cores. The work on the processor (decoding, finding speech, slides) stays below.
+FEEDER_PRIORITY = 2                                 # THREAD_PRIORITY_HIGHEST: base 8 in a below-normal process
+_THREAD_SET_INFORMATION, _THREAD_QUERY_LIMITED_INFORMATION = 0x20, 0x800
+
+
+def native_thread_ids() -> set[int]:
+    """The ids of this process's threads, those of native libraries included."""
+
+    class _Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ThreadID", wt.DWORD),
+                    ("th32OwnerProcessID", wt.DWORD), ("tpBasePri", wt.LONG), ("tpDeltaPri", wt.LONG),
+                    ("dwFlags", wt.DWORD)]
+
+    try:
+        k32 = ctypes.WinDLL("kernel32")
+        k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+        k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+        k32.Thread32First.argtypes = k32.Thread32Next.argtypes = [wt.HANDLE, ctypes.c_void_p]
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+        snap = k32.CreateToolhelp32Snapshot(0x4, 0)               # TH32CS_SNAPTHREAD (every process's)
+        if not snap or snap == wt.HANDLE(-1).value:
+            return set()
+    except (AttributeError, OSError):
+        return set()
+    pid, out = os.getpid(), set()
+    entry = _Entry()
+    entry.dwSize = ctypes.sizeof(_Entry)
+    try:
+        ok = k32.Thread32First(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                out.add(int(entry.th32ThreadID))
+            ok = k32.Thread32Next(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def drive_card(thread_ids: Iterable[int], on: bool = True) -> int:
+    """Run these threads as a normal program's (``on``) or as the rest of the process again. How many were set."""
+    try:
+        k32 = ctypes.WinDLL("kernel32")
+        k32.OpenThread.restype = wt.HANDLE
+        k32.OpenThread.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.SetThreadPriority.argtypes = [wt.HANDLE, ctypes.c_int]
+        k32.SetThreadInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+    except (AttributeError, OSError):
+        return 0
+    # THREAD_POWER_THROTTLING_EXECUTION_SPEED: controlled, not throttled (always the fast cores' quality of service);
+    # off again: Windows decides as for the rest of the process
+    state = _PowerThrottling(1, 1 if on else 0, 0)
+    n = 0
+    for tid in thread_ids:
+        h = k32.OpenThread(_THREAD_SET_INFORMATION | _THREAD_QUERY_LIMITED_INFORMATION, False, int(tid))
+        if not h:
+            continue
+        try:
+            if k32.SetThreadPriority(h, FEEDER_PRIORITY if on else 0):
+                n += 1
+            k32.SetThreadInformation(h, 3, ctypes.byref(state), ctypes.sizeof(state))   # ThreadPowerThrottling
+        finally:
+            k32.CloseHandle(h)
+    return n
+
+
 def set_low_priority(on: bool) -> None:
     """Below-normal priority while IEUStudia transcribes: the programs you use come first, and with nothing else
     running the transcription still gets the whole processor."""
@@ -505,16 +577,21 @@ class TaskbarProgress:
         except (AttributeError, OSError, ValueError):
             self._dead = True
             return
+        shown = None
         while True:
             hwnd, state, fraction = self._q.get()
             while not self._q.empty():                 # only the newest counts
                 hwnd, state, fraction = self._q.get_nowait()
+            now = (hwnd, state, round(fraction * 1000))
+            if now == shown:                           # a job's progress comes 4 times a second; the bar moves less
+                continue
+            shown = now
             try:
                 set_state(obj, hwnd, state)
                 if state in (self.NORMAL, self.PAUSED, self.ERROR):
-                    set_value(obj, hwnd, round(fraction * 1000), 1000)
+                    set_value(obj, hwnd, now[2], 1000)
             except OSError:
-                pass
+                shown = None
 
 
 def work_area() -> tuple[float, float, float, float]:

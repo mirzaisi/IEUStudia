@@ -7,8 +7,10 @@
   const St = window.Studia;
   const { S, A, I } = St;
   const SITE = "https://solvequill.com";
-  // course codes look like "MATH 240", "EEE 215": the subjects where Solvequill helps, by their prefix
-  const FITS = new Set(["MATH", "STAT", "PHYS", "CHEM", "EEE", "EE", "CE", "CENG", "COMP", "CS", "SE", "ME", "MCE", "IE", "BME", "AE", "CIVE", "GBE"]);
+  // course codes look like "MATH 240", "EEE 215": the subjects where Solvequill helps, by their prefix.
+  // The prefixes IEU uses for maths, physics, chemistry, engineering and programming (from the departments'
+  // /en/curr pages, 2026-11): statistics is taught under MATH, IE and ECON, so there's no STAT; GBE is mostly biology
+  const FITS = new Set(["MATH", "PHYS", "CHEM", "EEE", "CE", "SE", "ME", "MCE", "IE", "CIVE", "AE", "BME", "FE"]);
   const HIDE_KEY = "studia-sq-hide", HIDE_DAYS = 30;
 
   const fits = (c) => !!c && FITS.has(((c.code || "").match(/^[A-Za-z]+/) || [""])[0].toUpperCase());

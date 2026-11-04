@@ -15,7 +15,7 @@ For Claude, to keep subscription usage low we:
 - load no tools or MCP servers (--tools "" --strict-mcp-config --restricted); --bare is NOT used because it
   skips the stored subscription login,
 - send the compact transcript as text and only downscaled slide images (optional),
-- default to Sonnet with low effort, and cache notes on disk (never run twice for the same input),
+- default to Sonnet with low effort (Settings → AI and each request can choose another: effort.py), and cache notes on disk (never run twice for the same input),
 - keep one process per chat, so follow-up questions read the lectures from Claude's prompt cache,
 - write nothing to the prompt cache for one-off requests (notes, plans, digest): nothing reads it again, and with a
   subscription Claude Code writes to a one-hour cache, priced at twice the rate of plain input.
@@ -53,8 +53,9 @@ SYSTEM_PROMPT = (
     "You are a meticulous study assistant for a university engineering student. You receive the automatic "
     "transcript of a lecture (mostly English, some Turkish passages tagged [TR]) and sometimes images of the "
     "slides/board shown in the lecture. Produce accurate, well-organised study material in Markdown, with "
-    "formulas in LaTeX ($...$). Only use what the transcript and slides support; when you correct an obvious "
-    "speech-recognition error or are unsure, say so briefly. Do not ask questions; deliver the complete result."
+    "formulas in LaTeX: $...$ in a sentence, $$...$$ on lines of their own for a displayed formula. Only use what "
+    "the transcript and slides support; when you correct an obvious speech-recognition error or are unsure, say "
+    "so briefly. Do not ask questions; deliver the complete result."
 )
 IMAGE_TOKENS = 800          # ~1024x576 image
 CHARS_PER_TOKEN = 3.1       # Claude, measured on compact transcripts (timestamps and Turkish make tokens shorter)
@@ -130,7 +131,7 @@ def _claude_env() -> dict[str, str]:
 
 def _command(model: str, effort: str, system_prompt_file: Path, partial: bool = False) -> list[str]:
     cmd = [_require_claude(), "-p", "--restricted", "--strict-mcp-config", "--no-session-persistence",
-           "--model", model, "--effort", effort, "--system-prompt-file", str(system_prompt_file), "--tools", "",
+           "--model", model, "--effort", effort or "low", "--system-prompt-file", str(system_prompt_file), "--tools", "",
            "--permission-prompts", "none", "--input-format", "stream-json", "--output-format", "stream-json",
            "--verbose"]
     if partial:   # stream the answer token by token (chat)
@@ -332,7 +333,7 @@ TRANSCRIPT_MARK, TASK_MARK = "=== LECTURE TRANSCRIPT ===", "=== TASK ==="
 
 
 def run_claude(prompt: str, transcript: str, images: Sequence[Path] = (), model: str = "sonnet",
-               effort: str = "low", cancel: Optional[threading.Event] = None,
+               effort: str = "", cancel: Optional[threading.Event] = None,
                on_text: Optional[Callable[[str], None]] = None, timeout_s: int = 900) -> dict[str, Any]:
     """Study material from a lecture: the lecture (and its slides) first, the task last. Every kind of notes for the same
     lecture then begins with the same text, which ChatGPT reads from its prompt cache for the next kind."""
@@ -342,12 +343,35 @@ def run_claude(prompt: str, transcript: str, images: Sequence[Path] = (), model:
     return one_shot(SYSTEM_PROMPT, content, model, effort, cancel, on_text, timeout_s)
 
 
+# LaTeX written into a JSON string without doubling its backslashes: "\mathrm" is no JSON at all and "\frac" reads as a
+# form feed and "rac". Such a backslash is doubled; a real escape (a quote, "\n" before a word, a \u code) is kept.
+# "\t" is LaTeX before two letters or a lone "o" (\to); "\n" before the rest of a command's name (\neq, \nolimits), and
+# \ne, \ni only before a space, brace, backslash, digit or "$" (a new line then "i) " or "e.g." stays a new line).
+_TEX_N = (r"u|eq|eg|ot|otin|abla|mid|leq|geq|exists|ewline|olimits|onumber|subseteq|supseteq|vdash"   # (not \nparallel,
+          # \nsim or \ncong: a new line before "parallel plates" is far likelier than those symbols)
+          r"|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|earrow|warrow")
+_TEX_ESCAPE = re.compile(r"[bf][A-Za-z]|r[a-z]|t[a-z]{2}|to(?![A-Za-z])|u(?![0-9a-fA-F]{4})"
+                         rf"|n(?:{_TEX_N})(?![A-Za-z])|n[ei](?=[\s{{}}\\$0-9])")
+
+
+def _tex_backslashes(body: str) -> str:
+    out, i = [], 0
+    while (j := body.find("\\", i)) >= 0:
+        nxt = body[j + 1:j + 2]
+        keep = nxt in '"\\/' or (nxt in "bfnrtu" and not _TEX_ESCAPE.match(body, j + 1))
+        out += [body[i:j], body[j:j + 2] if keep else "\\\\" + nxt]
+        i = j + 2
+    return "".join(out) + body[i:]
+
+
 def parse_json(text: str) -> Any:
     """The JSON value in an answer (also inside a ```json fence or surrounded by a sentence); None if there is none."""
     body = (text or "").strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", body, re.S)
     if fence:
         body = fence.group(1).strip()
+    if "\\" in body:
+        body = _tex_backslashes(body)
     try:
         return json.loads(body)
     except ValueError:
@@ -361,7 +385,7 @@ def parse_json(text: str) -> Any:
     return None
 
 
-def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: str = "low",
+def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: str = "",
              cancel: Optional[threading.Event] = None, timeout_s: int = 900) -> tuple[Any, dict[str, Any]]:
     """One question whose answer must be JSON: (parsed answer, run info with usage). Asks once more if the first
     answer can't be parsed."""
@@ -379,11 +403,13 @@ def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: st
     return data, res
 
 
-def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "low",
+def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "",
              cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
              timeout_s: int = 900, *, think: bool = True) -> dict[str, Any]:
-    """One request (no tools, no history) to the AI the user chose: text, usage, model. ``think=False``: a task that
-    needs no extended thinking (a summary of given facts) - Claude then answers without it."""
+    """One request (no tools, no history) to the AI the user chose: text, usage, model. ``effort``: the reasoning
+    level (effort.resolve; "" = low for Claude, the one ``model`` meant for ChatGPT, thinking off offline).
+    ``think=False``: a task that needs no extended thinking (a summary of given facts) - Claude then answers without
+    it."""
     p = provider()
     if p == "chatgpt":
         return _chatgpt_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
@@ -402,13 +428,14 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
                 if found:              # the task stays whole; only the material is condensed when it is too long
                     system_prompt, text = f"{system_prompt}\n\n{task.strip()}", rest.strip()
                     break
-        return local_llm.one_shot(system_prompt, text, appconfig.load().local_model, cancel, on_text)
+        return local_llm.one_shot(system_prompt, text, appconfig.load().local_model, cancel, on_text,
+                                  think=effort == "on")
     if p != "claude":
         raise RuntimeError(t("AI features are turned off (Settings → AI)."))
     return _claude_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s, think=think)
 
 
-def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "low",
+def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "",
                      cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
                      timeout_s: int = 900, think: bool = True) -> dict[str, Any]:
     """One request to Claude Code in a fresh headless process (no tools, no history): text, usage, model.
@@ -487,7 +514,7 @@ class ClaudeSession:
 
     STOP_GRACE_S = 10.0
 
-    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "low") -> None:
+    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "") -> None:
         self.model = model
         self.key: Any = None                  # owner's fingerprint of what this session was started with
         _require_claude()
@@ -703,6 +730,9 @@ def ai_info() -> dict[str, Any]:
 
         key = appconfig.load().local_model
         out.update(available=llm_ready(key), version=key)
+    from .effort import supported
+
+    out["efforts"] = list(supported(p))         # the reasoning levels it takes (the page's choices)
     return out
 
 
@@ -716,16 +746,17 @@ def ai_name() -> str:
     return t("The offline model") if p == "local" else PROVIDER_LABELS.get(p) or t("The AI")
 
 
-REASONING = {"haiku": "quick", "sonnet": "standard", "opus": "thorough"}      # the app's levels, for ChatGPT
+def model_label(level: str, effort: str = "") -> str:
+    """The chosen AI with the app's model level, e.g. in an exported chat: "Claude Sonnet", "ChatGPT, medium
+    reasoning" (``effort``: the level it reasoned at, "" = the one ``level`` meant)."""
+    from .effort import LABELS, LEGACY
 
-
-def model_label(level: str) -> str:
-    """The chosen AI with the app's model level, e.g. in an exported chat: "Claude Sonnet", "ChatGPT, standard
-    reasoning"."""
     p = provider()
     if p in ("chatgpt", "codex"):
-        return f"ChatGPT, {REASONING.get(level, level)} reasoning"
-    return f"Claude {level.title()}" if p == "claude" else PROVIDER_LABELS.get(p) or "AI"
+        return f"ChatGPT, {LABELS.get(effort or LEGACY.get(level, ''), level).lower()} reasoning"
+    if p == "claude":
+        return f"Claude {level.title()}" + (f", {LABELS[effort].lower()} effort" if effort in LABELS else "")
+    return PROVIDER_LABELS.get(p) or "AI"
 
 
 def _run(cmd: list[str], timeout: float = 20, env: Optional[dict[str, str]] = None) -> tuple[int, str]:
@@ -768,12 +799,25 @@ def _codex_candidates() -> list[str]:
     return [x for x in c if x and os.path.isfile(x)]
 
 
+_codex_versions: dict[str, tuple[str, str]] = {}      # path → (size:modified, version): the same file, the same answer
+
+
 @functools.lru_cache(maxsize=1)
 def codex_cli_info() -> dict[str, Any]:
     for path in _codex_candidates():
+        try:
+            st = os.stat(path)
+            stamp = f"{st.st_size}:{st.st_mtime_ns}"
+        except OSError:
+            stamp = ""
+        known = _codex_versions.get(path)
+        if stamp and known and known[0] == stamp:
+            return {"available": True, "path": path, "version": known[1]}
         code, out = _run([path, "--version"], 20)
         ver = out.strip().split()[-1] if code == 0 and out.strip() else ""
         if ver:
+            if stamp:
+                _codex_versions[path] = (stamp, ver)
             return {"available": True, "path": path, "version": ver}
     return {"available": False, "path": "", "version": ""}
 
@@ -805,7 +849,7 @@ def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] =
     if not info["available"]:
         raise RuntimeError(t("The Codex CLI is not installed on this PC (Settings → AI)."))
     cmd = [info["path"], "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
-           "-s", "read-only", "-C", str(work), "-c", f'model_reasoning_effort="{CODEX_EFFORT.get(model, effort)}"']
+           "-s", "read-only", "-C", str(work), "-c", f'model_reasoning_effort="{effort or CODEX_EFFORT.get(model, "medium")}"']
     chosen = _codex_model()
     if chosen:
         cmd += ["-m", chosen]
@@ -914,7 +958,7 @@ class ChatGPTSession:
     KEEP_TURNS, MAX_TURNS = 8, 12     # the conversation sent along: cut back to 8 turns only after 12, so its beginning
                                       # stays the same for four questions in a row and comes from OpenAI's cache
 
-    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "low", cli: bool = False) -> None:
+    def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "", cli: bool = False) -> None:
         if cli:
             codex_cli_info()
         self.request = _codex_one_shot if cli else _chatgpt_one_shot
@@ -978,8 +1022,9 @@ class ChatGPTSession:
         pass
 
 
-def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") -> Any:
-    """A chat with the chosen AI (Claude keeps one process per chat; the others are stateless)."""
+def new_session(system_prompt: str, model: str = "sonnet", effort: str = "") -> Any:
+    """A chat with the chosen AI (Claude keeps one process per chat; the others are stateless). ``effort``: as for
+    :func:`one_shot`; the ChatGPT and offline sessions take a new one between questions (their ``effort``)."""
     p = provider()
     if p in ("chatgpt", "codex"):
         return ChatGPTSession(system_prompt, model, effort, cli=p == "codex")
@@ -987,7 +1032,7 @@ def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") 
         from . import appconfig
         from .local_llm import LocalSession
 
-        return LocalSession(system_prompt, appconfig.load().local_model)
+        return LocalSession(system_prompt, appconfig.load().local_model, think=effort == "on")
     if p != "claude":
         raise RuntimeError(t("AI features are turned off (Settings → AI)."))
     return ClaudeSession(system_prompt, model, effort)
@@ -997,34 +1042,48 @@ def new_session(system_prompt: str, model: str = "sonnet", effort: str = "low") 
 def ai_status(which: str = "") -> dict[str, Any]:
     """Everything the AI set-up shows, for each option: installed, signed in, the plan, a running install and the
     last test. ``which`` ("chatgpt", "claude" or "codex"): check only that one (the set-up polls it while you sign
-    in); the others are then left out. Takes a second or two."""
+    in); the others are then left out. The three are asked at once: each runs a program or two (~0.2-0.5 s each)."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from . import ai_setup, appconfig
     from .components import LLM_PRESETS, llm_ready
 
     cfg = appconfig.load()
     out: dict[str, Any] = {"provider": provider(), "chosen": cfg.ai_provider}
-    if which in ("", "chatgpt"):
+
+    def chatgpt_status() -> dict[str, Any]:
         from . import chatgpt
 
         native = chatgpt.status()          # signed_in, email, plan_allowed, registered, sign_in (a running attempt)
-        out["chatgpt"] = {**native, "model": cfg.codex_model, "needs": "a ChatGPT plan that apps may use (Plus or Pro)",
-                          "models": _chatgpt_models() if native["signed_in"] and native["plan_allowed"] else [],
-                          "test": ai_setup.last_test("chatgpt")}
-    if which in ("", "claude"):
+        return {**native, "model": cfg.codex_model, "needs": "a ChatGPT plan that apps may use (Plus or Pro)",
+                "models": _chatgpt_models() if native["signed_in"] and native["plan_allowed"] else [],
+                "test": ai_setup.last_test("chatgpt")}
+
+    def claude_status() -> dict[str, Any]:
         claude_cli_info.cache_clear()
         c = claude_cli_info()
         auth = claude_auth() if c["available"] else {"logged_in": False, "plan": "", "email": ""}
-        out["claude"] = {**c, **auth, "needs": "Claude Pro or Max subscription",
-                         "plan_status": ai_setup.plan_status("claude", auth["plan"], auth["logged_in"]),
-                         "job": ai_setup.job("claude"), "test": ai_setup.last_test("claude")}
-    if which in ("", "codex"):
+        return {**c, **auth, "needs": "Claude Pro or Max subscription",
+                "plan_status": ai_setup.plan_status("claude", auth["plan"], auth["logged_in"]),
+                "job": ai_setup.job("claude"), "test": ai_setup.last_test("claude")}
+
+    def codex_status() -> dict[str, Any]:
         codex_cli_info.cache_clear()
         x = codex_cli_info()
         auth = codex_auth() if x["available"] else {"logged_in": False, "plan": "", "email": ""}
-        out["codex"] = {**x, **auth, "model": cfg.codex_model, "models": codex_models(),
-                        "needs": "a ChatGPT plan with Codex", "ours": bool(ai_setup.codex_exe()),
-                        "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
-                        "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}
+        return {**x, **auth, "model": cfg.codex_model, "models": codex_models(),
+                "needs": "a ChatGPT plan with Codex", "ours": bool(ai_setup.codex_exe()),
+                "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
+                "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}
+
+    asked = {k: f for k, f in (("chatgpt", chatgpt_status), ("claude", claude_status), ("codex", codex_status))
+             if which in ("", k)}
+    if len(asked) <= 1:
+        out.update({k: f() for k, f in asked.items()})
+    else:
+        with ThreadPoolExecutor(len(asked), thread_name_prefix="ai-status") as pool:
+            running = {k: pool.submit(f) for k, f in asked.items()}
+            out.update({k: r.result() for k, r in running.items()})
     if not which:
         out["local"] = {"model": cfg.local_model, "models": [{"id": k, "label": t(v["label"]), "description": t(v["description"]),
                                                              "size_mb": v["size_mb"], "ready": llm_ready(k)}

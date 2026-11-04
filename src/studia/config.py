@@ -29,6 +29,7 @@ class Settings:
     device: str = "auto"               # auto | cuda | cpu
     languages: list[str] = dc.field(default_factory=lambda: ["en", "tr"])
     keep_audio: bool = False
+    ask_before_closing: bool = True    # closing the window while lectures are transcribed: the page asks first
     write_srt: bool = True
     capture_slides: bool = True        # extract slides from Panopto's screen recording
     min_duration_s: int = 60
@@ -37,9 +38,10 @@ class Settings:
     parallel_downloads: int = 2
     first_run_done: bool = False
     ai_model: str = "sonnet"           # model alias passed to the Claude CLI (chat, study notes)
-    plan_model: str = ""               # study plans and prep packs ("" = ai_model)
+    plan_model: str = ""               # study plans, review sheets and study packs ("" = ai_model)
     verify_model: str = "haiku"        # checking video captions against the course (many small requests)
     ai_model_light: str = "haiku"      # weekly digest
+    ai_effort: dict[str, str] = dc.field(default_factory=dict)   # reasoning level per "provider.use" (effort.py)
     course_prefs: dict[str, CoursePrefs] = dc.field(default_factory=dict)
 
     def prefs(self, course_id: str) -> CoursePrefs:
@@ -66,6 +68,8 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
                 value = int(value)
             elif isinstance(default, list):
                 value = [str(v) for v in value] if isinstance(value, list) else default
+            elif isinstance(default, dict):
+                value = dict(value) if isinstance(value, dict) else default
             elif isinstance(default, str):
                 value = str(value)
         except (TypeError, ValueError):
@@ -86,6 +90,9 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
     for key, fallback in (("ai_model", "sonnet"), ("plan_model", ""), ("verify_model", "haiku"), ("ai_model_light", "haiku")):
         if getattr(s, key) not in ("haiku", "sonnet", "opus") and not (key == "plan_model" and getattr(s, key) == ""):
             setattr(s, key, fallback)
+    from .effort import clean, migrate         # settings saved before reasoning levels: the levels they meant
+
+    s.ai_effort = {**migrate(raw), **clean(s.ai_effort)}
     s.parallel_downloads = max(1, min(4, s.parallel_downloads))
     s.text_size = max(90, min(130, s.text_size))
     return s

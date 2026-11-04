@@ -22,13 +22,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from . import ai, store
+from . import ai, chatslides, effort, store
 from .domain import Course, Recording
 from .i18n import date_long, date_short, t, tn
 from .knowledge import course_brief, retrieve
 from .outputs.ai_copy import compact_day
 from .outputs.common import course_display, kind_label, long_date
 from .outputs.markdown import part_views
+from .outputs.mathmd import dollar_math
 from .outputs.writer import atomic_write, course_dir, safe_name
 
 log = logging.getLogger("studia")
@@ -42,6 +43,17 @@ MODELS = ("haiku", "sonnet", "opus")
 FOCUS = ("full", "highlights", "course")      # course: every lecture's highlights + search per question
 EMIT_EVERY_S = 0.08
 SAVE_EVERY_S = 3.0
+
+
+LEVEL_NAMES = (*effort.LEVELS, *effort.LOCAL_LEVELS)
+
+
+def _set_level(session: Any, level: str) -> None:
+    """A ChatGPT or offline chat's level for its next question (Claude's process keeps its own)."""
+    if hasattr(session, "think"):
+        session.think = level == "on"
+    elif hasattr(session, "effort"):
+        session.effort = level
 
 
 def system_prompt(n_days: int, focus: str, slides: bool) -> str:
@@ -72,7 +84,8 @@ def system_prompt(n_days: int, focus: str, slides: bool) -> str:
         "and cite them as labelled, e.g. [Week05_Student.pdf p.12].",
         "",
         "How to answer:",
-        "- Answer directly and concisely in Markdown; formulas in LaTeX ($...$). Use lists or tables when they help.",
+        "- Answer directly and concisely in Markdown; formulas in LaTeX: $...$ in a sentence, $$...$$ on lines of their "
+        "own for a displayed formula (not \\(...\\) or \\[...\\]). Use lists or tables when they help.",
         f"- Base answers on the lectures and cite the moments you rely on as {cite}, so the student can jump there.",
         "- If the lectures do not cover something, say so; you may then answer from general knowledge, clearly "
         "labelled as such.",
@@ -87,7 +100,7 @@ def system_prompt(n_days: int, focus: str, slides: bool) -> str:
         '{"action": "video_plan", "weeks": [4, 5], "focus": "Quiz 2"}',
         "```",
         "Actions (all for this course): video_plan (YouTube videos for weeks, checked through their transcripts; "
-        "weeks, focus), prep_pack (written exam prep pack; weeks, focus), get_ready (checklist for an assessment; "
+        "weeks, focus), prep_pack (a written exam review sheet: key ideas, formulas, practice; weeks, focus), get_ready (checklist for an assessment; "
         "focus), transcribe (lectures of weeks, or of one date YYYY-MM-DD), download_files (weeks), study_notes "
         "(date), open_lecture (date, part, at \"mm:ss\"), weekly_digest, calendar (put the announced quizzes and "
         "exams in the student's calendar), sync_course (check IEULearn, transcribe and download what is missing). "
@@ -165,9 +178,11 @@ class ChatService:
         days.sort(key=lambda d: min(r.start for r in d[2]))
         return [d[0] for d in days]
 
-    def context(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False) -> dict[str, Any]:
+    def context(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
+                send: Any = None) -> dict[str, Any]:
         """System prompt and slide images for ``day_keys`` (already in lecture order; a day that is gone keeps
-        its L-number so citations in older answers stay valid)."""
+        its L-number so citations in older answers stay valid). ``send``: the course's slide files that go too
+        (see chatslides)."""
         multi = len(day_keys) > 1
         texts: list[str] = []
         images: list[tuple[str, Path]] = []        # every slide image available, whether attached or not
@@ -190,11 +205,31 @@ class ChatService:
                         images.append((f"[{label + ' ' if label else ''}Part {p.index}, slide {s.index}]",
                                        Path(s.path)))
         attached = images[:MAX_SLIDES] if slides else []
+        said = "\n".join(texts)                   # the lecture's slides are checked against what was taught
+        files = (chatslides.build(self.lib, course_id, day_keys, send, len(images) if slides else 0, said=said)
+                 if chatslides.normalize(send)["mode"] != "none" else None)
+        if files is not None:          # the course's pages first, the video's slides share what is left
+            attached = files["images"] + attached[:files["video_images"]]
         brief = course_brief(self.lib, self._s.settings, course_id)
-        prompt = (system_prompt(len(day_keys), focus, bool(attached)) + (f"\n\n=== COURSE ===\n\n{brief}" if brief else "")
+        note = chatslides.prompt_note(files["summary"]) if files else ""
+        prompt = (system_prompt(len(day_keys), focus, bool(attached)) + (f"\n\n{note}" if note else "")
+                  + (f"\n\n=== COURSE ===\n\n{brief}" if brief else "")
+                  + (f"\n\n=== COURSE SLIDES ===\n\n{files['text']}" if files and files["text"] else "")
                   + "\n\n=== LECTURES ===\n\n" + "\n\n".join(texts))
         return {"system": prompt, "images": attached, "slides_total": len(images), "n_days": len(texts),
+                "video_images": len(attached) - (len(files["images"]) if files else 0),
+                "files": files["summary"] if files else None, "said": said,
                 "tokens": ai.estimate_tokens(prompt, len(attached))["input"]}
+
+    def slide_options(self, course_id: str, day_keys: list[str], focus: str = "full", captured: bool = False,
+                      send: Any = None) -> dict[str, Any]:
+        """For the "send slides" chooser: the course's slide files, the files each choice takes, and what the
+        choice (with the video's slides when ``captured``) adds to the chat."""
+        days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
+        ctx = self.context(course_id, days, focus, captured, send)
+        return {**chatslides.options(self.lib, course_id, days, send, ctx["slides_total"] if captured else 0,
+                                     ctx["said"]),
+                "video_total": ctx["slides_total"], "tokens": ctx["tokens"], "max_tokens": MAX_CONTEXT_TOKENS}
 
     def scope_options(self, course_id: str) -> dict[str, Any]:
         """The transcribed class days of a course with their size, for the "new chat" picker."""
@@ -288,7 +323,8 @@ class ChatService:
         return {"id": chat["id"], "course_id": chat["course_id"], "course_code": course.code if course else "",
                 "title": self._title(chat, days), "scope_label": self._scope_label(chat, days),
                 "model": chat.get("model") or "sonnet", "updated_at": chat.get("updated_at"),
-                "n_messages": chat.get("n_messages", 0), "running": chat["id"] in self._running}
+                "n_messages": chat.get("n_messages", 0), "running": chat["id"] in self._running,
+                "effort": self._effort(chat)}
 
     def list(self) -> list[dict[str, Any]]:
         out = []
@@ -308,31 +344,38 @@ class ChatService:
         scope = chat.get("scope") or {}
         if ctx is None:
             ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"),
-                               bool(scope.get("slides")))
+                               bool(scope.get("slides")), scope.get("send"))
         course = self.lib.get_course(chat["course_id"])
         messages = [{"seq": m["seq"], "role": m["role"], "text": m["text"], "status": m["status"],
                      "usage": m.get("usage") or {}, "created_at": m["created_at"]} for m in self.lib.chat_messages(chat_id)]
         return {**self.summary(chat), "days": self._day_labels(chat), "focus": scope.get("focus", "full"),
-                "slides": bool(scope.get("slides")), "context_tokens": ctx["tokens"], "images": len(ctx["images"]),
+                "slides": bool(scope.get("slides")), "context_tokens": ctx["tokens"], "images": ctx["video_images"],
+                "send": chatslides.normalize(scope.get("send")), "files": ctx["files"],
                 "course_name": course_display(course) if course else "", "messages": messages,
                 "limits": ai.usage_limits()}
 
     def create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
-               model: str = "sonnet") -> dict[str, Any]:
+               model: str = "sonnet", level: str = "", send: Any = None) -> dict[str, Any]:
+        """A new chat. ``level``: its reasoning level (effort.py; "" = the one in Settings); ``send``: the course's
+        slide files that go along (chatslides)."""
         focus = focus if focus in FOCUS else "full"
         model = model if model in MODELS else "sonnet"
         days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
         if not days:
             raise RuntimeError(t("Pick at least one transcribed class day."))
-        ctx = self.context(course_id, days, focus, slides)
+        send = chatslides.normalize(send)
+        ctx = self.context(course_id, days, focus, slides, send)
         if ctx["tokens"] > MAX_CONTEXT_TOKENS:
             raise RuntimeError(t("That is too much for one chat (~{k}k tokens, the limit is {max}k). Pick fewer class "
                                  "days or use highlights only.", k=ctx["tokens"] // 1000, max=MAX_CONTEXT_TOKENS // 1000))
         chat_id = uuid.uuid4().hex[:12]
-        self.lib.create_chat(chat_id, course_id, {"days": days, "focus": focus, "slides": bool(slides and ctx["images"])},
-                             model)
+        scope = {"days": days, "focus": focus, "slides": bool(slides and ctx["slides_total"]),
+                 "effort": level if level in LEVEL_NAMES else ""}   # "" = Settings' level (never the old model's)
+        if send["mode"] != "none":
+            scope["send"] = send
+        self.lib.create_chat(chat_id, course_id, scope, model)
         # the same material as saved; slides asked for but none found: saved without them, so the view builds it again
-        return self.view(chat_id, ctx if not slides or ctx["images"] else None)
+        return self.view(chat_id, ctx if not slides or ctx["slides_total"] else None)
 
     def update(self, chat_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         if self.lib.get_chat(chat_id) is None:
@@ -342,6 +385,19 @@ class ChatService:
             fields["title"] = " ".join(str(patch["title"] or "").split())[:120]
         if patch.get("model") in MODELS:
             fields["model"] = patch["model"]          # the next question starts a new process with this model
+        scope = dict((self.lib.get_chat(chat_id) or {}).get("scope") or {})
+        if patch.get("effort") in LEVEL_NAMES:        # the next question's reasoning level (Claude: a new process)
+            fields["scope"] = scope = {**scope, "effort": patch["effort"]}
+        if "send" in patch or "slides" in patch:      # the slides that go along: the next question sends them anew
+            if "slides" in patch:
+                scope["slides"] = bool(patch["slides"])
+            if "send" in patch:
+                send = chatslides.normalize(patch["send"])
+                if send["mode"] == "none":
+                    scope.pop("send", None)
+                else:
+                    scope["send"] = send
+            fields["scope"] = scope
         if fields:
             self.lib.update_chat(chat_id, **fields)
         return self.view(chat_id)
@@ -401,19 +457,24 @@ class ChatService:
         """The chat's live Claude process, or a new one when there is none for this model and material; for a
         new one the slide images to attach to its first message are returned too (else None)."""
         cid = chat["id"]
-        key = (ai.provider(), chat.get("model"), json.dumps(chat.get("scope") or {}, sort_keys=True))
+        p, level = ai.provider(), self._effort(chat)
+        material = {k: v for k, v in (chat.get("scope") or {}).items() if k != "effort"}
+        # Claude's process keeps the level it was started with; the others take a new one with the next question
+        key = (p, chat.get("model"), json.dumps(material, sort_keys=True), level if p == "claude" else "")
         with self._lock:
             live = self._live.get(cid)
             if live is not None and live.alive() and live.key == key:
+                _set_level(live, level)
                 return live, None
             old = self._live.pop(cid, None)
         if old is not None:
             self._close_later(old)
         scope = chat.get("scope") or {}
-        ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")))
+        ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")),
+                           scope.get("send"))
         if not ctx["n_days"]:
             raise RuntimeError(t("The class days of this chat are no longer available."))
-        session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet")
+        session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet", effort=level)
         session.key = key
         with self._lock:
             self._live[cid] = session
@@ -450,6 +511,10 @@ class ChatService:
                     for label, path in images:
                         if stop.is_set():
                             break
+                        if isinstance(path, chatslides.PagePicture):      # a course file's page: drawn now
+                            path = path.path()
+                            if path is None:
+                                continue
                         content += [{"type": "text", "text": label}, ai.image_block(path)]
                 if history and hasattr(session, "seed"):
                     session.seed(history)               # it sends the conversation with every question itself
@@ -492,6 +557,13 @@ class ChatService:
             lim = ai.usage_limits()
             if lim:
                 self.lib.set_meta("claude_limits", json.dumps(lim))
+
+    def _effort(self, chat: dict[str, Any]) -> str:
+        """The chat's reasoning level: its own, else (a ChatGPT chat from before) the one its model level meant, else
+        the one in Settings."""
+        scope = chat.get("scope") or {}
+        return effort.resolve("chat", scope.get("effort", ""), legacy="" if "effort" in scope else chat.get("model") or "",
+                              settings=self._s.settings)
 
     # ------------------------------------------------------------------ processes
     def _close_later(self, session: ai.ClaudeSession) -> None:
@@ -541,7 +613,7 @@ class ChatService:
         title = v["title"] or "New chat"         # the heading and the file name stay English
         lines = [f"# {title}", "",
                  f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
-                 f"**Model:** {ai.model_label(v['model'])}" + (" · highlights only" if v["focus"] == "highlights" else ""),
+                 f"**Model:** {ai.model_label(v['model'], v.get('effort', ''))}" + (" · highlights only" if v["focus"] == "highlights" else ""),
                  "", f"*Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
         for m in v["messages"]:
             if m["role"] == "user":
@@ -552,5 +624,5 @@ class ChatService:
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
         name = safe_name(f"{stamp} - {title}" if stamp else title, limit=110) + f" [{chat_id[:6]}]"
         path = course_dir(self._s.output_root, course, self.lib.courses(True)) / "AI chats" / f"{name}.md"
-        atomic_write(path, "\n".join(lines).rstrip() + "\n")
+        atomic_write(path, dollar_math("\n".join(lines).rstrip()) + "\n")
         return path

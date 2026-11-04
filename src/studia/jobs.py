@@ -1,4 +1,5 @@
-"""Transcription jobs: downloads run in parallel, transcription on one GPU worker, slides alongside.
+"""Transcription jobs: downloads run in parallel, transcription on the GPU worker (a second one shares the loaded
+model when the PC allows it), slides alongside, and a finishing thread writes the files while the next lecture runs.
 
 Pipeline per recording:  Panopto details → audio download → decode (CPU) ──► GPU: transcribe
                                          └► screen keyframes → slides (parallel) ─┘──► write files
@@ -18,6 +19,7 @@ import heapq
 import itertools
 import json
 import logging
+import os
 import queue
 import re
 import sys
@@ -29,10 +31,11 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import requests
 
-from . import hls, local_llm, store
+from . import hls, local_llm, net, store
 from .cancel import Cancelled
 from .config import Settings
 from .i18n import date_short, t
+from .ieulearn import AuthError, NeedLogin
 from .library import Library
 from .net import plain_error
 from .panopto import NeedPanoptoAuth, NotReady, Panopto
@@ -55,15 +58,27 @@ Emit = Callable[[dict[str, Any]], None]
 IDLE_UNLOAD_S = 600   # free the GPU memory 10 minutes after the last job
 DECODED_MAX = 2       # decoded lectures in memory at once (~345 MB each for 90 minutes): one transcribing, one next
 LOW_MEMORY_GB = 6.0   # below this (e.g. 4 GB laptops) only one
+MORE_MEMORY_GB = 12.0  # from this (16 GB PCs) one more: a second lecture on the graphics card, or one more ready
+# With 2, two lectures are transcribed at once on a graphics card with its one model (8 GB doesn't hold two large-v3):
+# the card works through one lecture's batch while the processor prepares the other's. The card does one batch at a
+# time, so the transcripts are the same, and only with enough processors and free memory (see _may_share). One: on the
+# owner's RTX 4070 Laptop (large-v3, three 16-minute lectures as a Full sync) one lecture at a time already kept the
+# card's calls running 99 % of the time, and two were no faster (121-134 s against 122-124 s), took up to ~700 MB more
+# of the card, and finished the newest lecture twice as late (80-91 s against 44 s: it shared the card with the next).
+GPU_WORKERS = 1
+SHARE_MIN_CPUS = 8    # logical processors
+SHARE_FREE_GB = 2.0   # free memory for the second lecture's audio (~345 MB for 90 minutes) and its features
 PENDING_KEY = "outputs_pending"     # library meta: recordings whose files in the output folder could not be written
 QUEUE_KEY = "transcribe_queue"      # library meta: the lectures still to transcribe, offered again after a restart
 NOW, BATCH = 0, 1                   # queue ranks: asked for now, a full or course sync's batch ("Do next" goes below 0)
 _ETA = re.compile(r"\s*·\s*~(\d+)s left")      # the engine's time left: an untranslated marker (the page says it)
+_PASSAGES = re.compile(r"^\D*(\d+)\D+(\d+)\D*$")  # "Transcribing passage 40 of 600" (in either language): done, of
 
 _STATUS = {"queued": "queued", "downloading": "downloading", "transcribing": "transcribing",
            "writing": "transcribing", "done": "done", "failed": "failed", "processing": "processing"}
-# what a lecture is doing, finer than its stage (the jobs pane draws them as steps): waiting, downloading, decoding,
-# finding speech, waiting for its turn, loading the speech model, transcribing, finishing slides, writing files
+# what a lecture is doing, finer than its stage (the jobs pane draws them as steps): waiting, downloading, waiting for
+# a place to decode its audio ("place"), decoding, finding speech, waiting for the speech model ("turn"), loading the
+# speech model, transcribing, finishing slides, writing files
 _STEP = {"queued": "wait", "downloading": "download", "transcribing": "transcribe", "writing": "write"}
 
 
@@ -111,6 +126,15 @@ def _memory_gb() -> float:
         return LOW_MEMORY_GB
 
 
+def _free_memory_gb() -> float:
+    from .hardware import memory_gb
+
+    try:
+        return memory_gb()[1]
+    except (AttributeError, OSError):
+        return 0.0
+
+
 @dc.dataclass
 class Job:
     id: str
@@ -153,6 +177,24 @@ class Job:
     device: str = ""
     notes: list = dc.field(default_factory=list)     # warnings in plain words (the GPU couldn't be used, quality)
     anomalies: list = dc.field(default_factory=list)  # something looks wrong with the result: [{"kind", "text"}]
+    audio_s: float = 0.0             # the decoded audio's length
+    passages: list = dc.field(default_factory=lambda: [0, 0])     # transcribed so far, of all its passages
+    own_speed: bool = True           # its transcribing time is its own: not gone on from a checkpoint, the card unshared
+
+    def spent(self, step: str) -> float:
+        """Seconds it has spent in this step so far (all its times in it)."""
+        now, out = time.monotonic(), 0.0
+        for k, (s, at) in enumerate(self.steps):
+            if s == step:
+                out += (self.steps[k + 1][1] if k + 1 < len(self.steps) else now) - at
+        return out
+
+    def metrics(self) -> dict[str, Any]:
+        """What the jobs pane shows of a finished lecture, besides its view (only the final event carries it)."""
+        return {"audio_s": round(self.audio_s or self.duration_s, 1),
+                "passages": list(self.passages) if self.passages[1] else None,
+                # (no speed when this run did only part of the work, or the card also worked for another lecture)
+                "transcribe_s": round(max(0.0, self.spent("transcribe") - self.paused_s), 1) if self.own_speed else None}
 
     def view(self) -> dict[str, Any]:
         detail, eta = self.detail, None
@@ -200,17 +242,24 @@ class JobManager:
         # places for decoded audio in memory: one lecture transcribing, one ready (downloads still run ahead, as
         # files on disk). A free place goes to the waiting lecture that comes first in the queue. A PC with little
         # memory keeps only the one it transcribes: decoding the next one takes seconds, swapping takes much longer.
-        self._places = DECODED_MAX if _memory_gb() >= LOW_MEMORY_GB else 1
+        # One with more memory keeps one more (a second lecture on the graphics card, or one more ready).
+        memory = _memory_gb()
+        self._places = 1 if memory < LOW_MEMORY_GB else DECODED_MAX + (memory >= MORE_MEMORY_GB)
         self._place_wait: dict[int, Job] = {}
         self._run = threading.Event()                    # cleared while the queue is paused
         self._run.set()
         self._paused_at = 0.0
         self._closing = False                            # the app closes: what is still waiting is kept
+        self._waiting = ""                               # downloads wait: "offline" or "signin" (see _wait_for_net)
         self._saved: list[str] = self._load_saved()      # lectures still to transcribe (QUEUE_KEY), in order
         self._awake = KeepAwake("IEUStudia is transcribing lectures")
         self._started = False
         self._engine = None
         self._engine_key: Optional[tuple] = None
+        self._engine_users = 0                           # lectures transcribing with it now (see _use_engine)
+        self._engine_free = threading.Condition(self._lock)
+        self._driving: set[int] = set()                  # transcribe threads raised to drive the card (drive_card)
+        self._finishing: "queue.Queue[tuple[Job, list]]" = queue.Queue()   # transcribed: slides, files (_finish_loop)
         self._slides_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="slides")
         self._last_emit: dict[str, float] = {}
         self._idle_gen = 0
@@ -224,11 +273,17 @@ class JobManager:
         self._started = True
         # the offline AI frees an idle speech model before it loads on the graphics card (8 GB holds only one of them)
         local_llm.make_room = self.unload_engine
-        self._lanes = self.settings().parallel_downloads
+        # enough download threads to fill the places for decoded audio (they decode and find the speech too, on one
+        # processor each: a PC with few processors keeps the number chosen in Settings)
+        self._lanes = max(self.settings().parallel_downloads,
+                          min(4, self._places - 1, max(1, (os.cpu_count() or 4) // 4)))
         for i in range(self._lanes):
             threading.Thread(target=self._dl_loop, name=f"download-{i + 1}", daemon=True).start()
         threading.Thread(target=self._dl_loop, args=(True,), name="download-next", daemon=True).start()
-        threading.Thread(target=self._gpu_loop, name="transcribe", daemon=True).start()
+        for i in range(max(1, GPU_WORKERS)):
+            threading.Thread(target=self._gpu_loop, args=(i,), name="transcribe" + (f"-{i + 1}" if i else ""),
+                             daemon=True).start()
+        threading.Thread(target=self._finish_loop, name="finish", daemon=True).start()
 
     def enqueue(self, ids: list[str], batch: bool = False) -> int:
         """Queue lectures. ``batch``: a full or course sync's; lectures asked for one by one go before those (one
@@ -265,7 +320,8 @@ class JobManager:
                 self._jobs[did] = job
                 self.lib.set_status(did, "queued")
                 self._put_dl(job)
-                self._update(job, "queued", 0.0, t("Waiting"), force=True)
+                detail, step = self._wait_text()       # (no connection: it says so)
+                self._update(job, "queued", 0.0, detail, force=True, step=step)
                 n += 1
             if self._jobs:
                 self._working(True)
@@ -360,8 +416,9 @@ class JobManager:
 
     @staticmethod
     def _order(j: Job) -> tuple[int, int, int]:
-        """Queue order for the page: the lecture being transcribed, then the others in the order they come."""
-        return (0 if j.where == "run" else 1, j.rank, j.seq)
+        """Queue order for the page: the lecture being transcribed, one being finished (its slides, its files), then
+        the others in the order they come."""
+        return (0 if j.where == "run" and j.stage != "writing" else 1 if j.where == "run" else 2, j.rank, j.seq)
 
     def _new_batch(self) -> None:
         """Start counting a new batch when work is added to an idle queue (call with the lock held)."""
@@ -567,7 +624,8 @@ class JobManager:
 
     # ------------------------------------------------------------------ events
     def queue_event(self) -> dict[str, Any]:
-        return {"type": "queue", "jobs": self.snapshot(), "batch": self.batch(), "paused": self.paused()}
+        return {"type": "queue", "jobs": self.snapshot(), "batch": self.batch(), "paused": self.paused(),
+                "waiting": self._waiting}
 
     def _emit_queue(self) -> None:
         self.emit(self.queue_event())
@@ -603,8 +661,8 @@ class JobManager:
             return
         if not self._try_place(job):
             try:
-                self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
-                             t("Downloaded — waiting for its turn"), force=True, step="turn")
+                self._update(job, "queued", 0.0, t("Waiting to prepare the audio") if job.local_path else
+                             t("Downloaded — waiting to prepare the audio"), force=True, step="place")
                 while not self._try_place(job, 0.5):
                     if job.cancel.is_set():
                         raise Cancelled()
@@ -653,6 +711,10 @@ class JobManager:
             # download (it is tried again).
             for f in audio_cache_dir().glob(f"{job.id}.*"):
                 self._unlink(f)
+        if current and stage == "cancelled" and not self._closing:
+            from .engine.checkpoint import discard      # what was transcribed of it: you cancelled it
+
+            discard(job.id)
         with self._lock:
             b = getattr(self, "_batch", None)
             if b is not None and current:
@@ -687,7 +749,7 @@ class JobManager:
             if idle:
                 self._working(False)
             b = dict(getattr(self, "_batch", None) or {})
-        evt = {"type": "job", **job.view(), "final": True, "batch_done": idle, "status": status,
+        evt = {"type": "job", **job.view(), **job.metrics(), "final": True, "batch_done": idle, "status": status,
                "unwritten": job.unwritten}
         if idle and not self._closing:            # what the whole batch came to (the notification says it)
             evt["batch_result"] = {"done": b.get("done", 0), "failed": b.get("failed", 0), "ended": b.get("ended", 0),
@@ -716,12 +778,13 @@ class JobManager:
                 continue
             try:
                 self._hold(job)                   # paused: no new download starts
+                self._gate(job)                   # nor while there is no connection
                 self._prepare(job)
                 self._find_speech(job)
                 if job.cancel.is_set():
                     raise Cancelled()
-                self._update(job, "queued", 0.0, t("Waiting for its turn") if job.local_path else
-                             t("Downloaded — waiting for its turn"), step="turn")              # Cancel ends it at once
+                self._update(job, "queued", 0.0, t("Waiting to be transcribed") if job.local_path else
+                             t("Downloaded — waiting to be transcribed"), step="turn")         # Cancel ends it at once
                 self._put_gpu(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
@@ -734,6 +797,14 @@ class JobManager:
                 self._finish(job, "processing", str(error))
             elif isinstance(error, NoSpeech):             # found while finding its speech (see _find_speech)
                 self._no_speech(job, error)
+            elif isinstance(error, (NeedLogin, AuthError)) and not getattr(error, "server_error", False):
+                # the saved password no longer works (or there is none): never tried again in the background
+                self.log.warning("Downloads wait for a new sign-in: %s", error)
+                self._wait_for_net(job, "signin")
+            elif (isinstance(error, (requests.RequestException, OSError)) and job.local_path is None
+                  and net.connection_lost(error) and not net.online()):
+                self.log.info("No connection for %s (%s); the downloads wait for it", job.id, error)
+                self._wait_for_net(job, "offline")
             elif isinstance(error, (requests.RequestException, OSError)):
                 # a full disk, or a file of this PC that can't be read, won't be fixed by trying again (a file in
                 # the app's own cache held for a moment by an antivirus may be)
@@ -759,6 +830,76 @@ class JobManager:
             else:
                 raise error
 
+    def _wait_text(self) -> tuple[str, str]:
+        """What a lecture still to download says while the downloads wait (see _wait_for_net), and its step."""
+        if self._waiting == "offline":
+            return t("Waiting for the internet connection"), "offline"
+        if self._waiting == "signin":
+            return t("IEULearn needs you to sign in again. Press Sync to sign in; the downloads then go on by "
+                     "themselves."), "signin"
+        return t("Waiting"), "wait"
+
+    def _wait_for_net(self, job: Job, why: str) -> None:
+        """No internet connection (``why`` "offline": Wi-Fi off, the PC asleep, a VPN switching), or IEULearn no
+        longer takes the saved password ("signin"): the lecture goes back to its place (not counted as a try: its
+        download goes on from its parts), and no download starts until one thread, looking every
+        net.ONLINE_EVERY_S, finds the connection back (or a new sign-in). Lectures already downloaded go on
+        transcribing meanwhile. Cancel works; closing the app keeps them for the next start."""
+        with self._lock:
+            watch = not self._waiting
+            if watch or why == "signin":       # a wrong password outlasts the connection coming back
+                self._waiting = why
+        with self._q:
+            self._push_dl(job)
+            self._q.notify_all()
+        self._show_waiting()
+        if watch:
+            threading.Thread(target=self._watch_net, name="wait-online", daemon=True).start()
+
+    def _watch_net(self) -> None:
+        why = self._waiting
+        while True:
+            end = time.monotonic() + net.ONLINE_EVERY_S
+            while time.monotonic() < end:
+                if self._closing:
+                    return
+                time.sleep(0.05)
+            with self._lock:
+                why, idle = self._waiting, not self._jobs
+            try:
+                if idle or (self.sync.has_credentials() if why == "signin" else net.online()):
+                    break
+            except Exception:  # noqa: BLE001 - not yet
+                self.log.debug("Still waiting (%s)", why, exc_info=True)
+        self.log.info("The downloads go on (waited: %s)", why)
+        with self._lock:
+            self._waiting = ""
+        with self._q:
+            self._q.notify_all()
+        self._show_waiting()
+
+    def _show_waiting(self) -> None:
+        """The lectures still to download say why they wait (or that they only wait their turn again)."""
+        detail, step = self._wait_text()
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.local_path is None and j.stage == "queued"
+                    and j.step in ("wait", "offline", "signin") and j.where in ("dl", "prep")]
+        for j in jobs:
+            self._update(j, "queued", 0.0, detail, force=True, step=step)
+        self._emit_queue()
+
+    def _gate(self, job: Job) -> None:
+        """Before a download: wait while the downloads wait for the connection or a sign-in (Cancel works)."""
+        if job.local_path is not None or not self._waiting:
+            return
+        detail, step = self._wait_text()
+        self._update(job, "queued", 0.0, detail, force=True, step=step)
+        while self._waiting:
+            if job.cancel.is_set():
+                raise Cancelled()
+            with self._q:
+                self._q.wait(0.25)
+
     def _panopto(self, job: Job) -> tuple[Panopto, requests.Session, dict]:
         s = self.sync.worker_session()
         p = Panopto(s)
@@ -773,8 +914,9 @@ class JobManager:
     def _prepare(self, job: Job) -> None:
         if job.local_path is not None:
             self._take_audio_place(job)
-            self._update(job, "downloading", 0.5, t("Reading the file"))
+            self._update(job, "downloading", 0.5, t("Reading the file"), step="decode")
             job.audio = decode_audio(job.local_path, job.cancel)
+            job.audio_s = len(job.audio) / 16000           # (the decoder's 16 kHz)
             return
         rec = self.lib.get_recording(job.id)
         if rec is not None and rec.live:          # nothing to download yet: Panopto isn't asked
@@ -874,6 +1016,7 @@ class JobManager:
                 raise last_exc or RuntimeError(t("No downloadable audio for this recording."))
         elif silent_path is not None and silent_path != job.audio_path:
             self._unlink(silent_path)          # the silent stream's file: another stream had the sound
+        job.audio_s = len(job.audio) / 16000                # (the decoder's 16 kHz)
         self.sync.absorb(s)
 
     def _find_speech(self, job: Job) -> None:
@@ -884,6 +1027,7 @@ class JobManager:
         if find is not None:
             self._update(job, "downloading", 1.0, t("Finding speech"), force=True, step="speech")
             job.speech = find(job.audio, job.cancel, self._meta(job).get("expected_duration", 0.0))
+            job.passages = [0, len(getattr(job.speech, "units", None) or [])]
         job.audio = _to_int16(job.audio)
 
     def _speech_finder(self, settings: Settings) -> Optional[Callable[..., Any]]:
@@ -926,12 +1070,57 @@ class JobManager:
                 return self._engine
         made = self.engine_factory(settings)          # (outside the lock: the first one imports the engine's code)
         with self._lock:
-            if self._engine is not None and self._engine_key == key:     # the other thread was quicker
-                return self._engine
+            while True:
+                if self._engine is not None and self._engine_key == key:     # the other thread was quicker
+                    return self._engine
+                if not self._engine_users:
+                    break
+                # another lecture still transcribes with the model of the earlier settings: the card holds one
+                self._engine_free.wait(0.5)
             old, self._engine, self._engine_key = self._engine, made, key
         if old is not None:
             old.unload()
         return made
+
+    def _use_engine(self, settings: Settings) -> Any:
+        """The engine for these settings, counted as in use until _done_with_engine (it is not swapped meanwhile)."""
+        while True:
+            engine = self._get_engine(settings)
+            with self._lock:
+                if self._engine is engine:
+                    self._engine_users += 1
+                    return engine
+
+    def _done_with_engine(self) -> None:
+        with self._lock:
+            self._engine_users -= 1
+            self._engine_free.notify_all()
+
+    def _may_share(self) -> bool:
+        """A second lecture may be transcribed now, with the model already loaded on the graphics card: the queue isn't
+        paused, the PC has the processors and free memory for it, and the offline AI isn't on the card too."""
+        with self._lock:
+            engine = self._engine
+            if (engine is None or not self._jobs or not self._run.is_set()
+                    or self._engine_key != self._key(self.settings())
+                    or not getattr(engine, "loaded", False) or getattr(engine, "device", "") != "cuda"):
+                return False
+        if (os.cpu_count() or 1) < SHARE_MIN_CPUS or _free_memory_gb() < SHARE_FREE_GB:
+            return False
+        from .engine.transcriber import _ai_on_gpu
+
+        return not _ai_on_gpu()
+
+    def _drive_card(self, engine: Any) -> None:
+        """This transcribe thread hands the card its batches: on a graphics card it runs at a normal program's
+        priority, like the engine's own threads (see winutil.drive_card); on the processor as the rest again."""
+        from .osutil import drive_card
+
+        me = threading.get_native_id()
+        on = getattr(engine, "device", "") == "cuda"
+        if on != (me in self._driving):
+            drive_card([me], on)
+            (self._driving.add if on else self._driving.discard)(me)
 
     def _preload(self) -> None:
         """Lectures are queued: load the speech model while the first one downloads, not after it (6-25 s for
@@ -977,11 +1166,24 @@ class JobManager:
         if ok:
             self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
 
-    def _gpu_loop(self) -> None:
+    def _gpu_loop(self, worker: int = 0) -> None:
+        """A transcribe thread. ``worker`` 1 and up: the second lecture on the graphics card, only while the PC
+        allows it (see _may_share); it never loads a model."""
         while True:
-            _, _, token, job = self._gpu_q.get()
-            with self._q:
+            if worker and not self._may_share():
+                time.sleep(1.0)
+                continue
+            try:
+                _, _, token, job = self._gpu_q.get(timeout=1.0 if worker else None)
+            except queue.Empty:
+                continue
+            late = worker and not self._may_share()           # e.g. paused, or the settings changed meanwhile
+            with self._q:                                     # (lock order: self._lock is never taken under it)
                 if token != job.token:            # it moved up the queue since: this is its old place
+                    continue
+                if late:
+                    self._push_gpu(job)
+                    self._q.notify_all()
                     continue
                 before = lambda j: (j.rank, j.seq) < (job.rank, job.seq)    # noqa: E731
                 if (any(j.holds_audio and before(j) for j, _ in self._held.values())
@@ -997,6 +1199,8 @@ class JobManager:
                 continue
             try:
                 self._hold(job)                   # paused: the next lecture doesn't start
+                if job.cancel.is_set():           # cancelled while paused (the pause ended with the queue)
+                    raise Cancelled()
                 self._transcribe(job)
             except Cancelled:
                 self._finish(job, "cancelled")
@@ -1022,6 +1226,15 @@ class JobManager:
             # the engine counts the time paused as time spent: take it out of its estimate
             left = max(0, round(int(m.group(1)) - paused * (1 - done) / done))
             detail = f"{detail[:m.start()]} · ~{left}s left{detail[m.end():]}"
+        if stage == "transcribe":
+            with self._lock:
+                on_card = [j for j in self._jobs.values() if j.where == "run" and j.step == "transcribe"]
+            if len(on_card) > 1 or (on_card and on_card[0] is not job):
+                for j in on_card + [job]:
+                    j.own_speed = False
+            n = _PASSAGES.match(_ETA.sub("", detail))
+            if n and int(n.group(1)) <= int(n.group(2)) and job.passages[1] in (0, int(n.group(2))):
+                job.passages = [int(n.group(1)), int(n.group(2))]
         self._update(job, "transcribing", frac, detail, force=not m,    # a message without a time left is rare: show it
                      step="speech" if stage == "vad" else "transcribe")
 
@@ -1034,18 +1247,31 @@ class JobManager:
                     raise Cancelled()
                 time.sleep(0.5)
         settings = self.settings()
-        engine = self._get_engine(settings)
-        self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
-        engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
-        self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
-        info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
-        job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
-        if info.get("warning") and info["warning"] not in job.notes:
-            job.notes.append(info["warning"])
-        job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
-        found = {"speech": job.speech} if job.speech is not None else {}
-        transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel,
-                                       self._meta(job), **found)
+        engine = self._use_engine(settings)
+        try:
+            units = getattr(job.speech, "units", None)
+            if getattr(engine, "loaded", False) and units is not None:
+                # the model is there: its first batch is transcribing, not "Loading the speech model" (that step took
+                # the first batch's time, ~9 s, as if the model loaded again for every lecture)
+                self._update(job, "transcribing", 0.05, t("Transcribing passage {done} of {n}", done=0, n=len(units)),
+                             force=True, step="transcribe")
+            elif not getattr(engine, "loaded", False):
+                self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
+            engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
+            self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
+            self._drive_card(engine)
+            info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
+            job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
+            if info.get("warning") and info["warning"] not in job.notes:
+                job.notes.append(info["warning"])
+            job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
+            found = {"speech": job.speech} if job.speech is not None else {}
+            transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d),
+                                           job.cancel, self._meta(job), **found)
+            if getattr(engine, "resumed_passages", 0):    # (Job.metrics)
+                job.own_speed = False
+        finally:
+            self._done_with_engine()
         self._drop_audio(job)
         transcript.delivery_id = job.id
         path = store.save_transcript(transcript)
@@ -1056,6 +1282,26 @@ class JobManager:
             self.lib.save_transcript(transcript, path, quality=quality.get("stats"))
             self.lib.set_warnings(job.id, warnings)
         self.note_unwritten(job.id, True)         # until its files are written (closing now writes them next start)
+        # its slides and files are finished by another thread: this one takes the next lecture meanwhile. Its step
+        # moves on now, so a wait behind another lecture's slides doesn't count as transcribing (Job.metrics)
+        if job.slides is not None:
+            self._update(job, "writing", 0.97, t("Finishing slides"), force=True, step="slides")
+        else:
+            self._update(job, "writing", 0.99, t("Writing files"), force=True)
+        self._finishing.put((job, warnings))
+
+    def _finish_loop(self) -> None:
+        """Finishes transcribed lectures one after the other: waits for their slides, writes their files."""
+        while True:
+            job, warnings = self._finishing.get()
+            try:
+                self._complete(job, warnings)
+            except Exception as exc:  # noqa: BLE001
+                self.log.exception("Finishing %s failed", job.id)
+                self._finish(job, "failed", plain_error(exc))
+
+    def _complete(self, job: Job, warnings: list) -> None:
+        settings = self.settings()
         if job.slides is not None:
             self._update(job, "writing", 0.97, t("Finishing slides"), force=True, step="slides")
             try:

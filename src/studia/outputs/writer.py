@@ -48,7 +48,10 @@ def atomic_write(path: Path, text: str) -> None:
     open for a moment: the swap is tried again for about two seconds."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:      # on the disk before the swap (a power cut)
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     for attempt in range(8):
         try:
             os.replace(tmp, path)

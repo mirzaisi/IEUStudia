@@ -204,3 +204,42 @@ def test_status_for_one_ai_only(monkeypatch):
     assert "chatgpt" not in s and "codex" not in s and "local" not in s
     c = s["claude"]
     assert c["plan_status"]["label"] == "Claude Pro" and c["job"] == {} and c["test"] == {}
+
+
+def test_the_full_status_asks_every_ai_at_once(monkeypatch):
+    from studia import chatgpt
+
+    def slow(value):
+        def f():
+            time.sleep(0.4)                     # a program started and asked (claude auth status, codex login status)
+            return value
+        return f
+
+    monkeypatch.setattr(ai, "claude_cli_info", _cached({"available": True, "path": "claude.exe", "version": "2.1.0"}))
+    monkeypatch.setattr(ai, "codex_cli_info", _cached({"available": True, "path": "codex.exe", "version": "0.1"}))
+    monkeypatch.setattr(ai, "claude_auth", slow({"logged_in": True, "plan": "max", "email": "a@b.c"}))
+    monkeypatch.setattr(ai, "codex_auth", slow({"logged_in": False, "plan": "", "email": ""}))
+    monkeypatch.setattr(chatgpt, "status", slow({"signed_in": False, "email": "", "plan_allowed": False,
+                                                 "registered": False, "sign_in": {}}))
+    t0 = time.monotonic()
+    s = ai.ai_status()
+    assert time.monotonic() - t0 < 1.0                                  # not 1.2 s one after another
+    assert s["claude"]["logged_in"] and not s["codex"]["logged_in"] and not s["chatgpt"]["signed_in"]
+    assert "local" in s and s["chosen"] is not None
+
+
+def test_the_codex_version_is_asked_again_only_when_its_file_changes(tmp_path, monkeypatch):
+    exe = tmp_path / "codex.exe"
+    exe.write_bytes(b"MZ 1")
+    runs = []
+    monkeypatch.setattr(ai, "_codex_candidates", lambda: [str(exe)])
+    monkeypatch.setattr(ai, "_run", lambda cmd, timeout=20, env=None: runs.append(cmd) or (0, "codex-cli 0.1.0"))
+    for _ in range(3):
+        ai.codex_cli_info.cache_clear()                                 # (as ai_status does each time)
+        assert ai.codex_cli_info()["version"] == "0.1.0"
+    assert len(runs) == 1
+    exe.write_bytes(b"MZ 2 updated")                                    # it updated itself
+    monkeypatch.setattr(ai, "_run", lambda cmd, timeout=20, env=None: runs.append(cmd) or (0, "codex-cli 0.2.0"))
+    ai.codex_cli_info.cache_clear()
+    assert ai.codex_cli_info()["version"] == "0.2.0" and len(runs) == 2
+    ai.codex_cli_info.cache_clear()

@@ -35,7 +35,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import store
+from . import store, ytprefs
 from .cancel import Cancelled
 from .i18n import N_, language, t, tn
 
@@ -50,7 +50,7 @@ STAGES = [                                           # labels in English: t() to
     ("assemble", N_("Building your plan")),
 ]
 STAGE_NAMES = [s for s, _ in STAGES]
-PREP_STAGES = [("gather", N_("Reading the course material")), ("write", N_("Writing your exam prep pack"))]
+PREP_STAGES = [("gather", N_("Reading the course material")), ("write", N_("Writing your exam review sheet"))]
 LABELS = dict(STAGES + PREP_STAGES)
 PACK_CHARS = 90_000           # course material sent for the concept list (~29k tokens)
 MAT_CHARS = 9_000             # per file
@@ -63,6 +63,7 @@ MAX_VIDEOS = 40               # inspected in total
 CROSS = 2                     # long videos found for other concepts, also checked for a concept when they talk about it
 CROSS_MIN_S = 15 * 60         # (lectures that teach several topics in one go)
 CROSS_SCORE = 6.0             # how much they must talk about it (videos.windows score)
+PREFERRED_SEARCHED = 3        # the student's preferred channels searched themselves for each topic
 VERIFY_BATCH = 3              # concepts per verification request
 VERIFY_PARALLEL = 3           # verification requests at once (each one waits ~1–2 min for the model)
 EXCERPT_CHARS = 2_000         # caption text per part sent for verification (~2 minutes of speech)
@@ -76,7 +77,7 @@ SYSTEM = ("You are an expert university tutor who builds video study plans for a
 
 @dc.dataclass
 class Scope:
-    kind: str = "videos"         # "videos": a video study plan; "prep": an exam prep pack (no videos)
+    kind: str = "videos"         # "videos": a video study plan; "prep": an exam review sheet (no videos)
     weeks: list[int] = dc.field(default_factory=list)
     focus: str = ""              # an assessment from the course's plan, e.g. "Quiz 2"
     los: list[int] = dc.field(default_factory=list)   # learning outcomes to focus on
@@ -84,9 +85,15 @@ class Scope:
     difficulties: str = ""       # what the student finds hard
     minutes: int = 180           # viewing time budget
     deadline: str = ""           # YYYY-MM-DD
-    allow_tr: bool = False       # Turkish videos too
+    allow_tr: bool = False       # Turkish videos too (older plans; now video_lang != "en")
     model: str = ""              # Claude model for the concept list and the plan ("" = the app's setting)
+    effort: str = ""             # reasoning level for them, a review sheet, study pack or cheatsheet ("" = Settings')
+    verify_effort: str = ""      # reasoning level for checking the videos ("" = Settings')
     extras: bool = False         # with a focus: also videos for the topics of these weeks the focus does not ask for
+    video_lang: str = ""         # the videos' language: "en", "tr" or "both" (ytprefs.LANGS)
+    files: list[str] = dc.field(default_factory=list)   # a study pack: the files picked (empty: all of the weeks)
+    days: list[str] = dc.field(default_factory=list)    # and the lectures (day keys)
+    picked: bool = False         # the chooser's ticks: then an empty files/days list means none of them
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> "Scope":
@@ -95,7 +102,12 @@ class Scope:
         s.weeks = sorted({int(w) for w in s.weeks or [] if str(w).isdigit()})
         s.los = sorted({int(n) for n in s.los or [] if str(n).isdigit()})
         s.minutes = max(15, min(1200, int(s.minutes or 180)))
-        s.kind = s.kind if s.kind in ("videos", "prep") else "videos"
+        s.kind = s.kind if s.kind in ("videos", "prep", "pack", "sheet") else "videos"   # pack/sheet: studypack/cheatsheet.py
+        if s.video_lang not in ("en", "tr", "both"):
+            s.video_lang = "both" if s.allow_tr else "en"
+        s.allow_tr = s.video_lang != "en"
+        s.files = [str(x) for x in s.files or []]
+        s.days = [str(x) for x in s.days or []]
         return s
 
     def to_json(self) -> dict[str, Any]:
@@ -103,8 +115,17 @@ class Scope:
 
 
 def main_model(scope: "Scope", settings: Any) -> str:
-    """The model for the concept list, the plan and prep packs: the plan's own choice, else the settings'."""
+    """The model for the concept list, the plan, review sheets and study packs: the plan's own, else the settings'."""
     return scope.model or getattr(settings, "plan_model", "") or getattr(settings, "ai_model", "") or "sonnet"
+
+
+def levels(scope: "Scope", settings: Any) -> tuple[str, str]:
+    """The reasoning levels (effort.py) of the plan or pack itself and of checking the videos: the plan's own, else
+    (a ChatGPT plan from before) the one its model level meant, else the settings'."""
+    from .effort import resolve
+
+    return (resolve("plan", scope.effort, legacy=scope.model, settings=settings),
+            resolve("verify", scope.verify_effort, settings=settings))
 
 
 def _capital(s: str) -> str:
@@ -333,8 +354,35 @@ def searched(c: dict[str, Any], scope: Scope) -> bool:
 
 
 # ------------------------------------------------------------------ concepts (AI)
+def query_count(scope: Scope, in_scope: bool = True) -> int:
+    """How many of a concept's queries are searched: 2 (an explanation, a worked example) - with both languages
+    also the Turkish one; an extra topic gets one (two with both languages)."""
+    both = scope.video_lang == "both"
+    return (3 if both else 2) if in_scope else (2 if both else 1)
+
+
+def concept_queries(c: dict[str, Any], scope: Scope) -> list[str]:
+    """The searches made for a concept (with both languages its last query is the Turkish one: always kept)."""
+    qs, n = c.get("queries") or [], query_count(scope, c.get("in_scope", True))
+    if scope.video_lang == "both" and len(qs) > n:
+        return [*qs[:n - 1], qs[-1]]
+    return qs[:n]
+
+
 def concepts_prompt(scope: Scope, facts: dict[str, Any]) -> str:
-    lang = "English" + (" (Turkish videos are fine too: add one Turkish query when useful)" if scope.allow_tr else "")
+    queries = {
+        "en": 'queries (2 YouTube searches in English: one for a clear university-level explanation that names the '
+              'subject, e.g. "linear algebra pivot columns free variables", and one for a worked example)',
+        "tr": 'queries (2 YouTube searches in Turkish - the student wants Turkish videos: one for a clear '
+              'university-level explanation that names the subject, e.g. "lineer cebir pivot sütunları serbest '
+              'değişkenler", and one for a worked example, e.g. "... örnek soru çözümü")',
+        "both": 'queries (3 YouTube searches - the student wants videos in English and in Turkish: in English one for a '
+                'clear university-level explanation that names the subject, e.g. "linear algebra pivot columns free '
+                'variables", and one for a worked example; then one in Turkish, e.g. "lineer cebir pivot sütunları '
+                'örnek soru çözümü")'}[scope.video_lang]
+    terms = ("in English" if scope.video_lang == "en" else
+             "in English and the same in Turkish, as Turkish teachers say them (e.g. \"eigenvalue\", \"özdeğer\"), "
+             "so they are found in Turkish captions too; up to 14 in all")
     if focused(scope):
         what = target(scope)
         serves = (f"the focus outcomes ({', '.join(f'LO{n}' for n in scope.los)})" if scope.los
@@ -351,8 +399,8 @@ Rules:
 - Go through the material of every week in scope and list EVERY topic it teaches, so that nothing is silently left out. Each concept is ONE teachable unit: one idea, one procedure or one application. Never lump topics together: e.g. "network flow", "electrical circuits", "migration models" and "Leontief models" are four concepts, not one "applications" concept. 6–{MAX_CONCEPTS} concepts (fewer for a single week), in the order they should be learned, prerequisites first.
 - {in_scope}
 - skills: 2–6 things the student must be able to DO for the concept, including the cases the material practises or tests that one basic example would miss (e.g. a rectangular matrix, a column without a pivot, an inconsistent system, a parameter that changes the number of solutions, the 2×2 shortcut as well as the general method). Short phrases.
-- For each concept also: id ("c1", "c2", …), name (plain language), summary (what the student must be able to do; 1–2 sentences), weeks (week numbers), los (outcome numbers from the English list; [] if unclear), kind ("concept", "procedure" or "application"), importance ("core", "supporting" or "prerequisite" — prerequisite only if the material clearly assumes it), focus (true if it matches what the student finds hard), cues (2–4 ways an exam question signals that the concept is needed), terms (4–8 words or short phrases a teacher would SAY when explaining the concept and its skills, in English; used to find them in video captions), queries (2 YouTube searches in {lang}: one for a clear university-level explanation that names the subject, e.g. "linear algebra pivot columns free variables", and one for a worked example).
-- practice: for every in-scope concept, one question DRAWN FROM THE COURSE MATERIAL (an example, exercise or slide), preferring its harder skills, with a short worked answer and its source (file and page, or lecture date). Plain-text maths (e.g. P(A|B) = P(A∩B)/P(B)).
+- For each concept also: id ("c1", "c2", …), name (plain language), summary (what the student must be able to do; 1–2 sentences), weeks (week numbers), los (outcome numbers from the English list; [] if unclear), kind ("concept", "procedure" or "application"), importance ("core", "supporting" or "prerequisite" — prerequisite only if the material clearly assumes it), focus (true if it matches what the student finds hard), cues (2–4 ways an exam question signals that the concept is needed), terms (4–8 words or short phrases a teacher would SAY when explaining the concept and its skills, {terms}; used to find them in video captions), {queries}.
+- practice: for every in-scope concept, one question DRAWN FROM THE COURSE MATERIAL (an example, exercise or slide), preferring its harder skills, with a short worked answer and its source (file and page, or lecture date). Maths in LaTeX between dollars, every backslash doubled as JSON needs (e.g. "$P(A\\\\mid B)=\\\\frac{{P(A\\\\cap B)}}{{P(B)}}$").
 - gaps: what the scope needs but the material does not show ("" if nothing).
 Return JSON: {{"concepts": [{{"id": "c1", "name": "", "summary": "", "weeks": [], "los": [], "kind": "", "importance": "", "in_scope": true, "focus": false, "skills": [], "cues": [], "terms": [], "queries": []}}], "practice": [{{"concept": "c1", "question": "", "answer": "", "source": ""}}], "gaps": ""}}
 
@@ -390,7 +438,7 @@ def clean_concepts(raw: Any, scope: Optional[Scope] = None) -> tuple[list[dict[s
                          "kind": c.get("kind") if c.get("kind") in ("procedure", "application") else "concept",
                          "importance": importance, "in_scope": in_scope,
                          "focus": bool(c.get("focus")), "skills": list(dict.fromkeys(lst("skills")))[:6],
-                         "cues": lst("cues")[:4], "terms": lst("terms")[:8],
+                         "cues": lst("cues")[:4], "terms": lst("terms")[:14],
                          "queries": lst("queries")[:3] or [str(c["name"]).strip()]})
     concepts = concepts[:MAX_CONCEPTS]
     if not concepts:
@@ -606,7 +654,10 @@ def assemble_prompt(scope: Scope, facts: dict[str, Any], concepts: list[dict], c
         if skills:
             lines.append("   skills: " + "; ".join(f"{i}) {s}" for i, s in enumerate(skills, 1)))
         for cand in candidates.get(c["id"], []):
-            head = f"   - {cand['video']} \"{cand['title']}\" ({cand['channel']}, {fmt_ts(cand['duration_s'])}): "
+            seen = [f"{_count(cand['views'])} views" if cand.get("views") else "",
+                    f"{_count(cand['likes'])} likes" if cand.get("likes") is not None and cand.get("views") else "",
+                    "a channel the student prefers" if cand.get("preferred") else ""]
+            head = (f"   - {cand['video']} \"{cand['title']}\" ({', '.join(x for x in [cand['channel'], fmt_ts(cand['duration_s']), *seen] if x)}): ")
             if cand["state"] != "verified":
                 lines.append(head + ("UNVERIFIED (not checked)" if cand.get("unread") else "UNVERIFIED (no captions)"))
                 continue
@@ -634,11 +685,12 @@ Rules:
 - An item is one video. "segments" lists the parts to watch ([[start, end], …] in seconds; several parts of one video are fine), using the verified parts; a whole video only if most of it is relevant.
 - Time budget: {scope.minutes} minutes for the required and prerequisite items together. If it is not enough, keep the most important in-scope items required, make the rest optional, and say so in the summary.
 - Prefer candidates without a MISTAKE. If you use one with a MISTAKE, say it in limits and correct it in a supplement.
+- Between candidates that teach equally well, prefer the student's preferred channels and the better received videos (more likes per view; many views alone do not make a video good).
 - Order: prerequisites first, then the course order. Number the items 1, 2, 3…
 - role: "required", "prerequisite", "optional" (useful, not needed) or "alternative" (instead of another item: set alternative_to to that item's number).
 - why: what the student gets from the item (at most 20 words). limits: what it leaves out or does differently from the course (at most 15 words; "" if nothing).
 - summary: 2–3 honest sentences: what the plan covers, what is left to the supplements and what it does not cover. Never claim more than the verified skills show.
-- supplements: for every in-scope concept with skills that no chosen item teaches, a short correct explanation of exactly those skills with a small worked example (Markdown, plain-text maths); also the corrections of mistakes in chosen videos.
+- supplements: for every in-scope concept with skills that no chosen item teaches, a short correct explanation of exactly those skills with a small worked example (Markdown; maths in LaTeX, $...$ in a sentence and $$...$$ on lines of their own, every backslash doubled as JSON needs); also the corrections of mistakes in chosen videos.
 - checklist: for every in-scope concept, a plain-language explanation (at most 2 sentences) and how to recognise a question that needs it.
 - notes: per concept, what the student should know about how it is covered (at most 12 words), only when useful.
 - schedule: split the items over the days until the deadline (or over about a week), each day at most ~60 minutes, required items first.
@@ -648,6 +700,38 @@ Return JSON: {{"title": "", "summary": "", "items": [{{"n": 1, "video": "VIDEO_I
 {_scope_text(scope, facts)}. {deadline} Course: {facts['course']['code']} — {facts['course']['name']}.
 CONCEPTS AND CANDIDATE VIDEOS:
 """ + "\n".join(lines)
+
+
+def _count(n: Any) -> str:
+    """1234 -> "1.2k", 1_731_857 -> "1.7M" (for the AI)."""
+    n = int(n or 0)
+    for size, unit in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if n >= size:
+            return f"{n / size:.1f}".rstrip("0").rstrip(".") + unit
+    return str(n)
+
+
+def _video_ref(value: Any, videos: dict[str, dict]) -> str:
+    """The video an item means: its id - also when the AI wrote a link or put words around it."""
+    text = str(value or "").strip()
+    if text in videos:
+        return text
+    return next((w for w in re.findall(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])", text) if w in videos),
+                text)
+
+
+def _chapter_for(v: dict[str, Any], terms: list[str]) -> Optional[dict[str, Any]]:
+    """The chapter whose title names the most of ``terms`` (None when none does): where to open an unchecked video."""
+    from .videos import _terms, _tokens
+
+    tl = _terms(terms)
+    best, top = None, 0.0
+    for ch in v.get("chapters") or []:
+        title = " ".join(_tokens(str(ch.get("title") or "")))
+        score = sum(term.weight for term in tl if term.rx.search(title))
+        if score > top:
+            best, top = ch, score
+    return best
 
 
 def _segments(it: dict[str, Any], dur: float) -> list[list[float]]:
@@ -696,10 +780,12 @@ def _listed(value: Any) -> list[Any]:
 def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], videos: dict[str, dict],
              practice: list[dict], gaps: str, *, verdicts: Optional[dict[str, dict[str, dict]]] = None,
              excerpts: Optional[dict[str, dict[str, list]]] = None, scope: Optional[Scope] = None,
-             goal: str = "", goal_en: str = "") -> dict[str, Any]:
-    """The AI's plan, checked against the real data: only known videos, parts within the video, exact titles,
-    channels and links, the viewing time recomputed - and what each item teaches, the coverage of every concept and
-    skill and how complete the plan is, all from the verdicts (the AI's own claims about coverage are not used)."""
+             goal: str = "", goal_en: str = "",
+             blocked: Optional[Callable[[str, str], bool]] = None) -> dict[str, Any]:
+    """The AI's plan, checked against the real data: only known videos (none of a ``blocked`` channel), parts within
+    the video, exact titles, channels, views, likes and links, the viewing time recomputed - and what each item
+    teaches, the coverage of every concept and skill and how complete the plan is, all from the verdicts (the AI's own
+    claims about coverage are not used). A video whose captions weren't checked opens at the chapter about it."""
     from .videos import fmt_ts, watch_url
 
     raw = raw if isinstance(raw, dict) else {}
@@ -713,9 +799,11 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
     for it in raw.get("items") or []:
         if not isinstance(it, dict):
             continue
-        vid = str(it.get("video") or "")
+        vid = _video_ref(it.get("video"), videos)
         v = videos.get(vid)
-        if v is None or v.get("error"):
+        if v is None or v.get("error") or v.get("wrong_lang"):
+            continue
+        if blocked is not None and blocked(v.get("channel_id", ""), v.get("channel", "")):
             continue
         dur = float(v.get("duration_s") or 0)
         listed = [c for c in dict.fromkeys(str(x) for x in it.get("concepts") or []) if c in by_id]
@@ -751,11 +839,18 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
         role = it.get("role") if it.get("role") in ("required", "prerequisite", "optional", "alternative") else "required"
         if extra and role in ("required", "prerequisite"):
             role = "optional"                         # the focus does not ask for it
+        chapter = None
+        if state != "verified" and whole:             # unchecked: open it where its chapters say the topic starts
+            chapter = _chapter_for(v, [x for c in concepts_of for x in [*(by_id[c].get("terms") or []), by_id[c]["name"]]])
         n = len(items) + 1
         by_n[it.get("n", n)] = n
         items.append({
             "n": n, "video": vid, "title": v.get("title", ""), "channel": v.get("channel", ""),
-            "url": watch_url(vid, segs[0][0] or None), "duration_s": dur,
+            "channel_id": v.get("channel_id", ""), "view_count": v.get("view_count"), "like_count": v.get("like_count"),
+            "upload_date": v.get("upload_date", ""),
+            "weeks": sorted({w for c in concepts_of for w in by_id[c].get("weeks") or []}),
+            "chapter": {"start": round(chapter["start"]), "title": chapter["title"]} if chapter else None,
+            "url": watch_url(vid, (chapter["start"] if chapter else segs[0][0]) or None), "duration_s": dur,
             "start": round(segs[0][0]), "end": round(segs[-1][1]), "whole": whole,
             "segments": [{"start": round(a), "end": round(b), "url": watch_url(vid, a or None)} for a, b in segs],
             "minutes": max(1, round(secs / 60)) if secs > 0 else max(1, round(dur / 60)),
@@ -932,7 +1027,8 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         segs = it.get("segments") or [{"start": it["start"], "end": it["end"], "url": it["url"]}]
         part = ("whole video" if it["whole"] else
                 " and ".join(f"[{fmt_ts(s['start'])}–{fmt_ts(s['end'])}]({s['url']})" for s in segs))
-        out.append(f"{it['n']}. **[{it['title']}]({it['url']})** — {it['channel']} · {part} · {it['minutes']} min · "
+        seen = "".join(f" · {_count(it[k])} {w}" for k, w in (("view_count", "views"), ("like_count", "likes")) if it.get(k))
+        out.append(f"{it['n']}. **[{it['title']}]({it['url']})** — {it['channel']}{seen} · {part} · {it['minutes']} min · "
                    f"*{it['role']}*" + (f" (instead of {it['alternative_to']})" if it.get("alternative_to") else "")
                    + (f" · extra, not on {goal}" if it.get("extra") else ""))
         if it.get("teaches"):
@@ -997,21 +1093,21 @@ def extras_line(cp: dict[str, Any]) -> str:
     return line
 
 
-# ------------------------------------------------------------------ exam prep pack (Claude, one request)
+# ------------------------------------------------------------------ exam review sheet (one request)
 SYSTEM_PREP = ("You are an expert university tutor writing exam preparation material for an engineering student. "
                "You use only the course material you are given (say so when it is thin instead of inventing), you "
-               "write clear Markdown with LaTeX maths ($...$, $$...$$), and you deliver the complete pack without "
-               "asking questions.")
+               "write clear Markdown with LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own), and you "
+               "deliver the complete sheet without asking questions.")
 
 
 def prep_title(scope: Scope, facts: dict[str, Any], shown: bool = False) -> str:
-    """"Quiz 2 prep pack": in English for its file, ``shown`` in the language shown."""
+    """"Quiz 2 review sheet": in English for its file, ``shown`` in the language shown."""
     what = scope.focus or _capital(_week_span([w["no"] for w in facts["weeks"]], shown))
-    return t("{what} prep pack", what=what) if shown else f"{what} prep pack"
+    return t("{what} review sheet", what=what) if shown else f"{what} review sheet"
 
 
 def prep_prompt(scope: Scope, facts: dict[str, Any], questions: int = 10) -> str:
-    return f"""TASK: Write an exam preparation pack for the scope below, from the course material only.
+    return f"""TASK: Write an exam review sheet for the scope below, from the course material only.
 Use exactly these sections:
 ## What it covers
 The assessment (if any), the weeks and the learning outcomes involved (quote their text), and what the lecturer said about it (short quotes with dates).
@@ -1051,6 +1147,9 @@ class PlanRunner:
 
     # ---- public
     def create(self, course_id: str, scope: dict[str, Any], parent_id: str = "") -> str:
+        scope = dict(scope or {})
+        if scope.get("video_lang") not in ytprefs.LANGS and not scope.get("allow_tr"):
+            scope["video_lang"] = ytprefs.load().lang             # the language chosen in Settings
         s = Scope.from_json(scope)
         pid = uuid.uuid4().hex[:12]
         self._s.lib.create_plan(pid, course_id, s.to_json(), "", parent_id)
@@ -1130,10 +1229,10 @@ class PlanRunner:
                       "stage": p["stage"], "progress": p["progress"], "message": p["message"], "error": p["error"],
                       "title": p["title"], "kind": (p.get("scope") or {}).get("kind", ""), **extra})
 
-    def _ask_json(self, prompt: str, model: str, cancel: threading.Event) -> tuple[Any, dict]:
+    def _ask_json(self, prompt: str, model: str, cancel: threading.Event, level: str = "") -> tuple[Any, dict]:
         from .ai import ask_json
 
-        return (self._ask or ask_json)(SYSTEM, prompt, model=model, cancel=cancel)
+        return (self._ask or ask_json)(SYSTEM, prompt, model=model, effort=level, cancel=cancel)
 
     def _stage(self, plan_id: str, name: str, progress: float, message: str = "") -> None:
         label = t(LABELS[name])
@@ -1152,6 +1251,7 @@ class PlanRunner:
         usage: dict[str, dict[str, int]] = plan["usage"] or {}
         model = main_model(scope, self._s.settings)
         verify_with = getattr(self._s.settings, "verify_model", "") or VERIFY_MODEL
+        level, verify_level = levels(scope, self._s.settings)
 
         def save(**more: Any) -> None:
             self._s.lib.update_plan(plan_id, data=data, usage=usage, **more)
@@ -1166,6 +1266,11 @@ class PlanRunner:
             if cancel.is_set():
                 raise Cancelled()
 
+        if scope.kind in ("pack", "sheet"):            # a study pack or a cheatsheet: stages of its own
+            from . import cheatsheet, studypack
+
+            (cheatsheet if scope.kind == "sheet" else studypack).run(self, plan, scope, data, usage, model, cancel)
+            return
         # gather
         if "gather" not in data:
             self._stage(plan_id, "gather", 0.02)
@@ -1181,18 +1286,20 @@ class PlanRunner:
         # concepts
         if "concepts" not in data:
             self._stage(plan_id, "concepts", 0.08, t("Working out what you need to learn ({model})…", model=model))
-            raw, res = self._ask_json(concepts_prompt(scope, facts), model, cancel)
+            raw, res = self._ask_json(concepts_prompt(scope, facts), model, cancel, level)
             concepts, practice, gaps = clean_concepts(raw, scope)
             add_usage("concepts", res)
             data["concepts"] = {"concepts": concepts, "practice": practice, "gaps": gaps}
             save()
         concepts = data["concepts"]["concepts"]
         todo_c = [c for c in concepts if searched(c, scope)]
-        n_q = {c["id"]: 2 if c.get("in_scope", True) else 1 for c in todo_c}     # extras: one search each
+        qs_of = {c["id"]: concept_queries(c, scope) for c in todo_c}         # extras: fewer searches
+        prefs = ytprefs.load()                    # the channels the student prefers / never wants (read once per run)
+        langs = ytprefs.caption_langs(scope.video_lang)
         check()
         # search
         if "search" not in data:
-            queries = sorted({q for c in todo_c for q in c["queries"][:n_q[c["id"]]]})
+            queries = sorted({q for c in todo_c for q in qs_of[c["id"]]})
             done_q = [0]
 
             def on_search(n: int, total: int, label: str) -> None:
@@ -1202,13 +1309,22 @@ class PlanRunner:
 
             self._stage(plan_id, "search", 0.25, t("Searching YouTube for {n} concepts…", n=len(todo_c)))
             found = videos.search_many(queries, limit=8, cancel=cancel, progress=on_search)
+            # the preferred channels are also searched themselves (their first few, with each topic's first query)
+            mine = [(ch["id"], qs_of[c["id"]][0]) for c in todo_c if c.get("in_scope", True) and qs_of[c["id"]]
+                    for ch in prefs.allow[:PREFERRED_SEARCHED]]
+            if mine:
+                self._stage(plan_id, "search", 0.4, t("Searching your preferred channels…"))
+                own = videos.channel_search_many(mine, cancel=cancel)
+            else:
+                own = {}
             check()
             cands: dict[str, list[dict]] = {}
             failures = 0
             for c in todo_c:
                 hits, seen = [], set()
-                for q in c["queries"][:n_q[c["id"]]]:
-                    res_q = found.get(q)
+                results = [found.get(q) for q in qs_of[c["id"]]]
+                results += [own.get(key) for key in mine if key[1] == (qs_of[c["id"]] or [""])[0]]
+                for res_q in results:
                     if isinstance(res_q, Exception) or res_q is None:
                         failures += 1
                         continue
@@ -1216,7 +1332,8 @@ class PlanRunner:
                         if h.id not in seen:
                             seen.add(h.id)
                             hits.append(h)
-                ranked = videos.rank(hits, c["terms"] + [c["name"]])[:CANDIDATES]
+                ranked = videos.rank(hits, c["terms"] + [c["name"]], allow=prefs.is_allowed, block=prefs.is_blocked,
+                                     lang="" if scope.video_lang == "both" else scope.video_lang)[:CANDIDATES]
                 cands[c["id"]] = [h.to_json() for h in ranked]
             if failures and not any(cands.values()):
                 err = next((r for r in found.values() if isinstance(r, Exception)), None)
@@ -1240,9 +1357,30 @@ class PlanRunner:
                             t("Reading captions: {title} ({n}/{total})", title=label[:60], n=n, total=total))
 
             self._stage(plan_id, "inspect", 0.40, t("Reading the captions of {n} videos…", n=len(ids)))
-            infos = videos.inspect_many(ids, langs=("en", "tr") if scope.allow_tr else ("en",), cancel=cancel,
-                                        progress=on_inspect)
+            infos = videos.inspect_many(ids, langs=langs, cancel=cancel, progress=on_inspect)
             check()
+
+            def usable(vid: str) -> bool:
+                info = infos.get(vid)
+                return info is not None and not isinstance(info, Exception) and videos.in_languages(info, langs)
+
+            # a video in another language (or one YouTube refused) leaves its concept short: its next candidates
+            more: list[str] = []
+            for c in order:
+                hs = [h["id"] for h in cands.get(c["id"], [])]
+                need = per[c["id"]] - sum(1 for v in hs if v in infos and usable(v))
+                for v in hs:
+                    if need <= 0 or len(ids) + len(more) >= MAX_VIDEOS:
+                        break
+                    if v not in infos:
+                        more += [v] if v not in more else []
+                        need -= 1
+            if more:
+                self._stage(plan_id, "inspect", 0.58, t("Reading the captions of {n} videos…", n=len(more)))
+                infos.update(videos.inspect_many(more, langs=langs, cancel=cancel))
+                check()
+            chosen = {c["id"]: [h["id"] for h in cands.get(c["id"], []) if h["id"] in infos and usable(h["id"])][:per[c["id"]]]
+                      for c in todo_c}
             vids: dict[str, dict] = {}
             excerpts: dict[str, dict[str, list]] = {}
 
@@ -1259,16 +1397,20 @@ class PlanRunner:
                 vids[vid] = {"title": info.title, "channel": info.channel, "duration_s": info.duration_s,
                              "caption_kind": info.caption_kind, "caption_lang": info.caption_lang,
                              "has_captions": info.has_captions, "upload_date": info.upload_date,
-                             "view_count": info.view_count,
+                             "view_count": info.view_count, "like_count": getattr(info, "like_count", None),
+                             "channel_id": getattr(info, "channel_id", ""), "language": getattr(info, "language", ""),
                              "chapters": [{"start": ch.start, "end": ch.end, "title": ch.title} for ch in info.chapters]}
+                if not videos.in_languages(info, langs):
+                    vids[vid]["wrong_lang"] = True            # spoken in another language: not a candidate
+                    continue
                 for c in todo_c:
-                    if any(h["id"] == vid for h in cands.get(c["id"], [])[:per[c["id"]]]) and info.has_captions:
+                    if vid in chosen[c["id"]] and info.has_captions:
                         wins = videos.windows(info, find_terms(c), top=3 if c.get("in_scope", True) else 2)
                         if not wins and info.cues:                      # no term found: the opening still tells a lot
                             wins = [{"start": 0.0, "end": min(info.duration_s or 180, 180), "score": 0}]
                         excerpts.setdefault(c["id"], {})[vid] = parts(info, wins)
             lectures = [(vid, info) for vid, info in infos.items() if not isinstance(info, Exception)
-                        and info.has_captions and (info.duration_s or 0) >= CROSS_MIN_S]
+                        and info.has_captions and (info.duration_s or 0) >= CROSS_MIN_S and not vids[vid].get("wrong_lang")]
             for c in todo_c:                       # long lectures found for one concept often teach the next ones too
                 if not c.get("in_scope", True):
                     continue
@@ -1285,6 +1427,7 @@ class PlanRunner:
                 for h in cands.get(c["id"], []):
                     vids.setdefault(h["id"], {"title": h["title"], "channel": h["channel"], "duration_s": h["duration_s"],
                                               "caption_kind": "", "caption_lang": "", "has_captions": False,
+                                              "view_count": h.get("view_count"), "channel_id": h.get("channel_id", ""),
                                               "chapters": [], "uninspected": True})
             data["inspect"] = {"videos": vids, "excerpts": excerpts}
             save()
@@ -1302,7 +1445,7 @@ class PlanRunner:
 
             def judge(batch: list[dict]) -> tuple[dict, dict]:
                 asked = {c["id"]: set(excerpts.get(c["id"], {})) for c in batch}
-                raw, res = self._ask_json(verify_prompt(batch, vids, excerpts), verify_with, cancel)
+                raw, res = self._ask_json(verify_prompt(batch, vids, excerpts), verify_with, cancel, verify_level)
                 return clean_verdicts(raw, asked, vids, batch, excerpts), res
 
             left = [b for b in batches if key(b) not in finished]
@@ -1342,20 +1485,25 @@ class PlanRunner:
             hits = {h["id"]: h for h in cands.get(c["id"], [])}
             for vid in [*hits, *(v for v in excerpts.get(c["id"], {}) if v not in hits)]:   # + lectures checked for it
                 v = vids.get(vid) or {}
-                if not v or v.get("error"):
+                if not v or v.get("error") or v.get("wrong_lang"):
                     continue
                 h = hits.get(vid) or {}
+                if prefs.is_blocked(v.get("channel_id") or h.get("channel_id", ""), v.get("channel") or h.get("channel", "")):
+                    continue                                  # blocked since the search
                 vd = (verdicts.get(c["id"]) or {}).get(vid)
                 if vd and vd["coverage"] == "none":
                     continue
+                views, likes = v.get("view_count") or h.get("view_count"), v.get("like_count")
                 base = {"video": vid, "title": v.get("title") or h.get("title", ""), "channel": v.get("channel") or h.get("channel", ""),
-                        "duration_s": v.get("duration_s") or h.get("duration_s") or 0}
+                        "duration_s": v.get("duration_s") or h.get("duration_s") or 0, "views": views, "likes": likes,
+                        "preferred": prefs.is_allowed(v.get("channel_id") or h.get("channel_id", ""), v.get("channel") or h.get("channel", "")),
+                        "received": videos.reception(views, likes)}
                 if vd:
                     rows.append({**base, "state": "verified", **vd, "minutes": max(1, round((vd["end"] - vd["start"]) / 60))})
                 elif not v.get("has_captions"):
                     rows.append({**base, "state": "unverified", "unread": bool(v.get("uninspected"))})
             rows.sort(key=lambda r: (r["state"] != "verified", r.get("coverage") != "full", -len(r.get("skills") or []),
-                                     bool(r.get("errors")), -(r.get("quality") or 0)))
+                                     bool(r.get("errors")), -(r.get("quality") or 0), not r["preferred"], -r["received"]))
             if any(r["state"] == "verified" for r in rows):
                 rows = [r for r in rows if r["state"] == "verified"]       # unchecked ones only when nothing was verified
             candidates[c["id"]] = rows[:5] if c.get("in_scope", True) else rows[:2]
@@ -1364,12 +1512,21 @@ class PlanRunner:
             parent = self._s.lib.plan(plan["parent_id"])
             previous = (parent or {}).get("result") or None
         self._stage(plan_id, "assemble", 0.82, t("Building your plan ({model})…", model=model))
-        raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today()), model, cancel)
+        raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today()), model,
+                                  cancel, level)
         add_usage("assemble", res)
         result = finalize(raw, concepts, candidates, vids, data["concepts"]["practice"], data["concepts"]["gaps"],
                           verdicts=verdicts, excerpts=excerpts, scope=scope,
                           goal=target(scope, [w["no"] for w in facts["weeks"]], shown=True),
-                          goal_en=target(scope, [w["no"] for w in facts["weeks"]]))
+                          goal_en=target(scope, [w["no"] for w in facts["weeks"]]), blocked=prefs.is_blocked)
+        try:                                     # the channels' pictures for the plan's cards (cached for a month)
+            pics = videos.channels([it["channel_id"] for it in result["items"] if it.get("channel_id")], cancel=cancel)
+        except Exception as exc:  # noqa: BLE001 - a missing picture never fails a plan
+            log.info("Channel pictures: %s", exc)
+            pics = {}
+        for it in result["items"]:
+            ch = pics.get(it.get("channel_id") or "")
+            it["channel_avatar"] = ch.avatar if ch else ""
         result["materials_missing"] = facts.get("materials_missing", [])
         result["days_missing"] = len(facts.get("days_missing", []))
         result["days_used"] = len(facts.get("days_used", []))
@@ -1406,28 +1563,29 @@ class PlanRunner:
 
     def _write_prep(self, plan: dict[str, Any], scope: Scope, facts: dict[str, Any], model: str,
                     cancel: threading.Event, add_usage: Callable[[str, dict], None], save: Callable[..., None]) -> None:
-        """An exam prep pack: one request that writes a Markdown pack from the gathered material."""
+        """An exam review sheet: one request that writes a Markdown sheet from the gathered material."""
         from .ai import one_shot
 
         pid = plan["id"]
-        self._stage(pid, "write", 0.15, t("Writing your exam prep pack ({model})…", model=model))
+        self._stage(pid, "write", 0.15, t("Writing your exam review sheet ({model})…", model=model))
         progress = [0.15, 0.0]
 
-        def on_text(so_far: str) -> None:       # the pack is long: show that it is being written
+        def on_text(so_far: str) -> None:       # the sheet is long: show that it is being written
             now = time.monotonic()
             if now - progress[1] > 1.5:
                 progress[1] = now
                 progress[0] = min(0.95, 0.15 + len(so_far) / 30_000)
                 self._stage(pid, "write", progress[0],
-                            t("Writing your exam prep pack… ({k}k characters)", k=len(so_far) // 1000))
+                            t("Writing your exam review sheet… ({k}k characters)", k=len(so_far) // 1000))
 
         prompt = prep_prompt(scope, facts)
         run = self._ask_text or one_shot
-        res = run(SYSTEM_PREP, [{"type": "text", "text": prompt}], model, "low", cancel, on_text)
+        res = run(SYSTEM_PREP, [{"type": "text", "text": prompt}], model, levels(scope, self._s.settings)[0], cancel,
+                  on_text)
         add_usage("write", res)
         md = (res.get("text") or "").strip()
         if len(md) < 200:
-            raise RuntimeError(t("The AI returned an empty prep pack. Try again."))
+            raise RuntimeError(t("The AI returned an empty review sheet. Try again."))
         title = prep_title(scope, facts, shown=True)
         english = prep_title(scope, facts)                     # the file's name and heading stay English
         result = {"kind": "prep", "title": title, "markdown": md,
@@ -1436,12 +1594,13 @@ class PlanRunner:
                   "days_left_out": len(facts.get("days_left_out", []))}
         try:
             result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
-                                                  f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Exam prep"))
+                                                  f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Review sheets"))
         except OSError:
-            log.warning("Could not write the prep pack file", exc_info=True)
-        save(result=result, title=title, status="done", stage="done", progress=1.0, message=t("Prep pack ready"))
+            log.warning("Could not write the review sheet file", exc_info=True)
+        save(result=result, title=title, status="done", stage="done", progress=1.0, message=t("Review sheet ready"))
 
     def _write_file(self, plan: dict[str, Any], title: str, text: str, sub: str) -> Path:
+        from .outputs.mathmd import dollar_math
         from .outputs.writer import course_dir, safe_name
 
         course = self._s.lib.get_course(plan["course_id"])
@@ -1450,7 +1609,7 @@ class PlanRunner:
         stamp = (plan.get("created_at") or dt.datetime.now().isoformat())[:10]
         path = folder / (safe_name(f"{stamp} - {title}", 117) + ".md")        # a long title keeps its .md
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(text.encode("utf-8"))
+        tmp.write_bytes(dollar_math(text).encode("utf-8"))
         tmp.replace(path)
         return path
 
@@ -1463,10 +1622,15 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
     from .ai import PROMPT_OVERHEAD, chars_per_token
 
     s, per = Scope.from_json(scope), chars_per_token()
+    if s.kind in ("pack", "sheet"):
+        from . import cheatsheet, studypack
+
+        return (cheatsheet if s.kind == "sheet" else studypack).estimate(lib, settings, course_id, s)
     facts = gather(lib, settings, course_id, s)
     pack = int(facts["chars"] / per) + PROMPT_OVERHEAD + 900
     if s.kind == "prep":
         return {"main_model": main_model(s, settings), "verify_model": "", "main_input": pack,
+                "effort": levels(s, settings)[0], "verify_effort": "", "verify_requests": 0,
                 "main_output": 7000, "verify_input": 0, "verify_output": 0, "concepts": 0, "weeks": facts["weeks"],
                 "materials_used": facts["materials_used"], "materials_missing": facts["materials_missing"],
                 "days_used": facts["days_used"], "days_left_out": facts["days_left_out"],
@@ -1477,7 +1641,9 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
     excerpts_in = int((INSPECT + 1) * 2.5 * EXCERPT_CHARS / per)   # per concept: ~4 videos, 2–3 parts each
     verify_in = batches * (PROMPT_OVERHEAD + 900 + VERIFY_BATCH * excerpts_in)
     assemble_in = PROMPT_OVERHEAD + 1800 + m * 380
+    effort, verify_effort = levels(s, settings)
     return {"main_model": main_model(s, settings), "verify_model": getattr(settings, "verify_model", "") or VERIFY_MODEL,
+            "effort": effort, "verify_effort": verify_effort, "verify_requests": batches,
             "main_input": pack + assemble_in, "main_output": n * 220 + 1500 + 5000, "verify_input": verify_in,
             "verify_output": batches * VERIFY_BATCH * 4 * 130, "concepts": n,
             "weeks": facts["weeks"], "materials_used": facts["materials_used"],

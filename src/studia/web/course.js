@@ -39,6 +39,7 @@
       S.cd[cid] = r.course;
       loadedAt[cid] = Date.now();
       loadedFor[cid] = asked;
+      if (summaryKey(cid) !== asked) reloadSoon(cid);          // the course changed while it loaded
       if (R.cid === cid && $(".modal.rd")) drawReady();         // the "get ready" checklist is open: keep it current
       const v = S.view;
       if (v.name === "course" && v.courseId === cid) renderView();
@@ -72,7 +73,7 @@
     const st = S.mat[m.id] || {};
     const busy = st.state === "queued" || st.state === "downloading";
     let status = "";
-    if (busy) status = st.total ? `<span class="bar"><i style="width:${Math.round((100 * st.done) / st.total)}%"></i></span>` : `${SPIN()} ${st.state === "queued" ? t("Waiting") : t("Downloading")}`;
+    if (busy) status = st.total ? `<span class="bar"><i style="width:${Math.round((100 * st.done) / st.total)}%"></i></span>` : `${SPIN()} ${st.state === "queued" ? (st.offline ? t("Waiting for the internet connection") : t("Waiting")) : t("Downloading")}`;
     else if (st.state === "error") status = `<span class="err-txt" title="${esc(st.error)}">${I("alert-circle", "sm")} ${t("Failed")}</span>`;
     else if (m.downloaded) status = m.outdated ? `<span class="pill processing">${t("Updated on IEULearn")}</span>`
       : `<span class="dim">${m.pages ? (m.ext === "pptx" ? t.n(m.pages, "{n} slide", "{n} slides") : t.n(m.pages, "{n} page", "{n} pages")) : ""} ${fmtSize(m.size)}</span>`;
@@ -577,11 +578,11 @@
       [r.mats.length && !r.missing.length, t("Files on this PC: {done} of {n}", { done: r.downloaded, n: r.mats.length }), r.mats.length ? t("slides and PDFs of those weeks") : t("no files listed for these weeks"),
         r.missing.length ? `<button class="btn sm" data-act="rd-download">${I("download", "sm")} ${t("Download {n}", { n: r.missing.length })}</button>` : ""],
       [r.readable && r.read === r.readable, t("Lectures read: {done} of {n}", { done: r.read, n: r.readable }), t("ticked when you open a transcript, or tick them below"), ""],
-      [!!(prep && prep.status === "done") || !!(video && video.status === "done"), t("A prep pack or video plan for it"),
-        plans.length ? plans.map((p) => esc((p.scope || {}).kind === "prep" ? t("prep pack: {status}", { status: planState(p.status) }) : t("video plan: {status}", { status: planState(p.status) }))).join(" · ")
+      [!!(prep && prep.status === "done") || !!(video && video.status === "done"), t("A review sheet or video plan for it"),
+        plans.length ? plans.map((p) => esc((p.scope || {}).kind === "prep" ? t("review sheet: {status}", { status: planState(p.status) }) : t("video plan: {status}", { status: planState(p.status) }))).join(" · ")
           : t("made by AI when you ask (ChatGPT or Claude)"),
         `<span class="rd-acts">${plans.length ? `<button class="btn sm" data-act="plan-open" data-id="${esc(plans[0].id)}">${I("arrow-right", "sm")} ${t("Open")}</button>`
-          : `<button class="btn sm" data-act="plan-new" data-id="${esc(c.id)}" data-kind="prep" data-focus="${esc(e.name)}">${I("cap", "sm")} ${t("Prep pack")}</button>
+          : `<button class="btn sm" data-act="plan-new" data-id="${esc(c.id)}" data-kind="prep" data-focus="${esc(e.name)}">${I("cap", "sm")} ${t("Review sheet")}</button>
              <button class="btn sm" data-act="plan-new" data-id="${esc(c.id)}" data-kind="videos" data-focus="${esc(e.name)}">${I("youtube", "sm")} ${t("Video plan")}</button>`}</span>`],
     ];
     const done = steps.filter((s) => s[0]).length;
@@ -653,13 +654,13 @@
     }
   };
   St.openReady = openReady;
+  // only a course that changed (or whose details are old): every lecture of a full sync that ends sends the courses
+  const outdated = (cid) => !S.cd[cid] || summaryKey(cid) !== loadedFor[cid] || Date.now() - (loadedAt[cid] || 0) > STALE_MS;
   St.onEvents.courses = () => {
     const v = S.view;
-    if (v.name === "course") reloadSoon(v.courseId);
-    else if (v.name === "home") {               // only the courses that changed (or whose details are old)
-      S.courses.forEach((c) => {
-        if (!S.cd[c.id] || summaryKey(c.id) !== loadedFor[c.id] || Date.now() - (loadedAt[c.id] || 0) > STALE_MS) reloadSoon(c.id);
-      });
+    if (v.name === "course") { if (outdated(v.courseId)) reloadSoon(v.courseId); }
+    else if (v.name === "home") {
+      S.courses.forEach((c) => { if (outdated(c.id)) reloadSoon(c.id); });
       redrawHome();
     }
     else if (v.name === "new") renderView();
@@ -683,7 +684,9 @@
       hit.m.downloaded = true; hit.m.outdated = false; hit.m.is_new = false; hit.m.pages = e.pages || hit.m.pages;
       if (prev.open) call("material_open", e.id);
       delete S.mat[e.id];
-      reloadSoon(hit.cid);
+      // its row shows it already; the course's details once its last file is in (a full sync downloads dozens)
+      const ids = new Set(allMaterials(S.cd[hit.cid]).map((m) => m.id));
+      if (!Object.keys(S.mat).some((id) => ids.has(id) && ["queued", "downloading"].includes(S.mat[id].state))) reloadSoon(hit.cid);
     } else if (e.state === "error" && !e.quiet) {        // quiet: the rest of a batch that stopped for the same reason
       toast(`${hit ? hit.m.title : t.c("noun", "Download")}: ${e.error || t.c("download", "failed")}`, "error");
     }

@@ -1,0 +1,79 @@
+{
+ "id": "UC9rTsvTxJnx1DNrDA3Rqa6A",
+ "channel": "Dr. Trefor Bazett",
+ "channel_id": "UC9rTsvTxJnx1DNrDA3Rqa6A",
+ "title": "Dr. Trefor Bazett",
+ "channel_follower_count": 625000,
+ "uploader_id": "@DrTrefor",
+ "uploader_url": "https://www.youtube.com/@DrTrefor",
+ "channel_is_verified": true,
+ "channel_url": "https://www.youtube.com/channel/UC9rTsvTxJnx1DNrDA3Rqa6A",
+ "_type": "playlist",
+ "thumbnails": [
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 175,
+   "width": 1060,
+   "preference": -10,
+   "id": "0",
+   "resolution": "1060x175"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w1138-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 188,
+   "width": 1138,
+   "preference": -10,
+   "id": "1",
+   "resolution": "1138x188"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w1707-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 283,
+   "width": 1707,
+   "preference": -10,
+   "id": "2",
+   "resolution": "1707x283"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w2120-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 351,
+   "width": 2120,
+   "preference": -10,
+   "id": "3",
+   "resolution": "2120x351"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w2276-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 377,
+   "width": 2276,
+   "preference": -10,
+   "id": "4",
+   "resolution": "2276x377"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=w2560-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+   "height": 424,
+   "width": 2560,
+   "preference": -10,
+   "id": "5",
+   "resolution": "2560x424"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/DZCDxrJ48uiICojdwkzsbVeDtKfpxWCioRii9G03prhNIfxPOCy_kzLO7OiNGYjzFZQusSzh0A=s0",
+   "id": "banner_uncropped",
+   "preference": -5
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/ytc/AIdro_lAOi_1eAO-NKrsecIaYKpj05qQlLen6MFoxZv0kp-NWw=s900-c-k-c0x00ffffff-no-rj",
+   "height": 900,
+   "width": 900,
+   "id": "7",
+   "resolution": "900x900"
+  },
+  {
+   "url": "https://yt3.googleusercontent.com/ytc/AIdro_lAOi_1eAO-NKrsecIaYKpj05qQlLen6MFoxZv0kp-NWw=s0",
+   "id": "avatar_uncropped",
+   "preference": 1
+  }
+ ]
+}

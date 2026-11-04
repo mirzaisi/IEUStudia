@@ -21,7 +21,7 @@ import threading
 import time
 import weakref
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from .i18n import t
 from .winutil import instance_name  # noqa: F401 - the same name on every system
@@ -423,6 +423,17 @@ def run_in_terminal(cmd: list[str], env: Optional[dict[str, str]] = None) -> boo
 def set_low_priority(on: bool) -> None:
     """Nothing on Linux: a process can lower its priority but not raise it back without privileges, and the
     scheduler already shares the processor fairly with the programs you use."""
+
+
+def native_thread_ids() -> set[int]:
+    """Nothing to raise on Linux (see drive_card)."""
+    return set()
+
+
+def drive_card(thread_ids: Iterable[int], on: bool = True) -> int:
+    """Nothing on Linux: the process isn't lowered while it transcribes (set_low_priority), so neither are the threads
+    that drive the graphics card."""
+    return 0
 
 
 @contextlib.contextmanager

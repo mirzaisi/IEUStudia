@@ -113,13 +113,24 @@ def extract_pages(path: Path) -> list[str]:
     return []
 
 
+PAGE_COPIES = 1500              # page pictures kept (about 150 KB each); beyond that the oldest go
+
+
 def page_image(pdf_path: Path, page_no: int, width: int = 1280) -> Optional[Path]:
-    """A JPEG of one PDF page (cached), for Claude to look at diagrams, tables and handwriting."""
+    """A JPEG of one PDF page (cached under a name that stays the same between runs), for Claude to look at
+    diagrams, tables and handwriting."""
+    import hashlib
+
     cache = app_dir() / "cache" / "pages"
     cache.mkdir(parents=True, exist_ok=True)
-    out = cache / f"{safe_name(pdf_path.stem, 60)}-{abs(hash(str(pdf_path))) % 10**8}-{page_no}-{width}.jpg"
+    key = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:10]
+    out = cache / f"{safe_name(pdf_path.stem, 60)}-{key}-{page_no}-{width}.jpg"
     if out.exists() and out.stat().st_mtime >= pdf_path.stat().st_mtime:
         return out
+    if sum(1 for _ in os.scandir(cache)) > PAGE_COPIES + 100:          # now and then, not for every page
+        from .ai import _prune_copies
+
+        _prune_copies(cache, PAGE_COPIES)
     import av
     import pypdfium2 as pdfium
 

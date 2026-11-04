@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import __version__, store, views
+from . import __version__, net, store, views
 from .cancel import Cancelled
 from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
@@ -24,7 +24,9 @@ from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_prior
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
-EVENT_GAP_S = 0.15           # the page gets its events at most this often (each time all that came, coalesced)
+# the page gets its events at most this often (each time all that came, coalesced); a running job reports every 0.25 s,
+# so more often only meant more calls into the window (each one waits for its thread and Python's lock)
+EVENT_GAP_S = 0.25
 _EVENTS_JS = ("(function (a) { var f = window.__lsEvent; if (!f) return; "
               "for (var i = 0; i < a.length; i++) { try { f(a[i]); } catch (x) { console.error(x); } } })(%s)")
 
@@ -68,6 +70,8 @@ class Api:
         self._mat_queue: list[str] = []
         self._mat_running = False
         self._restart = False             # switching profiles: app.py starts a fresh copy once the window closed
+        self._close_ok = False            # closing while lectures are transcribed: you said so (see ask_close)
+        self._close_asked = self._close_seen = 0.0
         self._open_target = ""            # --open course:<id> (a notification was clicked)
         self._setup_cancel: Optional[threading.Event] = None
         self._setup_running = False
@@ -276,10 +280,18 @@ class Api:
                     latest[e["type"]] = e
                 else:
                     ordered.append(e)
+            # every course's view (~100 KB): only the newest goes, where the last one was; one built now if courses
+            # changed since (a job ended) is newer still
+            at = max((i for i, e in enumerate(ordered) if e.get("type") == "courses"), default=-1)
+            ordered = [e for i, e in enumerate(ordered) if i == at or e.get("type") != "courses"]
             out = ordered + list(latest.values())
             if self._courses_dirty.is_set():
                 self._courses_dirty.clear()
-                out.append({"type": "courses", "courses": self._course_views()})
+                fresh = {"type": "courses", "courses": self._course_views()}
+                if at >= 0:
+                    out[next(i for i, e in enumerate(out) if e.get("type") == "courses")] = fresh
+                else:
+                    out.append(fresh)
             if self._window is None:
                 continue
             run = getattr(self._window, "run_js", None) or self._window.evaluate_js   # (waits for the page too)
@@ -787,6 +799,31 @@ class Api:
         except Exception:  # noqa: BLE001 - the window is already gone
             log.debug("closing for restart failed", exc_info=True)
 
+    # ------------------------------------------------------------------ closing while lectures are transcribed
+    def _ask_close(self) -> bool:
+        """app.py: the window is closed while lectures are transcribed. True: the page asks (web/failsafe.js) and
+        close_now closes the window. False: the page didn't show the last question (it is stuck or still starting):
+        app.py asks in a window of its own."""
+        now = time.monotonic()
+        if self._close_asked and self._close_seen < self._close_asked and now - self._close_asked > 3:
+            return False
+        self._close_asked = now
+        self._push({"type": "close-ask"})
+        return True
+
+    def close_seen(self) -> dict[str, Any]:
+        self._close_seen = time.monotonic()
+        return {"ok": True}
+
+    @safe
+    def close_now(self, dont_ask: bool = False) -> dict[str, Any]:
+        """Close although lectures are transcribed (they go on where they stopped next time)."""
+        if dont_ask:
+            self._s.update_settings({"ask_before_closing": False})
+        self._close_ok = True
+        threading.Thread(target=self._close_for_restart, name="close", daemon=True).start()
+        return {"ok": True}
+
     @safe
     def profile_remove(self, profile_id: str) -> dict[str, Any]:
         from . import accounts
@@ -805,11 +842,18 @@ class Api:
         """One sync (the caller holds ``_sync_lock``; released here). True when it worked. ``quiet``: started by the
         app itself (the page then shows errors in the top bar only)."""
         q = {"quiet": True} if quiet else {}
+
+        def again(fn: Callable[[], Any], partial: Callable[[Any], bool]) -> Any:
+            # no internet connection (the PC just woke up, say): a sync you asked for waits for it and goes on
+            return fn() if quiet else net.until_online(fn, lambda: self._push({
+                "type": "sync", "phase": "progress", "offline": True,
+                "message": t("Waiting for the internet connection. The sync goes on by itself.")}), partial)
         try:
             self._push({"type": "sync", "phase": "start", "message": t("Syncing…"), **q})
-            res = self._s.sync.sync(
+            res = again(lambda: self._s.sync.sync(
                 lambda m: self._push({"type": "sync", "phase": "progress", "message": m, **q}),
-                lambda ids: self._push({"type": "courses", "courses": self._course_views()}))
+                lambda ids: self._push({"type": "courses", "courses": self._course_views()})),
+                lambda r: bool(r.errors))
             course_views = self._course_views()
             self._push({"type": "courses", "courses": course_views})
             new = self._own_new(course_views, res.new_ids)
@@ -820,8 +864,8 @@ class Api:
                         "errors": res.errors, **q})
             # then each course's weekly materials, announcements, outcomes (listed, nothing downloaded)
             self._push({"type": "content", "phase": "start", **q})
-            content = self._s.sync.sync_content()
-            self._push({"type": "courses", "courses": self._course_views()})
+            content = again(self._s.sync.sync_content, lambda c: bool(c["errors"]))
+            self._courses_dirty.set()                     # (built once with whatever else changed meanwhile)
             self._push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
                         "new_announcements": len(content["new_announcements"]), "errors": content["errors"], **q})
             return True
@@ -1130,14 +1174,28 @@ class Api:
 
             try:
                 self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0})
-                for wait in (5, 15, 30, 0):            # no connection (Wi-Fi coming back after sleep): wait it out
+                waits = [5, 15, 30]                    # no connection (Wi-Fi coming back after sleep): wait it out
+                while True:
                     try:
                         path = self._s.materials.download(rid, session, progress)
                         break
                     except NetworkError:               # no connection, or a timeout
-                        if not wait:
+                        if waits:
+                            time.sleep(waits.pop(0))
+                            continue
+                        if net.online():               # the internet is there, IEULearn isn't
                             raise
-                        time.sleep(wait)
+                    # none at all, for longer (the PC asleep): the files wait for it, then go on by themselves
+                    with self._mat_lock:
+                        rest = self._mat_queue[:]
+                    for one in [rid, *rest]:
+                        self._push({"type": "material", "id": one, "state": "queued", "offline": True})
+                    net.wait_online()
+                    waits = [5, 15, 30]
+                    self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0,
+                                "offline": False})
+                    for one in rest:
+                        self._push({"type": "material", "id": one, "state": "queued", "offline": False})
                 pages = self._s.materials.index_text(rid)
                 self._push({"type": "material", "id": rid, "state": "done", "path": str(path), "pages": pages})
             except NetworkError as exc:                # still none: the rest would fail the same way, say it once
@@ -1298,8 +1356,10 @@ class Api:
         return {"ok": True, "estimate": est, "ai": claude_info(), "model": self._s.settings.ai_model}
 
     @safe
-    def ai_notes(self, day_key: str, template: str = "notes", include_slides: bool = False) -> dict[str, Any]:
+    def ai_notes(self, day_key: str, template: str = "notes", include_slides: bool = False,
+                 level: str = "") -> dict[str, Any]:
         from .ai import ai_name
+        from .effort import resolve
 
         if self._ai_cancel is not None:
             return {"ok": False, "error": t("{ai} is already working on something.", ai=ai_name())}
@@ -1307,13 +1367,15 @@ class Api:
         cancel = threading.Event()
         self._ai_cancel = cancel
         kind = {"kind": template, "label": t(NOTE_KINDS[template])}
+        level = resolve("chat", level, settings=self._s.settings)      # this request's reasoning level, else Settings'
 
         def run() -> None:
             try:
                 self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": "", **kind})
                 path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
                                         lambda so_far: self._push({"type": "ai", "phase": "progress",
-                                                                   "day_key": day_key, "text": so_far, **kind}))
+                                                                   "day_key": day_key, "text": so_far, **kind}),
+                                        effort=level)
                 text = path.read_text(encoding="utf-8")
                 cards = {}
                 if template == "flashcards":                  # to practise them one by one
@@ -1404,6 +1466,11 @@ class Api:
         data = p.pop("data", {}) or {}
         p["concepts"] = (data.get("concepts") or {}).get("concepts", [])
         p["stages_done"] = [s for s in ("gather", "concepts", "search", "inspect", "verify") if s in data]
+        kind = (p.get("scope") or {}).get("kind")
+        if kind in ("pack", "sheet"):                     # a study pack's chapters (a cheatsheet's topics) so far
+            from .studypack import progress_info
+
+            p.update(progress_info(data, kind))
         return {"ok": True, "plan": p}
 
     @safe
@@ -1457,6 +1524,98 @@ class Api:
         open_path(f)
         return {"ok": True}
 
+    # ------------------------------------------------------------------ YouTube choices for video plans (ytprefs.py)
+    @safe
+    def yt_prefs(self) -> dict[str, Any]:
+        from . import ytprefs
+
+        return {"ok": True, "prefs": ytprefs.load().to_json()}
+
+    @safe
+    def yt_set_lang(self, lang: str) -> dict[str, Any]:
+        from . import ytprefs
+
+        return {"ok": True, "prefs": ytprefs.set_lang(str(lang or "")).to_json()}
+
+    @safe
+    def yt_channel_search(self, query: str) -> dict[str, Any]:
+        from . import videos
+
+        try:
+            found = videos.search_channels(str(query or ""), 8)
+        except videos.VideoError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "channels": [c.to_json() for c in found]}
+
+    @safe
+    def yt_channel_set(self, channel: dict[str, Any], which: str = "") -> dict[str, Any]:
+        """A channel on the preferred ("allow") or never-shown ("block") list, or off both (""). From a video card
+        only its id and name may be known: its picture is looked up (cached)."""
+        from . import videos, ytprefs
+
+        ch = {k: v for k, v in dict(channel or {}).items() if v}
+        if which and not ch.get("avatar"):
+            try:
+                found = videos.channel(str(ch.get("id") or ""))
+            except videos.VideoError:
+                found = None
+            if found is not None:
+                ch = {**found.to_json(), **ch, "avatar": found.avatar}
+        try:
+            prefs = ytprefs.set_channel(ch, which or None)
+        except ValueError:
+            return {"ok": False, "error": t("That isn't a YouTube channel.")}
+        return {"ok": True, "prefs": prefs.to_json()}
+
+    # ------------------------------------------------------------------ study packs (studypack.py; built as plans)
+    @safe
+    def pack_options(self, course_id: str) -> dict[str, Any]:
+        from . import studypack
+        from .ai import claude_info
+
+        return {"ok": True, **studypack.options(self._s.lib, self._s.settings, course_id), "ai": claude_info(),
+                "model": self._s.settings.plan_model or self._s.settings.ai_model}
+
+    @safe
+    def pack_doc(self, plan_id: str) -> dict[str, Any]:
+        """The study pack's document for its page (the same HTML as its file)."""
+        from .studypack import shown_body
+
+        p = self._s.lib.plan(plan_id)
+        if p is None:
+            return {"ok": False, "error": t("This plan no longer exists.")}
+        return {"ok": True, "html": shown_body(self._s, p)}
+
+    @safe
+    def pack_pdf(self, plan_id: str, how: str = "open") -> dict[str, Any]:
+        """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save") or shown in its
+        folder ("folder"). It is printed again when it is missing."""
+        import shutil
+
+        import webview
+
+        from .studypack import make_pdf
+
+        p = self._s.lib.plan(plan_id)
+        if p is None:
+            return {"ok": False, "error": t("This plan no longer exists.")}
+        pdf = make_pdf(self._s, p)
+        if pdf is None:
+            return {"ok": False, "error": t("The PDF could not be made: Microsoft Edge was not found.")}
+        if how == "folder":
+            reveal(pdf)
+        elif how == "save":
+            to = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(Path.home() / "Downloads"),
+                                                 save_filename=pdf.name)
+            to = to[0] if isinstance(to, (list, tuple)) else to
+            if not to:
+                return {"ok": True, "saved": ""}
+            shutil.copyfile(pdf, to)
+            return {"ok": True, "saved": str(to)}
+        else:
+            open_path(pdf)
+        return {"ok": True}
+
     # ------------------------------------------------------------------ weekly digest
     @safe
     def digest(self, offset: int = 0) -> dict[str, Any]:
@@ -1470,11 +1629,12 @@ class Api:
         return {"ok": True, "digest": d, "summary": saved}
 
     @safe
-    def digest_summary(self, offset: int = 0) -> dict[str, Any]:
+    def digest_summary(self, offset: int = 0, level: str = "") -> dict[str, Any]:
         """A short written summary of the week by the chosen AI (light model); saved, and written to the output
-        folder."""
+        folder. ``level``: its reasoning level (effort.py; "" = the one in Settings)."""
         from .ai import ai_name, claude_info, model_label, one_shot
         from .digest import digest_markdown, digest_prompt, weekly_digest
+        from .effort import resolve
 
         if not claude_info()["available"]:
             return {"ok": False, "error": t("Set up AI in Settings → AI first.")}
@@ -1484,18 +1644,19 @@ class Api:
         self._ai_cancel = cancel
         offset = int(offset or 0)
         model = getattr(self._s.settings, "ai_model_light", "") or "haiku"
+        level = resolve("digest", str(level or ""), settings=self._s.settings)
 
         def run() -> None:
             try:
                 d = weekly_digest(self._s.lib, self._s.settings, offset)
                 self._push({"type": "digest", "phase": "start", "offset": offset, "text": ""})
                 res = one_shot("You write brief, accurate study digests for a university student, in Markdown.",
-                               [{"type": "text", "text": digest_prompt(d)}], model, "low", cancel,
+                               [{"type": "text", "text": digest_prompt(d)}], model, level, cancel,
                                lambda so_far: self._push({"type": "digest", "phase": "progress", "offset": offset,
                                                           "text": so_far}),
                                think=False)          # a short summary of the facts given: no extended thinking
                 text = (res.get("text") or "").strip()
-                saved = {"text": text, "model": model_label(model), "at": dt.datetime.now().isoformat(timespec="seconds"),
+                saved = {"text": text, "model": model_label(model, level), "at": dt.datetime.now().isoformat(timespec="seconds"),
                          "usage": res.get("usage") or {}}
                 folder = self._s.output_root / "Weekly digests"
                 folder.mkdir(parents=True, exist_ok=True)
@@ -1526,10 +1687,10 @@ class Api:
 
     @safe
     def chat_estimate(self, course_id: str, day_keys: list[str], focus: str = "full",
-                      slides: bool = False) -> dict[str, Any]:
+                      slides: bool = False, send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         keys = self._s.chat.all_days(course_id) if focus == "course" else list(day_keys or [])
         days = self._s.chat.ordered_days(course_id, keys)
-        ctx = self._s.chat.context(course_id, days, focus, bool(slides))
+        ctx = self._s.chat.context(course_id, days, focus, bool(slides), send)
         return {"ok": True, "tokens": ctx["tokens"] if days else 0, "images": len(ctx["images"]),
                 "slides_total": ctx["slides_total"], "days": len(days)}
 
@@ -1545,10 +1706,17 @@ class Api:
 
     @safe
     def chat_create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
-                    model: Optional[str] = None) -> dict[str, Any]:
+                    model: Optional[str] = None, level: str = "",
+                    send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         chat = self._s.chat.create(course_id, list(day_keys or []), focus, bool(slides),
-                                   model or self._s.settings.ai_model)
+                                   model or self._s.settings.ai_model, level or "", send=send)
         return {"ok": True, "chat": chat}
+
+    @safe
+    def chat_slides(self, course_id: str, day_keys: list[str], focus: str = "full", captured: bool = False,
+                    send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """The "send slides" chooser: the course's slide files and what the choice adds to the chat."""
+        return {"ok": True, **self._s.chat.slide_options(course_id, list(day_keys or []), focus, bool(captured), send)}
 
     @safe
     def chat_send(self, chat_id: str, text: str) -> dict[str, Any]:

@@ -1,0 +1,58 @@
+/* IEUStudia — YouTube choices in Settings and a plan's videos as a playlist (youtube.js) */
+
+/* a channel's picture, or its initial */
+.yt-av { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; flex: none; background: var(--surface-3);
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; }
+.yt-av.lg { width: 40px; height: 40px; }
+.yt-av-none { font: 600 11px/1 var(--sans, inherit); color: var(--text-2); }
+.yt-av-none.lg { font-size: 16px; }
+
+/* Settings → YouTube videos */
+.yt-lists { align-items: flex-start; }
+.yt-lists .t { display: flex; align-items: center; gap: 6px; }
+.yt-chs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.yt-ch { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 2px 0 5px; border-radius: 15px;
+  border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; max-width: 100%; }
+.yt-ch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.yt-ch .btn.icon.xs { width: 22px; height: 22px; padding: 0; min-height: 0; border-radius: 50%; }
+.yt-search { padding: 13px 0 2px; border-top: 1px solid var(--border); }
+.yt-search-f { display: flex; gap: 8px; }
+.yt-search-f .input { flex: 1; min-width: 0; }
+.yt-found { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.yt-found-row { display: flex; align-items: center; gap: 12px; padding: 8px; border-radius: 10px; }
+.yt-found-row:hover { background: var(--surface-2); }
+.yt-found-row .grow { min-width: 0; }
+.yt-found-row b { overflow-wrap: anywhere; }
+.yt-found-acts { display: flex; gap: 6px; flex: none; }
+.yt-found-acts .btn.on { border-color: var(--text); font-weight: 600; }
+
+/* a plan's videos: the playlist head, the channel line, the numbers and what each covers */
+.yt-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 0 0 10px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--surface-2); }
+.yt-head .grow { min-width: 0; }
+.yt-head + .note-sm { margin: -4px 0 10px; }
+.yt-head + .note-sm .link, .note-sm .link { font-size: inherit; }
+.yt-by { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-weight: 500; vertical-align: middle; }
+.yt-pref { color: var(--amber); display: inline-flex; }
+.yt-stats { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.yt-covers { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.yt-covers .i { align-self: center; flex: none; color: var(--text-3); }
+.yt-covers b { color: var(--text); font-weight: 600; }
+
+/* the ⋯ menu of a video: prefer / never show its channel */
+.pl-it-title .yt-menu { margin-left: auto; flex: none; position: relative; align-self: flex-start; }
+.yt-menu summary { list-style: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.yt-menu summary::-webkit-details-marker { display: none; }
+.yt-menu-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 230px; padding: 5px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow, 0 8px 24px rgba(0, 0, 0, .18));
+  display: flex; flex-direction: column; }
+.yt-menu-it { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 7px 9px; border-radius: 7px;
+  font: inherit; font-size: 13px; color: var(--text); text-align: left; cursor: pointer; }
+.yt-menu-it:hover:not(:disabled) { background: var(--surface-2); }
+.yt-menu-it:disabled { color: var(--text-3); cursor: default; }
+
+@media (max-width: 700px) {
+  .yt-found-row { flex-wrap: wrap; }
+  .yt-found-acts { width: 100%; justify-content: flex-end; }
+  .yt-head { flex-wrap: wrap; }
+}

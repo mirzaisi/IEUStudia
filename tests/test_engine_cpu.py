@@ -164,5 +164,7 @@ def test_a_pc_with_little_memory_keeps_one_decoded_lecture(tmp_path, monkeypatch
                                    lambda did: {}, lambda *a: [])
     monkeypatch.setattr(jobs, "_memory_gb", lambda: 3.9)
     assert make()._places == 1
-    monkeypatch.setattr(jobs, "_memory_gb", lambda: 15.7)
+    monkeypatch.setattr(jobs, "_memory_gb", lambda: 7.7)
     assert make()._places == jobs.DECODED_MAX == 2
+    monkeypatch.setattr(jobs, "_memory_gb", lambda: 15.7)      # one more: a second lecture on the graphics card
+    assert make()._places == 3

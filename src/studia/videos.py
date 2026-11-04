@@ -5,9 +5,13 @@ video or audio: a search is one results page; an inspection is the watch page an
 caption file (json3, else vtt / srv1 / ttml). The captions are a human track in a preferred language, else the
 video's original automatic track; YouTube's machine translations (~150 languages) are never used.
 
+What a candidate is judged by: on the results page its title, channel, duration, views and description snippet
+(:func:`rank`); once inspected also its description, chapters, tags, likes, subscribers, spoken language and captions
+(:func:`windows` finds the parts that talk about a concept; plans.py has the AI check them).
+
 Everything is cached under ``<app>/cache/videos``: searches for 7 days, inspections for 30 (3 when a video has
-no captions yet: YouTube may still generate them). ``yt_dlp`` is imported lazily - it takes ~0.5 s to import
-and only study plans need it.
+no captions yet: YouTube may still generate them), channels for 30. ``yt_dlp`` is imported lazily - it takes
+~0.5 s to import and only study plans need it.
 """
 
 from __future__ import annotations
@@ -56,8 +60,14 @@ EDU_CHANNELS = (
     "CrashCourse", "Computerphile", "Numberphile", "freeCodeCamp.org",
 )
 
-# rank(): weights of the heuristic
+# rank(): weights of the heuristic. Views count on a log scale up to VIEWS_CAP (10 million), and only as far as the
+# title or description is about the terms (popularity never lifts an unrelated video); likes per view (known once a
+# video is inspected) say how viewers received it; a clickbait title costs CLICKBAIT_PENALTY per sign of it.
 TITLE_WEIGHT, DESCRIPTION_WEIGHT, VIEWS_WEIGHT, EDU_BOOST = 3.0, 0.75, 0.3, 1.0
+VIEWS_CAP, RECEPTION_WEIGHT, CLICKBAIT_PENALTY, MAX_CLICKBAIT = 7.0, 1.0, 1.0, 3
+ALLOW_BOOST = 3.0                      # a channel the student prefers (ytprefs)
+LANG_PENALTY = 4.0                     # a title in the other language (a plan for English or Turkish videos only)
+CHANNEL_TTL_S = 30 * 86400
 # windows(): bonuses, and when overlapping windows merge (at most MAX_REGION_WINDOWS x window_s long)
 COVERAGE_BONUS, CHAPTER_BONUS, MERGE_FRACTION, MAX_REGION_WINDOWS = 1.0, 2.0, 0.5, 2.0
 # cues: fragments shorter than TINY_CUE_CHARS join a neighbour less than MERGE_GAP_S away
@@ -77,6 +87,8 @@ class VideoHit:
     upload_date: str = ""                  # "YYYYMMDD"; usually "" (results pages only say "3 years ago")
     description: str = ""                  # the results page's snippet
     query: str = ""                        # the search that found it
+    channel_id: str = ""                   # "UC…"; "" in searches cached by older versions
+    like_count: Optional[int] = None       # never on a results page (known once inspected)
 
     def to_json(self) -> dict[str, Any]:
         return dc.asdict(self)
@@ -84,6 +96,25 @@ class VideoHit:
     @staticmethod
     def from_json(d: dict[str, Any]) -> "VideoHit":
         return VideoHit(**_known(VideoHit, d))
+
+
+@dc.dataclass
+class Channel:
+    """A YouTube channel, as the student sees it in Settings and on a video card."""
+
+    id: str                                # "UC…"
+    name: str
+    handle: str = ""                       # "@DrTrefor"
+    avatar: str = ""                       # its picture on YouTube's image servers (88 px); "" if unknown
+    followers: Optional[int] = None
+    verified: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        return dc.asdict(self)
+
+    @staticmethod
+    def from_json(d: dict[str, Any]) -> "Channel":
+        return Channel(**_known(Channel, d))
 
 
 @dc.dataclass
@@ -119,6 +150,10 @@ class VideoInfo:
     caption_lang: str = ""                 # language of the cues, e.g. "en"
     caption_kind: str = ""                 # "manual" | "auto" | "" (no usable captions)
     fetched_at: str = ""                   # when it was inspected (ISO)
+    like_count: Optional[int] = None       # None: hidden or unknown
+    channel_followers: Optional[int] = None
+    tags: list[str] = dc.field(default_factory=list)          # the creator's keywords (at most 20)
+    categories: list[str] = dc.field(default_factory=list)    # e.g. ["Education"]
 
     @property
     def has_captions(self) -> bool:
@@ -150,6 +185,7 @@ def _known(cls: Any, d: dict[str, Any]) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ small helpers
 _ID = re.compile(r"[A-Za-z0-9_-]{11}")
+_CHANNEL_ID = re.compile(r"UC[A-Za-z0-9_-]{22}")
 _ID_IN_URL = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/|/embed/|/live/|/v/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
 
 
@@ -331,7 +367,13 @@ def _hit(e: Any, query: str) -> Optional[VideoHit]:
     if "/shorts/" in url or 0 < duration < MIN_DURATION_S:
         return None
     return VideoHit(vid, _line(e.get("title")), _line(e.get("channel") or e.get("uploader")), duration,
-                    watch_url(vid), _int(e.get("view_count")), _date(e), _line(e.get("description"))[:300], query)
+                    watch_url(vid), _int(e.get("view_count")), _date(e), _line(e.get("description"))[:300], query,
+                    _channel_id(e.get("channel_id")))
+
+
+def _channel_id(value: Any) -> str:
+    value = str(value or "")
+    return value if _CHANNEL_ID.fullmatch(value) else ""
 
 
 # ------------------------------------------------------------------ inspect
@@ -378,10 +420,13 @@ def _video_info(vid: str, raw: dict[str, Any]) -> VideoInfo:
     duration = _num(raw.get("duration"))
     return VideoInfo(
         id=vid, title=_line(raw.get("title")), channel=_line(raw.get("channel") or raw.get("uploader")),
-        channel_id=str(raw.get("channel_id") or ""), duration_s=duration, url=watch_url(vid), upload_date=_date(raw),
+        channel_id=_channel_id(raw.get("channel_id")), duration_s=duration, url=watch_url(vid), upload_date=_date(raw),
         view_count=_int(raw.get("view_count")), language=_language(raw),
         description=str(raw.get("description") or "").strip()[:1500],
-        chapters=_chapters(raw.get("chapters"), duration), fetched_at=_now())
+        chapters=_chapters(raw.get("chapters"), duration), fetched_at=_now(),
+        like_count=_int(raw.get("like_count")), channel_followers=_int(raw.get("channel_follower_count")),
+        tags=[_line(x) for x in raw.get("tags") or [] if _line(x)][:20],
+        categories=[_line(x) for x in raw.get("categories") or [] if _line(x)][:5])
 
 
 def _chapters(items: Any, duration: float) -> list[Chapter]:
@@ -889,32 +934,258 @@ def _length_fit(minutes: float, lo: float, hi: float) -> float:
     return max(0.0, 1 - (minutes - hi) / max(90 - hi, 1e-9))
 
 
-def rank(hits: list[VideoHit], terms: list[str], *, prefer_minutes: tuple[float, float] = (3, 25)) -> list[VideoHit]:
-    """Search hits best first by a quick heuristic, before any captions are read: the terms in the title
-    (strong; a phrase's words in another order count half) and the description (weak), a length within
-    ``prefer_minutes`` (< 2 and > 90 minutes are penalised), views (log scale) and a small boost for the
-    :data:`EDU_CHANNELS`. Ties keep their order."""
+_CLICKBAIT = re.compile(
+    r"you won'?t believe|shocking|mind[- ]?blow\w*|gone wrong|must watch|nobody (?:tells|talks)|\binsane\b|"
+    r"\bcrazy\b|\b(?:secret|trick|hack)s?\b|\binstantly\b|easiest way|\b100 ?%|\bguaranteed\b|"
+    r"\b(?:in|under) (?:\d+|one|two|three|five|ten) (?:seconds?|secs?|minutes?|mins?)\b|"
+    r"\b(?:pass|ace) (?:your|any|the|every) (?:exams?|tests?|class)", re.I)
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿⭐⭕]")
+
+
+def clickbait(title: str) -> int:
+    """How many signs of a clickbait title it shows (0-3): its wording ("you won't believe", "in 5 minutes", "trick"),
+    SHOUTING (two or more words of 4+ letters in capitals; an acronym like "KVL" is shorter), "!!" or "?!", emoji."""
+    title = title or ""
+    signs = len({m.group(0).casefold() for m in _CLICKBAIT.finditer(title)})
+    words = re.findall(r"[^\W\d_]{4,}", title)
+    signs += sum(1 for w in words if w.isupper()) >= 2
+    signs += bool(re.search(r"[!?]{2,}", title))
+    signs += bool(_EMOJI.search(title))
+    return min(signs, MAX_CLICKBAIT)
+
+
+def reception(views: Optional[int], likes: Optional[int]) -> float:
+    """How viewers received a video, from its likes per view: +1 (2 % or more like it - well liked for a lesson),
+    +0.5 (1-2 %), 0 (typical, or unknown: hidden likes, or under 2000 views - too few to tell), -1 (under 0.3 %:
+    watched a lot, liked little - often a misleading title or a poor explanation)."""
+    if not views or views < 2000 or likes is None or likes < 0:
+        return 0.0
+    ratio = likes / views
+    return 1.0 if ratio >= 0.02 else 0.5 if ratio >= 0.01 else -1.0 if ratio < 0.003 else 0.0
+
+
+def popularity(views: Optional[int], relevance: float) -> float:
+    """What views add to a video's rank: log scale, capped at 10 million, and only as much as the video is about the
+    terms (``relevance``: the title and description score; a full title match counts fully)."""
+    if not views or views <= 0:
+        return 0.0
+    gate = max(0.0, min(1.0, relevance / TITLE_WEIGHT))
+    return VIEWS_WEIGHT * min(math.log10(1 + views), VIEWS_CAP) * gate
+
+
+_TURKISH_LETTERS = re.compile("[çğışöüÇĞİŞÖÜ]")       # case-sensitive: with IGNORECASE "ı" would match "i"
+_TURKISH_WORDS = re.compile(r"\b(?:ve|ile|nedir|nasıl|konu|anlatım|soru|sorular|çözüm|ders|dersi|örnek|teoremi|kuralı|"
+                            r"devre|türev|olasılık|matris|denklem)\b", re.I)
+
+
+def looks_turkish(title: str) -> bool:
+    """Whether a title looks Turkish (its letters or common words) - a guess before the video is inspected."""
+    return bool(_TURKISH_LETTERS.search(title or "") or _TURKISH_WORDS.search(title or ""))
+
+
+def rank(hits: list[Any], terms: list[str], *, prefer_minutes: tuple[float, float] = (3, 25),
+         allow: Any = None, block: Any = None, lang: str = "") -> list[Any]:
+    """Search hits (or inspected :class:`VideoInfo`) best first by a quick heuristic, before any captions are read:
+    the terms in the title (strong; a phrase's words in another order count half) and the description (weak), a
+    length within ``prefer_minutes`` (< 2 and > 90 minutes are penalised), views (see :func:`popularity`), likes per
+    view once known (:func:`reception`), a penalty for a clickbait title, a small boost for the
+    :data:`EDU_CHANNELS` and a bigger one for the channels the student prefers. ``allow`` / ``block``: callables
+    (channel id, channel name) -> bool; a blocked channel's videos are left out. ``lang`` "en" or "tr": a title that
+    looks like the other language costs LANG_PENALTY (inspection checks the spoken language). Ties keep their order."""
+    return [h for h, _ in ranked(hits, terms, prefer_minutes=prefer_minutes, allow=allow, block=block, lang=lang)]
+
+
+def ranked(hits: list[Any], terms: list[str], *, prefer_minutes: tuple[float, float] = (3, 25),
+           allow: Any = None, block: Any = None, lang: str = "") -> list[tuple[Any, float]]:
+    """:func:`rank` with each video's score: [(video, score)], best first."""
     tl = _terms(terms)
     lo, hi = sorted(float(m) for m in prefer_minutes)
 
-    def score(h: VideoHit) -> float:
+    def score(h: Any) -> float:
         title, desc = " ".join(_tokens(h.title)), " ".join(_tokens(h.description))
         words = set(title.split())
-        s = 0.0
+        rel = 0.0
         for term in tl:
             if term.rx.search(title):
-                s += TITLE_WEIGHT * term.weight
+                rel += TITLE_WEIGHT * term.weight
             elif " " in term.phrase:
                 part = term.phrase.split()
-                s += 0.5 * TITLE_WEIGHT * term.weight * sum(w in words for w in part) / len(part)
+                rel += 0.5 * TITLE_WEIGHT * term.weight * sum(w in words for w in part) / len(part)
             if term.rx.search(desc):
-                s += DESCRIPTION_WEIGHT * term.weight
-        s += _length_fit(h.duration_s / 60, lo, hi)
-        s += VIEWS_WEIGHT * math.log10(1 + h.view_count) if h.view_count and h.view_count > 0 else 0.0
+                rel += DESCRIPTION_WEIGHT * term.weight
+        s = rel + _length_fit(h.duration_s / 60, lo, hi) + popularity(h.view_count, rel)
+        s += RECEPTION_WEIGHT * reception(h.view_count, getattr(h, "like_count", None))
+        s -= CLICKBAIT_PENALTY * clickbait(h.title)
         key = _channel_key(h.channel)
-        return s + (EDU_BOOST if key and key.startswith(_EDU_KEYS) else 0.0)
+        s += EDU_BOOST if key and key.startswith(_EDU_KEYS) else 0.0
+        if lang in ("en", "tr") and looks_turkish(h.title) != (lang == "tr"):
+            s -= LANG_PENALTY
+        return s + (ALLOW_BOOST if allow is not None and allow(getattr(h, "channel_id", ""), h.channel) else 0.0)
 
-    return sorted(hits, key=lambda h: -score(h))                     # sorted() is stable: ties keep their order
+    kept = [h for h in hits if block is None or not block(getattr(h, "channel_id", ""), h.channel)]
+    scored = [(h, round(score(h), 3)) for h in kept]
+    return sorted(scored, key=lambda x: -x[1])                       # sorted() is stable: ties keep their order
+
+
+def in_languages(info: VideoInfo, langs: tuple[str, ...]) -> bool:
+    """Whether a video is in one of ``langs`` (e.g. ("en", "tr")): its spoken language when YouTube says it, else
+    the language of its captions; a video that says neither is given the benefit of the doubt."""
+    wanted = {_base(lang) for lang in langs}
+    if info.language:
+        return _base(info.language) in wanted
+    return not info.caption_lang or _base(info.caption_lang) in wanted
+
+
+def playlist_url(ids: list[str]) -> str:
+    """A link that opens these videos on YouTube as one temporary playlist, in this order (at most 50)."""
+    ids = [v for v in dict.fromkeys(ids) if _ID.fullmatch(v or "")][:50]
+    return f"https://www.youtube.com/watch_videos?video_ids={','.join(ids)}" if ids else ""
+
+
+# ------------------------------------------------------------------ channels
+_AVATAR_SIZE = re.compile(r"=s\d+[^/]*$|=w\d+[^/]*$")
+
+
+def _avatar(thumbs: Any) -> str:
+    """A channel's picture from yt-dlp's thumbnails (the square one, not the banner), 88 px, as an https URL."""
+    items = [x for x in thumbs or [] if isinstance(x, dict) and x.get("url")]
+    square = [x for x in items if x.get("id") == "avatar_uncropped"
+              or (x.get("width") and x.get("width") == x.get("height"))
+              or (not x.get("width") and re.search(r"=s\d+-c", str(x["url"])))]
+    if not square:
+        return ""
+    url = str(square[0]["url"])
+    url = "https:" + url if url.startswith("//") else url
+    if not re.match(r"https://yt\d\.(?:ggpht|googleusercontent)\.com/", url):
+        return ""                                  # only YouTube's image servers
+    return _AVATAR_SIZE.sub("", url) + "=s88-c-k-c0x00ffffff-no-rj"
+
+
+def _channel_of(d: dict[str, Any]) -> Optional[Channel]:
+    cid = _channel_id(d.get("channel_id") or d.get("id"))
+    name = _line(d.get("channel") or d.get("title") or d.get("uploader"))
+    if not cid or not name:
+        return None
+    handle = str(d.get("uploader_id") or "")
+    return Channel(cid, name, handle if handle.startswith("@") else "", _avatar(d.get("thumbnails")),
+                   _int(d.get("channel_follower_count")), bool(d.get("channel_is_verified")))
+
+
+def search_channels(query: str, limit: int = 8, *, cancel: Optional[threading.Event] = None) -> list[Channel]:
+    """Channels for a name (one results page filtered to channels, ~2 s, cached for 7 days) - or the one channel a
+    pasted link ("youtube.com/@handle", ".../channel/UC…") or @handle names."""
+    q = _line(query)
+    if not q:
+        return []
+    if q.startswith("@") or "youtube.com/" in q or _CHANNEL_ID.fullmatch(q):
+        ch = channel(q, cancel=cancel)
+        return [ch] if ch else []
+    limit = max(1, min(int(limit or 8), 20))
+    path = _cache_dir() / "channels" / f"search-{hashlib.sha1(q.casefold().encode('utf-8')).hexdigest()}.json"
+    cached = _read_json(path) if _fresh(path, SEARCH_TTL_S) else None
+    if isinstance(cached, dict) and isinstance(cached.get("channels"), list):
+        return [Channel.from_json(c) for c in cached["channels"][:limit]]
+    _check(cancel)
+    url = f"https://www.youtube.com/results?{urlencode({'search_query': q, 'sp': 'EgIQAg=='})}"   # channels only
+    with _ydl(extract_flat=True, playlistend=limit) as ydl:
+        try:
+            result = ydl.extract_info(url, download=False)
+        except Exception as exc:  # noqa: BLE001 - yt-dlp wraps every failure in DownloadError
+            raise _video_error(exc, N_("YouTube search failed. Try again later.")) from exc
+    out: list[Channel] = []
+    for e in list((result or {}).get("entries") or []):
+        ch = _channel_of(e) if isinstance(e, dict) and e.get("ie_key") in (None, "YoutubeTab") else None
+        if ch is not None and all(c.id != ch.id for c in out):
+            out.append(ch)
+    if out:
+        _write_json(path, {"query": q, "saved_at": _now(), "channels": [c.to_json() for c in out]})
+        for c in out:
+            _remember_channel(c)
+    return out[:limit]
+
+
+def channel(ref: str, *, cancel: Optional[threading.Event] = None) -> Optional[Channel]:
+    """One channel by its id ("UC…"), @handle or link: name, picture and subscribers (~1.5 s; cached for 30 days).
+    None when YouTube doesn't know it."""
+    ref = _line(ref)
+    m = _CHANNEL_ID.search(ref)
+    cid = m.group(0) if m and "/@" not in ref else ""
+    if cid:
+        cached = _read_json(_channel_path(cid)) if _fresh(_channel_path(cid), CHANNEL_TTL_S) else None
+        if isinstance(cached, dict) and cached.get("id") == cid:
+            return Channel.from_json(cached)
+        url = f"https://www.youtube.com/channel/{cid}"
+    else:
+        handle = re.search(r"@([\w.-]{3,30})", ref)
+        if not handle:
+            return None
+        url = f"https://www.youtube.com/@{handle.group(1)}"
+    _check(cancel)
+    with _ydl(extract_flat=True, playlist_items="0") as ydl:
+        try:
+            raw = ydl.extract_info(url, download=False)
+        except Exception as exc:  # noqa: BLE001
+            err = _video_error(exc, N_("Couldn't read this channel from YouTube."))
+            if err.kind == "unavailable":
+                return None
+            raise err from exc
+    ch = _channel_of(raw) if isinstance(raw, dict) else None
+    if ch is not None:
+        _remember_channel(ch)
+    return ch
+
+
+def channels(ids: list[str], *, workers: int = 4, cancel: Optional[threading.Event] = None) -> dict[str, Channel]:
+    """:func:`channel` for several ids at once: {id: Channel} for those YouTube knows (failures are left out)."""
+    found = _run_many([i for i in ids if _CHANNEL_ID.fullmatch(i or "")], lambda i: channel(i, cancel=cancel),
+                      workers, cancel, None, lambda k, r: k)
+    return {k: v for k, v in found.items() if isinstance(v, Channel)}
+
+
+def channel_videos(channel_id: str, query: str, limit: int = 5, *,
+                   cancel: Optional[threading.Event] = None) -> list[VideoHit]:
+    """A search within one channel (the student's preferred ones), like :func:`search`; cached for 7 days."""
+    q = _line(query)
+    if not q or not _CHANNEL_ID.fullmatch(channel_id or ""):
+        return []
+    limit = max(1, min(int(limit or 5), 20))
+    key = hashlib.sha1(f"{channel_id}\n{q.casefold()}".encode("utf-8")).hexdigest()
+    path = _cache_dir() / "search" / f"ch-{key}.json"
+    cached = _read_json(path) if _fresh(path, SEARCH_TTL_S) else None
+    if isinstance(cached, dict) and isinstance(cached.get("hits"), list):
+        return [dc.replace(VideoHit.from_json(h), query=q) for h in cached["hits"][:limit]]
+    _check(cancel)
+    url = f"https://www.youtube.com/channel/{channel_id}/search?{urlencode({'query': q})}"
+    with _ydl(extract_flat=True, playlistend=limit) as ydl:
+        try:
+            result = ydl.extract_info(url, download=False)
+        except Exception as exc:  # noqa: BLE001
+            raise _video_error(exc, N_("YouTube search failed. Try again later.")) from exc
+    hits: list[VideoHit] = []
+    for entry in list((result or {}).get("entries") or []):
+        hit = _hit(entry, q)
+        if hit is not None and all(h.id != hit.id for h in hits):
+            hits.append(dc.replace(hit, channel_id=hit.channel_id or channel_id))
+    if hits:
+        _write_json(path, {"query": q, "channel_id": channel_id, "saved_at": _now(), "hits": [h.to_json() for h in hits]})
+    return hits[:limit]
+
+
+def channel_search_many(pairs: list[tuple[str, str]], limit: int = 4, *, workers: int = 4,
+                        cancel: Optional[threading.Event] = None) -> dict[tuple[str, str], list[VideoHit] | VideoError]:
+    """:func:`channel_videos` for several (channel id, query) pairs in parallel: {pair: hits, or the VideoError}."""
+    return _run_many(pairs, lambda p: channel_videos(p[0], p[1], limit, cancel=cancel), workers, cancel, None,
+                     lambda p, r: p[1])
+
+
+def _channel_path(cid: str) -> Path:
+    return _cache_dir() / "channels" / f"{cid}.json"
+
+
+def _remember_channel(ch: Channel) -> None:
+    """Keeps what a search or lookup told about a channel (a later lookup by id then needs no network)."""
+    if ch.avatar:
+        _write_json(_channel_path(ch.id), ch.to_json())
 
 
 # ------------------------------------------------------------------ cache
@@ -966,6 +1237,8 @@ def _cached_info(vid: str, langs: tuple[str, ...]) -> Optional[VideoInfo]:
     data = _read_json(path)
     if not isinstance(data, dict) or not _fresh(path, INFO_TTL_S if data.get("cues") else NO_CAPTIONS_TTL_S):
         return None
+    if "categories" not in data:
+        return None                    # inspected by a version that didn't keep the likes: read it again
     try:
         info = VideoInfo.from_json(data)
     except (TypeError, ValueError, KeyError):

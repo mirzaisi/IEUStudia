@@ -13,7 +13,7 @@ import threading
 import time
 import weakref
 from html.parser import HTMLParser
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -219,6 +219,71 @@ class _Adapter(HTTPAdapter):
             conn.ca_certs = conn.ca_cert_dir = None   # the context has the bundle: urllib3 would read it again
             return
         super().cert_verify(conn, url, verify, cert)
+
+
+ONLINE_EVERY_S = 10.0           # while the connection is gone, it is looked for this often
+
+
+def connection_lost(exc: BaseException) -> bool:
+    """A connection problem (no network, a timeout, a connection dropped halfway), not an answer from a server."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in (errno.ECONNRESET, errno.ECONNABORTED, errno.ECONNREFUSED,
+                                                      errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH,
+                                                      errno.ETIMEDOUT)
+
+
+def online(timeout: float = 5.0) -> bool:
+    """Panopto or IEULearn answers at all (any answer, an error page too). False only when neither can be reached:
+    Wi-Fi off, the PC just woken from sleep, a VPN switching. A blocked secure connection (an antivirus, a Wi-Fi
+    sign-in page) counts as online: waiting wouldn't fix it."""
+    from .ieulearn import BASE as learn
+    from .panopto import BASE as panopto
+
+    s = plain_session()
+    try:
+        for url in (panopto, learn):
+            try:
+                s.head(url, timeout=(timeout, timeout), allow_redirects=False)
+                return True
+            except requests.exceptions.SSLError:
+                return True
+            except requests.RequestException:
+                continue
+        return False
+    finally:
+        s.close()
+
+
+def wait_online(stop: Callable[[], bool] = lambda: False) -> bool:
+    """Wait until :func:`online`. False when ``stop()`` says to give up first (checked four times a second)."""
+    while not online():
+        end = time.monotonic() + ONLINE_EVERY_S
+        while time.monotonic() < end:
+            if stop():
+                return False
+            time.sleep(min(0.25, ONLINE_EVERY_S))
+    return True
+
+
+def until_online(fn: Callable[[], Any], waiting: Callable[[], None] = lambda: None,
+                 partial: Callable[[Any], bool] = lambda result: False) -> Any:
+    """``fn()``; when it fails for want of any connection (not one server that is down), or comes back
+    ``partial(result)`` (some courses couldn't be reached) while there is none, ``waiting()`` says so, the
+    connection is waited for (a PC asleep for hours: as long as it takes), and ``fn()`` runs again."""
+    while True:
+        try:
+            result = fn()
+        except (requests.RequestException, OSError) as exc:
+            if not connection_lost(exc) or online():
+                raise
+            log.info("No internet connection (%s); waiting for it", exc)
+        else:
+            if not partial(result) or online():
+                return result
+            log.info("The connection went away halfway; waiting for it")
+        waiting()
+        wait_online()
 
 
 def make_session() -> requests.Session:

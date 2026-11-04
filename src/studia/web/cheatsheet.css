@@ -1,0 +1,77 @@
+/* IEUStudia — a cheatsheet (cheatsheet.py): the same HTML and this stylesheet on the app's page and in the file printed
+ * to PDF. On paper: A4, three columns, small type, each entry kept whole, a topic's heading kept with its first entry.
+ * The file is laid out at the paper's width on screen too, so the formulas made smaller to fit their column
+ * (cheatsheet.py FIT_JS) fit on paper. In the app the columns follow the width and the dark theme changes the colours. */
+@page { size: A4; margin: 8mm 8mm 9mm;
+  @bottom-right { content: counter(page) " / " counter(pages); font: 6.5pt "Segoe UI", system-ui, sans-serif; color: #8a8a8a; } }
+
+.cs-doc {
+  --cs-ink: #141414; --cs-dim: #5a5a5a; --cs-line: #dcdcdc; --cs-rule: #e4e4e4; --cs-accent: #1d4ed8; --cs-head-bg: #edf2fe;
+  --cs-def: #1d4ed8; --cs-law: #7c3aed; --cs-method: #047857; --cs-unit: #b45309; --cs-idea: #52606d;
+  color: var(--cs-ink); font: 13.5px/1.42 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; overflow-wrap: break-word;
+}
+:root[data-theme="dark"] .cs-doc {
+  --cs-ink: #ececec; --cs-dim: #a6a6a6; --cs-line: #333; --cs-rule: #2b2b2b; --cs-accent: #93b4ff; --cs-head-bg: #172036;
+  --cs-def: #8fb0ff; --cs-law: #c0a8ff; --cs-method: #5fd6a8; --cs-unit: #f2b366; --cs-idea: #aab6c3;
+}
+
+/* the title line: the course, what the sheet covers, the material and the date */
+.cs-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px;
+  padding-bottom: 4px; margin-bottom: 8px; border-bottom: 1.5px solid var(--cs-ink); }
+.cs-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 1.22em; line-height: 1.25; }
+.cs-course { font-weight: 700; }
+.cs-kind { font-size: .62em; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: #fff; background: var(--cs-accent);
+  border-radius: 3px; padding: .1em .45em; align-self: center; }
+:root[data-theme="dark"] .cs-kind { color: #0b1220; }
+.cs-title b { font-weight: 600; }
+.cs-meta { color: var(--cs-dim); font-size: .84em; }
+
+/* topics in columns */
+.cs-cols { column-width: 300px; column-gap: 22px; column-rule: 1px solid var(--cs-rule); }
+.cs-topic { margin: 0 0 9px; }
+.cs-topic h2 { display: flex; gap: .5em; align-items: baseline; margin: 0 0 2px; padding: 2px 6px 2px 5px; font-size: 1.02em; font-weight: 700; line-height: 1.3;
+  color: var(--cs-accent); background: var(--cs-head-bg); border-left: 3px solid var(--cs-accent); border-radius: 0 3px 3px 0; break-after: avoid; }
+.cs-topic h2 .n { font-variant-numeric: tabular-nums; opacity: .7; }
+.cs-keep, .cs-e { break-inside: avoid; }
+.cs-e { padding: 2px 1px 3px; border-bottom: 1px dotted var(--cs-line); }
+.cs-topic > :last-child, .cs-topic > .cs-keep:last-child > .cs-e { border-bottom: 0; }
+.cs-h { line-height: 1.38; }
+.cs-n { font-weight: 600; }
+.cs-x { display: inline-block; max-width: 100%; vertical-align: baseline; margin-left: .35em; white-space: nowrap; }
+.cs-k { --c: var(--cs-idea); display: inline-block; font-style: normal; font-size: .66em; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--c); border: 1px solid currentColor; border-radius: 3px; padding: 0 .3em; margin-right: .45em; line-height: 1.35; vertical-align: .12em; }
+.cs-definition .cs-k { --c: var(--cs-def); }
+.cs-rule .cs-k { --c: var(--cs-law); }
+.cs-method .cs-k { --c: var(--cs-method); }
+.cs-unit .cs-k { --c: var(--cs-unit); }
+.cs-tex { overflow: hidden; padding-left: .6em; }
+.cs-tex .katex-display, .cs-tex .math-display { margin: 1px 0 2px; text-align: left; overflow: visible; }
+.cs-tex .katex-display > .katex { text-align: left; }
+.cs-doc .katex { font-size: 1.06em; }
+.cs-t { margin-top: 1px; }
+.cs-w, .cs-if { color: var(--cs-dim); font-size: .9em; line-height: 1.35; }
+.cs-w > span { white-space: nowrap; }
+.cs-if b { color: var(--cs-accent); font-weight: 600; margin-right: .15em; }
+
+/* the page of its own (the file and the PDF): the PDF's width on screen too */
+body.cs-page { margin: 0; background: #fff; }
+body.cs-page .cs-doc { width: 194mm; margin: 0 auto; font-size: 7.5pt; line-height: 1.3; }
+body.cs-page .cs-cols { column-count: 3; column-width: auto; column-gap: 4mm; column-rule: .5pt solid #d6d6d6; }
+body.cs-page .cs-head { margin-bottom: 2.4mm; }
+body.cs-page .cs-topic { margin-bottom: 2mm; }
+body.cs-page .cs-e { padding: .5pt 0 1.2pt; }
+body.cs-page .cs-doc .katex { font-size: 1.08em; }
+@media screen { body.cs-page { padding: 8mm 0; } }
+
+/* ------------------------------------------------------------------ the app's page (not in the document) */
+.cs-paper { padding: 22px 26px 26px; min-width: 0; }
+.cs-paper .cs-doc { max-width: none; }
+.cs-topics { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.cs-topics button { border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; border-radius: 999px;
+  padding: 3px 10px; cursor: pointer; display: inline-flex; gap: 6px; align-items: baseline; max-width: 100%; }
+.cs-topics button:hover { border-color: var(--border-strong); color: var(--text); }
+.cs-topics button .pk-n { min-width: 0; }
+.cs-topics button span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal.pd .cp-modes:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }   /* four kinds of plan: two by two */
+@media (max-width: 700px) { .cs-paper { padding: 16px 14px 20px; } }
+.pk-heavy.light > .i { color: var(--blue); }

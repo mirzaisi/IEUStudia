@@ -12,6 +12,7 @@ import pytest
 
 import studia
 from studia import plans, store
+from studia import videos as real_videos
 from studia.ai import parse_json
 from studia.config import Settings
 from studia.coursesite import Resource, Unit
@@ -32,6 +33,8 @@ class Hit:
     upload_date: str = ""
     description: str = ""
     query: str = ""
+    channel_id: str = ""
+    like_count: int = None
 
     def to_json(self):
         return dc.asdict(self)
@@ -56,6 +59,9 @@ class Info:
     view_count: int = 1
     chapters: list = dc.field(default_factory=list)
     cues: list = dc.field(default_factory=lambda: [1])
+    like_count: int = None
+    channel_id: str = ""
+    language: str = ""
 
     @property
     def has_captions(self):
@@ -82,11 +88,27 @@ def fake_videos(calls):
 
     def inspect_many(ids, *, workers=4, langs=("en",), cancel=None, progress=None):
         calls["inspect"] += 1
-        return {i: VIDEOS[i] for i in ids}
+        calls["langs"] = langs
+        return {i: VIDEOS.get(i) or Info(i, "Preferred video", "Preferred channel", 500, channel_id="UC" + "p" * 22,
+                                         like_count=40) for i in ids}
+
+    def rank(hits, terms, allow=None, block=None, **kw):      # as videos.rank does with the channel lists
+        kept = [h for h in hits if not (block and block(h.channel_id, h.channel))]
+        return sorted(kept, key=lambda h: not (allow and allow(h.channel_id, h.channel)))
+
+    def channel_search_many(pairs, limit=4, *, workers=4, cancel=None):
+        calls.setdefault("channel_searches", []).extend(pairs)
+        return {p: [Hit(f"own{i:08d}", f"Preferred: {p[1]}", "Preferred channel", 500, query=p[1], channel_id=p[0])]
+                for i, p in enumerate(pairs)}
 
     m.search_many = search_many
     m.inspect_many = inspect_many
-    m.rank = lambda hits, terms, **kw: list(hits)
+    m.channel_search_many = channel_search_many
+    m.channels = lambda ids, **kw: calls.setdefault("channels", []).extend(ids) or {
+        "UC" + "p" * 22: real_videos.Channel("UC" + "p" * 22, "Preferred channel", avatar="https://yt3.ggpht.com/p=s88")}
+    for name in ("in_languages", "reception", "_terms", "_tokens"):      # pure functions: the real ones
+        setattr(m, name, getattr(real_videos, name))
+    m.rank = rank
     m.windows = lambda info, terms, window_s=180, top=3: [{"start": 30.0, "end": 150.0, "score": 3, "text": f"{info.title} explained"}]
     m.caption_text = lambda info, start=None, end=None: "text"
     m.fmt_ts = lambda s: f"{int(s) // 60}:{int(s) % 60:02d}"
@@ -276,7 +298,7 @@ def test_finished_verify_requests_are_kept_when_a_plan_stops(env, monkeypatch):
     monkeypatch.setattr(plans, "VERIFY_PARALLEL", 1)
     asked, failed = [], []
 
-    def ask(system, prompt, model="sonnet", cancel=None):
+    def ask(system, prompt, model="sonnet", cancel=None, **kw):
         if prompt.startswith("TASK: For each concept, judge"):
             cid = re.search(r"^CONCEPT (c\d)", prompt, re.M).group(1)
             asked.append(cid)
@@ -376,7 +398,7 @@ def test_an_update_tells_claude_about_the_previous_plan(env):
     runner.start(pid)
     wait_done(env.lib, pid)
     seen = []
-    runner._ask = lambda system, prompt, model="sonnet", cancel=None: (seen.append(prompt), fake_ask([])(system, prompt, model))[1]
+    runner._ask = lambda system, prompt, model="sonnet", cancel=None, **kw: (seen.append(prompt), fake_ask([])(system, prompt, model))[1]
     pid2 = runner.create("c", {"weeks": [1], "minutes": 30}, parent_id=pid)
     runner.start(pid2)
     assert wait_done(env.lib, pid2)["status"] == "done"
@@ -386,7 +408,7 @@ def test_an_update_tells_claude_about_the_previous_plan(env):
 def test_cancel_before_it_runs(env):
     gate = threading.Event()
 
-    def slow(system, prompt, model="sonnet", cancel=None):
+    def slow(system, prompt, model="sonnet", cancel=None, **kw):
         gate.wait(5)
         return fake_ask([])(system, prompt, model)
 
@@ -494,7 +516,7 @@ def test_parse_json_finds_the_object():
     assert parse_json("no json") is None
 
 
-def test_exam_prep_pack(env):
+def test_exam_review_sheet(env):
     seen = []
 
     def write(system, content, model="sonnet", effort="low", cancel=None, on_text=None):
@@ -508,11 +530,11 @@ def test_exam_prep_pack(env):
     runner.start(pid)
     assert wait_done(env.lib, pid)["status"] == "done"
     r = env.lib.plan(pid)["result"]
-    assert r["kind"] == "prep" and r["title"] == "Quiz 2 prep pack" and "## Practice" in r["markdown"]
-    assert seen[0][1].startswith("TASK: Write an exam preparation pack") and "[p.1] Bayes theorem" in seen[0][1]
+    assert r["kind"] == "prep" and r["title"] == "Quiz 2 review sheet" and "## Practice" in r["markdown"]
+    assert seen[0][1].startswith("TASK: Write an exam review sheet") and "[p.1] Bayes theorem" in seen[0][1]
     assert env.calls == {"search": 0, "inspect": 0}
-    text = next((env.tmp / "out").rglob("*prep pack.md")).read_text(encoding="utf-8")
-    assert text.startswith("# Quiz 2 prep pack") and "**Solution.** 42" in text
+    text = next((env.tmp / "out").rglob("*review sheet.md")).read_text(encoding="utf-8")
+    assert text.startswith("# Quiz 2 review sheet") and "**Solution.** 42" in text
 
 
 def test_skills_only_in_optional_videos_are_not_called_written():
@@ -527,3 +549,77 @@ def test_skills_only_in_optional_videos_are_not_called_written():
     assert cp["headline"] == ("Covered for Quiz 2, but partly only in optional videos: of the 3 skills found in your "
                               "material, 1 in checked video parts, 2 only in optional videos.")
     assert completeness(cov("video", "supplement", "optional"), Scope(focus="Quiz 2"), "Quiz 2", 30)["level"] == "written"
+
+
+def test_a_plan_sends_its_reasoning_levels(env):
+    from studia import appconfig
+
+    appconfig.update({"ai_provider": "claude"})
+    sent = []
+
+    def ask(system, prompt, model="sonnet", cancel=None, effort="", **kw):
+        sent.append((prompt.split(":", 1)[1].split()[0], effort))
+        return fake_ask([])(system, prompt, model)
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1], "effort": "high", "verify_effort": "medium"})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    assert {e for w, e in sent if w == "For"} == {"medium"}                     # checking the videos
+    assert {e for w, e in sent if w != "For"} == {"high"} and len(sent) >= 3    # the concepts and the plan
+    est = plans.estimate(env.lib, env.svc.settings, "c", {"weeks": [1], "effort": "xhigh"})
+    assert (est["effort"], est["verify_effort"]) == ("xhigh", "low") and est["verify_requests"] >= 1
+
+
+def test_the_videos_language_and_the_channel_lists_in_the_pipeline(env, monkeypatch):
+    from studia import ytprefs
+
+    ytprefs.set_lang("both")                                    # Settings: English and Turkish videos
+    ytprefs.set_channel({"id": "UC" + "k" * 22, "name": "Khan Academy"}, "block")
+    ytprefs.set_channel({"id": "UC" + "p" * 22, "name": "Preferred channel"}, "allow")
+    monkeypatch.setitem(VIDEOS, "v1", dc.replace(VIDEOS["v1"], language="hi", caption_lang="hi"))   # spoken Hindi
+    asked, base = [], fake_ask([])
+
+    def ask(system, prompt, model="sonnet", cancel=None, **kw):
+        asked.append(prompt)
+        raw, usage = base(system, prompt, model, cancel, **kw)
+        if prompt.startswith("TASK: For each concept, judge"):
+            raw = {"verdicts": [*raw["verdicts"], {"concept": "c1", "video": "own00000000", "coverage": "partial",
+                                                   "skills": [1], "start": 0, "end": 400, "quality": 4}]}
+        if prompt.startswith("TASK: Build the final video study plan"):
+            raw = {**raw, "items": [*raw["items"], {"n": 5, "video": "own00000000", "role": "required", "concepts": ["c1"]}]}
+        return raw, usage
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    full = env.lib.plan(pid)
+    assert full["scope"]["video_lang"] == "both" and env.calls["langs"] == ("en", "tr")
+    assert "3 YouTube searches" in asked[0] and "the same in Turkish" in asked[0]
+    # the preferred channel is searched itself, with each topic's first query
+    assert env.calls["channel_searches"] == [("UC" + "p" * 22, "bayes theorem example"),
+                                            ("UC" + "p" * 22, "conditional probability")]
+    cands = full["data"]["search"]
+    assert cands["c1"][0]["id"] == "own00000000"                                   # preferred: first
+    assert all(h["channel"] != "Khan Academy" for hs in cands.values() for h in hs)  # blocked (by name: no id known)
+    vids, excerpts = full["data"]["inspect"]["videos"], full["data"]["inspect"]["excerpts"]
+    assert vids["v1"]["wrong_lang"] and all("v1" not in per for per in excerpts.values())
+    assemble = next(q for q in asked if q.startswith("TASK: Build the final video study plan"))
+    assert "a channel the student prefers" in assemble and "Khan Academy" not in assemble and '- v1 "' not in assemble
+    items = full["result"]["items"]
+    assert [it["video"] for it in items] == ["own00000000"]                        # v2 (blocked), v1 (Hindi) left out
+    assert items[0]["channel_avatar"] == "https://yt3.ggpht.com/p=s88" and items[0]["like_count"] == 40
+    assert items[0]["weeks"] == [1] and env.calls["channels"] == ["UC" + "p" * 22]
+
+
+def test_a_video_in_another_language_is_replaced_by_the_next_candidate(env, monkeypatch):
+    monkeypatch.setattr(plans, "INSPECT", 1)
+    monkeypatch.setitem(VIDEOS, "v1", dc.replace(VIDEOS["v1"], language="hi", caption_lang="hi"))
+    runner = PlanRunner(env.svc, ask=fake_ask([]))
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    data = env.lib.plan(pid)["data"]
+    assert env.calls["inspect"] == 2 and data["inspect"]["videos"]["v1"]["wrong_lang"]
+    assert {c: list(per) for c, per in data["inspect"]["excerpts"].items()} == {"c1": ["v2"], "c2": ["v2"]}

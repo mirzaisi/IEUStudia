@@ -309,35 +309,15 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .md table { border-collapse: collapse; font-size: .93em; min-width: 50%; }
 .md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
 .md th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
-.md .math, .md .math-block { font-family: "Cambria Math", "Cambria", "Times New Roman", serif; }
-.md .math { font-size: 1.06em; padding: 0 2px; }
-.md .math-block { font-size: 1.14em; text-align: center; padding: 10px 12px; margin: 6px 0 12px; overflow-x: auto;
-  background: color-mix(in srgb, var(--text) 4%, transparent); border-radius: 8px; }
-.md .math i, .md .math-block i { font-style: italic; }
-.md .math .up, .md .math-block .up { font-style: normal; }
-.md .math .fn, .md .math-block .fn { margin-right: .17em; }
 .md sup, .md sub { font-size: .72em; line-height: 0; }
-.subsup { display: inline-flex; flex-direction: column; vertical-align: middle; margin: 0 1px; }
-.md .subsup sup, .md .subsup sub { font-size: .68em; line-height: 1.15; vertical-align: baseline; }
-.frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; font-size: .9em; margin: 0 2px; line-height: 1.25; }
-.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 3px 1px; }
-.frac > span:last-child { padding: 1px 3px 0; }
-.frac.binom > span:first-child { border-bottom: 0; }
-.frac .small { font-size: .78em; }
-.boxed { border: 1px solid currentColor; border-radius: 3px; padding: 0 5px; }
-.ubrace { border-bottom: 1.5px solid currentColor; border-radius: 0 0 7px 7px; padding: 0 2px 2px; }
-.obrace { border-top: 1.5px solid currentColor; border-radius: 7px 7px 0 0; padding: 2px 2px 0; }
-.sqrt { border-top: 1px solid currentColor; padding: 0 2px; }
-.ovl { border-top: 1px solid currentColor; }
-.mat { display: inline-grid; gap: 2px 12px; vertical-align: middle; padding: 3px 8px; margin: 2px 3px; text-align: center; line-height: 1.35; }
-.mat.paren { border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor; border-radius: 12px / 50%; }
-.mat.brack, .mat.vbar { border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor; }
-.mat.brack { background: linear-gradient(currentColor, currentColor) left top / 6px 1.5px no-repeat, linear-gradient(currentColor, currentColor) left bottom / 6px 1.5px no-repeat,
-  linear-gradient(currentColor, currentColor) right top / 6px 1.5px no-repeat, linear-gradient(currentColor, currentColor) right bottom / 6px 1.5px no-repeat; }
-.mat.brace, .mat.cases { border-left: 1.5px solid currentColor; border-radius: 8px 0 0 8px / 50% 0 0 50%; }
-.mat.brace { border-right: 1.5px solid currentColor; border-radius: 8px / 50%; }
-.mat.cases, .mat.aligned { text-align: left; }
-.mat.aligned { gap: 4px 4px; padding: 0; }
+/* formulas: KaTeX (vendor/katex, drawn by math.js); a wide one scrolls sideways instead of widening the page */
+.katex { font-size: 1.1em; }
+.math-display, .math-block { display: block; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.math-block { margin: 6px 0 12px; padding: 2px 12px; background: color-mix(in srgb, var(--text) 4%, transparent); border-radius: 8px; }
+.math-display .katex-display, .math-block .katex-display { margin: .5em 0; }
+.math-block.pending { height: 2.6em; background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%; animation: shimmer 1.3s infinite; }
+.math-src { font-family: var(--mono); font-size: .9em; color: var(--text-2); white-space: pre-wrap; }
 .md a.ext { color: var(--accent-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .cite { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 6px 0 5px; margin: 0 1px; border: 0;
   border-radius: 6px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text);
@@ -523,11 +503,22 @@ button.result { display: block; width: 100%; text-align: left; border: 0; border
 .qp-anom { color: var(--text); background: var(--amber-soft); border-radius: var(--radius-sm); padding: 4px 8px; }
 .qp-anom svg { color: var(--warning); flex: none; margin-top: 2px; }
 .qp-done h3 { font-size: 13px; color: var(--text-2); font-weight: 600; margin: 22px 0 8px; }
-.qp-fin { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 4px 2px; }
-.qp-fin.done > svg { color: var(--success); }
-.qp-fin.failed > svg, .qp-fin.processing > svg { color: var(--warning); }
-.qp-fin.cancelled { color: var(--text-3); }
+.qp-fin { font-size: 13px; padding: 4px 2px; }
+.qp-fh { display: flex; align-items: center; gap: 10px; }
+.qp-fh > svg { flex: none; }
+.qp-fin.done .qp-fh > svg { color: var(--success); }
+.qp-fin.failed .qp-fh > svg, .qp-fin.processing .qp-fh > svg { color: var(--warning); }
+.qp-fin.cancelled .qp-fh { color: var(--text-3); }
 .qp-why { color: var(--text-2); font-size: 12.5px; max-width: 50%; }
+.qp-fs { display: block; margin-top: 1px; font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.qp-more svg { transition: transform .15s ease; }
+.qp-fin.open .qp-more svg { transform: rotate(180deg); }
+.qp-fd { margin: 6px 0 6px 26px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.qp-fd .qp-steps { margin-top: 0; }
+.qp-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 10px 0 0; font-size: 12.5px; }
+.qp-dl dt { color: var(--text-3); }
+.qp-dl dd { margin: 0; color: var(--text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.qp-wt { flex: none; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 @container (max-width: 700px) { .qp-now .bar { width: 110px; } }
 .topbar .bg-off { color: var(--text-3); font-weight: 500; }
 @media (max-width: 1220px) { .topbar .bg-off .lbl { display: none; } }     /* the icon and its tooltip stay */
@@ -884,7 +875,7 @@ button.profile > .i { color: var(--text-3); flex: none; }
 .switching .t { font: 600 18px var(--font-display); color: var(--text); margin-top: 6px; }
 .switching .d { font-size: 13px; }
 
-/* ------------------------------------------------------------------ study plans + prep packs */
+/* ------------------------------------------------------------------ study plans + review sheets */
 .pl-head { display: flex; align-items: flex-start; gap: 16px; margin: 4px 0 14px; }
 .pl-head > div { flex: 1; }
 .pl-head h1 { margin: 0 0 2px; font: 600 24px var(--font-display); letter-spacing: -.02em; }
@@ -1401,3 +1392,18 @@ button.link:hover { text-decoration-color: currentColor; }
 .chip.dl-chip { cursor: pointer; border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 12.5px; }
 .chip.dl-chip:hover { border-color: var(--border-strong); }
 .chip.dl-chip.warn { color: var(--warning); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+
+/* reasoning levels (effort.js): Settings → AI, the dialogs' chooser and the composer's chip */
+.eff-intro { display: flex; gap: 6px; align-items: flex-start; padding: 2px 0 10px; }
+.eff-pair { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.eff-pair .eff-sel { width: 140px; }
+.eff-opt .eff-note { margin: 2px 0 0; padding: 8px 10px; font-size: 12px; }
+.eff-cost { margin-top: 2px; }
+.eff-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 32px; padding: 0 2px 0 8px; border-radius: 8px;
+  color: var(--text-2); cursor: pointer; }
+.eff-chip:hover, .eff-chip:focus-within { background: var(--surface-2); }
+.eff-chip.hot { color: var(--warning); }
+.eff-chip select { border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer;
+  max-width: 120px; padding: 0 2px; }
+.eff-chip select option { color: var(--text); background: var(--surface); }
+@media (max-width: 1000px) { .eff-pair .eff-sel { width: 130px; } }
