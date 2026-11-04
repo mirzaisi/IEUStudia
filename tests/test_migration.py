@@ -82,6 +82,7 @@ def test_a_merge_that_fails_keeps_the_old_folder_and_is_tried_again(tmp_path, mo
     _real_mode(tmp_path, monkeypatch)
     old, new = tmp_path / "local" / "Studia", tmp_path / "local" / "IEUStudia"
     (old / "transcripts").mkdir(parents=True)
+    (old / "transcripts" / "t.json").write_text("{}")    # (an empty folder moved first is pruned and made again)
     for name in ("library.db", "settings.json", "secrets.bin"):
         (old / name).write_text(name)
     (new / "logs").mkdir(parents=True)
