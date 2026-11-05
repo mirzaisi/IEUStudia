@@ -35,6 +35,7 @@ from urllib.parse import quote
 from . import store
 from .cancel import Cancelled
 from .i18n import N_, t, tn
+from .notices import ALERTS_MD, KINDS
 
 log = logging.getLogger("studia")
 
@@ -54,7 +55,7 @@ SYSTEM = ("You are an expert university lecturer writing a study pack: a complet
           "engineering student, built only on the course material you are given (where the slides are terse you "
           "explain with standard textbook knowledge, in the course's notation and scope, never contradicting it). "
           "You write LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own) and deliver what is asked "
-          "without asking questions.")
+          "without asking questions.\n\n" + ALERTS_MD)
 
 
 def _level(scope: Any, settings: Any) -> str:
@@ -591,6 +592,8 @@ def _num(v: Any) -> Optional[float]:
 
 
 # ------------------------------------------------------------------ Markdown → HTML (the subset the chapters use)
+ALERT_LABELS = {"note": "Note", "tip": "Tip", "important": "Important", "warning": "Warning", "caution": "Caution"}
+ALERT_SIGNS = {"note": "i", "tip": "✓", "important": "★", "warning": "!", "caution": "×"}
 BOXES = {"definition": "Definition", "key": "Key idea", "example": "Example", "mistake": "Common mistake",
          "check": "Check yourself", "note": "Note", "theorem": "Key idea", "tip": "Note", "warning": "Common mistake"}
 _MATH = re.compile(r"\$\$.+?\$\$|\\\[.+?\\\]|\\\(.+?\\\)|(?<![\\$\w])\$(?=\S)[^$\n]+?(?<=\S)\$(?!\d)", re.S)
@@ -696,6 +699,15 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
             while j < len(lines) and lines[j].strip().startswith(">"):
                 j += 1
             inner = [re.sub(r"^\s*>\s?", "", x) for x in lines[i:j]]
+            m = re.fullmatch(r"\[!(\w+)\]\s*(.*)", inner[0].strip())
+            if m and m.group(1).lower() in KINDS:          # "> [!WARNING]": an alert box (notices.py)
+                kind = m.group(1).lower()
+                title = _inline(m.group(2), keep) if m.group(2) else ALERT_LABELS[kind]
+                out.append(f'<div class="sp-alert sp-alert-{kind}" role="note"><div class="sp-alert-h">'
+                           f'<span class="sp-alert-i" aria-hidden="true">{ALERT_SIGNS[kind]}</span><b>{title}</b></div>'
+                           f'{_blocks(inner[1:], keep, code, figure)}</div>')
+                i = j
+                continue
             out.append(f"<blockquote>{_blocks(inner, keep, code, figure)}</blockquote>")
             i = j
             continue
@@ -870,25 +882,28 @@ def chapter_pages(pdf_path: Path, titles: list[str]) -> dict[int, int]:
     def norm(s: str) -> str:
         return re.sub(r"[^\w]+", "", s).lower()
 
+    from .materials import PDFIUM_LOCK
+
     out: dict[int, int] = {}
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    try:
-        heads = []
-        for i in range(len(pdf)):
-            tp = pdf[i].get_textpage()
-            lines = [x for x in tp.get_text_range().replace("\r", "").split("\n") if x.strip()]
-            tp.close()
-            lines = [x for x in lines if not re.fullmatch(r"\s*\d+\s*(/\s*\d+)?\s*", x)]
-            heads.append(norm(" ".join(lines[:3])))
-        k = 0
-        for n, title in enumerate(titles):
-            want = norm(f"{n + 1}{title}")[:40]
-            for i in range(k, len(heads)):
-                if heads[i].startswith(want):
-                    out[n], k = i + 1, i + 1
-                    break
-    finally:
-        pdf.close()
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        try:
+            heads = []
+            for i in range(len(pdf)):
+                tp = pdf[i].get_textpage()
+                lines = [x for x in tp.get_text_range().replace("\r", "").split("\n") if x.strip()]
+                tp.close()
+                lines = [x for x in lines if not re.fullmatch(r"\s*\d+\s*(/\s*\d+)?\s*", x)]
+                heads.append(norm(" ".join(lines[:3])))
+        finally:
+            pdf.close()
+    k = 0
+    for n, title in enumerate(titles):
+        want = norm(f"{n + 1}{title}")[:40]
+        for i in range(k, len(heads)):
+            if heads[i].startswith(want):
+                out[n], k = i + 1, i + 1
+                break
     return out
 
 
@@ -904,9 +919,11 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         cancel: threading.Event) -> None:
     """Build (or resume) the study pack ``plan``; every finished stage, chapter and figure is saved at once."""
     from .ai import ask_json, one_shot
+    from .plans import model_shown
 
     pid, s = plan["id"], runner._s
     level = _level(scope, s.settings)
+    shown = model_shown(model, level)       # "GPT-6.1-Sol · High", "Sonnet · Low"
     lock = threading.Lock()
 
     def stage(name: str, progress: float, message: str = "") -> None:
@@ -936,7 +953,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     check()
     # outline
     if "outline" not in data:
-        stage("outline", 0.05, t("Planning the chapters ({model})…", model=model))
+        stage("outline", 0.05, t("Planning the chapters ({model})…", model=shown))
         raw, res = (runner._ask or ask_json)(SYSTEM, outline_prompt(scope, facts), model=model, effort=level,
                                             cancel=cancel)
         _usage_add(usage, "outline", res)
@@ -953,7 +970,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
             n = len(done)
             stage("sections", 0.12 + 0.6 * n / len(chapters),
                   t("Writing chapter {n} of {total} ({model})…", n=min(n + 1, len(chapters)), total=len(chapters),
-                    model=model))
+                    model=shown))
 
         def write(ch: dict[str, Any]) -> tuple[str, str, dict]:
             material = chapter_material(s.lib, plan["course_id"], facts, ch)
@@ -996,7 +1013,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     todo = [c for c in chapters if c["id"] not in drawn and any(g["kind"] == "diagram" for g in c["figures"])]
     for n, ch in enumerate(todo):
         stage("figures", 0.74 + 0.16 * n / max(1, len(todo)),
-              t("Drawing the figures of chapter {n} ({model})…", n=chapters.index(ch) + 1, model=model))
+              t("Drawing the figures of chapter {n} ({model})…", n=chapters.index(ch) + 1, model=shown))
         ids = {g["id"] for g in ch["figures"] if g["kind"] == "diagram"}
         res = ask_text(figure_prompt(ch, done.get(ch["id"], "")))
         _usage_add(usage, "figures", res)

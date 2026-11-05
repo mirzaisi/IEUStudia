@@ -177,6 +177,35 @@ def test_a_chat_remembers_its_slides_and_sends_them(env):
     assert opts["modes"]["lecture"] == ["w4"] and opts["summary"]["pages"] == 10 and opts["tokens"] > 0
 
 
+def test_the_slides_chooser_and_a_new_chat_count_the_student_s_files(env, tmp_path, monkeypatch):
+    from studia import chat as chat_mod
+    from studia import chatfiles
+
+    chat = env.svc.create("c", [DAY])
+    book = tmp_path / "book.txt"
+    book.write_text("word " * 4000)
+    chatfiles.add(chat["id"], book, "book.txt")
+    bare = env.svc.slide_options("c", [DAY], send={"mode": "upto"})["tokens"]
+    full = env.svc.slide_options("c", [DAY], send={"mode": "upto"}, uploads=chat["id"])["tokens"]
+    assert full > bare + 1500
+    assert env.svc.slide_options("c", [DAY], send={"mode": "upto"}, uploads="0123456789ab")["tokens"] == bare
+    # a change that goes over the limit is refused, naming the files; one that makes the chat smaller never is
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", full - 10)
+    with pytest.raises(RuntimeError, match=r"don't fit in this chat.*Your files take ~\dk of it: book\.txt\."):
+        env.svc.update(chat["id"], {"send": {"mode": "upto"}})
+    assert "send" not in env.lib.get_chat(chat["id"])["scope"]
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 150_000)
+    env.svc.update(chat["id"], {"send": {"mode": "upto"}})
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 100)
+    assert env.svc.update(chat["id"], {"send": {"mode": "none"}})["send"]["mode"] == "none"
+    # a new chat: its files (under its draft token) are in the estimate and named when it is too big
+    chatfiles.add("draft-0123456789abcdef", book, "book.txt")
+    assert (env.svc.slide_options("c", [DAY], uploads="draft-0123456789abcdef")["tokens"]
+            > env.svc.slide_options("c", [DAY])["tokens"] + 1500)
+    with pytest.raises(RuntimeError, match=r"too much for one chat.*Your files take ~\dk of it: book\.txt\."):
+        env.svc.create("c", [DAY], uploads="0123456789abcdef")
+
+
 def test_page_pictures_keep_their_name_between_runs_and_old_ones_go(tmp_path, monkeypatch):
     import hashlib
     import os

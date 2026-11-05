@@ -28,6 +28,7 @@
     if (todo) notes.push(t.n(todo, "{n} picked lecture was not transcribed, so the cheatsheet doesn't use it.", "{n} picked lectures were not transcribed, so the cheatsheet doesn't use them."));
     if ((r.uncovered || []).length) notes.push(t.html("The AI left these out even when asked a second time: {items}.", { items: r.uncovered.join(", ") }));
     if (!r.pdf) notes.push(t("The PDF wasn't made yet: Save PDF makes it."));
+    if (St.packNotices) return St.packNotices(r, notes);    // coloured, with Download / Transcribe
     return notes.map((n) => `<div class="note-sm">${I("info", "sm")}<span>${n}</span></div>`).join("");
   }
   function sheetView(v) {

@@ -44,8 +44,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from . import aierrors
 from .cancel import Cancelled
 from .i18n import N_, date_short, day_month, language, t
+from .notices import ALERTS_MD
 
 log = logging.getLogger("studia")
 
@@ -55,7 +57,7 @@ SYSTEM_PROMPT = (
     "slides/board shown in the lecture. Produce accurate, well-organised study material in Markdown, with "
     "formulas in LaTeX: $...$ in a sentence, $$...$$ on lines of their own for a displayed formula. Only use what "
     "the transcript and slides support; when you correct an obvious speech-recognition error or are unsure, say "
-    "so briefly. Do not ask questions; deliver the complete result."
+    "so briefly. Do not ask questions; deliver the complete result.\n\n" + ALERTS_MD
 )
 IMAGE_TOKENS = 800          # ~1024x576 image
 CHARS_PER_TOKEN = 3.1       # Claude, measured on compact transcripts (timestamps and Turkish make tokens shorter)
@@ -320,7 +322,21 @@ def friendly_error(message: str) -> str:
         return t("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.")
     if any(k in low for k in ("/login", "not logged in", "invalid api key", "authentication", "oauth")):
         return t("Claude Code is not signed in. Settings → AI → Sign in with Claude.")
+    service = aierrors.from_message("Claude", m)        # "API Error: 500 …", "529 Overloaded": on Anthropic's side
+    if service is not None:
+        return str(service)
     return f"Claude: {m}"[:400] if m else t("Claude did not return an answer.")
+
+
+def _claude_failure(message: str) -> RuntimeError:
+    """Claude Code's error as the exception raised: a ServiceError when it failed on Anthropic's side (Claude Code
+    has already asked again by then), with its own words kept in the log."""
+    text = friendly_error(message)
+    service = aierrors.from_message("Claude", message)
+    if service is not None and text == str(service):
+        log.warning("Claude failed on its side: %s", (message or "")[:800])
+        return service
+    return RuntimeError(text)
 
 
 def usage_of(result: dict[str, Any]) -> dict[str, int]:
@@ -493,7 +509,7 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
     if not result or result.get("is_error") or result.get("subtype") not in (None, "success"):
         msg = result.get("result") or (err.strip().splitlines() or [t("Claude did not return a result.")])[-1]
-        raise RuntimeError(friendly_error(msg))
+        raise _claude_failure(msg)
     return {
         "text": result.get("result") or "".join(text_parts),
         "usage": usage_of(result),
@@ -565,7 +581,7 @@ class ClaudeSession:
         time.sleep(0.1)    # let the stderr reader catch the last lines
         tail = next((ln for ln in reversed(self._stderr) if ln), "")
         log.warning("Claude Code exited (code %s): %s", self._proc.returncode, " | ".join(self._stderr)[-600:])
-        return RuntimeError(friendly_error(tail) if tail else t("Claude Code stopped unexpectedly. Try again."))
+        return _claude_failure(tail) if tail else RuntimeError(t("Claude Code stopped unexpectedly. Try again."))
 
     def alive(self) -> bool:
         return self._proc.poll() is None
@@ -643,7 +659,7 @@ class ClaudeSession:
             text = _join(blocks)
             if interrupted_at is None:
                 if result is None or result.get("is_error") or result.get("subtype") not in (None, "success"):
-                    raise RuntimeError(friendly_error((result or {}).get("result") or ""))
+                    raise _claude_failure((result or {}).get("result") or "")
                 text = text or str(result.get("result") or "")
             return {"text": text, "usage": usage_of(result or {}), "stopped": interrupted_at is not None}
 
@@ -882,7 +898,21 @@ def _codex_error(message: str) -> str:
         return t("The Codex CLI is not signed in. Sign in under Settings → AI.")
     if "not supported" in low and "model" in low:
         return t("Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default.")
+    service = aierrors.from_message("ChatGPT", message)  # "unexpected status 500 …": on OpenAI's side
+    if service is not None:
+        return str(service)
     return f"ChatGPT: {message}"[:400] if message else t("ChatGPT did not return an answer.")
+
+
+def _codex_failure(message: str) -> RuntimeError:
+    """The Codex CLI's error as the exception raised (a ServiceError when it failed on OpenAI's side: the CLI has
+    already asked again by then), with its own words kept in the log."""
+    text = _codex_error(message)
+    service = aierrors.from_message("ChatGPT", message)
+    if service is not None and text == str(service):
+        log.warning("ChatGPT (Codex CLI) failed on its side: %s", (message or "")[:800])
+        return service
+    return RuntimeError(text)
 
 
 def _chatgpt_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
@@ -945,7 +975,7 @@ def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: st
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
     if not texts:
         last = error or next((ln for ln in reversed(err.splitlines()) if "ERROR" in ln and "rmcp" not in ln), "")
-        raise RuntimeError(_codex_error(last))
+        raise _codex_failure(last)
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
             "model": _codex_model() or "Codex's default model"}
 

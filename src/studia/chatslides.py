@@ -194,11 +194,15 @@ class PagePicture:
     pdf: str
     page: int
 
+    def folder(self) -> Optional[Path]:
+        """Where its picture is kept (None: the shared cache of page pictures)."""
+        return None
+
     def path(self) -> Optional[Path]:
         from .materials import page_image
 
         try:
-            return page_image(Path(self.pdf), self.page)
+            return page_image(Path(self.pdf), self.page, folder=self.folder())
         except Exception:  # noqa: BLE001 - a page that can't be drawn goes as text only
             log.debug("Could not draw page %d of %s", self.page, self.pdf, exc_info=True)
             return None
@@ -238,7 +242,8 @@ def build(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, captured
             continue
         pages = _pages(lib, f)
         n_pages += len(pages)
-        files_out.append({"id": f["id"], "title": f["title"], "ext": f["ext"], "pages": len(pages)})
+        files_out.append({"id": f["id"], "title": f["title"], "label": f["label"], "ext": f["ext"], "pages": len(pages),
+                          "path": f["path"]})
         body = []
         for i, text in enumerate(pages, start=1):
             label = f"[{f['label']} p.{i}]"
@@ -266,6 +271,13 @@ def build(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, captured
     video = min(captured, MAX_IMAGES - len(chosen_pics))
     images = [(label, pic) for _, label, pic in chosen_pics]
     text_tokens = ai.text_tokens(text, per) if text else 0
+    left = len(text)
+    for fo, section in zip(files_out, texts):    # each file's share ("What this chat sees"), in the text as sent
+        path = fo.pop("path")
+        fo["text_tokens"] = ai.text_tokens(section[:max(0, left)], per)
+        left -= len(section) + 2
+        fo["pictures"] = sum(1 for _, pic in images if pic.pdf == path)
+        fo["tokens"] = fo["text_tokens"] + fo["pictures"] * ai.IMAGE_TOKENS
     summary = {
         "mode": send["mode"], "images_on": send["images"], "can_images": bool(can_images),
         "files": files_out, "missing": missing, "pages": n_pages, "page_images": len(images),

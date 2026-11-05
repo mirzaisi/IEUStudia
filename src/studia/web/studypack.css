@@ -67,6 +67,23 @@
 .sp-mistake { --c: var(--sp-mis); --bg: var(--sp-mis-bg); }
 .sp-check { --c: var(--sp-chk); --bg: var(--sp-chk-bg); }
 
+/* alerts the AI wrote ("> [!WARNING]", notices.py): note blue, tip green, important violet, warning amber, caution red */
+.sp-alert { --c: #2563eb; --bg: #eff5ff; margin: 1em 0 1.2em; padding: 10px 14px 4px; border: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+  border-left: 4px solid var(--c); background: var(--bg); border-radius: 0 8px 8px 0; break-inside: avoid; }
+.sp-alert-h { display: flex; align-items: center; gap: .45em; color: var(--c); font-size: .9em; margin-bottom: .35em; }
+.sp-alert-i { display: inline-grid; place-items: center; width: 1.25em; height: 1.25em; border-radius: 50%; background: var(--c); color: #fff;
+  font: 700 .8em/1 "Segoe UI", system-ui, sans-serif; flex: none; }
+.sp-alert-tip { --c: #047857; --bg: #effaf5; }
+.sp-alert-important { --c: #7c3aed; --bg: #f5f1ff; }
+.sp-alert-warning { --c: #b45309; --bg: #fff8e6; }
+.sp-alert-caution { --c: #c81e1e; --bg: #fff1f1; }
+:root[data-theme="dark"] .sp-alert { --c: #6aa1ff; --bg: #111a2b; }
+:root[data-theme="dark"] .sp-alert-tip { --c: #4fd1a1; --bg: #0f1f19; }
+:root[data-theme="dark"] .sp-alert-important { --c: #b59cff; --bg: #1a1527; }
+:root[data-theme="dark"] .sp-alert-warning { --c: #f5b84a; --bg: #241b0b; }
+:root[data-theme="dark"] .sp-alert-caution { --c: #ff7b7b; --bg: #2a1212; }
+:root[data-theme="dark"] .sp-alert-i { color: #111; }
+
 /* figures: drawn (SVG), course slides and lecture frames */
 .sp-fig { margin: 1.2em auto 1.4em; text-align: center; break-inside: avoid; }
 .sp-fig svg, .sp-fig img { display: block; margin: 0 auto; max-width: 100%; height: auto; background: #fff; border-radius: 8px; }

@@ -22,7 +22,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from . import ai, chatslides, effort, store
+from . import ai, chatfiles, chatslides, effort, notices, store
+from .catchup import no_sound
 from .domain import Course, Recording
 from .i18n import date_long, date_short, t, tn
 from .knowledge import course_brief, retrieve
@@ -92,6 +93,7 @@ def system_prompt(n_days: int, focus: str, slides: bool) -> str:
         "- For questions about quizzes or exams, first list what the lecturer explicitly said (brief quotes with "
         "citations), then give your own prediction, clearly labelled as a prediction.",
         "- Reply in the language the student writes in.",
+        "- " + notices.ALERTS_MD,
         "",
         "You are inside the IEUStudia app, which can do things for the student. When it would clearly help, or when "
         "the student asks for something the app does, end your answer with ONE block like this; the app shows it as "
@@ -148,6 +150,7 @@ class ChatService:
         except ValueError:
             pass
         threading.Thread(target=_clean_stale_workdirs, daemon=True).start()
+        threading.Thread(target=self._clean_files, daemon=True).start()
         threading.Thread(target=self._reaper, name="chat-reaper", daemon=True).start()
 
     @property
@@ -179,17 +182,25 @@ class ChatService:
         return [d[0] for d in days]
 
     def context(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
-                send: Any = None) -> dict[str, Any]:
+                send: Any = None, uploads: str = "") -> dict[str, Any]:
         """System prompt and slide images for ``day_keys`` (already in lecture order; a day that is gone keeps
         its L-number so citations in older answers stay valid). ``send``: the course's slide files that go too
-        (see chatslides)."""
+        (see chatslides); ``uploads``: the chat (its id, or ``draft-<token>``) whose own files go too (chatfiles).
+        ``parts``: what each piece adds, for "What this chat sees"."""
         multi = len(day_keys) > 1
         texts: list[str] = []
         images: list[tuple[str, Path]] = []        # every slide image available, whether attached or not
+        gone, untranscribed = 0, []                # for the student's notices (notices.py), never for the AI
+        day_parts: list[dict[str, Any]] = []
+        per = ai.chars_per_token()
         for n, d in enumerate(self._load_days(course_id, day_keys), start=1):
             if d is None:
+                gone += 1
                 continue
-            _, course, recs, trans = d
+            key, course, recs, trans = d
+            tags = {r.section_tag for r in recs if r.delivery_id in trans}     # not another section's recording
+            untranscribed += [r for r in recs if r.delivery_id not in trans and r.section_tag in tags
+                              and not (r.hidden or r.duplicate_of or r.live) and not self._skipped(r)]
             label = f"L{n}" if multi else ""
             sl = {r.delivery_id: store.load_slides(r.delivery_id) for r in recs}
             text = compact_day(course, recs, trans, sl if slides else None, label=label,
@@ -197,6 +208,11 @@ class ChatService:
             if not text:
                 continue
             texts.append(text)
+            start = min(r.start for r in recs)
+            day_parts.append({"key": key, "n": n if multi else 0, "label": date_short(start.date()),
+                              "long": date_long(start.date()), "kind": t(kind_label(recs[0].kind)),
+                              "parts": text.count("\n## Part "), "chars": len(text), "tokens": ai.text_tokens(text, per),
+                              "seconds": sum(r.duration_s or 0 for r in recs if r.delivery_id in trans)})
             for p in part_views(recs, trans, sl):
                 seen: set[int] = set()
                 for s in p.slides if p.transcript else []:
@@ -210,23 +226,90 @@ class ChatService:
                  if chatslides.normalize(send)["mode"] != "none" else None)
         if files is not None:          # the course's pages first, the video's slides share what is left
             attached = files["images"] + attached[:files["video_images"]]
+        video = attached[len(files["images"]) if files else 0:]
+        p = ai.provider()
+        up = chatfiles.build(uploads, can_images=p in ("claude", "chatgpt", "codex"), local=p == "local") if uploads else None
+        if up is not None and not up["items"]:
+            up = None
         brief = course_brief(self.lib, self._s.settings, course_id)
-        note = chatslides.prompt_note(files["summary"]) if files else ""
+        note = "\n\n".join(x for x in (chatslides.prompt_note(files["summary"]) if files else "",
+                                       chatfiles.prompt_note(up) if up and not up["local"] else "") if x)
+        mine = up["text"] if up and not up["local"] else ""       # the offline model gets them with each question
         prompt = (system_prompt(len(day_keys), focus, bool(attached)) + (f"\n\n{note}" if note else "")
                   + (f"\n\n=== COURSE ===\n\n{brief}" if brief else "")
                   + (f"\n\n=== COURSE SLIDES ===\n\n{files['text']}" if files and files["text"] else "")
+                  + (f"\n\n=== STUDENT'S FILES ===\n\n{mine}" if mine else "")
                   + "\n\n=== LECTURES ===\n\n" + "\n\n".join(texts))
-        return {"system": prompt, "images": attached, "slides_total": len(images), "n_days": len(texts),
-                "video_images": len(attached) - (len(files["images"]) if files else 0),
-                "files": files["summary"] if files else None, "said": said,
-                "tokens": ai.estimate_tokens(prompt, len(attached))["input"]}
+        pictures = attached + (up["images"] if up else [])
+        mine_pics = up["picture_tokens"] if up else 0         # the student's pictures: by their size (pages are tall)
+        tokens = (ai.estimate_tokens(prompt, len(attached))["input"] + mine_pics
+                  + (ai.text_tokens(up["text"], per) if up and up["local"] else 0))
+        known = (sum(d["tokens"] for d in day_parts) + ai.text_tokens(brief, per) + len(attached) * ai.IMAGE_TOKENS
+                 + mine_pics + (files["summary"]["text_tokens"] if files else 0) + (up["text_tokens"] if up else 0))
+        parts = {"days": day_parts, "focus": focus, "brief_tokens": ai.text_tokens(brief, per),
+                 "instructions_tokens": max(0, tokens - known), "video": [label for label, _ in video],
+                 "uploads": up, "provider": p}
+        return {"system": prompt, "images": pictures, "slides_total": len(images), "n_days": len(texts),
+                "video_images": len(video), "video": video, "files": files["summary"] if files else None,
+                "said": said, "tokens": tokens, "parts": parts,
+                "notices": self._notices(gone, untranscribed, files, send, len(images) if slides else 0, len(video)),
+                "upload_text": chatfiles.local_text(up) if up and up["local"] else "",
+                "upload_passages": up["passages"] if up and up["local"] else []}
+
+    def _skipped(self, r: Recording) -> bool:
+        """A recording IEUStudia never transcribes on its own (too short, no sound): no notice that it is missing (its
+        Transcribe button would queue nothing), as Transcribe for a class day leaves it out too."""
+        return 0 < r.duration_s < self._s.settings.min_duration_s or no_sound(r, self.lib.warnings(r.delivery_id))
+
+    @staticmethod
+    def _notices(gone: int, untranscribed: list[Recording], built: Optional[dict[str, Any]], send: Any, video_total: int,
+                 video_sent: int) -> list[dict[str, Any]]:
+        """What the student should know about a chat's material: class days gone, parts not transcribed, slide files
+        not downloaded or cut, slide pictures trimmed or not taken by the AI (notices.py; never sent to the AI)."""
+        out = [notices.notice("days_gone", n=gone)] if gone else []
+        if untranscribed:
+            out.append(notices.notice("not_transcribed", n=len(untranscribed),
+                                      dates=sorted({r.start.date().isoformat() for r in untranscribed})))
+        files = built["summary"] if built else {}
+        if files.get("missing"):          # their ids: the notice's Download button gets them
+            chosen = set(chatslides.chosen_ids(built["catalog"], chatslides.normalize(send)))
+            out.append(notices.notice("files_missing", n=files["missing"], ids=[
+                f["id"] for f in built["catalog"]["files"] if f["id"] in chosen and not f["downloaded"]]))
+        if files.get("cut"):
+            out.append(notices.notice("files_cut"))
+        if ai.provider() not in ai.PLAN_AIS:
+            if video_total or files.get("images_on") and files.get("files"):
+                out.append(notices.notice("no_pictures"))
+        elif video_sent < video_total:
+            course = len(built.get("images") or []) if built else 0     # the chosen slide files' pictures went first
+            out.append(notices.notice("slides_trimmed", "info", sent=video_sent, total=video_total,
+                                      **({"files": course, "max": MAX_SLIDES} if course else {})))
+        return out
+
+    def uploads_of(self, course_id: str, ref: str) -> str:
+        """Whose files go with a chat being sized: a chat of this course (its id) or a new one (``draft-<token>``)."""
+        ref = str(ref or "")
+        if ref.startswith("draft-"):
+            return chatfiles.draft_target(ref[6:])
+        chat = self.lib.get_chat(ref) if ref else None
+        return ref if chat is not None and chat.get("course_id") == course_id else ""
+
+    @staticmethod
+    def _files_part(ctx: dict[str, Any]) -> str:
+        """The student's files' share of a chat that is too big, named (empty without files)."""
+        items = (ctx["parts"]["uploads"] or {}).get("items") or []
+        if not items:
+            return ""
+        names = ", ".join(i["name"] for i in items[:4]) + (", …" if len(items) > 4 else "")
+        return " " + t("Your files take ~{u}k of it: {names}.", u=sum(i["tokens"] for i in items) // 1000, names=names)
 
     def slide_options(self, course_id: str, day_keys: list[str], focus: str = "full", captured: bool = False,
-                      send: Any = None) -> dict[str, Any]:
+                      send: Any = None, uploads: str = "") -> dict[str, Any]:
         """For the "send slides" chooser: the course's slide files, the files each choice takes, and what the
-        choice (with the video's slides when ``captured``) adds to the chat."""
+        choice (with the video's slides when ``captured``, the student's files of ``uploads``: uploads_of) adds to
+        the chat."""
         days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
-        ctx = self.context(course_id, days, focus, captured, send)
+        ctx = self.context(course_id, days, focus, captured, send, self.uploads_of(course_id, uploads))
         return {**chatslides.options(self.lib, course_id, days, send, ctx["slides_total"] if captured else 0,
                                      ctx["said"]),
                 "video_total": ctx["slides_total"], "tokens": ctx["tokens"], "max_tokens": MAX_CONTEXT_TOKENS}
@@ -334,6 +417,7 @@ class ChatService:
                 out.append(self.summary(c))
             elif (c.get("created_at") or "") < cutoff and c["id"] not in self._running:
                 self.lib.delete_chat(c["id"])          # started but never used
+                chatfiles.forget(c["id"])
         return out
 
     def view(self, chat_id: str, ctx: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -344,7 +428,7 @@ class ChatService:
         scope = chat.get("scope") or {}
         if ctx is None:
             ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"),
-                               bool(scope.get("slides")), scope.get("send"))
+                               bool(scope.get("slides")), scope.get("send"), chat_id)
         course = self.lib.get_course(chat["course_id"])
         messages = [{"seq": m["seq"], "role": m["role"], "text": m["text"], "status": m["status"],
                      "usage": m.get("usage") or {}, "created_at": m["created_at"]} for m in self.lib.chat_messages(chat_id)]
@@ -352,33 +436,43 @@ class ChatService:
                 "slides": bool(scope.get("slides")), "context_tokens": ctx["tokens"], "images": ctx["video_images"],
                 "send": chatslides.normalize(scope.get("send")), "files": ctx["files"],
                 "course_name": course_display(course) if course else "", "messages": messages,
-                "limits": ai.usage_limits()}
+                "uploads": (ctx["parts"]["uploads"] or {}).get("items") or [], "limits": ai.usage_limits()}
 
     def create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
-               model: str = "sonnet", level: str = "", send: Any = None) -> dict[str, Any]:
+               model: str = "sonnet", level: str = "", send: Any = None, uploads: str = "") -> dict[str, Any]:
         """A new chat. ``level``: its reasoning level (effort.py; "" = the one in Settings); ``send``: the course's
-        slide files that go along (chatslides)."""
+        slide files that go along (chatslides); ``uploads``: the token of the files added before it (chatfiles)."""
         focus = focus if focus in FOCUS else "full"
         model = model if model in MODELS else "sonnet"
         days = self.ordered_days(course_id, self.all_days(course_id) if focus == "course" else day_keys)
         if not days:
             raise RuntimeError(t("Pick at least one transcribed class day."))
         send = chatslides.normalize(send)
-        ctx = self.context(course_id, days, focus, slides, send)
+        ctx = self.context(course_id, days, focus, slides, send, chatfiles.draft_target(uploads))
         if ctx["tokens"] > MAX_CONTEXT_TOKENS:
             raise RuntimeError(t("That is too much for one chat (~{k}k tokens, the limit is {max}k). Pick fewer class "
-                                 "days or use highlights only.", k=ctx["tokens"] // 1000, max=MAX_CONTEXT_TOKENS // 1000))
+                                 "days or use highlights only.", k=ctx["tokens"] // 1000, max=MAX_CONTEXT_TOKENS // 1000)
+                               + self._files_part(ctx))
         chat_id = uuid.uuid4().hex[:12]
         scope = {"days": days, "focus": focus, "slides": bool(slides and ctx["slides_total"]),
                  "effort": level if level in LEVEL_NAMES else ""}   # "" = Settings' level (never the old model's)
         if send["mode"] != "none":
             scope["send"] = send
         self.lib.create_chat(chat_id, course_id, scope, model)
-        # the same material as saved; slides asked for but none found: saved without them, so the view builds it again
-        return self.view(chat_id, ctx if not slides or ctx["slides_total"] else None)
+        chatfiles.adopt(uploads, chat_id)
+        # the same material as saved (built again when the files added before it moved, or slides asked for none)
+        return self.view(chat_id, ctx if not ctx["parts"]["uploads"] and (not slides or ctx["slides_total"]) else None)
+
+    # ------------------------------------------------------------------ the student's files (chatfiles)
+    def _clean_files(self) -> None:
+        try:
+            chatfiles.clean(lambda cid: self.lib.get_chat(cid) is not None)
+        except Exception:  # noqa: BLE001 - tidying up only
+            log.debug("Could not tidy the chats' files", exc_info=True)
 
     def update(self, chat_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-        if self.lib.get_chat(chat_id) is None:
+        chat = self.lib.get_chat(chat_id)
+        if chat is None:
             raise RuntimeError(t("This chat no longer exists."))
         fields: dict[str, Any] = {}
         if "title" in patch:
@@ -398,6 +492,15 @@ class ChatService:
                 else:
                     scope["send"] = send
             fields["scope"] = scope
+            ctx = self.context(chat["course_id"], self._scope_days({"scope": scope}), scope.get("focus", "full"),
+                               bool(scope.get("slides")), scope.get("send"), chat_id)
+            old = chat.get("scope") or {}          # the student's files count too: they go with every question
+            if ctx["tokens"] > MAX_CONTEXT_TOKENS and ctx["tokens"] > self.context(   # less than before: always fine
+                    chat["course_id"], self._scope_days(chat), old.get("focus", "full"), bool(old.get("slides")),
+                    old.get("send"), chat_id)["tokens"]:
+                raise RuntimeError(t("These slides don't fit in this chat: it would hold ~{k}k tokens, the limit is "
+                                     "{max}k. Choose fewer files or turn off the pictures.", k=ctx["tokens"] // 1000,
+                                     max=MAX_CONTEXT_TOKENS // 1000) + self._files_part(ctx))
         if fields:
             self.lib.update_chat(chat_id, **fields)
         return self.view(chat_id)
@@ -406,6 +509,7 @@ class ChatService:
         self.stop(chat_id)
         self._drop(chat_id)
         self.lib.delete_chat(chat_id)
+        chatfiles.forget(chat_id)
 
     def stop(self, chat_id: str) -> None:
         with self._lock:
@@ -459,6 +563,7 @@ class ChatService:
         cid = chat["id"]
         p, level = ai.provider(), self._effort(chat)
         material = {k: v for k, v in (chat.get("scope") or {}).items() if k != "effort"}
+        material["uploads"] = chatfiles.ids(cid)        # a file added or removed: it all goes again
         # Claude's process keeps the level it was started with; the others take a new one with the next question
         key = (p, chat.get("model"), json.dumps(material, sort_keys=True), level if p == "claude" else "")
         with self._lock:
@@ -471,11 +576,13 @@ class ChatService:
             self._close_later(old)
         scope = chat.get("scope") or {}
         ctx = self.context(chat["course_id"], self._scope_days(chat), scope.get("focus", "full"), bool(scope.get("slides")),
-                           scope.get("send"))
+                           scope.get("send"), cid)
         if not ctx["n_days"]:
             raise RuntimeError(t("The class days of this chat are no longer available."))
         session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet", effort=level)
         session.key = key
+        session.notices = ctx["notices"]                # shown with the answer it starts with (not sent to the AI)
+        session.upload_passages = ctx["upload_passages"]   # the offline model: the student's files, matched per question
         with self._lock:
             self._live[cid] = session
             idle = sorted((s.last_used, c) for c, s in self._live.items() if c != cid and c not in self._running)
@@ -489,6 +596,8 @@ class ChatService:
         cid = chat["id"]
         text = ""
         last_emit, last_save = [0.0], [time.monotonic()]
+        shown: list[dict[str, Any]] = []               # the student's notices with this answer (never the AI's input)
+        made_by = ai.provider()                        # kept with them: they name this AI, not the one chosen later
 
         def on_text(so_far: str) -> None:
             nonlocal text
@@ -496,7 +605,7 @@ class ChatService:
             now = time.monotonic()
             if now - last_emit[0] >= EMIT_EVERY_S:
                 last_emit[0] = now
-                self._emit(cid, seq, "streaming", so_far)
+                self._emit(cid, seq, "streaming", so_far, **({"usage": {"notices": shown}} if shown else {}))
             if now - last_save[0] >= SAVE_EVERY_S:     # keep the partial answer if the app is closed meanwhile
                 last_save[0] = now
                 self.lib.update_chat_message(cid, seq, so_far, "streaming")
@@ -506,16 +615,34 @@ class ChatService:
             session, images = self._session(chat)
             content: list[dict[str, Any]] = []
             if images is not None:                          # a new process: give it what it has not seen
+                shown += notices.fresh(getattr(session, "notices", None) or [], history)
+                if shown:
+                    self._emit(cid, seq, "streaming", "", usage={"notices": shown})
+                unread = unread_mine = 0
+                mine = False
                 if images:
-                    content.append({"type": "text", "text": "The slide images of these lectures, in order:"})
+                    if not chatfiles.is_upload(images[0][1]):
+                        content.append({"type": "text", "text": "The slide images of these lectures, in order:"})
                     for label, path in images:
                         if stop.is_set():
                             break
-                        if isinstance(path, chatslides.PagePicture):      # a course file's page: drawn now
+                        if chatfiles.is_upload(path) and not mine:
+                            mine = True
+                            content.append({"type": "text", "text": "Pictures of the files the student added, in order:"})
+                        if isinstance(path, (chatslides.PagePicture, chatfiles.UploadPicture)):   # a page: drawn now
+                            upload = chatfiles.is_upload(path)
                             path = path.path()
-                            if path is None:
+                            if path is None:            # the course's slide files, or the student's own files
+                                if upload:
+                                    unread_mine += 1
+                                else:
+                                    unread += 1
                                 continue
                         content += [{"type": "text", "text": label}, ai.image_block(path)]
+                if unread:
+                    shown += notices.fresh([notices.notice("pages_unreadable", n=unread)], history)
+                if unread_mine:
+                    shown += notices.fresh([notices.notice("uploads_unreadable", n=unread_mine)], history)
                 if history and hasattr(session, "seed"):
                     session.seed(history)               # it sends the conversation with every question itself
                 elif history:
@@ -527,6 +654,12 @@ class ChatService:
             except Exception:  # noqa: BLE001 - the answer works without it
                 log.debug("retrieval failed", exc_info=True)
                 found, sources = "", []
+            # the offline model: the passages of the student's files that match the question (and the one before it),
+            # first, so that its small window keeps them before the other passages
+            asked = " ".join([question] + [m.get("text") or "" for m in history[-2:] if m.get("role") == "user"])
+            mine = chatfiles.local_pick(getattr(session, "upload_passages", None) or [], asked)
+            if mine:
+                content.append({"type": "text", "text": mine})
             if found:
                 content.append({"type": "text", "text": found})
             content.append({"type": "text", "text": question})
@@ -538,7 +671,8 @@ class ChatService:
                 res = session.ask(content, on_text, stop)
             text = res["text"] or text
             state = "stopped" if res["stopped"] else "done"
-            usage = {**(res["usage"] or {}), **({"sources": sources} if sources else {})}
+            usage = {**(res["usage"] or {}), **({"sources": sources} if sources else {}),
+                     **({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, state, usage)
             if not session.alive():
                 self._drop(cid)
@@ -546,9 +680,11 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - reported in the chat
             log.warning("Chat %s failed: %s", cid, exc)
             msg = str(exc) or t("{ai} could not answer.", ai=ai.ai_name())
-            self.lib.update_chat_message(cid, seq, text, "error", {"error": msg})
+            self.lib.update_chat_message(cid, seq, text, "error", {"error": msg, "notices_ai": made_by,
+                                                                   **({"notices": shown} if shown else {})})
             self._drop(cid)
-            self._emit(cid, seq, "error", text, error=msg, limits=ai.usage_limits())
+            self._emit(cid, seq, "error", text, error=msg, limits=ai.usage_limits(),
+                       usage={"notices_ai": made_by, **({"notices": shown} if shown else {})})
         finally:
             with self._lock:
                 self._running.pop(cid, None)
@@ -618,9 +754,16 @@ class ChatService:
         for m in v["messages"]:
             if m["role"] == "user":
                 lines += [f"**You:** {m['text'].strip()}", ""]
-            elif m["text"].strip():
-                lines += [f"**{who}:**", "", m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""),
-                          "", "---", ""]
+            else:              # the app's notices and an error as alert blocks (GitHub and Obsidian draw them)
+                notes = [notices.markdown(n) for n in (m["usage"].get("notices") or [])]
+                if m["status"] == "error":
+                    notes.append(notices.alert("CAUTION", f"{who} could not answer: {m['usage'].get('error') or 'error'}"))
+                if not m["text"].strip() and not notes:
+                    continue
+                lines += [f"**{who}:**", ""] + [x for n in notes for x in (n, "")]
+                if m["text"].strip():
+                    lines += [m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""), ""]
+                lines += ["---", ""]
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
         name = safe_name(f"{stamp} - {title}" if stamp else title, limit=110) + f" [{chat_id[:6]}]"
         path = course_dir(self._s.output_root, course, self.lib.courses(True)) / "AI chats" / f"{name}.md"

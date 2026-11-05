@@ -23,6 +23,9 @@ from .paths import app_dir
 
 log = logging.getLogger("studia")
 TEXT_KINDS = {"pdf", "pptx", "docx", "txt", "md"}
+# PDFium (pypdfium2) is not thread-safe, and the viewer, a chat, an upload and a study pack can each be in it at once:
+# every use of it holds this lock (a crash in it would close the whole app)
+PDFIUM_LOCK = threading.RLock()
 
 
 # ------------------------------------------------------------------ weeks
@@ -71,18 +74,19 @@ def extract_pages(path: Path) -> list[str]:
     if ext == "pdf":
         import pypdfium2 as pdfium
 
-        pdf = pdfium.PdfDocument(str(path))
-        try:
-            out = []
-            for i in range(len(pdf)):
-                page = pdf[i]
-                tp = page.get_textpage()
-                out.append(re.sub(r"[ \t]+\n", "\n", tp.get_text_range().replace("\r\n", "\n")).strip())
-                tp.close()
-                page.close()
-            return out
-        finally:
-            pdf.close()
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(str(path))
+            try:
+                out = []
+                for i in range(len(pdf)):
+                    page = pdf[i]
+                    tp = page.get_textpage()
+                    out.append(re.sub(r"[ \t]+\n", "\n", tp.get_text_range().replace("\r\n", "\n")).strip())
+                    tp.close()
+                    page.close()
+                return out
+            finally:
+                pdf.close()
     if ext == "pptx":
         with zipfile.ZipFile(path) as z:
             names = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
@@ -116,18 +120,19 @@ def extract_pages(path: Path) -> list[str]:
 PAGE_COPIES = 1500              # page pictures kept (about 150 KB each); beyond that the oldest go
 
 
-def page_image(pdf_path: Path, page_no: int, width: int = 1280) -> Optional[Path]:
+def page_image(pdf_path: Path, page_no: int, width: int = 1280, folder: Optional[Path] = None) -> Optional[Path]:
     """A JPEG of one PDF page (cached under a name that stays the same between runs), for Claude to look at
-    diagrams, tables and handwriting."""
+    diagrams, tables and handwriting. ``folder``: kept there instead of the shared cache (a student's own PDF: its
+    pages go when it is removed)."""
     import hashlib
 
-    cache = app_dir() / "cache" / "pages"
+    cache = folder or app_dir() / "cache" / "pages"
     cache.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:10]
     out = cache / f"{safe_name(pdf_path.stem, 60)}-{key}-{page_no}-{width}.jpg"
     if out.exists() and out.stat().st_mtime >= pdf_path.stat().st_mtime:
         return out
-    if sum(1 for _ in os.scandir(cache)) > PAGE_COPIES + 100:          # now and then, not for every page
+    if folder is None and sum(1 for _ in os.scandir(cache)) > PAGE_COPIES + 100:   # now and then, not for every page
         from .ai import _prune_copies
 
         _prune_copies(cache, PAGE_COPIES)
@@ -136,18 +141,21 @@ def page_image(pdf_path: Path, page_no: int, width: int = 1280) -> Optional[Path
 
     from .slides import save_jpeg
 
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    try:
-        if not 1 <= page_no <= len(pdf):
-            return None
-        page = pdf[page_no - 1]
-        scale = width / max(1.0, page.get_width())
-        arr = page.render(scale=scale, rev_byteorder=True).to_numpy()
-        page.close()
-    finally:
-        pdf.close()
-    frame = av.VideoFrame.from_ndarray(arr[:, :, :3].copy(), format="rgb24")
-    save_jpeg(frame, out, max_width=width)
+    with PDFIUM_LOCK:
+        if out.exists() and out.stat().st_mtime >= pdf_path.stat().st_mtime:
+            return out                                  # drawn by another caller while this one waited: not replaced under a reader
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        try:
+            if not 1 <= page_no <= len(pdf):
+                return None
+            page = pdf[page_no - 1]
+            scale = width / max(1.0, page.get_width())
+            arr = page.render(scale=scale, rev_byteorder=True).to_numpy()
+            page.close()
+        finally:
+            pdf.close()
+        frame = av.VideoFrame.from_ndarray(arr[:, :, :3].copy(), format="rgb24")
+        save_jpeg(frame, out, max_width=width)          # the same page drawn twice at once never shares its file
     return out
 
 

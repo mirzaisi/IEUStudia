@@ -114,7 +114,8 @@
   }
   async function load() {
     const x = st.x, mine = st, n = st.seq = (st.seq || 0) + 1;
-    const r = await call("chat_slides", x.course_id, keysOf(x), x.focus || "full", st.slides, st.send);
+    const own = S.chat.draft === x ? (x.uploads ? `draft-${x.uploads}` : "") : x.id || "";      // the student's files count too
+    const r = await call("chat_slides", x.course_id, keysOf(x), x.focus || "full", st.slides, st.send, own);
     if (st !== mine || !$(".modal.sp-modal, .modal .sp")) return;          // closed or reopened meanwhile
     if (n !== st.seq) return;                  // an answer to an earlier choice that came late: the latest one counts
     if (!r.ok) { closeModal(); toast(r.error, "error"); return; }

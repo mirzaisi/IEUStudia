@@ -792,6 +792,14 @@
     if (opts.streaming && MathR()) md = MathR().settled(md);           // a formula still being written shows once it is closed
     try { return mdRender(md, opts); } catch (e) { console.error(e); return `<p>${esc(md).replace(/\n/g, "<br>")}</p>`; }
   }
+  // "> [!WARNING]" blocks (GitHub's alerts; the AI is asked to write them, notices.py): a coloured box with an icon and its name
+  const MD_ALERT = /^\[!(note|tip|important|warning|caution)\][+-]?\s*(.*)$/i;
+  const ALERT_KIND = () => ({ note: ["info", t("Note")], tip: ["sparkle", t("Tip")], important: ["star", t("Important")],
+    warning: ["alert", t("Warning")], caution: ["alert-circle", t("Caution")] });
+  function mdAlert(kind, title, body) {
+    const [icon, name] = ALERT_KIND()[kind];
+    return `<div class="md-alert md-alert-${kind}" role="note"><div class="md-alert-h">${I(icon, "sm")}<b>${title || name}</b></div>${body}</div>`;
+  }
   function mdRender(md, opts) {
     const lines = String(md || "").replace(/\r\n?|[\u2028\u2029]/g, "\n").split("\n");
     const inline = (s) => mdInline(s, opts);
@@ -854,8 +862,11 @@
         flushAll();
         const buf = [];
         for (; i < lines.length && (m = lines[i].replace(/\s+$/, "").match(/^\s*>\s?(.*)$/)); i++) buf.push(m[1]);
+        const writing = opts.streaming && i >= lines.length, al = buf[0].trim().match(MD_ALERT);
+        if (al) { out += mdAlert(al[1].toLowerCase(), al[2] ? inline(al[2]) : "", mdRender(buf.slice(1).join("\n"), { ...opts, streaming: writing })); continue; }
+        if (writing && buf.length === 1 && /^\[(!\w*\]?)?$/.test(buf[0].trim())) continue;   // "> [!WARN" still being written
         // its own Markdown inside (a worked solution: lines, display formulas, lists)
-        out += `<blockquote>${mdRender(buf.join("\n"), { ...opts, streaming: opts.streaming && i >= lines.length })}</blockquote>`; continue;
+        out += `<blockquote>${mdRender(buf.join("\n"), { ...opts, streaming: writing })}</blockquote>`; continue;
       }
       if ((m = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/))) {         // list item (nested by indentation)
         flushPara();
@@ -1046,7 +1057,7 @@
     return `<div class="chat-layout"><aside class="chat-list">
         <button class="btn grad sm block" data-act="chat-new" ${(S.system.ai || {}).available ? "" : "disabled"}>${I("plus", "sm")} ${t("New chat")}</button>
         <div class="chat-items" id="chat-items">${chatItemsHTML()}</div></aside>
-      <section class="chat-main" id="chat-main">${chatMainHTML()}</section></div>`;
+      <section class="chat-main" id="chat-main">${chatMainHTML()}</section>${Studia.chatSideHTML ? Studia.chatSideHTML() : ""}</div>`;
   }
   function chatItemsHTML() {
     const l = S.chat.list;
@@ -1073,8 +1084,8 @@
     if (!d && (!c || c.id !== S.chat.id)) return `<div class="chat-scroll"><div class="chat-msgs-inner">${skeleton()}</div></div>`;
     return `<header class="chat-head" id="chat-head">${chatHeadHTML()}</header>
       <div class="chat-scroll" id="chat-msgs"><div class="chat-msgs-inner" id="chat-msgs-inner">${chatMsgsHTML()}</div></div>
-      <form class="composer" data-form="chat">${Studia.chatToolsHTML ? Studia.chatToolsHTML() : ""}<div class="composer-inner">
-        <textarea id="chat-input" rows="1" placeholder="${esc(composerPlaceholder())}">${esc(S.chat.input)}</textarea>
+      <form class="composer" data-form="chat">${Studia.chatToolsHTML ? Studia.chatToolsHTML() : ""}${Studia.chatFilesRowHTML ? Studia.chatFilesRowHTML() : ""}<div class="composer-inner">
+        ${Studia.chatAttachBtn ? Studia.chatAttachBtn() : ""}<textarea id="chat-input" rows="1" placeholder="${esc(composerPlaceholder())}">${esc(S.chat.input)}</textarea>
         ${Studia.effortChip ? Studia.effortChip() : ""}
         <span id="composer-btn">${composerBtnHTML()}</span></div>
         <div class="composer-note">${t.html("Enter to send · Shift+Enter for a new line · uses {plan} · AI can make mistakes", { plan: aiPlan() })}</div></form>`;
@@ -1086,16 +1097,18 @@
       + (days.length > 6 ? `<span class="dim">${t("+{n} more", { n: days.length - 6 })}</span>` : "");
     const model = x.model || "sonnet";
     const sel = isChatGPT() ? "" : `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
-    const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(Math.min(d.slidesTotal, 60) * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: Math.min(d.slidesTotal, 60) })}</label>` : "")
+    // the video's slides that go: next to the chosen slide files, fewer than were captured (chatfiles.js reads it)
+    const fit = d && (d.slides && d.videoFit != null ? d.videoFit : Math.min(d.slidesTotal, 60));
+    const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(fit * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: fit })}</label>` : "")
       : (c.slides ? `<span class="pill">${I("monitor", "sm")}${t.n(c.images, "{n} slide", "{n} slides")}</span>` : "");
     const focus = x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}${t("Highlights only")}</span>`
       : x.focus === "course" ? `<span class="pill processing">${I("library", "sm")}${t("Whole course")}</span>` : "";
     const tokens = d ? d.tokens : c.context_tokens;
     const title = d || !c.title ? t("New chat") : c.title;
     return `<div class="ch-top"><div class="ch-title"><h2 title="${esc(title)}">${esc(title)}</h2>${d ? "" : `<button class="btn ghost icon sm" data-act="chat-rename" title="${esc(t("Rename"))}">${I("pencil", "sm")}</button>`}</div>
-        ${sel}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} ${t("Change…")}</button>` : `<button class="btn ghost icon sm" data-act="chat-menu" title="${esc(t("More"))}">${I("more")}</button>`}</div>
+        ${sel}${Studia.chatSideBtn ? Studia.chatSideBtn() : ""}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} ${t("Change…")}</button>` : `<button class="btn ghost icon sm" data-act="chat-menu" title="${esc(t("More"))}">${I("more")}</button>`}</div>
       <div class="ch-scope"><span class="pill new">${esc(x.course_code || "")}</span>${chips}${focus}${slides}
-        ${tokens ? `<span class="ch-meta" title="${esc(t("{ai} reads this with your first question", { ai: aiName() }))}">${t("~{k} tokens of lectures", { k: fmtK(tokens) })}</span>` : ""}<span class="spacer"></span>${limitsHTML()}</div>`;
+        ${tokens ? `<span class="ch-meta" title="${esc(t("{ai} reads this with your first question", { ai: aiName() }))}">${t("~{k} tokens", { k: fmtK(tokens) })}</span>` : ""}<span class="spacer"></span>${limitsHTML()}</div>`;
   }
   function chatMsgsHTML() {
     const c = S.chat.data, d = S.chat.draft;
@@ -1115,11 +1128,12 @@
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
     const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
+    const notes = Studia.chatNotices ? Studia.chatNotices(m, isLast) : {};    // the app's notices with this answer (notices.js)
     const foot = streaming ? `<span class="dim">${SPIN()} ${t.html("{ai} is answering…", { ai: aiName() })}</span>`
       : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
-    const err = m.status === "error" ? `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
-    return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
+    const err = m.status === "error" ? notes.error || `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
+    return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${notes.before || ""}${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
   }
   function composerPlaceholder() {
     const d = S.chat.draft, c = S.chat.data;
@@ -1133,7 +1147,7 @@
     return `<button type="submit" class="btn grad sm" ${S.chat.sending ? "disabled" : ""}>${S.chat.sending ? SPIN() : I("arrow-right", "sm")} ${t("Send")}</button>`;
   }
   function renderComposerBtn() { const el = $("#composer-btn"); if (el) el.innerHTML = composerBtnHTML(); const ta = $("#chat-input"); if (ta) ta.placeholder = composerPlaceholder(); }
-  function renderChatHead() { const el = $("#chat-head"); if (el) el.innerHTML = chatHeadHTML(); }
+  function renderChatHead() { const el = $("#chat-head"); if (el) el.innerHTML = chatHeadHTML(); if (Studia.chatSideRender) Studia.chatSideRender(); }
   function renderChatMsgs() { const el = $("#chat-msgs-inner"); if (el) { el.innerHTML = chatMsgsHTML(); scrollChatBottom(true); } }
   function renderChatMsg(m) {
     const box = $("#chat-msgs"), node = box && box.querySelector(`.msg[data-seq="${m.seq}"]`);
@@ -1145,6 +1159,7 @@
   }
   function renderChatMain() {
     const el = $("#chat-main"); if (el) el.innerHTML = chatMainHTML();
+    if (Studia.chatSideRender) Studia.chatSideRender();       // "What this chat sees" (chatfiles.js)
     const it = $("#chat-items"); if (it) it.innerHTML = chatItemsHTML();
   }
   function scrollChatBottom(force) { const box = $("#chat-msgs"); if (box && (force || box.scrollHeight - box.scrollTop - box.clientHeight < 140)) box.scrollTop = box.scrollHeight; }
@@ -1188,7 +1203,7 @@
   }
   async function estimateDraft() {
     const d = S.chat.draft; if (!d) return;
-    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides, d.send);
+    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides, d.send, d.uploads || "");
     if (r.ok && S.chat.draft === d) { d.tokens = r.tokens; d.slidesTotal = r.slides_total; renderChatHead(); }
   }
   async function sendChat(textArg) {
@@ -1200,11 +1215,12 @@
       return;
     }
     if (!S.chat.draft && S.chat.data && S.chat.data.running) { toast(t("{ai} is still answering. Wait for it, or press Stop.", { ai: aiName() }), "info"); return; }
+    if (S.chat.draft && Studia.chatUploading && Studia.chatUploading()) { toast(t("Wait until your files are added, then send."), "info"); return; }
     S.chat.sending = true; renderComposerBtn();
     let id = S.chat.id;
     if (S.chat.draft) {
       const d = S.chat.draft;
-      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model, d.effort || "", d.send);
+      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model, d.effort || "", d.send, d.uploads || "");
       if (S.chat.draft !== d) { S.chat.sending = false; return; }          // navigated away meanwhile
       if (!r.ok) { S.chat.sending = false; renderComposerBtn(); toast(r.error, "error"); return; }
       S.chat.draft = null; S.chat.id = id = r.chat.id; S.chat.data = r.chat;
@@ -1314,7 +1330,8 @@
         closeModal();
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
           labels: list.map((d, i) => ({ key: d.day_key, n: i + 1, label: d.label, kind: d.kind_label, long: d.label })),
-          focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "" });
+          focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "",
+          uploads: (preset && preset.uploads) || "" });        // Change…: the files already added stay with the new chat
       },
     };
     await load();
@@ -2477,8 +2494,9 @@
       chat_estimate: (cid, days, focus, slides) => ({ ok: true, tokens: (focus === "highlights" ? 2100 : 23800) * days.length + 700 + (slides ? 2400 : 0), images: slides ? 3 : 0, slides_total: 3, days: days.length }),
       chat_list: () => ({ ok: true, chats: Object.values(chats).filter((c) => c.messages.length).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(summary), limits }),
       chat_get: (id) => (chats[id] ? { ok: true, chat: view(chats[id]) } : { ok: false, error: "This chat no longer exists." }),
-      chat_create: (cid, days, focus, slides, model, effort) => {
+      chat_create: (cid, days, focus, slides, model, effort, send, uploads) => {
         const id = "m" + Math.random().toString(36).slice(2, 8);
+        if (uploads && Studia.mocks.chat_adopt) Studia.mocks.chat_adopt(uploads, id);     // the new chat's files become its own
         const known = scope[cid] || [];
         const ds = days.map((k, i) => { const d = known.find((x) => x.day_key === k) || { label: "Wed 14 Oct", kind_label: "Lecture" }; return { key: k, n: i + 1, label: d.label, kind: d.kind_label, long: d.label, gone: false }; });
         chats[id] = { id, course_id: cid, course_code: "MATH 240", title: "", days: ds, focus, slides, model: model || "sonnet", effort: effort || "", tokens: 23800 * days.length, messages: [], updated_at: now() };

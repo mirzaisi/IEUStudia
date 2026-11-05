@@ -125,8 +125,9 @@
       return `<div class="pl-step ${st}"><span class="dot">${st === "done" ? I("check", "xs") : st === "now" ? SPIN() : i + 1}</span>${l}</div>`;
     }).join("");
     const chapters = (p.chapters || []).map((c, i) => `<li class="${c.done ? "done" : ""}">${c.done ? I("check", "xs") : `<span class="pk-n">${i + 1}</span>`}<span>${esc(c.title)}</span></li>`).join("");
-    return `<div class="card pl-progress"><div class="pl-steps">${steps}</div>
-      <div class="pl-msg">${p.status === "error" ? `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>` : esc(p.message || "")}</div>
+    const notice = St.planStateNotice ? St.planStateNotice(p) : "";      // failed or stopped: what to do, with Resume (notices.js)
+    return `${notice}<div class="card pl-progress"><div class="pl-steps">${steps}</div>
+      <div class="pl-msg">${p.status === "error" ? (notice ? "" : `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>`) : esc(p.message || "")}</div>
       ${busy ? `<div class="bar wide"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></div>` : ""}
       ${chapters ? `<ol class="pk-chapters">${chapters}</ol>` : ""}
       <div class="note-sm">${I("info", "sm")}<span>${note || t("Runs in the background, so you can keep using the app. If it stops (for example at your plan's limit), resume it later: the finished chapters are kept.")}</span></div></div>`;
@@ -138,6 +139,7 @@
     if (todo) notes.push(t.n(todo, "{n} picked lecture was not transcribed, so the pack doesn't use it.", "{n} picked lectures were not transcribed, so the pack doesn't use them."));
     if ((r.uncovered || []).length) notes.push(t.html("The plan of the chapters left out: {topics}.", { topics: r.uncovered.join(", ") }));
     if (!r.pdf) notes.push(t("The PDF wasn't made yet: Save PDF makes it."));
+    if (St.packNotices) return St.packNotices(r, notes);       // coloured, with Download / Transcribe
     return notes.map((n) => `<div class="note-sm">${I("info", "sm")}<span>${n}</span></div>`).join("");
   }
   function packView(v) {

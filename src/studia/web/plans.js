@@ -60,7 +60,12 @@
   function stateLine(p) {
     if (p.status === "running" || p.status === "queued") return `<span class="pl-run">${SPIN()} ${esc(p.message || t("Working…"))}</span><span class="bar"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></span>`;
     if (p.status === "done") return `<span class="dim">${esc((p.scope || {}).kind === "prep" ? t("Review sheet ready") : p.message || t("Ready"))}</span>`;
-    if (p.status === "error") return `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error || t("Failed"))}</span>`;
+    if (p.status === "error") {       // an AI's error: its short title (notices.js), the whole text on hover and on the plan's page;
+      // any other (YouTube, IEULearn, a file) is already plain and short
+      const ai = p.error && St.explainError && /\b(ChatGPT|Claude|Codex)\b/.test(p.error);
+      const short = ai ? St.explainError(p.error, null).title : esc(p.error || t("Failed"));
+      return `<span class="err-txt" title="${esc(p.error || "")}">${I("alert-circle", "sm")} ${short}</span>`;
+    }
     if (p.status === "paused") return `<span class="dim">${I("stop", "sm")} ${esc(p.message || t("Stopped"))}</span>`;
     return `<span class="dim">${esc(p.message || "")}</span>`;
   }
@@ -111,6 +116,7 @@
           ${busy ? `<button class="btn sm" data-act="plan-stop" data-id="${esc(p.id)}">${I("stop", "sm")} ${t("Stop")}</button>` : ""}
           ${["error", "paused"].includes(p.status) ? `<button class="btn primary sm" data-act="plan-resume" data-id="${esc(p.id)}">${I("retry", "sm")} ${t("Resume")}</button>` : ""}
           <button class="btn ghost icon sm" data-act="plan-delete" data-id="${esc(p.id)}" title="${t("Delete this plan")}">${I("x", "sm")}</button></div></div>`;
+    if (p.status === "done" && St.planWarnings) h += St.planWarnings(p);       // what it couldn't use or cover (notices.js)
     if (p.status !== "done") h += progressHTML(p);
     else if (sc.kind === "prep") h += prepHTML(p);
     else h += resultHTML(p);
@@ -118,7 +124,7 @@
   }
   function prepHTML(p) {
     const r = p.result || {};
-    const miss = (r.materials_missing || []).length;
+    const miss = St.planWarnings ? 0 : (r.materials_missing || []).length;      // notices.js warns at the top instead
     return `${miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks was not downloaded, so the review sheet could not use it.", "{n} files of these weeks were not downloaded, so the review sheet could not use them.")}</span></div>` : ""}
       ${r.days_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${leftOut(r.days_left_out)}</span></div>` : ""}
       <div class="note-sm">${I("youtube", "sm")}<span>${t("A review sheet is written only, with no videos. For YouTube videos of these weeks, make a video study plan.")}</span>
@@ -136,8 +142,9 @@
     const chip = (c) => `<span class="chip ${c.focus ? "on" : ""} ${c.in_scope === false ? "extra" : ""}" title="${esc([c.summary, ...(c.skills || []).map((s) => "• " + s)].filter(Boolean).join("\n"))}">${esc(c.name)}</span>`;
     const cs = p.concepts || [], extras = cs.filter((c) => c.in_scope === false);
     const concepts = cs.filter((c) => c.in_scope !== false).map(chip).join("");
-    return `<div class="card pl-progress"><div class="pl-steps">${steps}</div>
-      <div class="pl-msg">${p.status === "error" ? `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>` : esc(p.message || "")}</div>
+    const notice = St.planStateNotice ? St.planStateNotice(p) : "";      // failed or stopped: what to do (notices.js; Resume is in the header)
+    return `${notice}<div class="card pl-progress"><div class="pl-steps">${steps}</div>
+      <div class="pl-msg">${p.status === "error" ? (notice ? "" : `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>`) : esc(p.message || "")}</div>
       ${["running", "queued"].includes(p.status) ? `<div class="bar wide"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></div>` : ""}
       ${concepts ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).focus ? t.html("Concepts to cover for {focus} (hover for their skills)", { focus: p.scope.focus }) : t("Concepts to cover (hover for their skills)")}</div>${concepts}</div>` : ""}
       ${extras.length ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).extras ? t.html("Also in these weeks, not on {focus} — optional videos", { focus: (p.scope || {}).focus || t("the focus") })

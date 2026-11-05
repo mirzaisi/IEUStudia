@@ -1687,10 +1687,12 @@ class Api:
 
     @safe
     def chat_estimate(self, course_id: str, day_keys: list[str], focus: str = "full",
-                      slides: bool = False, send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                      slides: bool = False, send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
+        from .chatfiles import draft_target
+
         keys = self._s.chat.all_days(course_id) if focus == "course" else list(day_keys or [])
         days = self._s.chat.ordered_days(course_id, keys)
-        ctx = self._s.chat.context(course_id, days, focus, bool(slides), send)
+        ctx = self._s.chat.context(course_id, days, focus, bool(slides), send, draft_target(str(uploads or "")))
         return {"ok": True, "tokens": ctx["tokens"] if days else 0, "images": len(ctx["images"]),
                 "slides_total": ctx["slides_total"], "days": len(days)}
 
@@ -1707,16 +1709,57 @@ class Api:
     @safe
     def chat_create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
                     model: Optional[str] = None, level: str = "",
-                    send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+                    send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
         chat = self._s.chat.create(course_id, list(day_keys or []), focus, bool(slides),
-                                   model or self._s.settings.ai_model, level or "", send=send)
+                                   model or self._s.settings.ai_model, level or "", send=send, uploads=str(uploads or ""))
         return {"ok": True, "chat": chat}
+
+    # "What this chat sees", the student's own files and the viewers (chatinputs.py). ``spec``: {"chat_id"}, or a new
+    # chat's {"course_id", "days", "focus", "slides", "send", "uploads": token}
+    @safe
+    def chat_inputs(self, spec: Any) -> dict[str, Any]:
+        from . import chatinputs
+
+        return {"ok": True, **chatinputs.inputs(self._s.chat, spec)}
+
+    @safe
+    def chat_upload_part(self, token: str, data_b64: str, first: bool = False) -> dict[str, Any]:
+        from . import chatfiles
+
+        return {"ok": True, "size": chatfiles.receive(str(token or ""), str(data_b64 or ""), bool(first))}
+
+    @safe
+    def chat_upload(self, spec: Any, token: str, name: str) -> dict[str, Any]:
+        from . import chatinputs
+
+        return {"ok": True, **chatinputs.upload(self._s.chat, spec, str(token or ""), str(name or ""))}
+
+    @safe
+    def chat_upload_check(self, spec: Any, name: str, size: int) -> dict[str, Any]:
+        from . import chatfiles, chatinputs
+
+        target = chatinputs.spec_of(self._s.chat, spec)["target"]
+        return {"ok": True, "kind": chatfiles.check(target, str(name or ""), int(size or 0))}
+
+    @safe
+    def chat_upload_remove(self, spec: Any, upload_id: str) -> dict[str, Any]:
+        from . import chatinputs
+
+        return {"ok": True, **chatinputs.remove_upload(self._s.chat, spec, str(upload_id or ""))}
+
+    @safe
+    def chat_file_view(self, spec: Any, ref: str, page: int = 0, zoom: float = 1.0) -> dict[str, Any]:
+        from . import chatinputs
+
+        return {"ok": True, **chatinputs.file_view(self._s.chat, spec, str(ref or ""), int(page or 0), float(zoom or 1))}
 
     @safe
     def chat_slides(self, course_id: str, day_keys: list[str], focus: str = "full", captured: bool = False,
-                    send: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        """The "send slides" chooser: the course's slide files and what the choice adds to the chat."""
-        return {"ok": True, **self._s.chat.slide_options(course_id, list(day_keys or []), focus, bool(captured), send)}
+                    send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
+        """The "send slides" chooser: the course's slide files and what the choice adds to the chat (``uploads``: the
+        chat's id or a new chat's ``draft-<token>``, whose files count too)."""
+        return {"ok": True, **self._s.chat.slide_options(course_id, list(day_keys or []), focus, bool(captured), send,
+                                                         str(uploads or ""))}
 
     @safe
     def chat_send(self, chat_id: str, text: str) -> dict[str, Any]:

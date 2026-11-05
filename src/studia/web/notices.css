@@ -1,0 +1,26 @@
+/* IEUStudia — clear warnings: the alert blocks an AI writes ("> [!WARNING]", drawn by app.js's Markdown) and the app's
+ * own notices in chats and plans (notices.js). Amber: a warning, red: an error or caution, blue: a note, green: a tip,
+ * violet: important. Each has its icon and its name or title in words, so the colour is never the only sign. */
+.md-alert, .ntc { --c: var(--blue); --bg: var(--blue-soft); border-radius: var(--radius); background: var(--bg); color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent), inset 3px 0 0 var(--c); }
+.md-alert { margin: 12px 0; padding: 10px 14px 10px 15px; }
+.md-alert-h { display: flex; align-items: center; gap: 7px; color: var(--c); font-size: 13px; margin-bottom: 4px; }
+.md-alert-h b { font-weight: 650; }
+.md-alert > :last-child { margin-bottom: 0; }
+.md-alert > p:first-of-type { margin-top: 0; }
+.md-alert-tip, .ntc-tip { --c: var(--green); --bg: var(--green-soft); }
+.md-alert-important { --c: var(--violet); --bg: var(--violet-soft); }
+.md-alert-warning, .ntc-warning { --c: var(--amber); --bg: var(--amber-soft); }
+.md-alert-caution, .ntc-error { --c: var(--red); --bg: var(--red-soft); }
+
+.ntc { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px 10px 13px; margin: 0 0 10px; font-size: 13px; line-height: 1.5; }
+.ntc > .i { color: var(--c); flex: none; margin-top: 2px; }
+.ntc-body { flex: 1; min-width: 0; }
+.ntc-title { font-weight: 600; }
+.ntc-text { color: var(--text-2); }
+.ntc-detail { color: var(--text-3); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+.ntc-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ntc-list { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
+.ntc-list > .ntc { margin: 0; }
+.msg.ai .md + .ntc { margin-top: 10px; }
+.plan-page > .ntc-list { margin: 14px 0; }

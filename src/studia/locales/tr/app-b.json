@@ -54,7 +54,7 @@
   "Whole course": "Dersin tamamı",
   "Rename": "Yeniden adlandır",
   "{ai} reads this with your first question": "{ai} bunu ilk sorunla birlikte okur",
-  "~{k} tokens of lectures": "derslerden ~{k} token",
+  "~{k} tokens": "~{k} token",
   "Ask anything about these lectures": "Bu dersler hakkında aklına geleni sor",
   "Ask anything about this lecture": "Bu ders hakkında aklına geleni sor",
   "{ai} reads the transcripts with your first question; follow-up questions build on them and cost much less.": "{ai} ders metinlerini ilk sorunla birlikte okur; sonraki sorular bunların üzerine kurulur ve çok daha ucuza gelir.",

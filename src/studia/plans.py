@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 from . import store, ytprefs
 from .cancel import Cancelled
 from .i18n import N_, language, t, tn
+from .notices import ALERTS_JSON, ALERTS_MD
 
 log = logging.getLogger("studia")
 
@@ -72,7 +73,7 @@ VERIFY_MODEL = "haiku"
 
 SYSTEM = ("You are an expert university tutor who builds video study plans for an engineering student. You work only "
           "from the material you are given, you never invent facts about videos, and you answer with one JSON object "
-          "in exactly the requested shape (no Markdown around it).")
+          "in exactly the requested shape (no Markdown around it). " + ALERTS_JSON)
 
 
 @dc.dataclass
@@ -117,6 +118,36 @@ class Scope:
 def main_model(scope: "Scope", settings: Any) -> str:
     """The model for the concept list, the plan, review sheets and study packs: the plan's own, else the settings'."""
     return scope.model or getattr(settings, "plan_model", "") or getattr(settings, "ai_model", "") or "sonnet"
+
+
+def model_shown(model: str, level: str = "") -> str:
+    """Who does a step, as its progress text names it: Claude's model ("Sonnet · Low"), the ChatGPT model chosen in
+    Settings with its reasoning level ("GPT-6.1-Sol · Extra high"), or the offline model - never a Claude model name
+    while the AI is ChatGPT (``model`` is the app's Claude model level, which ChatGPT doesn't use)."""
+    from .ai import _codex_model, provider
+    from .effort import LABELS
+
+    p = provider()
+    lv = t(LABELS[level]) if level in LABELS else ""
+    if p == "chatgpt":
+        from . import appconfig
+        from .chatgpt import _models_path
+
+        try:
+            rows = json.loads(_models_path().read_text(encoding="utf-8")).get("models") or []
+        except (OSError, ValueError, AttributeError):
+            rows = []
+        chosen = appconfig.load().codex_model
+        row = next((r for r in rows if isinstance(r, dict) and r.get("slug") == chosen), None) or \
+            next((r for r in rows if isinstance(r, dict) and r.get("slug")), None)
+        name = (row or {}).get("display_name") or (row or {}).get("slug") or "ChatGPT"
+    elif p == "codex":
+        name = _codex_model() or "ChatGPT"
+    elif p == "local":
+        return t("Offline model")
+    else:
+        name = (model or "sonnet").title()
+    return f"{name} · {lv}" if lv else name
 
 
 def levels(scope: "Scope", settings: Any) -> tuple[str, str]:
@@ -1097,7 +1128,7 @@ def extras_line(cp: dict[str, Any]) -> str:
 SYSTEM_PREP = ("You are an expert university tutor writing exam preparation material for an engineering student. "
                "You use only the course material you are given (say so when it is thin instead of inventing), you "
                "write clear Markdown with LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own), and you "
-               "deliver the complete sheet without asking questions.")
+               "deliver the complete sheet without asking questions.\n\n" + ALERTS_MD)
 
 
 def prep_title(scope: Scope, facts: dict[str, Any], shown: bool = False) -> str:
@@ -1151,6 +1182,13 @@ class PlanRunner:
         if scope.get("video_lang") not in ytprefs.LANGS and not scope.get("allow_tr"):
             scope["video_lang"] = ytprefs.load().lang             # the language chosen in Settings
         s = Scope.from_json(scope)
+        from .ai import provider
+        from .effort import LEGACY, OPENAI
+
+        if provider() in OPENAI and s.model:          # ChatGPT has no Claude model: the plan keeps only its level
+            if not s.effort and parent_id and s.model in LEGACY:
+                s.effort = LEGACY[s.model]            # a new version of a plan from before reasoning levels
+            s.model = ""
         pid = uuid.uuid4().hex[:12]
         self._s.lib.create_plan(pid, course_id, s.to_json(), "", parent_id)
         return pid
@@ -1214,6 +1252,7 @@ class PlanRunner:
                 self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped — resume to continue"))
             except Exception as exc:  # noqa: BLE001 - reported on the plan
                 log.exception("Plan %s failed", plan_id)
+                # the page's notice (notices.js) adds that Resume goes on from this step, keeping the steps done
                 self._s.lib.update_plan(plan_id, status="error", error=str(exc) or exc.__class__.__name__,
                                         message=t("Something went wrong"))
             finally:
@@ -1252,6 +1291,7 @@ class PlanRunner:
         model = main_model(scope, self._s.settings)
         verify_with = getattr(self._s.settings, "verify_model", "") or VERIFY_MODEL
         level, verify_level = levels(scope, self._s.settings)
+        verify_shown = model_shown(verify_with, verify_level)
 
         def save(**more: Any) -> None:
             self._s.lib.update_plan(plan_id, data=data, usage=usage, **more)
@@ -1285,7 +1325,7 @@ class PlanRunner:
             return
         # concepts
         if "concepts" not in data:
-            self._stage(plan_id, "concepts", 0.08, t("Working out what you need to learn ({model})…", model=model))
+            self._stage(plan_id, "concepts", 0.08, t("Working out what you need to learn ({model})…", model=model_shown(model, level)))
             raw, res = self._ask_json(concepts_prompt(scope, facts), model, cancel, level)
             concepts, practice, gaps = clean_concepts(raw, scope)
             add_usage("concepts", res)
@@ -1451,7 +1491,7 @@ class PlanRunner:
             left = [b for b in batches if key(b) not in finished]
             self._stage(plan_id, "verify", 0.62 + 0.18 * (len(batches) - len(left)) / max(1, len(batches)),
                         tn(len(left), "Checking the captions against the course ({n} request, {model})…",
-                           "Checking the captions against the course ({n} requests, {model})…", model=verify_with))
+                           "Checking the captions against the course ({n} requests, {model})…", model=verify_shown))
             with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
                 futures = {pool.submit(judge, b): b for b in left}
                 try:
@@ -1463,7 +1503,7 @@ class PlanRunner:
                         n = sum(key(b) in finished for b in batches)
                         self._stage(plan_id, "verify", 0.62 + 0.18 * n / len(batches),
                                     t("Checking the captions against the course ({n}/{total}, {model})…", n=n,
-                                      total=len(batches), model=verify_with))
+                                      total=len(batches), model=verify_shown))
                 except BaseException:
                     for f in futures:              # one failed: don't start the ones still waiting
                         f.cancel()
@@ -1511,7 +1551,7 @@ class PlanRunner:
         if plan.get("parent_id"):
             parent = self._s.lib.plan(plan["parent_id"])
             previous = (parent or {}).get("result") or None
-        self._stage(plan_id, "assemble", 0.82, t("Building your plan ({model})…", model=model))
+        self._stage(plan_id, "assemble", 0.82, t("Building your plan ({model})…", model=model_shown(model, level)))
         raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today()), model,
                                   cancel, level)
         add_usage("assemble", res)
@@ -1567,7 +1607,7 @@ class PlanRunner:
         from .ai import one_shot
 
         pid = plan["id"]
-        self._stage(pid, "write", 0.15, t("Writing your exam review sheet ({model})…", model=model))
+        self._stage(pid, "write", 0.15, t("Writing your exam review sheet ({model})…", model=model_shown(model, levels(scope, self._s.settings)[0])))
         progress = [0.15, 0.0]
 
         def on_text(so_far: str) -> None:       # the sheet is long: show that it is being written

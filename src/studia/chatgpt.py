@@ -21,6 +21,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -30,6 +31,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import aierrors
 from .cancel import Cancelled
 from .i18n import t
 
@@ -432,17 +434,32 @@ def _models_cache_clear() -> None:
 
 
 def models(refresh: bool = False) -> list[dict[str, str]]:
-    """The models this account may use, in OpenAI's order: [{"slug", "display_name", "levels"}] (cached for a day)."""
+    """The models this account may use, in OpenAI's order: [{"slug", "display_name", "levels"}] (cached for a day).
+    When the list can't be fetched (no network, a failure on OpenAI's side), an older cached list is used."""
+    import requests
+
     path = _models_path()
-    if not refresh:
-        try:
-            cached = json.loads(path.read_text(encoding="utf-8"))
-            if time.time() - cached.get("at", 0) < MODELS_TTL_S and cached.get("models"):
-                return cached["models"]
-        except (OSError, ValueError):
-            pass
-    r = _session().get(f"{API}/models", headers={"Authorization": f"Bearer {access_token()}"}, timeout=30)
+    stale: list[dict[str, str]] = []
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        stale = cached.get("models") or []
+        if not refresh and time.time() - cached.get("at", 0) < MODELS_TTL_S and stale:
+            return stale
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        r = _session().get(f"{API}/models", headers={"Authorization": f"Bearer {access_token()}"}, timeout=30)
+    except requests.RequestException as exc:
+        if stale and not refresh:
+            log.info("ChatGPT's model list could not be fetched (%s): the older list is used", exc)
+            return stale
+        raise
     if r.status_code != 200:
+        log.warning("ChatGPT's model list: HTTP %s: %s", r.status_code, _logged_body(r))
+        if aierrors.retryable(r.status_code) and r.status_code != 429:
+            if stale and not refresh:
+                return stale
+            raise aierrors.ServiceError(aierrors.explain("ChatGPT", r.status_code), r.status_code)
         raise _api_failure(r.status_code, _json(r))
     rows = [{"slug": m["slug"], "display_name": m.get("display_name") or m["slug"],
              "levels": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if isinstance(x, dict)]}
@@ -524,10 +541,18 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
 
     started = time.monotonic()
     chosen = appconfig.load().codex_model
-    try:
-        listed = models()
-    except requests.RequestException as exc:
-        raise _unreachable(exc) from exc
+    for tries in range(1, len(aierrors.DELAYS) + 2):     # no older list to fall back on: asked again like the request
+        try:
+            listed = models()
+            break
+        except aierrors.ServiceError as exc:
+            wait = aierrors.delay(tries - 1, None)
+            if wait is None:
+                raise aierrors.ServiceError(aierrors.explain("ChatGPT", exc.status, tries), exc.status, tries) from exc
+            log.info("ChatGPT's model list: HTTP %s; asking again in %.0f s", exc.status, wait)
+            aierrors.wait(wait, cancel)
+        except requests.RequestException as exc:
+            raise _unreachable(exc) from exc
     slug = chosen if chosen and any(m["slug"] == chosen for m in listed) else (listed[0]["slug"] if listed else "")
     if not slug:
         raise RuntimeError(t("ChatGPT lists no models for your account."))
@@ -541,25 +566,35 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
                             "prompt_cache_key": cache_key or prompt_cache_key(system_prompt, content)}
     for name in _turned_down:
         body.pop(name, None)
-    for attempt in range(3):
+    adjusted = failed = 0                                   # requests changed after a refusal; failures on OpenAI's side
+    while True:
         try:
             text, usage = _stream(body, cancel, on_text, timeout_s)
             return {"text": text, "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
                     "model": slug}
         except _Unsupported as exc:
-            if attempt < 2 and "reasoning" in exc.param and "reasoning" in body:
+            adjusted += 1
+            if adjusted < 3 and "reasoning" in exc.param and "reasoning" in body:
                 body.pop("reasoning")                       # this model takes no effort setting: ask without it
                 continue
-            if attempt < 2 and exc.param in OPTIONAL and exc.param in body:
+            if adjusted < 3 and exc.param in OPTIONAL and exc.param in body:
                 _turned_down.add(exc.param)                 # only a hint for OpenAI's cache: ask without it
                 body.pop(exc.param)
                 continue
             raise RuntimeError(f"ChatGPT: {exc}") from exc
+        except _Transient as exc:                           # a failure on OpenAI's side: ask again a little later
+            if cancel is not None and cancel.is_set():
+                raise Cancelled() from exc
+            wait = aierrors.delay(failed, exc.retry_after)
+            failed += 1
+            if wait is None:
+                raise exc.final(failed) from exc
+            log.info("ChatGPT: HTTP %s; asking again in %.0f s (try %d)", exc.status, wait, failed + 1)
+            aierrors.wait(wait, cancel)
         except requests.RequestException as exc:            # the sign-in renewal or the request itself
             if cancel is not None and cancel.is_set():
                 raise Cancelled() from exc
             raise _unreachable(exc) from exc
-    raise RuntimeError(t("ChatGPT did not return an answer."))
 
 
 def _unreachable(exc: Exception) -> RuntimeError:
@@ -575,6 +610,43 @@ class _Unsupported(RuntimeError):
     def __init__(self, message: str, param: str) -> None:
         super().__init__(message)
         self.param = param or ""
+
+
+class _Transient(Exception):
+    """A 5xx answer, or a 429 that is not the plan's usage limit (before any text came): one_shot asks again."""
+
+    def __init__(self, status: int, body: dict[str, Any], retry_after: Optional[float] = None) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status, self.body, self.retry_after = status, body, retry_after
+
+    def final(self, tries: int) -> RuntimeError:
+        """What the student reads when the last try failed too."""
+        err = self.body.get("error") if isinstance(self.body.get("error"), dict) else {}
+        if err.get("code") in ("subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable"):
+            return _api_failure(self.status, self.body)       # "ChatGPT can't check your plan right now"
+        return aierrors.ServiceError(aierrors.explain("ChatGPT", self.status, tries), self.status, tries)
+
+
+_SECRET = re.compile(r"(?i)bearer\s+\S+|\beyJ[\w-]{8,}\.[\w-]+\.[\w-]*|\b(?:sk|rt|at)-[\w-]{12,}")
+
+
+def _logged_body(r: Any) -> str:
+    """An error answer's body for the log: short, on one line, anything token-like left out."""
+    try:
+        text = r.text if isinstance(getattr(r, "text", None), str) else json.dumps(r.json())
+    except (ValueError, TypeError, AttributeError):
+        text = ""
+    return _SECRET.sub("[hidden]", " ".join(str(text).split()))[:800] or "(empty)"
+
+
+_SERVICE_CODES = ("server_error", "internal_error", "overloaded", "service_unavailable", "rate_limit_exceeded")
+
+
+def _failed_early(err: dict[str, Any], parts: list[str]) -> None:
+    """A stream that failed on OpenAI's side before any text: asked again (once text came, it is not)."""
+    if not parts and str(err.get("code") or err.get("type") or "") in _SERVICE_CODES:
+        log.warning("ChatGPT's answer failed on its side: %s", _SECRET.sub("[hidden]", json.dumps(err))[:800])
+        raise _Transient(0, {"error": err})
 
 
 def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
@@ -594,11 +666,19 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
         threading.Thread(target=stopper, daemon=True).start()
     try:
         if r.status_code != 200:
+            logged = _logged_body(r)
             data = _json(r)
             err = data.get("error") if isinstance(data.get("error"), dict) else {}
             param = str(err.get("param") or "")
+            headers = getattr(r, "headers", None) or {}
+            log.warning("ChatGPT answered HTTP %s (model %s, %s reasoning, %d characters sent, request %s): %s",
+                        r.status_code, body.get("model"), (body.get("reasoning") or {}).get("effort", "no"),
+                        len(json.dumps(body.get("input") or [])), headers.get("x-request-id", "-"), logged)
             if err.get("code") == "subscription_sharing_unsupported_capability" or (r.status_code == 400 and param in OPTIONAL):
                 raise _Unsupported(err.get("message") or "unsupported", param)
+            if aierrors.retryable(r.status_code) and err.get("code") not in ("subscription_sharing_usage_limit_exceeded",
+                                                                             "subscription_sharing_user_not_eligible"):
+                raise _Transient(r.status_code, data, aierrors.retry_after(headers))
             raise _api_failure(r.status_code, data)
         parts: list[str] = []
         usage: dict[str, int] = {}
@@ -628,6 +708,7 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
                 break
             elif kind == "response.failed":
                 err = (ev.get("response") or {}).get("error") or {}
+                _failed_early(err, parts)
                 raise (_api_failure(0, {"error": err}) if err.get("code") else
                        RuntimeError(f"ChatGPT: {err['message']}" if err.get("message") else
                                     t("ChatGPT: the answer failed")))
@@ -639,13 +720,15 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
                 raise RuntimeError(t("ChatGPT stopped before answering ({why}).", why=why) if why else
                                    t("ChatGPT stopped before answering (stopped early)."))
             elif kind == "error":
-                raise _api_failure(0, {"error": ev.get("error") or {"message": ev.get("message")}})
+                err = ev.get("error") if isinstance(ev.get("error"), dict) else {"message": ev.get("message")}
+                _failed_early(err, parts)
+                raise _api_failure(0, {"error": err})
         if not done:
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             raise RuntimeError(t("The connection to ChatGPT ended before the answer was complete. Try again."))
         return "".join(parts), usage
-    except (Cancelled, RuntimeError):
+    except (Cancelled, RuntimeError, _Transient):
         raise
     except Exception as exc:                        # the stream broke: closed by Stop, or the network
         if cancel is not None and cancel.is_set():

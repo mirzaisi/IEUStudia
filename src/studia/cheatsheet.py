@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 from .cancel import Cancelled
 from .i18n import N_, t, tn
+from .notices import ALERTS_JSON
 
 STAGES = [("gather", N_("Reading the course material")), ("topics", N_("Listing the formulas and concepts")),
           ("entries", N_("Writing the entries")), ("check", N_("Checking that nothing is missing")),
@@ -47,7 +48,7 @@ TAGS = {"definition": "Def", "rule": "Rule", "method": "Method", "unit": "Unit",
 SYSTEM = ("You are an expert university lecturer making a cheatsheet for an engineering student: a compact, complete "
           "reference of every formula, definition, rule, unit and standard method the course material requires, "
           "built only on the material you are given, in its notation. You answer with the JSON asked for, maths in "
-          "LaTeX, and never ask questions.")
+          "LaTeX, and never ask questions. " + ALERTS_JSON)
 
 
 def _str(v: Any, limit: int = 400) -> str:
@@ -438,11 +439,14 @@ def pdf_pages(pdf: Path) -> int:
     try:
         import pypdfium2 as pdfium
 
-        doc = pdfium.PdfDocument(str(pdf))
-        try:
-            return len(doc)
-        finally:
-            doc.close()
+        from .materials import PDFIUM_LOCK
+
+        with PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(str(pdf))
+            try:
+                return len(doc)
+            finally:
+                doc.close()
     except Exception:  # noqa: BLE001 - only shown as a number
         return 0
 
@@ -497,10 +501,12 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         cancel: threading.Event) -> None:
     """Build (or resume) the cheatsheet ``plan``; every finished stage and batch is saved at once."""
     from .ai import ask_json
+    from .plans import model_shown
     from .studypack import _level, _usage_add, gather
 
     pid, s = plan["id"], runner._s
     level = _level(scope, s.settings)
+    shown = model_shown(model, level)       # "GPT-6.1-Sol · High", "Sonnet · Low"
     lock = threading.Lock()
 
     def stage(name: str, progress: float, message: str = "") -> None:
@@ -530,7 +536,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     check()
     # topics: what the sheet must hold
     if "topics" not in data:
-        stage("topics", 0.06, t("Listing the formulas and concepts ({model})…", model=model))
+        stage("topics", 0.06, t("Listing the formulas and concepts ({model})…", model=shown))
         raw, res = ask(topics_prompt(facts))
         _usage_add(usage, "topics", res)
         data["topics"] = clean_topics(raw, facts)
@@ -553,9 +559,9 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     if left:
         def progress() -> None:
             stage("entries", 0.2 + 0.6 * len(done) / len(batches),
-                  t("Writing the entries ({model})…", model=model) if len(batches) == 1 else
+                  t("Writing the entries ({model})…", model=shown) if len(batches) == 1 else
                   t("Writing the entries: part {n} of {total} ({model})…", n=min(len(done) + 1, len(batches)),
-                    total=len(batches), model=model))
+                    total=len(batches), model=shown))
 
         def write(i: int) -> tuple[int, Any, dict]:
             group = [by_id[x] for x in batches[i]]
@@ -595,7 +601,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         fixed: dict[str, list] = {}
         if missing:
             stage("check", 0.84, tn(sum(len(v) for v in missing.values()), "Adding {n} missing item ({model})…",
-                                    "Adding {n} missing items ({model})…", model=model))
+                                    "Adding {n} missing items ({model})…", model=shown))
             group = [tp for tp in topics if tp["id"] in missing]
             raw, res = ask(entries_prompt(sheet, group, material(s.lib, plan["course_id"], facts, group),
                                           facts["span"], missing))
