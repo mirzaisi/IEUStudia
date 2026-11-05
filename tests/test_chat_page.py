@@ -96,7 +96,7 @@ def test_the_preview_s_new_chat_keeps_its_files_after_the_first_question(tmp_pat
   A["chat-suggest"]({ dataset: { text: "Check my notes" } }); await tick(100);
   out.chat = !!S.chat.id; out.files = names();
 """)
-    assert out == {"chat": True, "files": ["notes.txt", "pic.png"]}
+    assert out["chat"] is True and sorted(out["files"]) == ["notes.txt", "pic.png"]   # (in the order they finished)
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
