@@ -3,7 +3,8 @@
 Usage: fake_claude.py <system prompt file>. Each user message is answered with
 "Answer <n> (images <k>, replay <bool>, lectures <m>): <question>", streamed in small text deltas.
 A question containing SLOW streams slowly (so it can be interrupted), CRASH exits with an error,
-LIMIT returns Claude's usage-limit error.
+LIMIT returns Claude's usage-limit error. With FAKE_CLAUDE_LOG set, each message's blocks (without their data) are
+written to that file, one message per line.
 """
 
 import collections
@@ -50,6 +51,11 @@ def main():
             continue
         turns += 1
         content = msg["message"]["content"]
+        if os.environ.get("FAKE_CLAUDE_LOG"):            # what Claude Code got, block by block (no picture data: its size)
+            with open(os.environ["FAKE_CLAUDE_LOG"], "a", encoding="utf-8") as f:
+                f.write(json.dumps([{**{k: v for k, v in b.items() if k != "source"},
+                                     **({"size": len((b.get("source") or {}).get("data") or "")} if "source" in b else {})}
+                                    for b in content]) + "\n")
         texts = [b["text"] for b in content if b.get("type") == "text"]
         question = texts[-1] if texts else ""
         flaky = os.environ.get("FAKE_CLAUDE_FLAKY_MARKER", "")

@@ -23,9 +23,11 @@ log = logging.getLogger("studia")
 
 MODES = ("none", "lecture", "upto", "all", "pick")
 SLIDE_KINDS = ("pdf", "pptx", "docx")
-MAX_IMAGES = 60               # pictures per chat, the lecture video's slides included (Claude takes 100 per request)
-MAX_TEXT_TOKENS = 60_000      # of course-file text (the lectures and the conversation need the rest of the window)
-PAGE_CHARS = 2500             # a page's text beyond this is cut (a dense page; the picture has it all)
+MAX_IMAGES = 500             # pictures per chat at most, the lecture video's slides included (each AI's own limit is
+                              # chatlimits.Limits.pictures: 80 on Claude Haiku; tokens and size decide before that)
+MAX_TEXT_TOKENS = 600_000     # of course-file text at most (a chat sends it all when the AI's window holds it)
+PAGE_CHARS = 12_000           # a page's text beyond this is cut (unusual: then read in batches, or said so)
+SLIDE_RATIO = 0.75            # a course PDF's height / width when it can't be read (most are slides: 4:3 or 16:9)
 MATCH_KEEP = 0.75             # the week's files stay when they match what was said this well (the best file: 1)
 SHORT_TEXT = 300              # a page with less text than this is mostly a figure, a formula or handwriting
 IMAGE_BYTES = 95_000          # an average page picture as sent (1024 px JPEG), measured on the owner's course PDFs
@@ -221,73 +223,228 @@ def _pages(lib: Any, f: dict[str, Any]) -> list[str]:
     return pages
 
 
-def build(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, captured: int = 0,
-          can_images: Optional[bool] = None, said: str = "") -> dict[str, Any]:
-    """What the choice sends: ``text`` (for the chat's instructions), ``images`` ([(label, PagePicture)], in file and
-    page order) and ``summary`` (for the page: the files, the counts, the size). ``captured``: how many slides from
-    the lecture video go too (they share the picture budget, the course's pages first)."""
+@dc.dataclass
+class PdfFile:
+    """A whole PDF sent as a file (an AI that takes PDFs: each page goes as text and as a picture)."""
+    pdf: str
+    pages: int
+    name: str
+
+    def path(self) -> Optional[Path]:
+        return Path(self.pdf) if os.path.isfile(self.pdf) else None
+
+
+_ratios: dict[str, tuple[int, float]] = {}
+
+
+def page_ratio(path: str, fallback: float = SLIDE_RATIO) -> float:
+    """A PDF's height / width (its first page), remembered while the file stays the same: how much its pictures cost."""
+    try:
+        stamp = os.stat(path).st_mtime_ns
+    except OSError:
+        return fallback
+    hit = _ratios.get(path)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    from .chatfiles import _pdf_ratio
+
+    r = _pdf_ratio(Path(path), fallback)
+    _ratios[path] = (stamp, r)
+    return r
+
+
+def pdf_ok(path: str, pages: int) -> bool:
+    """Whether a PDF opens as it is, with ``pages`` pages and no password, so that it can go whole as a file (one the
+    AI's service can't read would be left out of the request without a word)."""
+    import pypdfium2 as pdfium
+
+    from .materials import PDFIUM_LOCK
+
+    try:
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(str(path))
+            try:
+                return len(pdf) == pages
+            finally:
+                pdf.close()
+    except Exception:  # noqa: BLE001 - damaged or locked: its pages go as pictures
+        return False
+
+
+def picture_cost(ratio: float) -> int:
+    """A page picture's tokens as sent (1024 px wide; a 16:9 slide about 800, a portrait page about 2,000)."""
+    from .chatfiles import SENT_WIDTH, picture_tokens
+
+    return picture_tokens(SENT_WIDTH, SENT_WIDTH * ratio)
+
+
+def collect(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, can_images: Optional[bool] = None,
+            said: str = "") -> dict[str, Any]:
+    """Every page of the chosen slide files (chatread.Page: its text whole, its picture where it is a PDF page and
+    pictures are wanted; a PowerPoint slide that is mostly a figure: that figure), before any budget."""
+    from . import chatfiles
+    from .chatread import Page
+
     send = normalize(send)
-    local = ai.provider() == "local"        # its window holds a few thousand tokens: it gets matching passages instead
     can_images = ai.provider() in ("claude", "chatgpt", "codex") if can_images is None else can_images
     catalog = course_files(lib, course_id, day_keys, said if send["mode"] == "lecture" else "")
-    ids = chosen_ids(catalog, send) if send["mode"] != "none" and not local else []
+    ids = chosen_ids(catalog, send) if send["mode"] != "none" else []
     picked = [f for f in catalog["files"] if f["id"] in set(ids)]
-    per = ai.chars_per_token()
-    texts: list[str] = []
-    pictures: list[tuple[int, str, PagePicture]] = []        # (priority, label, picture)
-    files_out, n_pages, missing = [], 0, 0
+    files, pages, missing = [], [], 0
     for f in picked:
         if not f["downloaded"]:
             missing += 1
             continue
-        pages = _pages(lib, f)
+        texts = _pages(lib, f)
+        cost = picture_cost(page_ratio(f["path"])) if f["ext"] == "pdf" else 0
+        wanted = can_images and send["images"]
+        # a PowerPoint slide that is mostly a figure: its picture (chatfiles.slide_figure), else it says little
+        figures = chatfiles.pptx_figures(Path(f["path"])) if f["ext"] == "pptx" and wanted else set()
+        own = []
+        for i, text in enumerate(texts, start=1):
+            text = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+            pic: Any = None
+            if f["ext"] == "pdf" and wanted:
+                pic = PagePicture(f["path"], i)
+            elif i in figures and len(text) < SHORT_TEXT:
+                pic = chatfiles.PptxPicture(f["path"], i)
+            tokens = (cost if isinstance(pic, PagePicture) else chatfiles.FIGURE_TOKENS) if pic is not None else 0
+            own.append(Page(label=f"[{f['label']} p.{i}]", group="course", file=f["id"], name=f["label"], page=i,
+                            text=text, picture=pic, tokens=tokens, bytes=IMAGE_BYTES * 4 // 3 if pic is not None else 0,
+                            priority=1 if len(text) < SHORT_TEXT else 2, source=f["path"]))
+        pages += own
+        files.append({"file": f, "pages": own})
+    return {"send": send, "catalog": catalog, "files": files, "pages": pages, "missing": missing,
+            "can_images": bool(can_images)}
+
+
+def allocate(candidates: list[Any], count: int, tokens: Optional[int] = None, size: Optional[int] = None,
+             video: int = 0) -> list[Any]:
+    """The pictures that go, in their order: photos first, then pages that are mostly figures, formulas or handwriting,
+    then pages whose text says much of it, within ``count`` pictures, ``tokens`` and ``size`` (bytes). ``video``: the
+    slides from the video among them (group "video") keep at least a third of the pictures when other pages go too."""
+    others = [p for p in candidates if p.group != "video"]
+    shots = [p for p in candidates if p.group == "video"]
+    keep = min(len(shots), count // 3) if others else len(shots)
+    order = {id(p): n for n, p in enumerate(candidates)}
+    queue = shots[:keep] + sorted(others, key=lambda p: (p.priority, order[id(p)])) + shots[keep:]
+    chosen, n, tok, weight = [], 0, 0, 0
+    for p in queue:
+        if n >= count:
+            break
+        if (tokens is not None and tok + p.tokens > tokens) or (size and weight + p.bytes > size):
+            continue
+        chosen.append(p)
+        n, tok, weight = n + 1, tok + p.tokens, weight + p.bytes
+    return sorted(chosen, key=lambda p: order[id(p)])
+
+
+def assemble(col: dict[str, Any], captured: int = 0, chosen: Optional[list[Any]] = None, video: Optional[int] = None,
+             max_text_tokens: Optional[int] = None, local: Optional[bool] = None,
+             native: Iterable[str] = ()) -> dict[str, Any]:
+    """What the choice sends: ``text`` (for the chat's instructions), ``images`` ([(label, PagePicture or PdfFile)], in
+    file and page order) and ``summary`` (for the page: the files, the counts, the size). ``chosen``: the pages that go
+    as pictures (default: as many as ``MAX_IMAGES`` takes, the course's pages first, the ``captured`` slides from the
+    video at least a third of them); ``video``: then how many of those slides go; ``native``: the files (paths) that go
+    whole as PDF files instead of page pictures."""
+    send = col["send"]
+    local = ai.provider() == "local" if local is None else local   # it gets matching passages instead
+    files = [] if local else col["files"]
+    per = ai.chars_per_token()
+    if chosen is None:
+        shots = [types_video(i) for i in range(captured)]
+        picked = allocate([p for f in files for p in f["pages"] if p.picture is not None] + shots, MAX_IMAGES)
+        video = sum(1 for p in picked if p.group == "video")
+        chosen = [p for p in picked if p.group != "video"]
+    video = min(captured, video or 0)
+    pictured = {p.key for p in chosen}
+    native = set(native)
+    texts: list[str] = []
+    marks: list[tuple[int, Any]] = []            # (where each page's text starts, the page)
+    long_pages: list[Any] = []
+    files_out, n_pages = [], 0
+    for f in files:
+        meta, pages = f["file"], f["pages"]
         n_pages += len(pages)
-        files_out.append({"id": f["id"], "title": f["title"], "label": f["label"], "ext": f["ext"], "pages": len(pages),
-                          "path": f["path"]})
-        body = []
-        for i, text in enumerate(pages, start=1):
-            label = f"[{f['label']} p.{i}]"
-            text = re.sub(r"\n{3,}", "\n\n", text.strip())
-            if len(text) > PAGE_CHARS:
-                text = text[:PAGE_CHARS].rstrip() + " …"
-            body.append(f"{label}\n{text}" if text else f"{label} (no text: see the picture)" if f["ext"] == "pdf"
-                        else f"{label} (no text)")
-            if f["ext"] == "pdf" and can_images and send["images"]:
-                pictures.append((0 if len(text) < SHORT_TEXT else 1, label, PagePicture(f["path"], i)))
-        texts.append(f"## {f['label']}" + (f" (week {', '.join(map(str, f['weeks']))})" if f["weeks"] else "")
-                     + "\n\n" + "\n\n".join(body))
+        files_out.append({"id": meta["id"], "title": meta["title"], "label": meta["label"], "ext": meta["ext"],
+                          "pages": len(pages), "path": meta["path"]})
+        start = sum(len(x) + 2 for x in texts)
+        head = f"## {meta['label']}" + (f" (week {', '.join(map(str, meta['weeks']))})" if meta["weeks"] else "") + "\n\n"
+        body, at = [], start + len(head)
+        for p in pages:
+            text = p.text if len(p.text) <= PAGE_CHARS else p.text[:PAGE_CHARS].rstrip() + " …"
+            if text is not p.text:               # a page of an unusual length: its rest is read in batches, or cut
+                long_pages.append(p)
+            line = (f"{p.label}\n{text}" if text else f"{p.label} (no text: see the picture)"
+                    if meta["ext"] == "pdf" or p.picture is not None
+                    else f"{p.label} (no text: only a figure, which the app can't send)")
+            marks.append((at, p))
+            at += len(line) + 2
+            body.append(line)
+        texts.append(head + "\n\n".join(body))
     text = "\n\n".join(texts)
-    cut = False
-    if len(text) > MAX_TEXT_TOKENS * per:
-        text = text[:int(MAX_TEXT_TOKENS * per)].rsplit("\n[", 1)[0] + "\n\n(The rest of the files was left out: too long.)"
-        cut = True
-    # the picture budget: the course's pages first (those that are mostly figures, formulas or handwriting before
-    # those whose text says it all), the video's slides get what is left, at least a third when both go
-    keep_video = min(captured, MAX_IMAGES // 3) if pictures else min(captured, MAX_IMAGES)
-    room = MAX_IMAGES - keep_video
-    chosen_pics = sorted(pictures, key=lambda p: p[0])[:room]
-    order = {id(p[2]): n for n, p in enumerate(pictures)}
-    chosen_pics.sort(key=lambda p: order[id(p[2])])
-    video = min(captured, MAX_IMAGES - len(chosen_pics))
-    images = [(label, pic) for _, label, pic in chosen_pics]
+    cut_pages: list[Any] = []                    # the pages whose text doesn't go (chatread reads them instead)
+    most = MAX_TEXT_TOKENS if max_text_tokens is None else max_text_tokens
+    if len(text) > most * per:
+        kept = text[:int(max(0, most) * per)].rsplit("\n[", 1)[0]
+        cut_pages = [p for at, p in marks if at >= len(kept)]
+        text = kept + "\n\n(The rest of the files was left out: too long.)" if kept.strip() else ""
+    cut = bool(cut_pages)
+    known = {p.key for p in cut_pages}
+    cut_pages += [p for p in long_pages if p.key not in known]
+    images: list[tuple[str, Any]] = []
+    for f in files:
+        meta = f["file"]
+        if meta["path"] in native:
+            images.append((f"[{meta['label']}] (the whole PDF, {len(f['pages'])} pages)",
+                           PdfFile(meta["path"], len(f["pages"]), meta["label"])))
+        else:
+            images += [(p.label, p.picture) for p in f["pages"] if p.key in pictured]
+    page_images = sum(len(f["pages"]) if f["file"]["path"] in native else sum(1 for p in f["pages"] if p.key in pictured)
+                      for f in files)
     text_tokens = ai.text_tokens(text, per) if text else 0
     left = len(text)
-    for fo, section in zip(files_out, texts):    # each file's share ("What this chat sees"), in the text as sent
+    image_tokens = 0
+    for fo, section, f in zip(files_out, texts, files):   # each file's share ("What this chat sees"), as sent
         path = fo.pop("path")
         fo["text_tokens"] = ai.text_tokens(section[:max(0, left)], per)
         left -= len(section) + 2
-        fo["pictures"] = sum(1 for _, pic in images if pic.pdf == path)
-        fo["tokens"] = fo["text_tokens"] + fo["pictures"] * ai.IMAGE_TOKENS
+        mine = [p for p in f["pages"] if p.key in pictured or path in native]
+        fo["pictures"] = len(mine)
+        fo["native"] = path in native             # as a file: each page's text goes in it again
+        fo["picture_tokens"] = sum(p.tokens + (ai.text_tokens(p.text, per) if path in native else 0) for p in mine)
+        fo["tokens"] = fo["text_tokens"] + fo["picture_tokens"]
+        fo["cut"] = any(p.file == fo["id"] for p in cut_pages)
+        # pages with no text and no picture the app can send (a Word page that is only a figure): named, not hidden
+        fo["blank"] = sum(1 for p in f["pages"] if not p.text and p.picture is None) if fo["ext"] != "pdf" else 0
+        image_tokens += fo["picture_tokens"]
     summary = {
-        "mode": send["mode"], "images_on": send["images"], "can_images": bool(can_images),
-        "files": files_out, "missing": missing, "pages": n_pages, "page_images": len(images),
-        "text_only_pages": n_pages - len(images), "video_images": video, "video_total": captured,
-        "text_tokens": text_tokens, "image_tokens": (len(images) + video) * ai.IMAGE_TOKENS,
-        "tokens": text_tokens + (len(images) + video) * ai.IMAGE_TOKENS,
-        "bytes": len(text.encode("utf-8")) + len(images) * IMAGE_BYTES + video * VIDEO_IMAGE_BYTES,
+        "mode": send["mode"], "images_on": send["images"], "can_images": col["can_images"],
+        "files": files_out, "missing": col["missing"] if not local else 0, "pages": n_pages, "page_images": page_images,
+        "text_only_pages": n_pages - page_images, "video_images": video, "video_total": captured,
+        "text_tokens": text_tokens, "image_tokens": image_tokens + video * ai.IMAGE_TOKENS,
+        "tokens": text_tokens + image_tokens + video * ai.IMAGE_TOKENS,
+        "bytes": len(text.encode("utf-8")) + page_images * IMAGE_BYTES + video * VIDEO_IMAGE_BYTES,
         "cut": cut, "max_images": MAX_IMAGES, "local": local,
     }
-    return {"text": text, "images": images, "video_images": video, "summary": summary, "catalog": catalog}
+    return {"text": text, "images": images, "video_images": video, "summary": summary, "catalog": col["catalog"],
+            "cut_pages": cut_pages}
+
+
+def types_video(i: int) -> Any:
+    """A placeholder for the ``i``-th slide from the video in the default picture budget (they are counted only)."""
+    from .chatread import Page
+
+    return Page(label=f"video {i}", group="video", file="video", name="video", page=i, tokens=ai.IMAGE_TOKENS,
+                bytes=VIDEO_IMAGE_BYTES * 4 // 3, priority=1)
+
+
+def build(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, captured: int = 0,
+          can_images: Optional[bool] = None, said: str = "") -> dict[str, Any]:
+    """What the choice sends on its own (the chooser's preview; a chat shares its budget with the student's files and
+    the AI's limits: chat.ChatService.context). ``captured``: how many slides from the lecture video go too (they
+    share the picture budget, the course's pages first)."""
+    return assemble(collect(lib, course_id, day_keys, send, can_images, said), captured)
 
 
 def options(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, captured: int = 0,

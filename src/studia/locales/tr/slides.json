@@ -49,5 +49,7 @@
   "{n} of these files isn't on this PC yet, so it can't be sent.": "Bu dosyalardan {n} tanesi henüz bu bilgisayarda değil, o yüzden gönderilemez.",
   "Download them": "İndir",
   "That is more than one chat can hold. Choose fewer files, or turn off the pictures.": "Bu, bir sohbetin alabileceğinden fazla. Daha az dosya seç ya da resimleri kapat.",
-  "checked against what the lecturer taught": "hocanın anlattıklarıyla karşılaştırıldı"
+  "checked against what the lecturer taught": "hocanın anlattıklarıyla karşılaştırıldı",
+  "Read everything is on: {ai} goes through the {n} page that doesn't fit whole before it answers.": "Her şeyi oku açık: {ai} cevap vermeden önce tamamı sığmayan {n} sayfayı okur.",
+  "{n} page doesn't fit whole. Read everything (in What this chat sees) has {ai} go through it first.": "{n} sayfa tam sığmıyor. Her şeyi oku (Bu sohbet neleri görüyor bölümünde) açıkken {ai} önce bunları da okur."
 }

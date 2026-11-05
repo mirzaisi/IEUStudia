@@ -462,9 +462,11 @@ def models(refresh: bool = False) -> list[dict[str, str]]:
             raise aierrors.ServiceError(aierrors.explain("ChatGPT", r.status_code), r.status_code)
         raise _api_failure(r.status_code, _json(r))
     rows = [{"slug": m["slug"], "display_name": m.get("display_name") or m["slug"],
-             "levels": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if isinstance(x, dict)]}
+             "levels": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if isinstance(x, dict)],
+             **{k: m[k] for k in ("context_window", "effective_context_window_percent") if isinstance(m.get(k), int)}}
             for m in (_json(r).get("models") or []) if isinstance(m, dict) and m.get("slug")
-            and m.get("visibility", "list") == "list"]           # levels: the reasoning efforts it takes (effort.py)
+            and m.get("visibility", "list") == "list"]           # levels: the reasoning efforts it takes (effort.py);
+    # context_window: how much one request holds (chatlimits.py), when the list says
     path.write_text(json.dumps({"at": time.time(), "models": rows}), encoding="utf-8")
     return rows
 
@@ -505,13 +507,19 @@ def _api_error(status: int, body: dict[str, Any]) -> str:
 
 
 def _parts(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The app's content blocks (Anthropic's shape) as the Responses API takes them: text, pictures, and a document (a
+    PDF) as a file, never dropped on the way."""
     out = []
     for b in content:
+        src = b.get("source") or {}
         if b.get("type") == "text" and b.get("text"):
             out.append({"type": "input_text", "text": b["text"]})
-        elif b.get("type") == "image" and (b.get("source") or {}).get("data"):
-            src = b["source"]
+        elif b.get("type") == "image" and src.get("data"):
             out.append({"type": "input_image", "image_url": f"data:{src.get('media_type', 'image/jpeg')};base64,{src['data']}"})
+        elif b.get("type") == "document" and src.get("data"):
+            mime = src.get("media_type", "application/pdf")
+            out.append({"type": "input_file", "filename": str(b.get("title") or "file.pdf"),
+                        "file_data": f"data:{mime};base64,{src['data']}"})
     return out
 
 
@@ -594,13 +602,18 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
         except requests.RequestException as exc:            # the sign-in renewal or the request itself
             if cancel is not None and cancel.is_set():
                 raise Cancelled() from exc
-            raise _unreachable(exc) from exc
+            raise _unreachable(exc, body_size(body)) from exc
 
 
-def _unreachable(exc: Exception) -> RuntimeError:
+def _unreachable(exc: Exception, size: int = 0) -> RuntimeError:
     import requests
 
-    log.info("ChatGPT could not be reached: %s", exc)
+    log.info("ChatGPT could not be reached (%d bytes to send): %s", size, exc)
+    if size >= BIG_BODY and isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        # most likely the upload: the pictures go up again with every question
+        return RuntimeError(t("Your question and its pictures (~{mb} MB) didn't finish uploading to ChatGPT: your "
+                              "connection may be slow for this much. Try again, or send fewer slides.",
+                              mb=max(1, round(size / 1024 / 1024))))
     if isinstance(exc, requests.Timeout):
         return RuntimeError(t("ChatGPT did not answer in time. Check your internet connection and try again."))
     return RuntimeError(t("Can't reach ChatGPT. Check your internet connection and try again."))
@@ -649,11 +662,26 @@ def _failed_early(err: dict[str, Any], parts: list[str]) -> None:
         raise _Transient(0, {"error": err})
 
 
+UPLOAD_BPS = 150_000          # bytes a second a request's body is given to go up (a 3 Mbit/s upload sends ~390 KB/s)
+BIG_BODY = 4 * 1024 * 1024    # a request this heavy that fails on the way is said to be too heavy, not "no internet"
+
+
+def body_size(body: dict[str, Any]) -> int:
+    return len(json.dumps(body))
+
+
+def upload_timeout(body: dict[str, Any]) -> float:
+    """The first timeout of a request: requests keeps it on the socket while the body goes up (one write, one deadline),
+    so a heavy request needs more than 30 s on a slow upload (42 MB failed after 30 s at 3 Mbit/s, measured)."""
+    return max(30.0, body_size(body) / UPLOAD_BPS)
+
+
 def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
             timeout_s: float) -> tuple[str, dict[str, int]]:
     headers = {"Authorization": f"Bearer {access_token()}", "Content-Type": "application/json",
                "Accept": "text/event-stream"}
-    r = _session().post(f"{API}/responses", headers=headers, json=body, stream=True, timeout=(30, timeout_s))
+    r = _session().post(f"{API}/responses", headers=headers, json=body, stream=True,
+                        timeout=(upload_timeout(body), timeout_s))
     finished = threading.Event()
 
     def stopper() -> None:                         # Stop: close the stream at once, even while it is quiet

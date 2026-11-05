@@ -1682,19 +1682,21 @@ class Api:
         return {"ok": True, "courses": self._s.chat.courses(), "limits": usage_limits()}
 
     @safe
-    def chat_scope(self, course_id: str) -> dict[str, Any]:
-        return {"ok": True, **self._s.chat.scope_options(course_id)}
+    def chat_scope(self, course_id: str, model: str = "") -> dict[str, Any]:
+        return {"ok": True, **self._s.chat.scope_options(course_id, str(model or ""))}
 
     @safe
     def chat_estimate(self, course_id: str, day_keys: list[str], focus: str = "full",
-                      slides: bool = False, send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
+                      slides: bool = False, send: Optional[dict[str, Any]] = None, uploads: str = "",
+                      model: str = "", read_all: Optional[bool] = None) -> dict[str, Any]:
         from .chatfiles import draft_target
 
         keys = self._s.chat.all_days(course_id) if focus == "course" else list(day_keys or [])
         days = self._s.chat.ordered_days(course_id, keys)
-        ctx = self._s.chat.context(course_id, days, focus, bool(slides), send, draft_target(str(uploads or "")))
+        ctx = self._s.chat.context(course_id, days, focus, bool(slides), send, draft_target(str(uploads or "")),
+                                   str(model or ""), None if read_all is None else bool(read_all))
         return {"ok": True, "tokens": ctx["tokens"] if days else 0, "images": len(ctx["images"]),
-                "slides_total": ctx["slides_total"], "days": len(days)}
+                "slides_total": ctx["slides_total"], "days": len(days), "read": ctx["read"], "max_tokens": ctx["limit"]}
 
     @safe
     def chat_list(self) -> dict[str, Any]:
@@ -1709,9 +1711,11 @@ class Api:
     @safe
     def chat_create(self, course_id: str, day_keys: list[str], focus: str = "full", slides: bool = False,
                     model: Optional[str] = None, level: str = "",
-                    send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
+                    send: Optional[dict[str, Any]] = None, uploads: str = "",
+                    read_all: Optional[bool] = None) -> dict[str, Any]:
         chat = self._s.chat.create(course_id, list(day_keys or []), focus, bool(slides),
-                                   model or self._s.settings.ai_model, level or "", send=send, uploads=str(uploads or ""))
+                                   model or self._s.settings.ai_model, level or "", send=send, uploads=str(uploads or ""),
+                                   read_all=None if read_all is None else bool(read_all))
         return {"ok": True, "chat": chat}
 
     # "What this chat sees", the student's own files and the viewers (chatinputs.py). ``spec``: {"chat_id"}, or a new
@@ -1755,11 +1759,13 @@ class Api:
 
     @safe
     def chat_slides(self, course_id: str, day_keys: list[str], focus: str = "full", captured: bool = False,
-                    send: Optional[dict[str, Any]] = None, uploads: str = "") -> dict[str, Any]:
+                    send: Optional[dict[str, Any]] = None, uploads: str = "", model: str = "",
+                    read_all: Optional[bool] = None) -> dict[str, Any]:
         """The "send slides" chooser: the course's slide files and what the choice adds to the chat (``uploads``: the
         chat's id or a new chat's ``draft-<token>``, whose files count too)."""
         return {"ok": True, **self._s.chat.slide_options(course_id, list(day_keys or []), focus, bool(captured), send,
-                                                         str(uploads or ""))}
+                                                         str(uploads or ""), str(model or ""),
+                                                         None if read_all is None else bool(read_all))}
 
     @safe
     def chat_send(self, chat_id: str, text: str) -> dict[str, Any]:

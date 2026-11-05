@@ -30,13 +30,16 @@ from .i18n import t
 
 log = logging.getLogger("studia")
 
-MAX_FILES = 20                     # uploads per chat
-MAX_PICTURES = 20                  # pictures from uploads per chat (photos and PDF pages), next to the slides' 60
-MAX_TEXT_TOKENS = 40_000           # of upload text per chat
-PAGE_CHARS = 6000                  # a page's text beyond this is cut (the picture has it all)
+MAX_FILES = 100                    # uploads per chat (the app's own limit: the AIs take far more per request)
+MAX_PICTURES = 500                 # pictures from uploads per chat at most (photos and PDF pages); each AI's own limit
+                                   # and its window decide first (chatlimits.py), shared with the course's slides
+MAX_TEXT_TOKENS = 400_000          # of upload text per chat at most (all of it goes when the AI's window holds it)
+PAGE_CHARS = 12_000                # a page's text beyond this is cut (unusual: then read in batches, or said so)
+PAGE_BYTES = 95_000                # an average PDF page picture as sent (1024 px JPEG)
 SHORT_TEXT = 300                   # a PDF page with less text than this is mostly a figure, a formula or handwriting
 PICTURE_WIDTH = 1600               # a photo as kept (the AI gets a 1024 px copy)
 SENT_WIDTH = 1024                  # a picture as the AI gets it (ai._small_jpeg)
+FIGURE_TOKENS = 1050               # a PowerPoint slide's figure as sent (its shape unknown until drawn: as a 4:3 one)
 A4 = 1.414                         # a page's height / width when it isn't known (a PDF added before it was kept)
 PASSAGE_CHARS = 1500               # the offline model: the files' text in pieces of about this much...
 LOCAL_CHARS = 3200                 # ...and the pieces that match a question, at most this much with it
@@ -193,7 +196,15 @@ def _read_pages(path: Path, kind: str, name: str = "") -> list[str]:
     if "\x00" in text[:4000]:
         raise Refused(t("{name} doesn't look like a text file.", name=name or path.name))
     chunks, cur = [], ""
+    lines = []
     for line in text.replace("\r\n", "\n").split("\n"):          # ~3000 characters per "page"
+        while len(line) > 3000:                                   # a very long line: at a word's end
+            cut = line.rfind(" ", 0, 3000)
+            cut = cut if cut > 1500 else 3000
+            lines.append(line[:cut])
+            line = line[cut:].lstrip(" ")
+        lines.append(line)
+    for line in lines:
         if len(cur) + len(line) > 3000 and cur:
             chunks.append(cur.rstrip())
             cur = ""
@@ -359,6 +370,56 @@ class UploadPage(PagePicture):
         return pages_folder(Path(self.pdf))
 
 
+@dc.dataclass
+class PptxPicture:
+    """A PowerPoint slide that is mostly a figure (its text says little of it): the slide's largest picture, drawn
+    only when it is sent (kept with a student's file, so they go together; else in the cache of page pictures).
+    Without it such a slide would reach the AI as its title alone, or not at all."""
+    pptx: str
+    slide: int
+
+    def folder(self) -> Path:
+        from .paths import app_dir
+
+        return pages_folder(Path(self.pptx)) or app_dir() / "cache" / "pages"
+
+    def path(self) -> Optional[Path]:
+        try:
+            return slide_figure(Path(self.pptx), self.slide, self.folder())
+        except Exception:  # noqa: BLE001 - a picture that can't be drawn: the slide goes as text only
+            log.debug("Could not draw the picture of slide %d of %s", self.slide, self.pptx, exc_info=True)
+            return None
+
+
+def pptx_figures(path: Path) -> set[int]:
+    """The slides of a PowerPoint file that hold a picture."""
+    try:
+        return {n for n, pics in _pptx_media(Path(path)).items() if pics}
+    except (OSError, zipfile.BadZipFile, KeyError, ValueError):
+        return set()
+
+
+def slide_figure(path: Path, slide: int, cache: Path) -> Optional[Path]:
+    """A PowerPoint slide's largest picture as a JPEG in ``cache`` (drawn once; None: the slide has none)."""
+    import hashlib
+    import tempfile
+
+    key = hashlib.sha1(f"{os.path.abspath(path)}|{os.path.getmtime(path)}".encode("utf-8")).hexdigest()[:12]
+    jpg = cache / f"pptx-{key}-{int(slide)}-figure.jpg"
+    if jpg.is_file():
+        return jpg
+    names = _pptx_media(path).get(int(slide), [])
+    if not names:
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path) as z, tempfile.TemporaryDirectory() as tmp:
+        name = max(names, key=lambda n: z.getinfo(n).file_size)
+        src = Path(tmp) / Path(name).name
+        src.write_bytes(z.read(name))
+        _to_jpeg(src, jpg, PICTURE_WIDTH)
+    return jpg
+
+
 def pages_folder(path: Path) -> Optional[Path]:
     """Where the pictures drawn from a student's file are kept: in the file's own folder, so that they go with it
     (None for any other file)."""
@@ -394,7 +455,8 @@ def _delete(where: Path) -> None:
 
 
 def is_upload(picture: Any) -> bool:
-    return isinstance(picture, (UploadPicture, UploadPage))
+    return isinstance(picture, (UploadPicture, UploadPage)) or (
+        isinstance(picture, PptxPicture) and pages_folder(Path(picture.pptx)) is not None)
 
 
 def _pages(box: Path) -> list[str]:
@@ -414,7 +476,7 @@ def picture_tokens(width: Any, height: Any) -> int:
     return max(1, round(w * s * h * s / 750))
 
 
-def _pdf_ratio(path: Path) -> float:
+def _pdf_ratio(path: Path, fallback: float = A4) -> float:
     """A PDF's height / width, from its first page (how much its page pictures cost)."""
     import pypdfium2 as pdfium
 
@@ -431,7 +493,7 @@ def _pdf_ratio(path: Path) -> float:
                 pdf.close()
         return round(max(0.2, min(5.0, h / max(1.0, w))), 3)
     except Exception:  # noqa: BLE001 - only an estimate
-        return A4
+        return fallback
 
 
 def _passages(label: str, text: str) -> list[str]:
@@ -445,80 +507,142 @@ def _passages(label: str, text: str) -> list[str]:
     return [f"{label}\n{p}" for p in out + [cur.strip()] if p]
 
 
-def build(target: str, can_images: bool, local: bool = False) -> dict[str, Any]:
-    """What the uploads of ``target`` send: ``text`` (for the chat's instructions; the offline model gets
-    ``passages`` of it that match each question instead: local_pick), ``images`` ([(label, picture)]: photos, then
-    PDF pages, mostly-figure pages first) and ``items`` (each upload with what goes of it and its size)."""
-    per = ai.chars_per_token()
-    budget = int(MAX_TEXT_TOKENS * per)
-    texts: list[str] = []
-    passages: list[str] = []
-    pictures: list[tuple[int, int, str, Any, str, int]] = []   # (priority, order, label, picture, upload id, tokens)
-    files: list[tuple[dict[str, Any], dict[str, Any], list[tuple[str, str]]]] = []
-    items: list[dict[str, Any]] = []
-    used = 0
+def notes_folder(box: Path) -> Path:
+    """Where the notes read from an upload are kept ("Read everything", chatread.py): in its own folder."""
+    return box / "notes"
+
+
+def collect(target: str, can_images: bool, local: bool = False) -> dict[str, Any]:
+    """Every page of the uploads of ``target`` (chatread.Page: photos, then the pages of each file with their text
+    whole and, for a PDF, a picture), before any budget."""
+    from .chatread import Page
+
+    files: list[tuple[dict[str, Any], dict[str, Any], list[Any]]] = []
     for m in listing(target):
         box = folder(target) / m["id"]
         item = {k: m.get(k) for k in ("id", "name", "kind", "ext", "size", "pages", "width", "height")}
-        item.update({"text_tokens": 0, "pictures": 0, "picture_tokens": 0, "cut": False, "unread": False})
-        pages: list[tuple[str, str]] = []
+        item.update({"text_tokens": 0, "pictures": 0, "picture_tokens": 0, "cut": False, "unread": False, "native": False,
+                     "blank": 0})
+        original = str(box / f"original.{m['ext']}")
+        pages: list[Any] = []
         if m["kind"] == "image":
             if can_images and not local:
-                pictures.append((0, len(pictures), f"[{m['name']}]", UploadPicture(str(box / "picture.jpg")), m["id"],
-                                 picture_tokens(m.get("width"), m.get("height"))))
+                pic = box / "picture.jpg"
+                weight = int((pic.stat().st_size if pic.is_file() else 150_000) * 0.7) * 4 // 3   # sent at 1024 px
+                pages.append(Page(label=f"[{m['name']}]", group="upload", file=m["id"], name=m["name"], page=0,
+                                  picture=UploadPicture(str(pic)), tokens=picture_tokens(m.get("width"), m.get("height")),
+                                  bytes=weight, priority=0, source=original, notes_dir=str(notes_folder(box))))
         else:
             cost = picture_tokens(SENT_WIDTH, SENT_WIDTH * (m.get("ratio") or A4))
+            # a PowerPoint slide that is mostly a figure: its picture (slide_figure)
+            figures = pptx_figures(Path(original)) if m.get("ext") == "pptx" and can_images and not local else set()
             for i, text in enumerate(_pages(box), start=1):
                 label = f"[{m['name']} p.{i}]" if m["kind"] in ("pdf", "doc") else f"[{m['name']}" + (f" part {i}]" if m.get("pages", 0) > 1 else "]")
                 text = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
-                if len(text) > PAGE_CHARS:
-                    text = text[:PAGE_CHARS].rstrip() + " …"
-                pages.append((label, text))
+                pic: Any = None
                 if m["kind"] == "pdf" and can_images and not local:
-                    pictures.append((0 if len(text) < SHORT_TEXT else 1, len(pictures), label,
-                                     UploadPage(str(box / f"original.{m['ext']}"), i), m["id"], cost))
+                    pic = UploadPage(original, i)
+                elif i in figures and len(text) < SHORT_TEXT:
+                    pic = PptxPicture(original, i)
+                tokens = (cost if isinstance(pic, UploadPage) else FIGURE_TOKENS) if pic is not None else 0
+                pages.append(Page(label=label, group="upload", file=m["id"], name=m["name"], page=i, text=text,
+                                  picture=pic, tokens=tokens, bytes=PAGE_BYTES * 4 // 3 if pic is not None else 0,
+                                  priority=1 if len(text) < SHORT_TEXT else 2,
+                                  source=original, notes_dir=str(notes_folder(box))))
         files.append((m, item, pages))
+    return {"files": files, "pages": [p for _, _, ps in files for p in ps], "local": local, "can_images": can_images}
+
+
+def assemble(col: dict[str, Any], chosen: Optional[list[Any]] = None, max_text_tokens: Optional[int] = None,
+             native: Any = ()) -> dict[str, Any]:
+    """What the uploads send: ``text`` (for the chat's instructions; the offline model gets ``passages`` of it that
+    match each question instead: local_pick), ``images`` ([(label, picture)]) and ``items`` (each upload with what
+    goes of it and its size). ``chosen``: the pages that go as pictures (default: photos, then PDF pages, mostly-figure
+    pages first, ``MAX_PICTURES`` of them); ``native``: the uploads (ids) that go whole as PDF files."""
+    from .chatslides import PdfFile, allocate
+
+    per = ai.chars_per_token()
+    budget = int((MAX_TEXT_TOKENS if max_text_tokens is None else max_text_tokens) * per)
+    local = col["local"]
+    candidates = [p for p in col["pages"] if p.picture is not None]
+    if chosen is None:
+        chosen = allocate(candidates, MAX_PICTURES)
+    pictured = {p.key for p in chosen}
+    native = set(native)
+    texts: list[str] = []
+    passages: list[str] = []
+    cut_pages: list[Any] = []
+    items: list[dict[str, Any]] = []
+    images: list[tuple[str, Any]] = []
+    used = 0
+    for m, item, pages in col["files"]:
+        item = dict(item)
         items.append(item)
-    chosen = sorted(pictures, key=lambda p: (p[0], p[1]))[:MAX_PICTURES]
-    chosen.sort(key=lambda p: p[1])
-    seen: set[tuple[str, str]] = set()                          # (upload id, label) of the pictures that go
-    for _, _, label, _, uid, cost in chosen:
-        it = next(i for i in items if i["id"] == uid)
-        it["pictures"] += 1
-        it["picture_tokens"] += cost
-        seen.add((uid, label))
-    for m, item, pages in files:                 # the text, written once it is known which pages go as pictures
+        whole = m["id"] in native
+        mine = [p for p in pages if p.key in pictured or (whole and p.picture is not None)]
+        item["pictures"], item["native"] = len(mine), whole
+        # pages with no text and no picture the app can send (a Word page that is only a figure): named, not hidden
+        item["blank"] = sum(1 for p in pages if not p.text and p.picture is None) if m["kind"] == "doc" else 0
+        item["picture_tokens"] = sum(p.tokens + (ai.text_tokens(p.text, per) if whole else 0) for p in mine)
+        if whole:
+            images.append((f"[{m['name']}] (the whole PDF, {len(pages)} pages)",
+                           PdfFile(str(Path(pages[0].source)), len(pages), m["name"])))
+        else:
+            images += [(p.label, p.picture) for p in mine]
+        if m["kind"] == "image":
+            continue
         if not pages:
             continue
-        if not any(text for _, text in pages) and not item["pictures"]:
+        if not any(p.text for p in pages) and not item["pictures"]:
             item["unread"] = True                # a scan with no picture sent: nothing of it would reach the AI
+            cut_pages += pages                   # (read as pictures in batches, when that is on and the AI sees them)
             continue
-        body = [f"{label}\n{text}" if text else f"{label} (no text: see the picture)" if (m["id"], label) in seen
-                else f"{label} (no text could be read from this page, and its picture isn't sent)"
-                for label, text in pages]
-        section = f"## {m['name']}\n\n" + "\n\n".join(body)
+        lines = []
+        for p in pages:
+            text = p.text if len(p.text) <= PAGE_CHARS else p.text[:PAGE_CHARS].rstrip() + " …"
+            if text is not p.text:               # a page of an unusual length: its rest is read in batches, or cut
+                cut_pages.append(p)
+                item["cut"] = True
+            lines.append(f"{p.label}\n{text}" if text else f"{p.label} (no text: see the picture)"
+                         if p.key in pictured or whole else
+                         f"{p.label} (no text: only a figure, which the app can't send)" if p.picture is None
+                         and m["kind"] == "doc" else
+                         f"{p.label} (no text could be read from this page, and its picture isn't sent)")
+        section = f"## {m['name']}\n\n" + "\n\n".join(lines)
         room = budget - used
         if len(section) > room:                  # the files' text so far fills the budget: this one is cut
             item["cut"] = True
-            section = (section[:room].rsplit("\n", 1)[0] + "\n\n(The rest of this file was left out: too long.)"
-                       if room > 500 else "")
+            part = section[:max(0, room)]
+            nl = part.rfind("\n")                # at a line's end; in a long line, at a word's
+            part = part[:nl] if nl > len(part) * 0.7 else part[:part.rfind(" ")] if " " in part else part
+            section = part + "\n\n(The rest of this file was left out: too long.)" if room > 500 else ""
+            known = {p.key for p in cut_pages}
+            cut_pages += [p for p, line in zip(pages, lines) if line not in section and p.key not in known]
         if section:
             texts.append(section)
             used += len(section)
-            if any(text for _, text in pages):  # only the page labels of a scan: the pictures are what goes
+            if any(p.text for p in pages):       # only the page labels of a scan: the pictures are what goes
                 item["text_tokens"] = ai.text_tokens(section, per)
             if local:
-                passages += [p for label, text in pages if text and f"{label}\n{text}" in section
-                             for p in _passages(label, text)]
+                passages += [x for p in pages if p.text and f"{p.label}\n{p.text}" in section
+                             for x in _passages(p.label, p.text)]
     for it in items:
         it["tokens"] = it["text_tokens"] + it["picture_tokens"]
         it["sent"] = ("text+pictures" if it["text_tokens"] and it["pictures"] else "pictures" if it["pictures"]
                       else "text" if it["text_tokens"] else "none")
     text = "\n\n".join(texts)
-    return {"text": text, "images": [(label, pic) for _, _, label, pic, _, _ in chosen], "items": items,
-            "passages": passages, "text_tokens": sum(it["text_tokens"] for it in items), "pictures": len(chosen),
+    n_pictures = sum(it["pictures"] for it in items)
+    return {"text": text, "images": images, "items": items,
+            "passages": passages, "text_tokens": sum(it["text_tokens"] for it in items), "pictures": n_pictures,
             "picture_tokens": sum(it["picture_tokens"] for it in items),
-            "pictures_left_out": max(0, len(pictures) - len(chosen)), "local": local, "can_images": can_images}
+            "pictures_left_out": max(0, len(candidates) - n_pictures), "local": local, "can_images": col["can_images"],
+            "cut_pages": cut_pages}
+
+
+def build(target: str, can_images: bool, local: bool = False) -> dict[str, Any]:
+    """What the uploads of ``target`` send on their own (a chat shares the budget with the course's slides and the AI's
+    limits: chat.ChatService.context)."""
+    return assemble(collect(target, can_images, local))
 
 
 def local_pick(passages: list[str], question: str, max_chars: int = LOCAL_CHARS) -> str:

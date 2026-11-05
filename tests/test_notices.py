@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from studia import ai, aierrors, appconfig, chat as chat_mod, cheatsheet, i18n, notices, plans, store, studypack
+from studia import ai, aierrors, appconfig, chat as chat_mod, chatlimits, cheatsheet, i18n, notices, plans, store, studypack
 from studia.chat import ChatService, replay_text
 from studia.config import Settings
 from studia.domain import Course, Recording, Segment, Transcript
@@ -425,14 +425,16 @@ def test_slides_trimmed_because_the_course_files_took_the_pictures_says_so(tmp_p
     monkeypatch.setattr(ai, "provider", lambda: "claude")      # an AI that takes pictures (whatever this PC has)
     files = {"summary": {"missing": 0, "cut": False, "images_on": True, "files": [{"id": "a"}]},
              "catalog": {"files": [{"id": "a", "downloaded": True}]}, "images": [("[a p.1]", "x")] * 40}
-    got = ChatService._notices(0, [], files, {"mode": "pick", "files": ["a"]}, 27, 20)
-    assert got == [{"code": "slides_trimmed", "kind": "info", "sent": 20, "total": 27, "files": 40, "max": 60}]
+    got = ChatService._notices(0, [], files, {"mode": "pick", "files": ["a"]}, 27, 20, chatlimits.of("claude", "haiku"))
+    assert got == [{"code": "slides_trimmed", "kind": "info", "sent": 20, "total": 27, "files": 40, "max": 80}]
     assert notices.markdown(got[0]) == ("> [!NOTE]\n> The AI got 20 of the 27 video slides: the chosen slide files used "
-                                        "the other 40 of the 60 pictures a chat takes.")
+                                        "the other 40 of the 80 pictures a chat takes.")
+    # with "Read everything" the rest is read in batches: nothing to say
+    assert ChatService._notices(0, [], files, {"mode": "pick", "files": ["a"]}, 27, 20, read_on=True) == []
     out = _run(tmp_path, {"md": [], "plans": [], "warn": [], "chat": [
         [{"seq": 2, "status": "done", "text": "x", "usage": {"notices": got}}, True],
         [{"seq": 3, "status": "done", "text": "x", "usage": {"notices": [
             {"code": "slides_trimmed", "kind": "info", "sent": 60, "total": 70}]}}, True]]})
     shared, cap = out["chat"]
-    assert "20 of the 27 video slides: the chosen slide files used the other 40 of the 60 pictures" in shared["before"]
+    assert "20 of the 27 video slides: the chosen slide files used the other 40 of the 80 pictures" in shared["before"]
     assert "the most one chat can take" not in shared["before"] and "the most one chat can take" in cap["before"]

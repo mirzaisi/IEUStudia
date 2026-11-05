@@ -78,8 +78,11 @@
     const [wk, wl] = weight(s.tokens), over = r.tokens > r.max_tokens;
     const notes = [];
     if (s.local) notes.push(t("The offline model has room for only a few pages: for each question it reads the passages of your files that match it."));
-    if (s.cut) notes.push(t("The files are long: only their beginning goes as text. Choose fewer files to send them whole."));
-    if (s.page_images && s.text_only_pages > 0 && s.page_images >= s.max_images - s.video_images) notes.push(t("More pages than pictures: the pages that are mostly figures, formulas or handwriting go as pictures first."));
+    const rd = r.read || {};
+    if (s.cut && !rd.on) notes.push(t("The files are long: only their beginning goes as text. Choose fewer files to send them whole."));
+    if (s.page_images && s.text_only_pages > 0) notes.push(t("More pages than pictures: the pages that are mostly figures, formulas or handwriting go as pictures first."));
+    if (rd.pages) notes.push(rd.on ? t.n(rd.pages, "Read everything is on: {ai} goes through the {n} page that doesn't fit whole before it answers.", "Read everything is on: {ai} goes through the {n} pages that don't fit whole before it answers.", { ai: esc(who) })
+      : t.n(rd.pages, "{n} page doesn't fit whole. Read everything (in What this chat sees) has {ai} go through it first.", "{n} pages don't fit whole. Read everything (in What this chat sees) has {ai} go through them first.", { ai: esc(who) }));
     if (s.video_total > s.video_images) notes.push(t("Only {n} of the video's slides fit next to the files.", { n: s.video_images }));
     if (!S.chat.draft && (x.messages || []).length) notes.push(t.html("{ai} reads the chosen slides again with your next question.", { ai: who }));
     const sum = parts.length ? `<div class="sp-sum"><div class="sp-what">${I("layers", "sm")} ${esc(parts.join(" + "))}</div>
@@ -115,7 +118,7 @@
   async function load() {
     const x = st.x, mine = st, n = st.seq = (st.seq || 0) + 1;
     const own = S.chat.draft === x ? (x.uploads ? `draft-${x.uploads}` : "") : x.id || "";      // the student's files count too
-    const r = await call("chat_slides", x.course_id, keysOf(x), x.focus || "full", st.slides, st.send, own);
+    const r = await call("chat_slides", x.course_id, keysOf(x), x.focus || "full", st.slides, st.send, own, x.model || "", x.read_all == null ? null : x.read_all);
     if (st !== mine || !$(".modal.sp-modal, .modal .sp")) return;          // closed or reopened meanwhile
     if (n !== st.seq) return;                  // an answer to an earlier choice that came late: the latest one counts
     if (!r.ok) { closeModal(); toast(r.error, "error"); return; }
@@ -198,6 +201,7 @@
     const textTok = pages * 260, tokens = textTok + (pics + video) * 800;
     return { ok: true, files, modes, lecture_weeks: [4], file_weeks: [4], closest: false, matched: ["f4"], send: s, provider: "claude", video_total: 3,
       tokens: 23800 * keys.length + 700 + tokens, max_tokens: 150000,
+      read: { on: false, auto: true, pages: Math.max(0, pages - pics), batches: 1, tokens: 20000, output: 2000, cached: 0 },
       summary: { mode: s.mode, images_on: s.images, can_images: true, files: fs.map((f) => ({ id: f.id, title: f.title, ext: f.ext, pages: f.pages })), missing: ids.length - fs.length,
         pages, page_images: pics, text_only_pages: pages - pics, video_images: video, video_total: captured ? 3 : 0, text_tokens: textTok, image_tokens: (pics + video) * 800,
         tokens, bytes: pages * 2000 + pics * 95000 + video * 70000, cut: false, max_images: 60, local: false } };

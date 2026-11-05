@@ -94,6 +94,20 @@
       case "no_pictures": return { kind: "info", title: t.html("{ai} can't read pictures, so the slides went as text only.", { ai }) };
       case "pages_unreadable": return { kind: "warning", title: t.n(n.n, "{n} page of the slide files couldn't be turned into a picture, so {ai} got only its text.", "{n} pages of the slide files couldn't be turned into pictures, so {ai} got only their text.", { ai }) };
       case "uploads_unreadable": return { kind: "warning", title: t.n(n.n, "{n} page or photo of your own files couldn't be sent as a picture, so {ai} didn't see it.", "{n} pages or photos of your own files couldn't be sent as pictures, so {ai} didn't see them.", { ai }) };
+      // "Read everything" (chatread.py): off, so pages went as text only; on, and some pages still couldn't be read
+      case "pictures_left": return { kind: "info", title: t.n(n.n, "{ai} didn't see {n} of the {total} pages of your slides and files whole: it went as text only, or was cut.", "{ai} didn't see {n} of the {total} pages of your slides and files whole: they went as text only, or were cut.", { ai, total: t.num(n.total || n.n) }),
+        text: t.html("Turn on Read everything and {ai} goes through every page before it answers.", { ai: answered || St.aiName() }),
+        actions: [{ label: t("Read everything"), icon: "list-checks", key, run: () => St.setReadAll && St.setReadAll(true) }] };
+      case "pages_not_read": return { kind: "warning", title: t.n(n.n, "{n} page couldn't be read even on a second try, so {ai} didn't get it.", "{n} pages couldn't be read even on a second try, so {ai} didn't get them.", { ai }),
+        text: (n.labels || []).length ? esc((n.labels || []).join(", ") + (n.n > n.labels.length ? ", …" : "")) : "" };
+      // one request's weight (chatlimits): the first message's pictures, and the ones added with later questions
+      case "request_full": return { kind: "info", title: t.n(n.n, "{n} page went as text only: one request to {ai} can't carry more pictures.", "{n} pages went as text only: one request to {ai} can't carry more pictures.", { ai }),
+        text: n.read ? t("Read everything reads them first, so their notes come with your question.")
+          : t("Choose fewer slide files, or turn on Read everything so these pages are read first.") };
+      case "pictures_full": return { kind: "info", title: t.html("This chat already holds as many pictures as {ai} can take in one request: the pages that matter for this question went as notes only.", { ai }),
+        text: t("A new chat starts afresh.") };
+      case "codex_model": return { kind: "info", title: t.html("Codex doesn't offer {model} with your ChatGPT account, so it answered with its default model.", { model: esc(n.model || "") }),
+        text: t("IEUStudia uses Codex's default model from now on. Settings → AI no longer offers that one.") };
       default: return null;
     }
   }

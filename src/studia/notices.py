@@ -64,6 +64,18 @@ _ENGLISH = {      # for the exported Markdown, which stays English (the page wor
                            "not see it.",
                            "{n} pages or photos of your own files could not be sent as pictures, so the AI did "
                            "not see them."),
+    "pictures_left": ("The AI did not see {n} of the {total} pages of the slides and files whole: it went as text only, "
+                      "or was cut. Read everything has the AI go through every page first.",
+                      "The AI did not see {n} of the {total} pages of the slides and files whole: they went as text "
+                      "only, or were cut. Read everything has the AI go through every page first."),
+    "pages_not_read": ("{n} page could not be read even on a second try, so the AI did not get it: {labels}.",
+                       "{n} pages could not be read even on a second try, so the AI did not get them: {labels}."),
+    "request_full": ("{n} page went as text only: one request to the AI can't carry more pictures.",
+                     "{n} pages went as text only: one request to the AI can't carry more pictures."),
+    "pictures_full": ("This chat already holds as many pictures as one request can carry: the pages that matter for "
+                      "this question went as notes only. A new chat starts afresh.",) * 2,
+    "codex_model": ("Codex doesn't offer {model} with your ChatGPT account, so it answered with its default model. "
+                    "IEUStudia uses that from now on.",) * 2,
 }
 ALERT_OF = {"warning": "WARNING", "error": "CAUTION", "info": "NOTE", "tip": "TIP"}
 
@@ -75,7 +87,8 @@ def markdown(n: dict[str, Any]) -> str:
         code = "slides_trimmed_files"
     one, many = _ENGLISH.get(code, ("{text}",) * 2)
     count = n.get("n", 1)
-    params = {**n, "dates": ", ".join(n.get("dates") or []), "text": n.get("text", "")}
+    params = {**n, "dates": ", ".join(n.get("dates") or []), "text": n.get("text", ""),
+              "labels": ", ".join(n.get("labels") or []), "total": n.get("total", count)}
     text = (one if count == 1 else many).format(**params)
     return alert(ALERT_OF.get(n.get("kind", ""), "WARNING"), text)
 

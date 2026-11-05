@@ -212,10 +212,16 @@ def test_limits_have_plain_messages(env, monkeypatch):
     with pytest.raises(ValueError, match="up to 1 of your files"):
         send(env, spec, "two.txt", b"two")
     monkeypatch.setattr(chatfiles, "MAX_FILES", 20)
-    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", chat["context_tokens"] + 50)
+    # a file bigger than the room left is added: its text is cut to what fits (read in batches with "Read everything")
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", chat["context_tokens"] + 2500)
+    r = send(env, spec, "book.txt", b"word " * 4000)
+    book = next(u for u in r["inputs"]["uploads"] if u["name"] == "book.txt")
+    assert book["cut"] and r["inputs"]["material_tokens"] <= chat["context_tokens"] + 2500
+    # refused only when the lectures alone fill the chat
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 200)
     with pytest.raises(RuntimeError, match="doesn't fit in this chat"):
-        send(env, spec, "book.txt", b"word " * 4000)
-    assert [m["name"] for m in chatfiles.listing(chat["id"])] == ["one.txt"]
+        send(env, spec, "three.txt", b"three")
+    assert [m["name"] for m in chatfiles.listing(chat["id"])] == ["one.txt", "book.txt"]
 
 
 def test_the_picture_and_text_budgets(env, monkeypatch):
@@ -508,11 +514,11 @@ def test_no_copy_of_a_removed_file_stays_behind(env):
     assert chatinputs.file_view(env.svc, spec, f"upload:{hw['id']}", 1, 1.5)["data"].startswith("data:image/jpeg")
     assert chatinputs.file_view(env.svc, spec, f"upload:{deck['id']}", 1)["pictures"]
     copies = app_dir() / "cache" / "slides"
-    assert len(list(copies.glob("*.jpg"))) == 3                 # the photo and the PDF's two pages
+    assert len(list(copies.glob("*.jpg"))) == 4                 # the photo, the PDF's two pages, the slide's figure
     assert not list((app_dir() / "cache" / "pages").glob("*.jpg"))
     box = chatfiles.folder(chat["id"])
     assert len(list((box / hw["id"] / "pages").glob("*.jpg"))) == 3 and list((box / deck["id"] / "pages").glob("*.jpg"))
     chatinputs.remove_upload(env.svc, spec, hw["id"])
-    assert len(list(copies.glob("*.jpg"))) == 1
+    assert len(list(copies.glob("*.jpg"))) == 2
     env.svc.delete(chat["id"])
     assert not list(copies.glob("*.jpg")) and not box.exists()

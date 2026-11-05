@@ -32,5 +32,15 @@
   "Download it and update, so nothing that's only there is missed.": "İndirip planı güncelle; böylece yalnızca orada olan hiçbir şey kaçmaz.",
   "{n} lecture of these weeks isn't transcribed, so the AI couldn't use it.": "Bu haftaların {n} dersi yazıya dökülmedi, bu yüzden yapay zeka kullanamadı.",
   "Transcribe it and update, so nothing that's only there is missed.": "Yazıya döküp planı güncelle; böylece yalnızca orada olan hiçbir şey kaçmaz.",
-  "{n} page or photo of your own files couldn't be sent as a picture, so {ai} didn't see it.": "Kendi dosyalarından {n} sayfa ya da fotoğraf görüntü olarak gönderilemedi, bu yüzden {ai} göremedi."
+  "{n} page or photo of your own files couldn't be sent as a picture, so {ai} didn't see it.": "Kendi dosyalarından {n} sayfa ya da fotoğraf görüntü olarak gönderilemedi, bu yüzden {ai} göremedi.",
+  "{ai} didn't see {n} of the {total} pages of your slides and files whole: it went as text only, or was cut.": "{ai}, slaytlarının ve dosyalarının {total} sayfasından {n} tanesini eksiksiz görmedi: bunlar yalnızca metin olarak gitti ya da kısaltıldı.",
+  "Turn on Read everything and {ai} goes through every page before it answers.": "Her şeyi oku seçeneğini açarsan {ai} cevap vermeden önce her sayfayı okur.",
+  "{n} page couldn't be read even on a second try, so {ai} didn't get it.": "{n} sayfa ikinci denemede de okunamadı, bu yüzden {ai} bunları almadı.",
+  "{n} page went as text only: one request to {ai} can't carry more pictures.": "{n} sayfa yalnızca metin olarak gitti: {ai} ile tek bir istek daha fazla görsel taşıyamıyor.",
+  "Choose fewer slide files, or turn on Read everything so these pages are read first.": "Daha az slayt dosyası seç ya da bu sayfaların önce okunması için Her şeyi oku seçeneğini aç.",
+  "Read everything reads them first, so their notes come with your question.": "Her şeyi oku bu sayfaları önce okur, böylece notları sorunla birlikte gider.",
+  "This chat already holds as many pictures as {ai} can take in one request: the pages that matter for this question went as notes only.": "Bu sohbette, {ai} tek istekte ne kadar görsel alabiliyorsa o kadarı zaten var: bu soru için önemli sayfalar yalnızca not olarak gitti.",
+  "A new chat starts afresh.": "Yeni bir sohbet sıfırdan başlar.",
+  "Codex doesn't offer {model} with your ChatGPT account, so it answered with its default model.": "Codex, ChatGPT hesabınla {model} modelini sunmuyor, bu yüzden varsayılan modeliyle cevap verdi.",
+  "IEUStudia uses Codex's default model from now on. Settings → AI no longer offers that one.": "IEUStudia bundan sonra Codex'in varsayılan modelini kullanır. Ayarlar → Yapay zeka artık o modeli sunmuyor."
 }

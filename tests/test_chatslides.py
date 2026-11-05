@@ -130,7 +130,9 @@ def test_what_goes_text_pictures_and_size(env):
     assert "[Week04_Student.pdf p.3] (no text: see the picture)" in b["text"]
     assert s["page_images"] == 10 and s["video_images"] == 3
     assert [label for label, _ in b["images"]][:2] == ["[Week01_Student.pdf p.1]", "[Week01_Student.pdf p.2]"]
-    assert s["tokens"] == s["text_tokens"] + 13 * ai.IMAGE_TOKENS and s["bytes"] > 10 * chatslides.IMAGE_BYTES
+    # a page picture by its shape (one that can't be read: a 4:3 slide), a video slide 800
+    assert chatslides.picture_cost(0.75) == 1049 and chatslides.picture_cost(9 / 16) == 786
+    assert s["tokens"] == s["text_tokens"] + 10 * 1049 + 3 * ai.IMAGE_TOKENS and s["bytes"] > 10 * chatslides.IMAGE_BYTES
     # a PowerPoint goes as text only; pictures off: text only; a file that isn't downloaded is counted as missing
     p = chatslides.build(env.lib, "c", [DAY], {"mode": "pick", "files": ["w6", "w5"]}, can_images=True)["summary"]
     assert p["pages"] == 1 and p["page_images"] == 0 and p["missing"] == 1
@@ -189,19 +191,27 @@ def test_the_slides_chooser_and_a_new_chat_count_the_student_s_files(env, tmp_pa
     full = env.svc.slide_options("c", [DAY], send={"mode": "upto"}, uploads=chat["id"])["tokens"]
     assert full > bare + 1500
     assert env.svc.slide_options("c", [DAY], send={"mode": "upto"}, uploads="0123456789ab")["tokens"] == bare
-    # a change that goes over the limit is refused, naming the files; one that makes the chat smaller never is
-    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", full - 10)
-    with pytest.raises(RuntimeError, match=r"don't fit in this chat.*Your files take ~\dk of it: book\.txt\."):
-        env.svc.update(chat["id"], {"send": {"mode": "upto"}})
-    assert "send" not in env.lib.get_chat(chat["id"])["scope"]
-    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 150_000)
-    env.svc.update(chat["id"], {"send": {"mode": "upto"}})
+    # slides beyond what the chat holds are never refused: their text is cut (and read in batches with "Read
+    # everything"), the student's own files first; a change that makes the chat smaller is always fine
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", full - 12_000)        # less than the pages' pictures take
+    v = env.svc.update(chat["id"], {"send": {"mode": "upto"}, "read_all": False})
+    assert v["context_tokens"] <= full - 12_000 and v["files"]["page_images"] < 10 and v["uploads"][0]["cut"]
+    ctx = env.svc.context("c", [DAY], send={"mode": "upto"}, uploads=chat["id"], read_all=False)
+    # every page without its picture, and those of the book whose text was cut: "Read everything" would read them
+    (left,) = [n for n in ctx["notices"] if n["code"] == "pictures_left"]
+    assert left["total"] == 10 + 7 and left["n"] == 10 - v["files"]["page_images"] + ctx["read"]["pages"] - 10
+    on = env.svc.context("c", [DAY], send={"mode": "upto"}, uploads=chat["id"], read_all=True)
+    assert on["tokens"] <= full - 12_000 and on["read"]["on"] and not on["notices"]
+    read = {p.label for p in on["read_pages"]}                                # every page not seen whole is read
+    assert {f"[Week04_Student.pdf p.{i}]" for i in (1, 2, 3)} <= read and "[book.txt part 7]" in read
     monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 100)
     assert env.svc.update(chat["id"], {"send": {"mode": "none"}})["send"]["mode"] == "none"
-    # a new chat: its files (under its draft token) are in the estimate and named when it is too big
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 900_000)
+    # a new chat: its files (under its draft token) are in the estimate and named when the lectures alone fill it
     chatfiles.add("draft-0123456789abcdef", book, "book.txt")
     assert (env.svc.slide_options("c", [DAY], uploads="draft-0123456789abcdef")["tokens"]
             > env.svc.slide_options("c", [DAY])["tokens"] + 1500)
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", 300)
     with pytest.raises(RuntimeError, match=r"too much for one chat.*Your files take ~\dk of it: book\.txt\."):
         env.svc.create("c", [DAY], uploads="0123456789abcdef")
 

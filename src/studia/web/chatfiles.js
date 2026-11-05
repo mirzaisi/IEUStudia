@@ -38,11 +38,12 @@
   // the chat the page shows, as the app takes it: a chat, or a new chat not asked yet (its files wait under a token)
   function spec() {
     const d = S.chat.draft, c = S.chat.data;
-    if (d && d.course_id) return { course_id: d.course_id, days: d.days || [], focus: d.focus || "full", slides: !!d.slides, send: d.send || null, uploads: d.uploads || "" };
+    if (d && d.course_id) return { course_id: d.course_id, days: d.days || [], focus: d.focus || "full", slides: !!d.slides, send: d.send || null, uploads: d.uploads || "",
+      model: d.model || "", read_all: d.read_all == null ? null : !!d.read_all };
     if (c && c.id === S.chat.id) return { chat_id: c.id };
     return null;
   }
-  const sigOf = (sp) => { const c = S.chat.data; return JSON.stringify([sp, c && !S.chat.draft ? [c.messages.length, c.running, c.send, c.slides, c.model] : 0, (S.system.ai || {}).provider]); };
+  const sigOf = (sp) => { const c = S.chat.data; return JSON.stringify([sp, c && !S.chat.draft ? [c.messages.length, c.running, c.send, c.slides, c.model, c.read_all] : 0, (S.system.ai || {}).provider]); };
 
   // ---------------------------------------------------------------- the panel
   St.chatSideHTML = () => `<aside class="cf-side" id="cf-side" aria-label="${esc(t("What this chat sees"))}"></aside>`;
@@ -72,8 +73,10 @@
     F.data = r;
     const d = S.chat.draft, c = S.chat.data;
     const fit = d && d.slides ? r.video.count : null;       // the video's slides that fit next to the slide files
-    const head = d ? d.tokens !== r.material_tokens || d.videoFit !== fit : c && c.context_tokens !== r.material_tokens;
-    if (d) { d.tokens = r.material_tokens; d.videoFit = fit; } else if (c) { c.context_tokens = r.material_tokens; c.uploads = r.uploads; }
+    const x = d || c, readSig = (v) => JSON.stringify(v && [v.on, v.pages]);
+    const head = (d ? d.tokens !== r.material_tokens || d.videoFit !== fit : c && c.context_tokens !== r.material_tokens)
+      || (x && readSig(x.read) !== readSig(r.read));
+    if (d) { d.tokens = r.material_tokens; d.videoFit = fit; d.read = r.read; } else if (c) { c.context_tokens = r.material_tokens; c.uploads = r.uploads; c.read = r.read; }
     if (head && St.renderChatHead) St.renderChatHead();
     draw(); drawRow();
   }
@@ -90,8 +93,12 @@
   const note = (kind, html) => (St.noticeHTML ? St.noticeHTML({ kind, text: html, cls: "cf-ntc" })
     : `<div class="callout ${kind} cf-note">${I(ICONS[kind])}<div>${html}</div></div>`);
   const group = (title, body, tools = "") => `<section class="cf-group"><div class="cf-gh"><span>${title}</span>${tools}</div>${body}</section>`;
-  const sentAs = (u, local) => (u.sent === "pictures" ? t("as a picture") : u.sent === "text+pictures" ? t.n(u.pictures, "as text + {n} page as a picture", "as text + {n} pages as pictures")
+  const sentAs = (u, local) => (u.native ? t("the whole PDF as a file") : u.sent === "pictures" ? t("as a picture") : u.sent === "text+pictures" ? t.n(u.pictures, "as text + {n} page as a picture", "as text + {n} pages as pictures")
     : u.sent === "text" ? t("as text") : local && u.kind === "image" ? t("not sent: the offline model can't see pictures") : t("not sent"));
+  // the pages read in batches first ("Read everything"), after how the rest goes
+  const readAs = (x) => (x.read ? t.n(x.read, "{n} read first", "{n} read first") : "");
+  // Word or PowerPoint pages that are only a figure the app can't send (no text, no picture): said, not hidden
+  const blankAs = (x) => (x.blank ? esc(t.n(x.blank, "{n} page is only a figure: it has no text, and its picture can't be sent.", "{n} pages are only a figure: they have no text, and their pictures can't be sent.")) : "");
   const kindName = (u) => ({ image: t("Photo"), pdf: "PDF", doc: (u.ext || "").toUpperCase(), text: (u.ext || "").toUpperCase() || t("Text") }[u.kind] || "");
 
   function draw() {
@@ -126,26 +133,29 @@
     if (f && (f.files.length || f.missing)) {
       const rows = f.files.map((x) => row({ ref: `material:${x.id}`, icon: x.ext === "pptx" ? "presentation" : "file",
         title: esc(x.title), sub: [(x.ext || "").toUpperCase(), t.n(x.pages, "{n} page", "{n} pages"),
-          x.pictures ? t.n(x.pictures, "{n} as a picture", "{n} as pictures") : t("as text")].filter(Boolean).map(esc).join(" · "),
-        tokens: x.tokens }));
+          x.native ? t("the whole PDF as a file") : x.pictures ? t.n(x.pictures, "{n} as a picture", "{n} as pictures") : t("as text"), readAs(x)].filter(Boolean).map(esc).join(" · "),
+        tokens: x.tokens, warn: blankAs(x) }));
       const warn = [f.missing ? t.n(f.missing, "{n} chosen file isn't on this PC yet, so it isn't sent.", "{n} chosen files aren't on this PC yet, so they aren't sent.") : "",
-        f.cut ? t("The files are long: only their beginning goes as text.") : ""].filter(Boolean);
+        f.cut && !(r.read || {}).on ? t("The files are long: only their beginning goes as text.") : ""].filter(Boolean);
       out.push(group(t("Course slides from IEULearn"), rows.join("") + warn.map((w) => note("warning", esc(w))).join(""), slideTools));
     } else if (!local) out.push(group(t("Course slides from IEULearn"), `<div class="cf-empty">${t("None. Choose some with Send slides.")}</div>`, slideTools));
     if (r.video.count) out.push(group(t("Slides from the video"), row({ ref: "video", icon: "monitor", title: esc(t.n(r.video.count, "{n} picture of the lecture's screen", "{n} pictures of the lecture's screen")), sub: esc(t("with the first question")), tokens: r.video.tokens })));
     // the student's own files
     const ups = (r.uploads || []).map((u) => row({ ref: `upload:${u.id}`, icon: u.kind === "image" ? "image" : u.kind === "pdf" ? "file" : u.ext === "pptx" ? "presentation" : "file-text",
-      title: esc(u.name), sub: esc([kindName(u), mb(u.size), sentAs(u, local)].filter(Boolean).join(" · ")), tokens: u.tokens,
-      warn: u.unread ? esc(t("No text could be read from it, and none of its pages goes as a picture: nothing of it is sent."))
-        : u.cut ? esc(t("Too long: only its beginning is sent.")) : "",
+      title: esc(u.name), sub: esc([kindName(u), mb(u.size), sentAs(u, local), readAs(u)].filter(Boolean).join(" · ")), tokens: u.tokens,
+      warn: u.read ? blankAs(u) : u.unread ? esc(t("No text could be read from it, and none of its pages goes as a picture: nothing of it is sent."))
+        : u.cut ? esc(t("Too long: only its beginning is sent.")) : blankAs(u),
       extra: `<button type="button" class="btn ghost icon sm cf-x" data-act="cf-remove" data-id="${esc(u.id)}" title="${esc(t("Remove {name}", { name: u.name }))}">${ic("trash", "sm")}</button>` }));
     const busy = F.busy.map((b) => `<div class="cf-row static"><div class="cf-open"><span class="cf-ic">${St.SPIN()}</span><span class="cf-txt"><span class="cf-t">${esc(b.name)}</span><span class="cf-s">${b.total ? t("Adding… {pct}", { pct: t.pct(Math.min(1, b.done / b.total)) }) : t("Adding…")}</span></span></div></div>`);
-    const left = r.upload_pictures_left_out ? note("warning", esc(t.n(r.upload_pictures_left_out, "{n} page goes as text only: a chat takes up to {max} pictures of your files.", "{n} pages go as text only: a chat takes up to {max} pictures of your files.", { max: r.limits.pictures }))) : "";
+    const left = r.upload_pictures_left_out && !(r.read || {}).on ? note("warning", esc(t.n(r.upload_pictures_left_out, "{n} page goes as text only: one request to {ai} takes up to {max} pictures in all.", "{n} pages go as text only: one request to {ai} takes up to {max} pictures in all.", { max: r.limits.pictures, ai }))) : "";
     out.push(group(t("Your files"), (ups.join("") + busy.join("")) || `<div class="cf-empty">${t("Add photos, PDFs, Word, PowerPoint or text files: with the paperclip, by dropping them here, or by pasting a screenshot.")}</div>`,
       `<button class="btn ghost sm cf-mini" data-act="cf-attach">${ic("clip", "sm")} ${t("Add")}</button>`) + left);
+    const reading = readGroup(r, ai, local);
+    if (reading) out.push(reading);
     // the rest that goes along
     const rest = [row({ icon: "cap", title: esc(t("Course info")), sub: esc(t("Learning outcomes, weekly plan, assessments, announcements")), tokens: r.brief_tokens }),
       row({ icon: "ai", title: esc(t("Instructions for {ai}", { ai })), sub: esc(t("How to answer and cite, what the app can do")), tokens: r.instructions_tokens })];
+    if (r.notes_tokens) rest.push(row({ icon: "list-checks", title: esc(t("Notes of the pages read first")), sub: esc(t("Written by {ai} while reading, page by page: with each question", { ai })), tokens: r.notes_tokens }));
     if (r.conversation.turns) rest.push(row({ icon: "chat", title: esc(t("The conversation so far")), sub: esc(t.n(r.conversation.turns, "{n} question and its answer", "{n} questions and their answers")), tokens: r.conversation.tokens }));
     rest.push(row({ icon: "search", title: esc(t("Matching passages")), sub: esc(t("From your other lectures and the course's files, only when they match a question")), tokens: null,
       extra: `<span class="cf-tok cf-upto">${t("up to ≈{k}", { k: fmtK(r.passages_tokens) })}</span>` }));
@@ -156,6 +166,57 @@
     side.innerHTML = head + `<div class="cf-body">${out.join("")}</div>`;
     const body = side.querySelector(".cf-body"); if (body) body.scrollTop = top;
   }
+
+  // ---------------------------------------------------------------- "Read everything" (chatread.py)
+  // what doesn't fit in one request (pages not seen as pictures, text that was cut) is read in batches before an answer
+  function readGroup(r, ai, local) {
+    const rd = r.read || {};
+    if (!rd.pages && rd.on == null) return "";
+    const sw = `<label class="cf-read-sw" title="${esc(t("Read everything"))}"><input type="checkbox" class="switch sm" data-act="cf-read" aria-label="${esc(t("Read everything"))}" ${rd.on ? "checked" : ""}></label>`;
+    const lines = [];
+    if (!rd.pages) lines.push(t.html("Everything fits in one request: {ai} sees every page whole.", { ai }));
+    else if (rd.on) {
+      lines.push(t.n(rd.pages, "Before it answers, {ai} goes through {n} page that doesn't fit whole, in {b} requests, and writes notes of it.", "Before it answers, {ai} goes through the {n} pages that don't fit whole, in {b} requests, and writes notes of them.", { ai: esc(ai), b: t.num(Math.max(1, rd.batches || 0)) }));
+      lines.push(rd.batches ? t("About {k} tokens read and {o} written, once: the notes are kept and serve every question, so follow-ups reuse them.", { k: St.fmtK(rd.tokens || 0), o: St.fmtK(rd.output || 0) })
+        : t("All of them were read before: the kept notes go with your questions."));
+      if (rd.cached && rd.batches) lines.push(t.n(rd.cached, "{n} page was read before and isn't read again.", "{n} pages were read before and aren't read again."));
+      if (local) lines.push(t("The offline model reads slowly: this can take a while on this PC."));
+    } else lines.push(t.n(rd.pages, "{n} page doesn't fit whole in one request: {ai} gets it as text only, or not at all. Turn on Read everything to have {ai} go through it first.", "{n} pages don't fit whole in one request: {ai} gets them as text only, or not at all. Turn on Read everything to have {ai} go through them first.", { ai: esc(ai) }));
+    const warn = rd.on && St.effortBig && St.effortBig.read ? St.effortBig.read(rd) : "";
+    return group(t("Read everything"), `<div class="cf-read">${lines.map((l) => `<div class="cf-read-l">${l}</div>`).join("")}</div>${warn ? note("warning", warn) : ""}`, sw);
+  }
+  async function setReadAll(on) {
+    const d = S.chat.draft, c = S.chat.data;
+    if (on && F.data && F.data.read && St.confirmRead && !(await St.confirmRead(F.data.read))) { draw(); return; }
+    if (d) { d.read_all = on; F.sig = ""; St.chatSideRender(); return; }
+    if (!c) return;
+    const r = await call("chat_update", c.id, { read_all: on });
+    if (!r.ok) { toast(r.error, "error"); draw(); return; }
+    c.read_all = r.chat.read_all; c.read = r.chat.read; c.context_tokens = r.chat.context_tokens;
+    F.sig = ""; St.chatSideRender();
+    if (St.renderChatHead) St.renderChatHead();
+    if (on && c.messages.length) toast(t("{ai} goes through everything before your next answer.", { ai: St.aiName() }), "info");
+  }
+  St.setReadAll = (on) => { if (!sideOn()) A["cf-side-open"](); setReadAll(on); };
+  // a chat answer while the pages are read (usage.reading), and what was read for it (usage.read)
+  St.chatReadingHTML = (m) => {
+    const u = m.usage || {}, rd = u.reading, done = u.read, ai = esc(St.aiName());
+    if (m.status === "streaming" && !m.text && rd && rd.total) {
+      const pct = Math.round(((rd.read || 0) / Math.max(1, rd.pages || 1)) * 100);
+      return { body: `<div class="cf-reading" role="status">${St.SPIN()}<div class="cf-reading-t"><b>${t("Reading slides: part {done} of {total}…", { done: t.num(Math.min(rd.total, (rd.done || 0) + 1)), total: t.num(rd.total) })}</b>
+        <span class="dim sm">${t("{read} of {pages} pages read · Stop keeps them: asking again goes on from there.", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) })}</span>
+        <div class="cf-bar light"><i style="width:${pct}%"></i></div></div></div>`, foot: "" };
+    }
+    if (!done) return { body: "", foot: "" };
+    if (done.stopped || done.failed) {
+      const said = t("{read} of {pages} pages were read and kept: asking again goes on from there.", { read: t.num(done.read || 0), pages: t.num(done.pages || 0) });
+      return { body: done.stopped && !m.text ? `<div class="cf-reading stopped">${I("info", "sm")}<div class="cf-reading-t"><b>${t("Stopped while reading the slides.")}</b><span class="dim sm">${said}</span></div></div>` : "",
+        foot: done.failed ? `<span class="cf-read-foot dim sm">${said}</span>` : "" };
+    }
+    if (done.again || !done.pages) return { body: "", foot: "" };
+    const what = t.n(done.pages, "Went through {n} page first", "Went through all {n} pages first") + (done.cached ? ` (${t.n(done.cached, "{n} read before", "{n} read before")})` : "");
+    return { body: "", foot: `<span class="cf-read-foot dim sm" title="${esc(t("Pages that didn't fit whole: {ai} read them in batches and answered from its notes and the pages that matter most.", { ai: St.aiName() }))}">${I("list-checks", "xs")} ${esc(what)}</span>` };
+  };
 
   // ---------------------------------------------------------------- the composer: the paperclip and the files row
   St.chatAttachBtn = () => (spec() || S.chat.draft ? `<button type="button" class="btn ghost icon sm cf-attach" data-act="cf-attach" title="${esc(t("Add files or photos (or drop them here, or paste a screenshot)"))}" aria-label="${esc(t("Add files or photos"))}">${ic("clip")}</button>` : "");
@@ -171,7 +232,7 @@
   function drawRow() { const el = $("#cf-chips"); if (el) el.innerHTML = rowHTML(); }
 
   // ---------------------------------------------------------------- adding files
-  function limits() { return (F.data && F.data.limits) || { files: 20, bytes: { image: 15728640, pdf: 41943040, doc: 41943040, text: 5242880 }, kinds: null }; }
+  function limits() { return (F.data && F.data.limits) || { files: 100, bytes: { image: 15728640, pdf: 41943040, doc: 41943040, text: 5242880 }, kinds: null }; }
   function kindOf(name) {
     const k = limits().kinds, e = extOf(name);
     if (!k) return /^(png|jpe?g|webp|gif|bmp)$/.test(e) ? "image" : e === "pdf" ? "pdf" : /^(docx|pptx)$/.test(e) ? "doc" : e ? "text" : "";
@@ -393,6 +454,7 @@
     if (e.ctrlKey && ["+", "=", "-"].includes(e.key)) { e.preventDefault(); e.stopImmediatePropagation(); setZoom(e.key === "-" ? -1 : 1); }
   }, true);
   window.addEventListener("resize", () => { if (S.view.name === "chat") St.chatSideRender(); });
+  St.inputActs = (St.inputActs || []).concat(["cf-read", "cp-read"]);       // switches: app.js passes their clicks on
   const before = St.after.chat;               // the chat page drawn whole
   // the chat view entered (go() and openChat make a new view; a redraw keeps it): its panel is read again, as a file
   // may have been downloaded or removed, or a lecture transcribed, since the same chat was last shown
@@ -406,6 +468,7 @@
     },
     "cf-side-open": () => { if (WIDE()) { try { localStorage.setItem(PREF, "1"); } catch (e) { /* */ } } else F.drawer = true; St.chatSideRender(); },
     "cf-attach": () => picker(),
+    "cf-read": (el) => setReadAll(el.checked),
     "cf-view": (el) => openView(el.dataset.ref),
     "cf-vclose": () => closeViewer(),
     "cf-vbg": (el, e) => { if (e.target === el) closeViewer(); },
@@ -430,14 +493,20 @@
       const days = (c ? c.days : (d && d.labels) || []).map((x, i, all) => ({ key: x.key, n: all.length > 1 ? i + 1 : 0, label: x.label, long: x.long || x.label, kind: x.kind, parts: 2, chars: 70000, tokens: (c || d).focus === "highlights" ? 2100 : 22600, seconds: 6000 }));
       const key = sp.chat_id || sp.uploads || "none";
       const ups = Object.values(demo.files[key] || {});
-      const files = { files: [{ id: "w4", title: "Week04_Student", label: "Week04_Student.pdf", ext: "pdf", pages: 24, pictures: 9, text_tokens: 6100, tokens: 13300 }, { id: "w5", title: "Bayes examples", label: "Bayes examples.pptx", ext: "pptx", pages: 12, pictures: 0, text_tokens: 2400, tokens: 2400 }], missing: 1, cut: false, pages: 36, page_images: 9 };
+      // "Read everything": 15 of Week04's 24 pages don't fit as pictures (app.js's preview chat says the same)
+      const x = c || d || {}, readAll = sp.chat_id ? x.read_all : sp.read_all;
+      const rd = St.mockReadOf ? St.mockReadOf({ focus: x.focus, read_all: readAll, readDone: !!(c && c.messages.some((m) => (m.usage || {}).read)) }) : { on: false, pages: 0 };
+      const files = { files: [{ id: "w4", title: "Week04_Student", label: "Week04_Student.pdf", ext: "pdf", pages: 24, pictures: 9, text_tokens: 6100, tokens: 13300, read: rd.on ? 15 : 0 },
+        { id: "w5", title: "Bayes examples", label: "Bayes examples.pptx", ext: "pptx", pages: 12, pictures: 0, text_tokens: 2400, tokens: 2400, read: 0 }], missing: 1, cut: false, pages: 36, page_images: 9 };
       const video = (c ? c.slides : d && d.slides) ? 12 : 0;
       const msgs = c ? c.messages.filter((m) => m.text) : [];
       const conv = msgs.reduce((n, m) => n + Math.round(m.text.length / 3.1), 0);
-      const material = days.reduce((n, x) => n + x.tokens, 0) + 900 + 2100 + 15700 + video * 800 + ups.reduce((n, u) => n + u.tokens, 0);
+      const notes = rd.on ? rd.output : 0;
+      const material = days.reduce((n, y) => n + y.tokens, 0) + 900 + 2100 + 15700 + video * 800 + ups.reduce((n, u) => n + u.tokens, 0) + notes;
       return { ok: true, provider: (St.S.system.ai || {}).provider || "claude", ai: St.aiName(), focus: (c || d || {}).focus || "full", days, brief_tokens: 900, instructions_tokens: 2100, files,
         video: { count: video, tokens: video * 800 }, uploads: ups.map(({ data, text, ...u }) => u), upload_pictures_left_out: 0, conversation: { turns: msgs.filter((m) => m.role === "user").length, tokens: conv },
-        passages_tokens: 1800, material_tokens: material, total: material + conv, max_tokens: 150000, can_images: true, limits: { files: 20, pictures: 20, bytes: { image: 15728640, pdf: 41943040, doc: 41943040, text: 5242880 }, kinds: null }, target: key };
+        passages_tokens: 1800, material_tokens: material, total: material + conv, max_tokens: 850000, can_images: true, limits: { files: 100, pictures: 500, bytes: { image: 15728640, pdf: 41943040, doc: 41943040, text: 5242880 }, kinds: null }, target: key,
+        read: rd, read_all: readAll == null ? null : readAll, notes_tokens: notes, window: 1000000 };
     },
     chat_upload_check: (sp, name, size) => (size > 41943040 ? { ok: false, error: t("{name} is too big ({size}). Files of this kind can be up to {max}.", { name, size: mb(size), max: "40 MB" }) } : { ok: true }),
     chat_upload_part: (token, b64, first) => { demo.parts[token] = (first ? "" : demo.parts[token] || "") + b64; return { ok: true, size: demo.parts[token].length }; },

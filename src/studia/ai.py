@@ -206,6 +206,19 @@ def image_block(path: Path) -> dict[str, Any]:
                                         "data": base64.b64encode(_small_jpeg(Path(path))).decode()}}
 
 
+def pdf_block(path: Path, title: str = "") -> dict[str, Any]:
+    """A whole PDF as a file (Claude reads each page as text and as a picture; chatlimits.Limits.pdf)."""
+    return {"type": "document", "title": title or Path(path).name,
+            "source": {"type": "base64", "media_type": "application/pdf",
+                       "data": base64.b64encode(Path(path).read_bytes()).decode()}}
+
+
+def turn_blocks(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The content as the AI takes it: the app's own marks on blocks (``_turn``: this question's only) left out."""
+    return [{k: v for k, v in b.items() if not k.startswith("_")} if any(k.startswith("_") for k in b) else b
+            for b in content]
+
+
 def cache_key(prompt: str, transcript: str, images: Sequence[Path], model: str) -> str:
     h = hashlib.sha256()
     for part in (prompt, transcript, model, *[str(p) for p in images]):
@@ -464,7 +477,7 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
     env = {**_claude_env(), "DISABLE_PROMPT_CACHING": "1"}
     if not think:
         env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
-    message = {"type": "user", "message": {"role": "user", "content": content}}
+    message = {"type": "user", "message": {"role": "user", "content": turn_blocks(content)}}
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
         sp = Path(work) / "system.txt"
         sp.write_text(system_prompt, encoding="utf-8")
@@ -601,7 +614,7 @@ class ClaudeSession:
                 raise self._died()
             started = time.monotonic()
             try:
-                self._write({"type": "user", "message": {"role": "user", "content": content}})
+                self._write({"type": "user", "message": {"role": "user", "content": turn_blocks(content)}})
             except (OSError, ValueError):       # ValueError: the pipe was closed
                 raise self._died() from None
             blocks: list[str] = []
@@ -852,12 +865,74 @@ CODEX_EFFORT = {"haiku": "low", "sonnet": "medium", "opus": "high"}
 
 
 def _codex_model() -> str:
-    """The ChatGPT model chosen in Settings, if the Codex CLI offers it ("" = Codex's default). The setting is shared
-    with "Continue with ChatGPT", whose list can differ."""
+    """The ChatGPT model chosen in Settings, if the Codex CLI offers it and has not turned it down ("" = Codex's
+    default). The setting is shared with "Continue with ChatGPT", whose list can differ."""
     from . import appconfig
 
     chosen = appconfig.load().codex_model
     return chosen if chosen in codex_models() else ""
+
+
+_rejected: set[str] = set()
+
+
+def _rejected_path() -> Path:
+    from .paths import app_dir
+
+    return app_dir() / "cache" / "codex-rejected.json"
+
+
+def codex_rejected() -> set[str]:
+    """The models Codex listed but turned down ("model not supported when using Codex with a ChatGPT account", HTTP
+    400: gpt-6.1-sol, Nov 2026): kept, so they are no longer offered or sent."""
+    try:
+        saved = json.loads(_rejected_path().read_text(encoding="utf-8"))
+        return _rejected | {str(x) for x in saved if isinstance(x, str)}
+    except (OSError, ValueError, TypeError):
+        return set(_rejected)
+
+
+def _codex_reject(model: str) -> None:
+    _rejected.add(model)
+    try:
+        path = _rejected_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(codex_rejected() | {model})), encoding="utf-8")
+    except OSError:
+        log.debug("Could not keep the models Codex turned down", exc_info=True)
+
+
+def _accepted_path() -> Path:
+    from .paths import app_dir
+
+    return app_dir() / "cache" / "codex-accepted.json"
+
+
+def codex_accepted() -> set[str]:
+    """The chosen models Codex has answered with at least once. Until then a chat is sized for Codex's default model
+    too (chatlimits), so that the same request still fits when Codex turns the chosen one down and asks its default.
+    (Not kept: the smaller size again, which is safe.)"""
+    try:
+        saved = json.loads(_accepted_path().read_text(encoding="utf-8"))
+        return {str(x) for x in saved if isinstance(x, str)}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _codex_accept(model: str) -> None:
+    if not model or model in codex_accepted():
+        return
+    try:
+        path = _accepted_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(codex_accepted() | {model})), encoding="utf-8")
+    except OSError:
+        log.debug("Could not keep the models Codex answered with", exc_info=True)
+
+
+def _model_refused(message: str) -> bool:
+    low = (message or "").lower()
+    return "not supported" in low and "model" in low
 
 
 def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] = ()) -> list[str]:
@@ -869,8 +944,9 @@ def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] =
     chosen = _codex_model()
     if chosen:
         cmd += ["-m", chosen]
-    for img in images:
-        cmd += ["-i", str(img)]
+    for img in images:      # by name in the work folder (the process runs there): with full paths a few hundred
+        # pictures already pass Windows' 32,767 characters of command line ("WinError 206"), measured at about 600
+        cmd += ["-i", Path(img).name if Path(img).parent == Path(work) else str(img)]
     return cmd + ["-"]
 
 
@@ -896,7 +972,7 @@ def _codex_error(message: str) -> str:
         return t("You have reached your ChatGPT usage limit for Codex. Try again later.")
     if "not logged in" in low or "login" in low or "unauthorized" in low or "401" in low:
         return t("The Codex CLI is not signed in. Sign in under Settings → AI.")
-    if "not supported" in low and "model" in low:
+    if _model_refused(message):
         return t("Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default.")
     service = aierrors.from_message("ChatGPT", message)  # "unexpected status 500 …": on OpenAI's side
     if service is not None:
@@ -912,7 +988,9 @@ def _codex_failure(message: str) -> RuntimeError:
     if service is not None and text == str(service):
         log.warning("ChatGPT (Codex CLI) failed on its side: %s", (message or "")[:800])
         return service
-    return RuntimeError(text)
+    err = RuntimeError(text)
+    err.codex_message = message or ""          # type: ignore[attr-defined] - its own words (a model turned down)
+    return err
 
 
 def _chatgpt_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
@@ -927,7 +1005,26 @@ def _chatgpt_one_shot(system_prompt: str, content: list[dict[str, Any]], model: 
 def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                     cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
                     timeout_s: float) -> dict[str, Any]:
-    """One request to ChatGPT through the Codex CLI."""
+    """One request to ChatGPT through the Codex CLI. A chosen model that Codex turns down is remembered (no longer
+    offered: codex_models) and the request is asked again with Codex's default model; the answer then says which
+    model was turned down (``model_refused``), so the chat can tell the student once."""
+    chosen = _codex_model()
+    try:
+        res = _codex_once(system_prompt, content, model, effort, cancel, on_text, timeout_s)
+        _codex_accept(chosen)                      # it answers with it: chats may use its whole window from now on
+        return res
+    except RuntimeError as exc:
+        refused = getattr(exc, "codex_message", "")
+        if not chosen or not _model_refused(refused) or (cancel is not None and cancel.is_set()):
+            raise
+        log.warning("Codex turned down the model %s (%s); asking again with its default model", chosen, refused[:200])
+        _codex_reject(chosen)
+    return {**_codex_once(system_prompt, content, model, effort, cancel, on_text, timeout_s), "model_refused": chosen}
+
+
+def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
+                cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
+                timeout_s: float) -> dict[str, Any]:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="studia-codex-") as tmp:
         work = Path(tmp)
@@ -1022,7 +1119,10 @@ class ChatGPTSession:
     def ask(self, content: list[dict[str, Any]], on_text: Optional[Callable[[str], None]] = None,
             stop: Optional[threading.Event] = None, timeout_s: float = 900) -> dict[str, Any]:
         with self._turn:
-            last_image = max((i for i, b in enumerate(content) if b.get("type") == "image"), default=-1)
+            # blocks marked ``_turn`` are this question's only (the notes read for it, the pages that matter most)
+            extra = [b for b in content if b.get("_turn")]
+            content = [b for b in content if not b.get("_turn")]
+            last_image = max((i for i, b in enumerate(content) if b.get("type") in ("image", "document")), default=-1)
             if last_image >= 0:                        # each turn is a new request: the slides go with every one
                 self.slides = content[:last_image + 1]
             texts = [b.get("text", "") for b in content[last_image + 1:] if b.get("type") == "text"]
@@ -1034,13 +1134,14 @@ class ChatGPTSession:
             text = ((f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + (f"{found}\n\n" if found else "")
                     + f"=== NEW QUESTION ===\n{question}")
             try:
-                r = self.request(self.system, [*self.slides, {"type": "text", "text": text}], self.model, self.effort,
-                                 stop, on_text, timeout_s, **self._extra)
+                r = self.request(self.system, [*self.slides, *turn_blocks(extra), {"type": "text", "text": text}],
+                                 self.model, self.effort, stop, on_text, timeout_s, **self._extra)
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}
             self.history.append((question, r["text"]))
             self.last_used = time.monotonic()
-            return {"text": r["text"], "usage": r["usage"], "stopped": False}
+            return {"text": r["text"], "usage": r["usage"], "stopped": False,
+                    **({"model_refused": r["model_refused"]} if r.get("model_refused") else {})}
 
     def kill(self) -> None:
         pass
@@ -1133,11 +1234,14 @@ def _chatgpt_models() -> list[str]:
 
 
 def codex_models() -> list[str]:
-    """The models Codex lists for this account (from its own cache), for an optional override."""
+    """The models Codex lists for this account (from its own cache), for an optional override; not those it turned
+    down when asked (codex_rejected)."""
     path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "models_cache.json"
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
-        return [m["slug"] for m in d.get("models", []) if isinstance(m, dict) and m.get("visibility") == "list"][:12]
+        refused = codex_rejected()
+        return [m["slug"] for m in d.get("models", []) if isinstance(m, dict) and m.get("visibility") == "list"
+                and m.get("slug") not in refused][:12]
     except (OSError, ValueError, KeyError, TypeError):
         return []
 

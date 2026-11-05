@@ -93,5 +93,6 @@
   "The class days of this chat are no longer available.": "Bu sohbetin ders günleri artık yok.",
   "The offline AI model is not downloaded yet (Settings → AI).": "Çevrimdışı yapay zeka modeli henüz indirilmedi (Ayarlar → Yapay zeka).",
   "*Reading part {i} of {n}…*": "*Bölüm {i}/{n} okunuyor…*",
-  "*(Cut off here: the offline model reached its length limit.)*": "*(Burada kesildi: çevrimdışı model uzunluk sınırına ulaştı.)*"
+  "*(Cut off here: the offline model reached its length limit.)*": "*(Burada kesildi: çevrimdışı model uzunluk sınırına ulaştı.)*",
+  "Your question and its pictures (~{mb} MB) didn't finish uploading to ChatGPT: your connection may be slow for this much. Try again, or send fewer slides.": "Sorun ve görselleri (~{mb} MB) ChatGPT'ye yüklenmeyi bitiremedi: bağlantın bu kadarı için yavaş olabilir. Yeniden dene ya da daha az slayt gönder."
 }

@@ -31,33 +31,36 @@ def spec_of(svc: Any, spec: Any) -> dict[str, Any]:
         scope = chat.get("scope") or {}
         return {"course_id": chat["course_id"], "days": [str(k) for k in scope.get("days") or []],
                 "focus": scope.get("focus", "full"), "slides": bool(scope.get("slides")), "send": scope.get("send"),
-                "target": chat["id"], "chat": chat}
+                "target": chat["id"], "chat": chat, "model": chat.get("model") or "", "read_all": scope.get("read_all")}
     course_id = str(spec.get("course_id") or "")
     focus = spec.get("focus") if spec.get("focus") in FOCUS else "full"
     keys = svc.all_days(course_id) if focus == "course" else [str(k) for k in spec.get("days") or []]
     return {"course_id": course_id, "days": svc.ordered_days(course_id, keys), "focus": focus,
             "slides": bool(spec.get("slides")), "send": spec.get("send"),
-            "target": chatfiles.draft_target(str(spec.get("uploads") or "")), "chat": None}
+            "target": chatfiles.draft_target(str(spec.get("uploads") or "")), "chat": None,
+            "model": str(spec.get("model") or ""),
+            "read_all": None if spec.get("read_all") is None else bool(spec.get("read_all"))}
 
 
 def _ctx(svc: Any, sp: dict[str, Any]) -> dict[str, Any]:
-    return svc.context(sp["course_id"], sp["days"], sp["focus"], sp["slides"], sp["send"], sp["target"])
+    return svc.context(sp["course_id"], sp["days"], sp["focus"], sp["slides"], sp["send"], sp["target"], sp["model"],
+                       sp["read_all"])
 
 
 def upload(svc: Any, spec: Any, token: str, name: str) -> dict[str, Any]:
-    """A file the page sent (chatfiles.receive) becomes one of the chat's; refused when the chat can't hold it."""
-    from .chat import MAX_CONTEXT_TOKENS
-
+    """A file the page sent (chatfiles.receive) becomes one of the chat's; refused when the chat can't hold it (the
+    lectures alone fill the window: a file's own text and pictures never are, as what doesn't fit is read in batches
+    or cut, and said so)."""
     sp = spec_of(svc, spec)
     if not sp["target"]:
         raise RuntimeError(t("This chat no longer exists."))
     item = chatfiles.finish(sp["target"], token, name)
     ctx = _ctx(svc, sp)
-    if ctx["tokens"] > MAX_CONTEXT_TOKENS:
+    if ctx["tokens"] > ctx["limit"]:
         chatfiles.remove(sp["target"], item["id"])
         raise RuntimeError(t("{name} doesn't fit in this chat: it would hold ~{k}k tokens, the limit is {max}k. "
                              "Remove other files or pick fewer class days.", name=item["name"],
-                             k=ctx["tokens"] // 1000, max=MAX_CONTEXT_TOKENS // 1000))
+                             k=ctx["tokens"] // 1000, max=ctx["limit"] // 1000))
     if sp["chat"] is not None:
         svc.lib.update_chat(sp["chat"]["id"])          # it moves up in the list, as when its slides change
     return {"item": item, "inputs": inputs(svc, spec, ctx)}
@@ -70,9 +73,8 @@ def remove_upload(svc: Any, spec: Any, upload_id: str) -> dict[str, Any]:
 
 
 def inputs(svc: Any, spec: Any, ctx: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """What the chat sends to the AI with each question, piece by piece, with sizes."""
-    from .chat import MAX_CONTEXT_TOKENS
-
+    """What the chat sends to the AI with each question, piece by piece, with sizes, and what "Read everything" reads
+    in batches first (``read``)."""
     sp = spec_of(svc, spec)
     ctx = ctx or _ctx(svc, sp)
     parts, per = ctx["parts"], ai.chars_per_token()
@@ -96,8 +98,10 @@ def inputs(svc: Any, spec: Any, ctx: Optional[dict[str, Any]] = None) -> dict[st
         "uploads": up["items"] if up else [], "upload_pictures_left_out": up["pictures_left_out"] if up else 0,
         "conversation": {"turns": turns, "tokens": conv_tokens},
         "passages_tokens": ai.text_tokens("x" * PASSAGE_CHARS, per),
-        "material_tokens": ctx["tokens"], "total": ctx["tokens"] + conv_tokens, "max_tokens": MAX_CONTEXT_TOKENS,
-        "can_images": p in ("claude", "chatgpt", "codex"), "limits": chatfiles.limits(), "target": sp["target"],
+        "material_tokens": ctx["tokens"], "total": ctx["tokens"] + conv_tokens, "max_tokens": ctx["limit"],
+        "can_images": p in ("claude", "chatgpt", "codex"), "limits": {**chatfiles.limits(), "pictures": ctx["lim"].pictures},
+        "target": sp["target"], "read": ctx["read"], "read_all": sp["read_all"], "notes_tokens": parts["notes_tokens"],
+        "window": ctx["lim"].window,
     }
 
 
@@ -137,8 +141,7 @@ def file_view(svc: Any, spec: Any, ref: str, page: int = 0, zoom: float = 1.0) -
             raise RuntimeError(t("That file isn't on this PC yet. Download it on the course page."))
         pictured = []
         if path.suffix.lower() == ".pdf" and not page:
-            pictured = [pic.page for _, pic in _ctx(svc, sp)["images"]
-                        if isinstance(pic, chatslides.PagePicture) and not chatfiles.is_upload(pic) and pic.pdf == str(path)]
+            pictured = _pictured(_ctx(svc, sp)["images"], str(path), upload=False)
         return _show(path, path.suffix.lower().lstrip("."), m.get("title") or chatslides.label_of(m), page, zoom, pictured)
     if kind == "upload":
         meta, box = chatfiles.get(sp["target"], rest)
@@ -147,10 +150,20 @@ def file_view(svc: Any, spec: Any, ref: str, page: int = 0, zoom: float = 1.0) -
             return {"kind": "image", "title": meta["name"], "data": chatfiles.data_url(box / "picture.jpg")}
         pictured = []
         if meta["kind"] == "pdf" and not page:
-            pictured = [pic.page for _, pic in _ctx(svc, sp)["images"]
-                        if chatfiles.is_upload(pic) and getattr(pic, "pdf", "") == str(path)]
+            pictured = _pictured(_ctx(svc, sp)["images"], str(path), upload=True)
         return _show(path, meta["ext"], meta["name"], page, zoom, pictured, "text" if meta["kind"] == "text" else "doc")
     raise RuntimeError(t("That file is no longer in this chat."))
+
+
+def _pictured(images: list[tuple[str, Any]], pdf: str, upload: bool) -> list[int]:
+    """The pages of the PDF ``pdf`` that go as pictures (all of them when it goes whole as a file)."""
+    out: list[int] = []
+    for _, pic in images:
+        if isinstance(pic, chatslides.PdfFile) and pic.pdf == pdf:
+            return list(range(1, pic.pages + 1))
+        if isinstance(pic, chatslides.PagePicture) and chatfiles.is_upload(pic) == upload and pic.pdf == pdf:
+            out.append(pic.page)
+    return out
 
 
 def _show(path: Path, ext: str, title: str, page: int, zoom: float, pictured: list[int],

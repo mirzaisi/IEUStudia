@@ -12,7 +12,7 @@
   const DEFAULTS = { chatgpt: GPT, codex: GPT, claude: { chat: "low", plan: "low", verify: "low", digest: "low" },
     local: { chat: "off", plan: "off", verify: "off", digest: "off" } };
   const OK_KEY = "studia-effort-ok";                 // the levels the student already said yes to (per AI and use)
-  const BIG_CHAT = 60000, BIG_NOTES = 40000, BIG_PLAN = 100000;       // tokens: "this reads a lot"
+  const BIG_CHAT = 60000, BIG_NOTES = 40000, BIG_PLAN = 100000, BIG_READ = 60000;       // tokens: "this reads a lot"
 
   const name = (v) => ({ low: t("Low"), medium: t("Medium"), high: t("High"), xhigh: t("Extra high"), max: t("Max"),
     off: t("Thinking off"), on: t("Thinking on") }[v] || v);
@@ -130,6 +130,28 @@
     chat: (tokens, whole) => [tokens >= BIG_CHAT ? t("That is a lot to read: about {k} tokens with your first question (a long lecture is about 10k). Fewer days or Highlights only use less.", { k: St.fmtK(tokens) }) : "",
       whole ? t("Whole course: each question also sends the matching pages of your slides and PDFs, so every one uses more of your plan than a usual follow-up.") : ""].filter(Boolean).join("<br>"),
     notes: (tokens) => (tokens >= BIG_NOTES ? t("A long lecture: about {k} tokens to read. Without the slide images it uses less.", { k: St.fmtK(tokens) }) : ""),
+    // "Read everything" (chatfiles.js): what reading the pages that don't fit whole takes, before the first answer
+    read: (rd) => (rd && rd.batches && (rd.tokens || 0) >= BIG_READ ? t("Reading everything is a lot: about {k} tokens in {n} requests before the answer. It happens once: later questions reuse the notes. Fewer files or Highlights only use less.", { k: St.fmtK(rd.tokens), n: t.num(rd.batches) }) : ""),
+  };
+  // asked once (for this AI) before a large "Read everything": when the student turns it on, and before the first
+  // question of a chat where it is on by itself (the whole course, 4 files and more, files added later: ``send``).
+  // Resolves true (read), false (don't: "Not now" / "Send without reading") or, for ``send``, null when the dialog
+  // was closed (nothing is sent)
+  St.confirmRead = (rd, opts = {}) => {
+    const key = `${prov()}.read`, send = !!opts.send;
+    if (!rd || !rd.on && send || !rd.batches || (rd.tokens || 0) < BIG_READ || acked().includes(key)) return Promise.resolve(true);
+    return new Promise((done) => {
+      let said = null;
+      St.modal(`<h2>${I("alert")} ${t("Read everything?")}</h2>
+        ${send && rd.auto ? `<p>${t("Read everything is on by itself for the whole course and for 4 files and more.")}</p>` : ""}
+        <p class="lead">${t.n(rd.pages || 0, "{ai} goes through {n} page first: about {k} tokens in {b} requests, from your plan.", "{ai} goes through {n} pages first: about {k} tokens in {b} requests, from your plan.", { ai: esc(St.aiName()), k: St.fmtK(rd.tokens), b: t.num(rd.batches) })}</p>
+        <div class="callout info">${I("info")}<div>${esc(t("The notes it writes are kept: later questions, and new chats about the same files, reuse them."))}</div></div>
+        <p class="dim sm">${t("You see this once. You can turn it off any time in What this chat sees.")}</p>
+        <div class="actions"><button class="btn" data-act="eff-no">${send ? t("Send without reading") : t("Not now")}</button>
+          <button class="btn primary" data-act="eff-yes" autofocus>${send ? t("Read everything and send") : t("Read everything")}</button></div>`);
+      St.onModalClose = () => done(said != null ? said : send ? null : false);
+      window.__eff = { yes: () => { ack(key); said = true; St.closeModal(); }, no: () => { said = false; St.closeModal(); } };
+    });
   };
   // the footer of the plan dialog and of the study pack / cheatsheet dialog (studypack.js): a large plan, the long
   // writing of a review sheet, and a pack or sheet whose many requests each think longer at a heavy level

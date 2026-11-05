@@ -38,5 +38,17 @@
   "At {level} reasoning every one of its requests also thinks longer, so it uses more than this estimate.": "{level} akıl yürütmede isteklerinin her biri daha uzun düşünür, bu yüzden bu tahminden daha çok harcar.",
   "This plan reads a lot: about {k} tokens in all. Fewer weeks use less.": "Bu plan çok şey okuyor: toplamda yaklaşık {k} token. Daha az hafta seçersen daha az harcar.",
   "Each question here sends about {k} tokens of lectures.": "Buradaki her soru derslerden yaklaşık {k} token gönderir.",
-  "Next answers use {level} reasoning. {ai} reads the lectures again once.": "Sonraki cevaplarda {level} akıl yürütme kullanılır. {ai} dersleri bir kez daha okur."
+  "Next answers use {level} reasoning. {ai} reads the lectures again once.": "Sonraki cevaplarda {level} akıl yürütme kullanılır. {ai} dersleri bir kez daha okur.",
+  "Reading everything is a lot: about {k} tokens in {n} requests before the answer. It happens once: later questions reuse the notes. Fewer files or Highlights only use less.": "Her şeyi okumak çok tutar: cevaptan önce {n} istekte yaklaşık {k} token. Bu bir kez olur: sonraki sorular notları yeniden kullanır. Daha az dosya ya da Yalnızca öne çıkanlar daha az harcar.",
+  "Read everything?": "Her şey okunsun mu?",
+  "{ai} goes through {n} page first: about {k} tokens in {b} requests, from your plan.": "{ai} önce {n} sayfayı okur: {b} istekte yaklaşık {k} token, planından harcanır.",
+  "The notes it writes are kept: later questions, and new chats about the same files, reuse them.": "Yazdığı notlar saklanır: sonraki sorular ve aynı dosyalarla açılan yeni sohbetler onları yeniden kullanır.",
+  "Read everything is on by itself for the whole course and for 4 files and more.": "Her şeyi oku, tüm ders için ve 4 ya da daha fazla dosyada kendiliğinden açıktır.",
+  "Send without reading": "Okumadan gönder",
+  "Read everything and send": "Her şeyi oku ve gönder",
+  "With this choice everything fits whole: nothing is read first.": "Bu seçimle her şey eksiksiz sığıyor: önceden hiçbir şey okunmaz.",
+  "With this choice: {n} page read first, about {k} tokens in {b} requests.": "Bu seçimle: önce {n} sayfa okunur, {b} istekte yaklaşık {k} token.",
+  "With this choice: {n} page, read before: its notes are used again.": "Bu seçimle: daha önce okunmuş {n} sayfa, notları yeniden kullanılır.",
+  "You see this once. You can turn it off any time in What this chat sees.": "Bunu bir kez görürsün. İstediğin zaman Bu sohbet neleri görüyor bölümünden kapatabilirsin.",
+  "Not now": "Şimdi değil"
 }

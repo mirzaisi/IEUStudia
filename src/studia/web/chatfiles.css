@@ -55,6 +55,16 @@ button.cf-open:focus-visible { outline: 2px solid var(--blue); outline-offset: -
 .ntc.cf-ntc .ntc-text { color: var(--text); }
 .cf-group .ntc.cf-ntc { margin-top: 6px; }
 .cf-foot { margin-top: 14px; display: flex; gap: 5px; align-items: flex-start; line-height: 1.45; }
+/* "Read everything": its switch in the group's head, what it reads, and the answer's progress while it reads */
+.cf-read-sw { display: inline-flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 11.5px;
+  font-weight: 600; color: var(--text-2); cursor: pointer; }
+.cf-read { display: grid; gap: 4px; padding: 4px 6px 2px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.cf-reading { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface-2); max-width: 520px; }
+.cf-reading-t { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
+.cf-reading .cf-bar { margin: 4px 0 0; }
+.cf-reading.stopped { background: none; }
+.cf-read-foot { display: inline-flex; align-items: center; gap: 4px; }
 .cf-side-btn.on { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
 .cf-side-btn .i { margin-right: 4px; }
 @media (max-width: 1040px) { .cf-side-btn .lbl { display: none; } .cf-side-btn .i { margin: 0; } }

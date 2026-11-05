@@ -1101,8 +1101,10 @@
     const fit = d && (d.slides && d.videoFit != null ? d.videoFit : Math.min(d.slidesTotal, 60));
     const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(fit * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: fit })}</label>` : "")
       : (c.slides ? `<span class="pill">${I("monitor", "sm")}${t.n(c.images, "{n} slide", "{n} slides")}</span>` : "");
-    const focus = x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}${t("Highlights only")}</span>`
-      : x.focus === "course" ? `<span class="pill processing">${I("library", "sm")}${t("Whole course")}</span>` : "";
+    const rd = x.read || {};
+    const focus = (x.focus === "highlights" ? `<span class="pill processing">${I("star", "sm")}${t("Highlights only")}</span>`
+      : x.focus === "course" ? `<span class="pill processing">${I("library", "sm")}${t("Whole course")}</span>` : "")
+      + (rd.on && rd.pages ? `<span class="pill" title="${esc(t.n(rd.pages, "{ai} goes through {n} page that doesn't fit whole before it answers (Read everything).", "{ai} goes through the {n} pages that don't fit whole before it answers (Read everything).", { ai: aiName() }))}">${I("list-checks", "sm")}${t("Reads everything")}</span>` : "");
     const tokens = d ? d.tokens : c.context_tokens;
     const title = d || !c.title ? t("New chat") : c.title;
     return `<div class="ch-top"><div class="ch-title"><h2 title="${esc(title)}">${esc(title)}</h2>${d ? "" : `<button class="btn ghost icon sm" data-act="chat-rename" title="${esc(t("Rename"))}">${I("pencil", "sm")}</button>`}</div>
@@ -1127,10 +1129,11 @@
     if (m.role === "user") return `<div class="msg user" data-seq="${m.seq}"><div class="bubble">${esc(m.text)}</div></div>`;
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
-    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "";
+    const reading = Studia.chatReadingHTML ? Studia.chatReadingHTML(m) : { body: "", foot: "" };   // "Read everything" (chatfiles.js)
+    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : reading.body || (streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "");
     const notes = Studia.chatNotices ? Studia.chatNotices(m, isLast) : {};    // the app's notices with this answer (notices.js)
-    const foot = streaming ? `<span class="dim">${SPIN()} ${t.html("{ai} is answering…", { ai: aiName() })}</span>`
-      : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
+    const foot = streaming ? `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`
+      : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${reading.foot}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
     const err = m.status === "error" ? notes.error || `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${notes.before || ""}${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
@@ -1203,8 +1206,16 @@
   }
   async function estimateDraft() {
     const d = S.chat.draft; if (!d) return;
-    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides, d.send, d.uploads || "");
-    if (r.ok && S.chat.draft === d) { d.tokens = r.tokens; d.slidesTotal = r.slides_total; renderChatHead(); }
+    const r = await call("chat_estimate", d.course_id, d.days, d.focus, d.slides, d.send, d.uploads || "", d.model || "", d.read_all == null ? null : d.read_all);
+    if (r.ok && S.chat.draft === d) { d.tokens = r.tokens; d.slidesTotal = r.slides_total; d.read = r.read; renderChatHead(); }
+  }
+  // "Send without reading": Read everything off for this chat (a new chat: when it is made)
+  async function readOff(x) {
+    if (x === S.chat.draft) { x.read_all = false; x.read = { ...(x.read || {}), on: false }; return true; }
+    const r = await call("chat_update", x.id, { read_all: false });
+    if (!r.ok) { toast(r.error, "error"); return false; }
+    Object.assign(x, { read_all: r.chat.read_all, read: r.chat.read, context_tokens: r.chat.context_tokens });
+    return true;
   }
   async function sendChat(textArg) {
     const box = $("#chat-input");
@@ -1216,11 +1227,21 @@
     }
     if (!S.chat.draft && S.chat.data && S.chat.data.running) { toast(t("{ai} is still answering. Wait for it, or press Stop.", { ai: aiName() }), "info"); return; }
     if (S.chat.draft && Studia.chatUploading && Studia.chatUploading()) { toast(t("Wait until your files are added, then send."), "info"); return; }
+    // "Read everything" on by itself (the whole course, 4 files and more, files added later) before a large first
+    // reading: its cost is shown and asked about once, as when the student turns it on (effort.js)
+    const pending = S.chat.draft || (S.chat.data && S.chat.data.id === S.chat.id ? S.chat.data : null);
+    if (pending && pending.read && pending.read.on && Studia.confirmRead) {
+      S.chat.sending = true;                          // no second send while the question is open
+      const go = await Studia.confirmRead(pending.read, { send: true });
+      S.chat.sending = false;
+      if (go === null) return;                        // closed: nothing sent, the question stays in the box
+      if (go === false && !(await readOff(pending))) return;
+    }
     S.chat.sending = true; renderComposerBtn();
     let id = S.chat.id;
     if (S.chat.draft) {
       const d = S.chat.draft;
-      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model, d.effort || "", d.send, d.uploads || "");
+      const r = await call("chat_create", d.course_id, d.days, d.focus, d.slides, d.model, d.effort || "", d.send, d.uploads || "", d.read_all == null ? null : d.read_all);
       if (S.chat.draft !== d) { S.chat.sending = false; return; }          // navigated away meanwhile
       if (!r.ok) { S.chat.sending = false; renderComposerBtn(); toast(r.error, "error"); return; }
       S.chat.draft = null; S.chat.id = id = r.chat.id; S.chat.data = r.chat;
@@ -1251,13 +1272,17 @@
     if (!cr.courses.length) { toast(t("Transcribe a lecture first, then you can ask {ai} about it.", { ai: aiName() }), "info"); return; }
     const st = { course: cr.courses.some((c) => c.id === courseId) ? courseId : cr.courses[0].id, scope: null,
       sel: new Set(preset ? preset.days : []), focus: (preset && preset.focus) || "full", slides: !!(preset && preset.slides),
-      model: (preset && preset.model) || S.settings.ai_model || "sonnet", keep: !!preset };
+      model: (preset && preset.model) || S.settings.ai_model || "sonnet", keep: !!preset,
+      read: preset && preset.read_all != null ? preset.read_all : null };          // "Read everything": null = as the chat's size says
     const daysOf = () => (st.scope ? st.scope.days : []);
     const whole = () => st.focus === "course";              // every lecture's highlights + the course files, searched per question
     const chosen = () => daysOf().filter((d) => whole() || st.sel.has(d.day_key));
     const tokOf = (d) => (st.focus === "full" ? d.tokens : d.hl_tokens);
     const slideCount = () => chosen().reduce((n, d) => n + d.slides, 0);
-    const total = () => 3000 + chosen().reduce((n, d) => n + tokOf(d), 0) + (st.slides ? Math.min(60, slideCount()) * 800 : 0);
+    const maxSlides = () => (st.scope && st.scope.max_slides) || 60;          // what the chosen AI takes in one request
+    const maxTokens = () => (st.scope && ((st.scope.limits || {})[st.model] || st.scope.max_tokens)) || 150000;
+    const readOn = () => (st.read != null ? st.read : whole() && (S.system.ai || {}).provider !== "local");
+    const total = () => 3000 + chosen().reduce((n, d) => n + tokOf(d), 0) + (st.slides ? Math.min(maxSlides(), slideCount()) * 800 : 0);
     const pickDefault = () => {   // newest days, as many as fit comfortably
       st.sel = new Set(); let sum = 0;
       for (const d of daysOf()) { if (st.sel.size && sum + tokOf(d) > 60000) break; st.sel.add(d.day_key); sum += tokOf(d); }
@@ -1266,7 +1291,7 @@
       const old = $(".cp-days"), keepScroll = old ? old.scrollTop : 0;
       const oldBody = $(".cp-scroll"), keepBody = oldBody ? oldBody.scrollTop : 0;
       const ai = S.system.ai || {}, who = aiName();
-      const max = (st.scope && st.scope.max_tokens) || 150000, tot = total(), over = tot > max, sc = slideCount();
+      const max = maxTokens(), tot = total(), over = tot > max, sc = slideCount(), ms = maxSlides();
       const images = ai.can_images !== false && ai.provider !== "local";
       const modes = [["full", "file-text", t("Chosen class days"), t("Full transcripts of the days you pick. Best for questions about specific lectures.")],
         ["highlights", "star", t("Highlights only"), t("Only what the lecturer stressed, from the days you pick. Lightest.")],
@@ -1293,8 +1318,13 @@
           ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} ${t("Offline model")}</div><div class="d">${t("Runs on this PC. For each question it reads the parts of these lectures that match it.")}</div></div>`
             : isChatGPT(ai) ? "" : `<div class="cp-opt"><div class="t">${t("Model")}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
           ${Studia.effortField ? Studia.effortField("cp", "chat", preset && preset.effort, { big: ai.provider === "local" ? "" : Studia.effortBig.chat(tot, whole()) }) : ""}
-          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(60, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(Math.min(60, sc) * 800) }) : t("No slides were captured for these days.")}</div></div>
-            <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}</div>
+          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(ms, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(Math.min(ms, sc) * 800) }) : t("No slides were captured for these days.")}</div></div>
+            <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}
+          <label class="cp-opt cp-switch"><div><div class="t">${t("Read everything")}</div><div class="d">${ai.provider === "local"
+            ? t("Before it answers, the offline model goes through your chosen slides and files in small parts and keeps notes of them. Slow on this PC; off unless you turn it on.")
+            : t.html("Before it answers, {ai} goes through every slide and file that doesn't fit whole in one request, in parts, and keeps notes of them. On for the whole course or 4 files and more; the first reading uses more of your plan, later questions reuse the notes.", { ai: who })}
+            <div class="cp-read-cost" id="cp-read-cost">${readCost()}</div></div></div>
+            <input type="checkbox" class="switch" data-act="cp-read" ${(st.read == null && st.est ? st.est.on : readOn()) ? "checked" : ""}></label></div>
         ${over ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
         </div>
         <div class="cp-foot"><div class="cp-cost"><div>${ai.provider === "local" ? t("<b>≈{k} tokens</b> on your first question · runs on this PC", { k: fmtK(tot) })
@@ -1304,6 +1334,33 @@
       $(".modal").classList.add("cp");
       const nl = $(".cp-days"); if (nl) nl.scrollTop = keepScroll;
       const nb = $(".cp-scroll"); if (nb) nb.scrollTop = keepBody;
+      if (st.scope) estimate();
+    };
+    // what "Read everything" would read with this choice (the files of a chat being changed count too): its tokens and
+    // requests next to its switch, and the same warning as for a heavy reasoning level when that is a lot
+    const readCost = () => {
+      const rd = st.est;
+      if (!rd || !rd.on || !chosen().length || (S.system.ai || {}).provider === "local") return "";
+      if (!rd.pages) return esc(t("With this choice everything fits whole: nothing is read first."));
+      const line = rd.batches ? t.n(rd.pages, "With this choice: {n} page read first, about {k} tokens in {b} requests.", "With this choice: {n} pages read first, about {k} tokens in {b} requests.", { k: fmtK(rd.tokens || 0), b: t.num(rd.batches) })
+        : t.n(rd.pages, "With this choice: {n} page, read before: its notes are used again.", "With this choice: {n} pages, read before: their notes are used again.");
+      const warn = Studia.effortBig && Studia.effortBig.read ? Studia.effortBig.read(rd) : "";
+      return `<b>${esc(line)}</b>${warn ? `<div class="callout warning eff-note">${I("alert")}<div>${warn}</div></div>` : ""}`;
+    };
+    let estTimer = 0, estSeq = 0;
+    const estimate = () => {
+      clearTimeout(estTimer);
+      estTimer = setTimeout(async () => {
+        const list = chosen();
+        if (!list.length || !$(".modal.cp")) return;
+        const n = ++estSeq;
+        const r = await call("chat_estimate", st.course, list.map((d) => d.day_key), st.focus, st.slides && slideCount() > 0,
+          (preset && preset.send) || null, (preset && preset.uploads) || "", st.model, st.read);
+        if (n !== estSeq || !r.ok || !$(".modal.cp")) return;          // a later choice, or the dialog closed
+        st.est = r.read || null;
+        const el = $("#cp-read-cost"); if (el) el.innerHTML = readCost();
+        const sw = $('[data-act="cp-read"]'); if (sw && st.read == null && st.est) sw.checked = !!st.est.on;
+      }, 250);
     };
     const load = async () => {
       const course = st.course;
@@ -1322,16 +1379,17 @@
       none: () => { st.sel = new Set(); draw(); },
       focus: (v) => { st.focus = v; draw(); },
       slides: (v) => { st.slides = v; draw(); },
+      read: (v) => { st.read = v; draw(); },
       model: (v) => { st.model = v; draw(); },
       go: () => {
         const list = chosen().sort((a, b) => a.start.localeCompare(b.start));
-        if (!list.length || total() > ((st.scope && st.scope.max_tokens) || 150000)) return;
+        if (!list.length || total() > maxTokens()) return;
         const course = cr.courses.find((c) => c.id === st.course) || {};
         closeModal();
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
           labels: list.map((d, i) => ({ key: d.day_key, n: i + 1, label: d.label, kind: d.kind_label, long: d.label })),
           focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "",
-          uploads: (preset && preset.uploads) || "" });        // Change…: the files already added stay with the new chat
+          read_all: st.read, uploads: (preset && preset.uploads) || "" });        // Change…: the files already added stay with the new chat
       },
     };
     await load();
@@ -2013,7 +2071,7 @@
       c.model = r.chat.model; loadChats();
       if (c.messages.length) toast(t("Next answers use {model}. {ai} reads the lectures again once.", { model: levelLabel(el.value), ai: aiName() }), "info");
     },
-    "draft-model": (el) => { if (S.chat.draft) S.chat.draft.model = el.value; },
+    "draft-model": (el) => { if (S.chat.draft) { S.chat.draft.model = el.value; estimateDraft(); if (Studia.chatSideRender) Studia.chatSideRender(); } },   // each model holds its own amount
     "draft-slides": (el) => { const d = S.chat.draft; if (d) { d.slides = el.checked; estimateDraft(); } },
     "draft-change": () => { const d = S.chat.draft; if (d) chatPicker(d.course_id, d); },
     "chat-menu": (el) => menu(el, [
@@ -2041,6 +2099,7 @@
     "cp-all": () => window.__cp.all(), "cp-last": () => window.__cp.last(), "cp-none": () => window.__cp.none(),
     "cp-focus": (el) => window.__cp.focus(el.dataset.val),
     "cp-slides": (el) => window.__cp.slides(el.checked),
+    "cp-read": (el) => window.__cp.read(el.checked),
     "cp-model": (el) => window.__cp.model(el.dataset.val),
     "cp-go": () => window.__cp.go(),
     "menu-copy": (el) => menu(el, [
@@ -2486,20 +2545,27 @@
     const answer = "Based on the lecture, these are the most likely quiz topics:\n\n1. **Bayes' theorem** — the lecturer said *\"this is exactly the kind of question I will ask in the midterm\"* [P1 18:41].\n   - Watch the denominator: $P(+) = 3384/100000$.\n2. **Conditional probability** and the multiplication rule $P(A\\cap B)=P(A\\mid B)\\,P(B)$ [P1 00:31].\n3. The screening example (posterior ≈ 11.7%) [P2 05:40, P2 06:10].\n\n| Topic | Emphasised | Where |\n|---|---|---|\n| Bayes' theorem | ⭐⭐ | [P1 18:41] |\n| Multiplication rule | ⭐ | [P1 00:31] |\n\n> **My prediction:** a two-step screening question like the one at [P2 05:05].\n\nIn Turkish he added *\"bu konu sınavda çıkacak\"* — “this topic will be on the exam” (Part 2, 05:05).\n\n$$P(D\\mid +) = \\frac{P(+\\mid D)\\,P(D)}{P(+)} = \\frac{0.99 \\cdot 0.004}{0.03384} \\approx 0.117$$\n\nAlso check: $A = \\begin{bmatrix} 1 & 2 \\\\ 3 & 4 \\end{bmatrix}$, $\\det A = -2$, $x_{1}^2 + \\sqrt{x_2} \\le \\bar{X}$, $v \\in \\mathbb{R}^n$.";
     const label = (c) => (c.days.length === 1 ? `${c.days[0].label} · ${c.days[0].kind}` : `${c.days.length} class days`) + (c.focus === "highlights" ? " · highlights only" : "");
     const summary = (c) => ({ id: c.id, course_id: c.course_id, course_code: c.course_code, title: c.title || (c.messages[0] ? c.messages[0].text.slice(0, 64) : ""), scope_label: label(c), model: c.model, updated_at: c.updated_at, n_messages: c.messages.length, running: c.messages.some((m) => m.status === "streaming") });
-    const view = (c) => ({ ...summary(c), days: c.days, focus: c.focus, slides: c.slides, context_tokens: c.tokens, images: c.slides ? 3 : 0, course_name: "MATH 240 – Probability for Engineers", messages: JSON.parse(JSON.stringify(c.messages)), limits });
+    // "Read everything": 15 pages of the slides don't fit whole (chatfiles.js's preview says the same)
+    const readOf = (c) => ({ on: c.read_all != null ? !!c.read_all : c.focus === "course", auto: c.read_all == null, pages: 15, total: 48, local: false,
+      batches: c.readDone ? 0 : 2, tokens: c.readDone ? 0 : 61500, output: 3300, cached: c.readDone ? 15 : 0, pictures: 15 });
+    const view = (c) => ({ ...summary(c), days: c.days, focus: c.focus, slides: c.slides, context_tokens: c.tokens, images: c.slides ? 3 : 0, course_name: "MATH 240 – Probability for Engineers", messages: JSON.parse(JSON.stringify(c.messages)), limits,
+      read: readOf(c), read_all: c.read_all == null ? null : c.read_all });
+    Studia.mockReadOf = readOf;
     const timers = {};
     return {
       chat_courses: () => ({ ok: true, courses: [{ id: "17933", code: "MATH 240", name: "Probability for Engineers", days: 2 }], limits }),
       chat_scope: (cid) => ({ ok: true, course: { id: cid, code: "MATH 240", name: "Probability for Engineers" }, days: scope[cid] || [], max_tokens: 150000, max_slides: 60 }),
-      chat_estimate: (cid, days, focus, slides) => ({ ok: true, tokens: (focus === "highlights" ? 2100 : 23800) * days.length + 700 + (slides ? 2400 : 0), images: slides ? 3 : 0, slides_total: 3, days: days.length }),
+      chat_estimate: (cid, days, focus, slides, send, uploads, model, readAll) => ({ ok: true, tokens: (focus === "highlights" ? 2100 : 23800) * days.length + 700 + (slides ? 2400 : 0), images: slides ? 3 : 0, slides_total: 3, days: days.length,
+        read: readOf({ focus, read_all: readAll }) }),
       chat_list: () => ({ ok: true, chats: Object.values(chats).filter((c) => c.messages.length).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).map(summary), limits }),
       chat_get: (id) => (chats[id] ? { ok: true, chat: view(chats[id]) } : { ok: false, error: "This chat no longer exists." }),
-      chat_create: (cid, days, focus, slides, model, effort, send, uploads) => {
+      chat_create: (cid, days, focus, slides, model, effort, send, uploads, readAll) => {
         const id = "m" + Math.random().toString(36).slice(2, 8);
         if (uploads && Studia.mocks.chat_adopt) Studia.mocks.chat_adopt(uploads, id);     // the new chat's files become its own
         const known = scope[cid] || [];
         const ds = days.map((k, i) => { const d = known.find((x) => x.day_key === k) || { label: "Wed 14 Oct", kind_label: "Lecture" }; return { key: k, n: i + 1, label: d.label, kind: d.kind_label, long: d.label, gone: false }; });
-        chats[id] = { id, course_id: cid, course_code: "MATH 240", title: "", days: ds, focus, slides, model: model || "sonnet", effort: effort || "", tokens: 23800 * days.length, messages: [], updated_at: now() };
+        chats[id] = { id, course_id: cid, course_code: "MATH 240", title: "", days: ds, focus, slides, model: model || "sonnet", effort: effort || "", tokens: 23800 * days.length, messages: [], updated_at: now(),
+          read_all: readAll == null ? null : !!readAll };
         return { ok: true, chat: view(chats[id]) };
       },
       chat_send: (id, text) => {
@@ -2507,20 +2573,39 @@
         c.messages.push({ seq: seq - 1, role: "user", text, status: "done", usage: {} }, { seq, role: "assistant", text: "", status: "streaming", usage: {} });
         c.updated_at = now();
         let i = 0; const m = c.messages[c.messages.length - 1];
-        timers[id] = setInterval(() => {
-          i += 28; m.text = answer.slice(0, i);
-          const done = i >= answer.length;
-          if (done) { clearInterval(timers[id]); m.status = "done"; m.usage = { input_tokens: 9, cache_creation_input_tokens: seq > 2 ? 140 : 24100, cache_read_input_tokens: seq > 2 ? 24100 : 0, output_tokens: 412 }; }
-          emit({ type: "chat", chat_id: id, seq, state: m.status, text: m.text, usage: m.usage, limits });
-        }, 70);
+        const rd = readOf(c), parts = rd.on && !c.readDone ? rd.batches : 0;      // "Read everything" first, part by part
+        let part = 0, read = null;
+        const stream = () => {
+          timers[id] = setInterval(() => {
+            i += 28; m.text = answer.slice(0, i);
+            const done = i >= answer.length;
+            if (done) { clearInterval(timers[id]); m.status = "done"; m.usage = { input_tokens: 9, cache_creation_input_tokens: seq > 2 ? 140 : 24100, cache_read_input_tokens: seq > 2 ? 24100 : 0, output_tokens: 412, ...(read ? { read } : {}) }; }
+            emit({ type: "chat", chat_id: id, seq, state: m.status, text: m.text, usage: m.usage, limits });
+          }, 70);
+        };
+        if (!parts) stream();
+        else {
+          const tick = () => {
+            m.usage = { reading: { done: part, total: parts, pages: rd.pages, read: Math.round((rd.pages * part) / parts), cached: 0, kind: "study" } };
+            emit({ type: "chat", chat_id: id, seq, state: "streaming", text: "", usage: m.usage, limits });
+            if (part === parts) { clearInterval(timers[id]); c.readDone = true; read = { ...m.usage.reading, unread: [], relevant: 0 }; m.usage = {}; stream(); }
+            part += 1;
+          };
+          tick(); timers[id] = setInterval(tick, Number(window.__readTick || 1400));
+        }
         return { ok: true, user_seq: seq - 1, seq };
       },
       chat_stop: (id) => {
         const c = chats[id]; const m = c && c.messages[c.messages.length - 1];
-        if (m && m.status === "streaming") { clearInterval(timers[id]); m.status = "stopped"; emit({ type: "chat", chat_id: id, seq: m.seq, state: "stopped", text: m.text, usage: {} }); }
+        if (m && m.status === "streaming") {
+          clearInterval(timers[id]); m.status = "stopped";
+          const rd = (m.usage || {}).reading;          // stopped while reading: what was read is kept
+          m.usage = rd && !m.text ? { read: { ...rd, stopped: true } } : {};
+          emit({ type: "chat", chat_id: id, seq: m.seq, state: "stopped", text: m.text, usage: m.usage });
+        }
         return { ok: true };
       },
-      chat_update: (id, patch) => { Object.assign(chats[id], patch.title != null ? { title: patch.title } : {}, patch.model ? { model: patch.model } : {}, patch.effort ? { effort: patch.effort } : {}); return { ok: true, chat: view(chats[id]) }; },
+      chat_update: (id, patch) => { Object.assign(chats[id], patch.title != null ? { title: patch.title } : {}, patch.model ? { model: patch.model } : {}, patch.effort ? { effort: patch.effort } : {}, "read_all" in patch ? { read_all: patch.read_all } : {}); return { ok: true, chat: view(chats[id]) }; },
       chat_delete: (id) => { delete chats[id]; return { ok: true }; },
       chat_export: () => ({ ok: true, path: "chat.md" }),
     };

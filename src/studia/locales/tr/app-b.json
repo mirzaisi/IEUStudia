@@ -242,5 +242,10 @@
   "{done} of {n}": "{done}/{n}",
   "Finished": "Bitiş",
   "Details": "Ayrıntılar",
-  "Details: {name}": "Ayrıntılar: {name}"
+  "Details: {name}": "Ayrıntılar: {name}",
+  "Reads everything": "Her şeyi okuyor",
+  "{ai} goes through {n} page that doesn't fit whole before it answers (Read everything).": "{ai} cevap vermeden önce tamamı sığmayan {n} sayfayı okur (Her şeyi oku).",
+  "{ai} is reading your slides and files…": "{ai} slaytlarını ve dosyalarını okuyor…",
+  "Before it answers, the offline model goes through your chosen slides and files in small parts and keeps notes of them. Slow on this PC; off unless you turn it on.": "Çevrimdışı model cevap vermeden önce seçtiğin slaytları ve dosyaları küçük parçalar hâlinde okur ve notlarını saklar. Bu bilgisayarda yavaştır; sen açmadıkça kapalı kalır.",
+  "Before it answers, {ai} goes through every slide and file that doesn't fit whole in one request, in parts, and keeps notes of them. On for the whole course or 4 files and more; the first reading uses more of your plan, later questions reuse the notes.": "{ai} cevap vermeden önce tek bir isteğe tam sığmayan her slaytı ve dosyayı parça parça okur ve notlarını saklar. Dersin tamamında ya da 4 ve daha fazla dosyada açıktır; ilk okuma planından daha çok harcar, sonraki sorular notları yeniden kullanır."
 }
