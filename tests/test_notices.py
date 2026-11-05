@@ -421,7 +421,8 @@ def test_a_failed_plan_s_card_has_the_short_reason_and_a_review_sheet_one_missin
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
-def test_slides_trimmed_because_the_course_files_took_the_pictures_says_so(tmp_path):
+def test_slides_trimmed_because_the_course_files_took_the_pictures_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai, "provider", lambda: "claude")      # an AI that takes pictures (whatever this PC has)
     files = {"summary": {"missing": 0, "cut": False, "images_on": True, "files": [{"id": "a"}]},
              "catalog": {"files": [{"id": "a", "downloaded": True}]}, "images": [("[a p.1]", "x")] * 40}
     got = ChatService._notices(0, [], files, {"mode": "pick", "files": ["a"]}, 27, 20)
