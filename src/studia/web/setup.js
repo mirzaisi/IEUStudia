@@ -380,7 +380,7 @@
         const v = VENDOR[U.ch.ai];
         St.modal(`<h2>${t.html("{name} isn't connected yet", { name: v.name })}</h2>
           <p class="lead">${t("Until it is, chatting about your lectures, study notes and study plans won't work. Everything else does. You can connect it later in Settings → AI.")}</p>
-          <div class="actions"><button class="btn" data-act="modal-close">${t("Connect it now")}</button><button class="btn primary" data-act="su-next" data-anyway="1">${t("Continue without it")} ${I("arrow-right", "sm")}</button></div>`);
+          <div class="actions"><button class="btn" data-act="su-connect-now" data-id="${U.ch.ai}">${t("Connect it now")}</button><button class="btn primary" data-act="su-next" data-anyway="1">${t("Continue without it")} ${I("arrow-right", "sm")}</button></div>`);
         return;
       }
       if (el && el.dataset.anyway) St.closeModal();
@@ -399,6 +399,19 @@
     "su-back": () => go(U.step - 1),
     "su-speech": (el) => { U.ch.speech = el.dataset.id; St.render(); },
     "su-llm": (el) => { U.ch.llm = el.dataset.id; St.render(); },
+    // "Connect it now" in the not-connected question: really starts it (it used to close the question only, so
+    // nothing seemed to happen): ChatGPT's sign-in, or Claude/Codex's next step; then shows that step on screen
+    "su-connect-now": (el) => {
+      const key = el.dataset.id, a = (U.ai && U.ai[key]) || {};
+      St.closeModal();
+      if (key === "chatgpt") A["ai-login"]({ dataset: { id: "chatgpt", ...(a.signed_in && !a.plan_allowed ? { consent: "1" } : {}) } });
+      else if (VENDOR[key] && !a.available) A["ai-install"]({ dataset: { id: key } });
+      else if (VENDOR[key] && !a.logged_in) A["ai-login"]({ dataset: { id: key } });
+      setTimeout(() => {
+        const at = $(".su-ai.on .cn-step.busy") || $(".su-ai.on .cn-step.now") || $(".su-ai.on .cn-step.err") || $(".su-ai.on");
+        if (at) { at.scrollIntoView({ block: "center", behavior: "smooth" }); at.classList.remove("attention"); void at.offsetWidth; at.classList.add("attention"); }
+      }, 60);
+    },
     "su-ai": (el) => { U.ch.ai = el.dataset.id; St.render(); if (VENDOR[U.ch.ai]) { loadAi(U.ch.ai); pollAi(true); } },
     "su-bool": (el) => { U.ch[el.dataset.key] = el.checked; if (el.dataset.key === "tray" && !el.checked) U.ch.startup = false; St.render(); },
     "su-download": async () => {

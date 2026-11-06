@@ -1191,6 +1191,7 @@ button.link:hover { text-decoration-color: currentColor; }
 .nav-item.earlier { opacity: .72; }
 .preset .d.warn-txt { color: var(--warning); margin-top: 4px; }
 .su-accept.attention { animation: attention 1.2s ease; }
+.su-ai.attention, .cn-step.attention { animation: attention 1.2s ease; }
 @keyframes attention { 0%, 40%, 80% { box-shadow: 0 0 0 3px var(--blue); } 20%, 60%, 100% { box-shadow: 0 0 0 0 transparent; } }
 .su-ai-body .su-row { padding: 6px 0; }
 .su-ai-body .presets { padding: 2px 0 6px; }
