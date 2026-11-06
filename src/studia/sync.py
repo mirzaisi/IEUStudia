@@ -203,6 +203,40 @@ class SyncService:
         self.lib.set_meta(f"listed_full:{course_id}", dt.datetime.now().isoformat(timespec="seconds"))
         return new
 
+    def _reopen_empty(self, courses: list[Course], listed: dict[str, Optional[list]], failed: list[str],
+                      progress: Callable[[str], None]) -> list[str]:
+        """Courses whose folder came back empty although it had recordings: Panopto shows a course's folder only for a
+        while after IEULearn opened it for this account, and the sign-in cookie outlives that (the listing then says
+        0 recordings, without an error). Each is opened again through IEULearn and listed once more. New ids."""
+        empty = [c for c in courses if listed.get(c.id) == [] and self.lib.has_recordings(c.id)]
+        if not empty:
+            return []
+        progress(t("Connecting to Panopto…"))
+        new_ids: list[str] = []
+        sessions = [clone_session(self._session) for _ in empty]
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="lti") as pool:
+            launched = list(pool.map(self._launch, [c.id for c in empty], sessions))
+        for c, (cid, folder, s) in zip(empty, launched):
+            merge_cookies(self._session, s)
+            if not folder:                              # IEULearn didn't open it: tried again next time
+                continue
+            if folder != c.folder_id:                   # the course moved to another folder
+                self.lib.set_course_folder(cid, folder, True)
+                c = dc.replace(c, folder_id=folder)
+            try:
+                course, recs, s2, got = self._list(c, s)
+            except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
+                self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
+                failed.append(c.code or c.name or c.id)
+                continue
+            merge_cookies(self._session, s2)
+            self.log.info("Panopto listed no recordings for %s; opened through IEULearn again: %d", c.code or c.id,
+                          len(recs or []))
+            listed[course.id] = recs
+            new_ids += self._merge(course.id, recs, got)
+        self._save_cookies()
+        return new_ids
+
     def _heads(self, course_id: str) -> Optional[dict]:
         """What the course's folders' first rows said at its last full listing (None: never listed in full)."""
         try:
@@ -353,6 +387,7 @@ class SyncService:
                     merge_cookies(self._session, s)
                     listed[course.id] = recs
                     new_ids += self._merge(course.id, recs, got)
+            new_ids += self._reopen_empty(with_folders, listed, failed, progress)
             if failed:
                 errors.append(t("Couldn't check new recordings for {courses}: Panopto didn't answer. They're checked "
                                 "again next time.", courses=", ".join(sorted(set(failed)))))

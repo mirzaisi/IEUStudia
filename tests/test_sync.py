@@ -101,6 +101,30 @@ def _service(tmp_path):
     return lib, sync_mod.SyncService(lib, Settings)
 
 
+def test_a_folder_that_comes_back_empty_is_opened_again_through_ieulearn(site, tmp_path, monkeypatch):
+    """Panopto shows a course's folder only for a while after IEULearn opened it, and the sign-in outlives that: the
+    listing then says 0 recordings without an error. Such a course is opened again and listed once more."""
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    assert lib.has_recordings("a") and lib.has_recordings("b")
+    site.launches.clear()
+    site.listing["a"] = []                               # access gone: an empty answer
+    orig = sync_mod.IEULearn.launch_panopto
+
+    def launch(self, cid):
+        if cid == "a":                                   # opening the course gives the folder back
+            site.listing["a"] = [_rec("a", 0), _rec("a", 1)]
+        return orig(self, cid)
+
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", launch)
+    res = sync.sync()
+    assert site.launches == ["a"] and "a1" in res.new_ids and not res.errors
+    assert {r.delivery_id for r in lib.recordings("a")} == {"a0", "a1"}
+    site.launches.clear()
+    res = sync.sync()                                    # the folder answers again: nothing opened
+    assert site.launches == [] and res.new_ids == []
+
+
 def test_with_panopto_down_ieulearn_still_syncs(site, tmp_path):
     lib, sync = _service(tmp_path)
     site.panopto = NetworkError("Can't reach panopto.ieu.edu.tr. Check your internet connection.")
