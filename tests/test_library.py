@@ -25,6 +25,25 @@ def test_merge_new_duplicates_and_empty_listing(tmp_path):
     assert len(lib.recordings("c1")) == 4
 
 
+def test_a_reupload_with_sound_is_kept_and_the_silent_copy_is_its_duplicate(tmp_path):
+    """The lecturer's first upload had no sound (it failed so); the fixed copy has the same start and length. The
+    copy kept is the one with sound, also in a library that marked it the other way round before."""
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c1", title="t", code="MATH 250", name="n")])
+    lib.merge_recordings("c1", [rec("a", 0)], first_sync=True)
+    lib.set_warnings("a", [{"code": "no_speech", "level": "error", "message": "Panopto'da bu kaydın sesi yok."}])
+    lib.set_status("a", "failed", "Panopto'da bu kaydın sesi yok.")      # (the words follow the UI's language)
+    lib.merge_recordings("c1", [rec("a", 0), rec("b", 0, 2400.4)], first_sync=False)
+    assert lib.get_recording("b").duplicate_of is None and lib.get_recording("a").duplicate_of == "b"
+    lib2 = Library(tmp_path / "old.db")                  # failed before the warning existed: only its words say it
+    lib2.upsert_courses([Course(id="c1", title="t", code="MATH 250", name="n")])
+    lib2.merge_recordings("c1", [rec("a", 0), rec("b", 0, 2400.4)], first_sync=True)
+    assert lib2.get_recording("b").duplicate_of == "a"
+    lib2.set_status("a", "failed", "Panopto has no sound for this recording (only a picture).")
+    lib2.merge_recordings("c1", [rec("a", 0), rec("b", 0, 2400.4)], first_sync=False)
+    assert lib2.get_recording("b").duplicate_of is None and lib2.get_recording("a").duplicate_of == "b"
+
+
 def test_status_and_fts_search(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c1", title="t", code="EEE 215", name="n")])

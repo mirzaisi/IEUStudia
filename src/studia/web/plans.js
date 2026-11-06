@@ -331,7 +331,7 @@
     const sel = new Set(sc.weeks);
     const weeks = r.weeks.filter((w) => w.start || w.topic);
     const picked = weeks.filter((w) => sel.has(w.no));
-    const missing = picked.flatMap((w) => w.missing);
+    const missing = [...new Set(picked.flatMap((w) => w.missing))];      // (a file of a unit for two weeks once)
     const todo = picked.flatMap((w) => w.todo_days || []);
     const ai = r.ai || {};
     const prep = sc.kind === "prep";
@@ -425,7 +425,11 @@
         : t("Study plan ready: {title}", { title: e.title || "" }), "success");
       loadPlan(e.id, true);
     }
-    else if (e.status === "error") toast(t("Study plan: {error}", { error: e.error || t("failed") }), "error");
+    else if (e.status === "error") {
+      const error = e.error || t("failed");
+      toast(kind === "prep" ? t("Review sheet: {error}", { error }) : kind === "pack" ? t("Study pack: {error}", { error }) : kind === "sheet" ? t("Cheatsheet: {error}", { error })
+        : t("Study plan: {error}", { error }), "error");
+    }
     else if (cached && e.stage && !(cached.stages_done || []).includes(e.stage) && ["concepts", "search"].includes(e.stage)) loadPlan(e.id, true);
     if (S.view.name === "plans" || (S.view.name === "plan" && S.view.planId === e.id)) renderView();
     renderSidebar();
@@ -488,7 +492,7 @@
     "pd-download": async () => {
       readInputs();
       const sel = new Set(D.scope.weeks);
-      const ids = D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing);
+      const ids = [...new Set(D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing))];
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file — the plan will read them once they are in", "Downloading {n} files — the plan will read them once they are in"), "success");
     },

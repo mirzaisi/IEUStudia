@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import functools
 import json
@@ -64,6 +65,9 @@ class Api:
         self._window: Any = None
         self._events: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self._sync_lock = threading.Lock()
+        self._last_sync_ok = False        # how the last sync went (set before it lets go of _sync_lock)
+        self._sync_ask = threading.Lock()   # (sync() asking while one runs vs. that one ending)
+        self._sync_asked = False
         self._ai_cancel: Optional[threading.Event] = None
         self._courses_dirty = threading.Event()
         self._mat_lock = threading.Lock()
@@ -354,6 +358,7 @@ class Api:
         from .ai import usage_limits
 
         target, self._open_target = self._open_target, ""
+        notes, self._s.notes = list(getattr(self._s, "notes", [])), []    # told once, not at every reload
         return {
             "ok": True, "version": __version__, "signed_in": signed_in, "system": cached_system,
             "limits": usage_limits(), "app": appconfig.load().to_json(), "open": target, "update": updates.status(),
@@ -364,7 +369,7 @@ class Api:
             "courses": self._course_views() if signed_in else [], "queue": self._s.jobs.snapshot(),
             "paused": self._s.jobs.paused(), "resume": self._s.jobs.leftover_view() if signed_in else None,
             "pending_downloads": self._pending_downloads(), "downloading": self._setup_running,
-            **self._profiles_view(),
+            "notes": notes, **self._profiles_view(),
         }
 
     def _pending_downloads(self) -> list[dict[str, Any]]:
@@ -627,6 +632,21 @@ class Api:
             start_login(which)
         return {"ok": True}
 
+    @safe
+    def ai_login_again(self) -> dict[str, Any]:
+        """"Continue with ChatGPT": its sign-in page once more (it didn't show up, or its tab was closed)."""
+        from . import chatgpt
+
+        return {"ok": True, **chatgpt.reopen_sign_in(open_browser=open_in_browser)}
+
+    @safe
+    def ai_login_cancel(self) -> dict[str, Any]:
+        """"Continue with ChatGPT": stop waiting for the browser."""
+        from . import chatgpt
+
+        chatgpt.cancel_sign_in()
+        return {"ok": True}
+
     def _ai_event(self, e: dict[str, Any]) -> None:
         """A sign-in or an install to the page; once it is through, whether the AI can be used changed."""
         self._push(e)
@@ -833,15 +853,29 @@ class Api:
 
     @safe
     def sync(self) -> dict[str, Any]:
-        if not self._sync_lock.acquire(blocking=False):
-            return {"ok": True, "running": True}
+        with self._sync_ask:
+            if not self._sync_lock.acquire(blocking=False):
+                self._sync_asked = True           # the running sync answers you: aloud, or once more right after it
+                return {"ok": True, "running": True}
         threading.Thread(target=self._run_sync, name="sync", daemon=True).start()
         return {"ok": True}
 
     def _run_sync(self, quiet: bool = False) -> bool:
         """One sync (the caller holds ``_sync_lock``; released here). True when it worked. ``quiet``: started by the
-        app itself (the page then shows errors in the top bar only)."""
-        q = {"quiet": True} if quiet else {}
+        app itself (the page then shows errors in the top bar only), until you ask for a sync while it runs: then
+        what is left of it is yours (errors, the sign-in screen), and if its result had already gone out, one more
+        sync runs for you right after it."""
+        asked = lambda: getattr(self, "_sync_asked", False)    # noqa: E731
+        q: dict[str, Any] = {"quiet": True} if quiet and not asked() else {}
+        ok = answered = False
+
+        def push(evt: dict[str, Any]) -> None:
+            nonlocal answered
+            if q and asked():
+                q.clear()
+            if evt["type"] == "sync" and evt["phase"] in ("done", "error"):
+                answered = asked()
+            self._push({**evt, **q})
 
         def again(fn: Callable[[], Any], partial: Callable[[Any], bool]) -> Any:
             # no internet connection (the PC just woke up, say): a sync you asked for waits for it and goes on
@@ -849,38 +883,44 @@ class Api:
                 "type": "sync", "phase": "progress", "offline": True,
                 "message": t("Waiting for the internet connection. The sync goes on by itself.")}), partial)
         try:
-            self._push({"type": "sync", "phase": "start", "message": t("Syncing…"), **q})
+            push({"type": "sync", "phase": "start", "message": t("Syncing…")})
             res = again(lambda: self._s.sync.sync(
-                lambda m: self._push({"type": "sync", "phase": "progress", "message": m, **q}),
+                lambda m: push({"type": "sync", "phase": "progress", "message": m}),
                 lambda ids: self._push({"type": "courses", "courses": self._course_views()})),
                 lambda r: bool(r.errors))
             course_views = self._course_views()
             self._push({"type": "courses", "courses": course_views})
             new = self._own_new(course_views, res.new_ids)
-            self._push({"type": "sync", "phase": "done", "new_count": new,
-                        "message": t("{n} new recording(s)", n=new) if new else t("Up to date"),
-                        "last_sync": self._s.lib.get_meta("last_sync"),
-                        "profile": res.profile.__dict__ if res.profile else None,
-                        "errors": res.errors, **q})
+            push({"type": "sync", "phase": "done", "new_count": new,
+                  "message": t("{n} new recording(s)", n=new) if new else t("Up to date"),
+                  "last_sync": self._s.lib.get_meta("last_sync"),
+                  "profile": res.profile.__dict__ if res.profile else None, "errors": res.errors})
             # then each course's weekly materials, announcements, outcomes (listed, nothing downloaded)
-            self._push({"type": "content", "phase": "start", **q})
+            push({"type": "content", "phase": "start"})
             content = again(self._s.sync.sync_content, lambda c: bool(c["errors"]))
             self._courses_dirty.set()                     # (built once with whatever else changed meanwhile)
-            self._push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
-                        "new_announcements": len(content["new_announcements"]), "errors": content["errors"], **q})
-            return True
+            push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
+                  "new_announcements": len(content["new_announcements"]), "errors": content["errors"]})
+            ok = True
         except (AuthError, NeedLogin) as exc:
-            self._push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc), **q})
+            push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc)})
         except Exception as exc:  # noqa: BLE001
             log.log(logging.WARNING if quiet else logging.ERROR, "sync failed", exc_info=True)
-            self._push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed"), **q})
+            push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed")})
         finally:
-            self._sync_lock.release()
+            self._last_sync_ok = ok                       # (for a full sync that waited for this one)
+            with getattr(self, "_sync_ask", contextlib.nullcontext()):
+                more = asked() and not answered           # you asked after its result went out: one more, yours
+                self._sync_asked = False
+                if not more:
+                    self._sync_lock.release()
+            if more:                                      # (it keeps the lock: nothing starts in between)
+                threading.Thread(target=self._run_sync, name="sync", daemon=True).start()
             try:                                          # from what is on this PC: also when IEULearn can't be reached
                 self._remind()
             except Exception:  # noqa: BLE001 - a reminder never fails a sync
                 log.warning("Reminders failed", exc_info=True)
-        return False
+        return ok
 
     @staticmethod
     def _own_new(course_views: list[dict[str, Any]], new_ids: list[str]) -> int:
@@ -934,9 +974,9 @@ class Api:
             self._push({"type": "catchup", "phase": "sync", "scope": scope})
             if self._sync_lock.acquire(blocking=False):
                 ok = self._run_sync()
-            else:                                  # a sync is running already: use its result
+            else:                                  # a sync is running already: wait for it and use its result
                 with self._sync_lock:
-                    ok = True
+                    ok = self._last_sync_ok
             if not ok:
                 self._push({"type": "catchup", "phase": "error", "scope": scope,
                             "message": t("The sync failed, so nothing was queued.")})
@@ -1144,7 +1184,7 @@ class Api:
     @safe
     def materials_download(self, resource_ids: list[str]) -> dict[str, Any]:
         """Download materials (and index their text) one after another in the background."""
-        ids = [str(i) for i in resource_ids or []]
+        ids = list(dict.fromkeys(str(i) for i in resource_ids or []))     # (a file of two weeks is asked for once)
         with self._mat_lock:
             fresh = [i for i in ids if i not in self._mat_queue]
             self._mat_queue.extend(fresh)
@@ -1223,8 +1263,11 @@ class Api:
     @safe
     def material_open(self, resource_id: str, reveal_only: bool = False) -> dict[str, Any]:
         m = self._s.lib.get_material(resource_id)
-        if not m or not m.get("local_path") or not Path(m["local_path"]).is_file():
-            return {"ok": False, "error": t("Download it first.")}
+        if m and m.get("local_path") and not Path(m["local_path"]).is_file():       # deleted or moved in Explorer
+            return {"ok": False, "missing": True,
+                    "error": t("This file is no longer in its folder (moved or deleted). Download it again.")}
+        if not m or not m.get("local_path"):
+            return {"ok": False, "missing": True, "error": t("Download it first.")}
         (reveal if reveal_only else open_path)(m["local_path"])
         return {"ok": True}
 
@@ -1300,8 +1343,12 @@ class Api:
 
     @safe
     def open_url(self, url: str) -> dict[str, Any]:
-        if url.startswith(("https://", "http://")):
-            open_in_browser(url)
+        """A link in the browser. When no browser could be started, the link is copied for pasting by hand."""
+        if url.startswith(("https://", "http://")) and open_in_browser(url) is False:
+            copied = set_clipboard(url)
+            return {"ok": False, "copied": copied, "error": t("No browser could be opened on this PC. The link was "
+                    "copied: paste it into your browser's address bar.") if copied else
+                    t("No browser could be opened on this PC. Set a default browser in Windows' settings and try again.")}
         return {"ok": True}
 
     @safe

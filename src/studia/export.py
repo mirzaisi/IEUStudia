@@ -190,7 +190,12 @@ def build_ai_pack(output_root: Path, course: Course, all_courses: Sequence[Cours
                 shutil.copy2(stage / "pack.pdf", pdf_path)
             except PermissionError as exc:
                 raise PermissionError(exc.errno, exc.strerror, str(pdf_path)) from exc
+        else:                                   # an earlier export's PDF is not this one's (it may lack parts)
+            try:
+                pdf_path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("The earlier AI pack PDF could not be removed", exc_info=True)
     out = {"zip": zip_path, "folder": dest}
-    if pdf_path.exists():
+    if pdf_ok:                                  # no "pdf": the page says the PDF couldn't be made
         out["pdf"] = pdf_path
     return out

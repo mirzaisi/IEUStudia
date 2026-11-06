@@ -51,6 +51,16 @@ def test_own_section_newest_first_and_skips(tmp_path):
     assert course_needs(lib, s, ["a"], busy={"a2"})[0].lectures[0][0] == "a1"   # already queued: not twice
 
 
+def test_a_material_replaced_on_ieulearn_is_downloaded_again(tmp_path):
+    lib = _lib(tmp_path)
+    lib.merge_units("a", [Unit("u1", 0, "Hafta 1", dt.date(2026, 10, 5), dt.date(2026, 10, 11), "",
+                               [Resource("m1", "Week01", "Week01.pdf", "pdf", "pdf", "u", "d"),
+                                Resource("m2", "Week01b v2", "Week01b.pdf", "pdf", "pdf", "u2", "d")])], first_sync=False)
+    assert course_needs(lib, Settings(), ["a"])[0].materials == ["m1", "m2"]     # the old copy is out of date
+    lib.set_material_file("m2", str(tmp_path / "w.pdf"), 5, "u2")
+    assert course_needs(lib, Settings(), ["a"])[0].materials == ["m1"]
+
+
 def test_lectures_without_sound_are_not_queued_by_a_batch_again(tmp_path):
     lib = _lib(tmp_path)
     s = Settings(min_duration_s=300)
@@ -145,6 +155,27 @@ def test_the_sync_dialog_asks_for_the_section_and_uses_the_answer(isolated_home)
         assert api.catch_up(["b"], False, include)["ok"] and done.wait(10)
         assert asked[-1] == queued and events[-1]["phase"] == "done"
         assert events[-1]["unknown"] == (0 if include else 1) and events[-1]["waiting"] == []
+
+
+def test_a_full_sync_started_during_another_sync_uses_that_sync_s_real_result(isolated_home):
+    import threading
+    import time
+
+    api, asked = _api_with_two_sections(isolated_home)
+    api.set_course_prefs("b", {"my_section": "3", "show_mode": "mine"})
+    for worked, phase in ((False, "error"), (True, "done")):
+        done, started, events = threading.Event(), threading.Event(), []
+        api._push = lambda evt: (events.append(evt), evt.get("phase") == "sync" and started.set(),
+                                 evt.get("type") == "catchup" and evt.get("phase") in ("done", "error") and done.set())
+        api._run_sync = lambda quiet=False: (api._sync_lock.release(), False)[1]   # (not used: the other sync runs)
+        assert api._sync_lock.acquire(blocking=False)          # the half-hourly sync (or F5's) is running
+        assert api.catch_up(["b"], False)["ok"] and started.wait(10)
+        time.sleep(0.3)                                       # the full sync waits for it
+        api._last_sync_ok = worked                            # … and that sync ends
+        api._sync_lock.release()
+        assert done.wait(10) and events[-1]["phase"] == phase
+        if not worked:
+            assert events[-1]["message"] == "The sync failed, so nothing was queued."
 
 
 def test_a_chat_or_plan_batch_queues_only_your_section_but_a_day_you_ask_for_runs(isolated_home):

@@ -18,6 +18,37 @@ def test_settings_roundtrip_and_tolerance():
     assert s2.theme == "dark" and s2.prefs("19226").my_section == "1" and s2.parallel_downloads == 4
 
 
+def test_unreadable_settings_are_kept_aside_not_written_over():
+    from studia import config
+
+    s = apply_patch(load_settings(), {"course_prefs": {"19226": {"my_section": "3"}}})
+    save_settings(s)
+    good = settings_path().read_bytes()
+    settings_path().write_bytes(b"\0" * len(good))               # a power cut kept the rename but not the data
+    s = load_settings()
+    assert config.unreadable() and s.prefs("19226").my_section is None     # the defaults, and the app says so
+    save_settings(apply_patch(s, {"theme": "dark"}))
+    (aside,) = settings_path().parent.glob("settings.json.unreadable-*")
+    assert aside.read_bytes() == b"\0" * len(good)                # kept as it was
+    assert load_settings().theme == "dark" and not config.unreadable()
+
+
+def test_the_app_says_when_it_started_with_default_settings(isolated_home):
+    from studia.api import Api
+    from studia.services import Services
+
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text("{\"theme\": \"da", encoding="utf-8")
+    svc = Services()
+    try:
+        api = Api(svc)
+        (note,) = api.get_bootstrap()["notes"]
+        assert "couldn't read your settings" in note and str(settings_path().parent) in note
+        assert api.get_bootstrap()["notes"] == []                 # told once, not again at a reload (F5)
+    finally:
+        svc.shutdown()
+
+
 def test_dpapi_secrets_roundtrip():
     secrets_store.set_credentials("student", "pässwörd!")
     secrets_store.save_cookies([{"name": "PHPSESSID", "value": "v", "domain": "learn.ieu.edu.tr", "path": "/"}])
@@ -28,6 +59,29 @@ def test_dpapi_secrets_roundtrip():
     assert secrets_store.get_credentials() is None
     secrets_path().write_bytes(b"garbage")
     assert secrets_store.load_cookies() == []                     # corrupt file -> empty, no crash
+
+
+def test_a_secrets_file_that_cant_be_read_is_never_written_over(monkeypatch):
+    import pytest
+
+    secrets_store.set_credentials("student", "pw")
+    stored = secrets_path().read_bytes()
+    real = secrets_store.unprotect
+
+    def blocked(data):                                             # a read blocked for a moment (antivirus, say)
+        raise OSError(5, "Access is denied")
+    monkeypatch.setattr(secrets_store, "unprotect", blocked)
+    with pytest.raises(OSError):                                   # the sync logs it and tries again later
+        secrets_store.save_cookies([{"name": "PHPSESSID", "value": "v", "domain": "learn.ieu.edu.tr", "path": "/"}])
+    secrets_store.mark_rejected("pw")
+    assert secrets_path().read_bytes() == stored                   # the username and password are still there
+    monkeypatch.setattr(secrets_store, "unprotect", real)
+    assert secrets_store.get_credentials() == ("student", "pw")
+    monkeypatch.setattr(secrets_store, "unprotect", blocked)
+    secrets_store.set_credentials("student", "new")                # signing in again: the old file is kept aside
+    assert secrets_path().with_name("secrets.bin.unreadable").read_bytes() == stored
+    monkeypatch.setattr(secrets_store, "unprotect", real)
+    assert secrets_store.get_credentials() == ("student", "new")
 
 
 def test_can_resume_needs_a_password_or_session(tmp_path):

@@ -4,8 +4,10 @@ their errors, signing out. No network: requests are answered by a fake session; 
 
 import base64
 import hashlib
+import http.client
 import json
 import random
+import socket
 import threading
 import time
 import urllib.parse
@@ -160,9 +162,24 @@ def openai(monkeypatch):
     chatgpt.cancel_sign_in()
 
 
+def _follow(link):
+    """What a browser does with IEUStudia's own link: asks for it, and is sent on (302) to OpenAI's sign-in page."""
+    u = urllib.parse.urlsplit(link)
+    conn = http.client.HTTPConnection(u.hostname, u.port, timeout=5)
+    try:
+        conn.request("GET", u.path)
+        r = conn.getresponse()
+        return r.status, r.getheader("Location") or ""
+    finally:
+        conn.close()
+
+
 def _browser(fake, params=None, *, wrong_state=False):
-    """A browser that signs in at once and follows the redirect to IEUStudia's loopback callback."""
-    def open_url(url):
+    """A browser that opens IEUStudia's link, signs in at once and follows the redirect to the loopback callback."""
+    def open_url(link):
+        assert link.startswith("http://127.0.0.1:") and link.endswith(chatgpt.START)
+        status, url = _follow(link)
+        assert status == 302 and url.startswith(chatgpt.AUTHORIZE_URL)
         q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
         fake.nonce, fake.authorize = q["nonce"], q
 
@@ -179,7 +196,8 @@ def _browser(fake, params=None, *, wrong_state=False):
 
 def _sign_in(fake, **kw):
     events, done = [], threading.Event()
-    chatgpt.start_sign_in(lambda e: (events.append(e), done.set()), open_browser=_browser(fake, **kw.pop("browser", {})), **kw)
+    chatgpt.start_sign_in(lambda e: (events.append(e), e["state"] != "waiting" and done.set()),
+                          open_browser=_browser(fake, **kw.pop("browser", {})), **kw)
     assert done.wait(10), "no outcome"
     return events[-1]
 
@@ -222,6 +240,96 @@ def test_a_callback_with_another_state_is_refused(openai, monkeypatch):
     e = _sign_in(openai, browser={"wrong_state": True})
     assert e["state"] == "error" and "in time" in e["error"]
     assert not any(c[0] == "POST" for c in openai.calls)                        # no code exchanged
+
+
+def _wait_for(cond, s=5.0):
+    end = time.monotonic() + s
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_the_page_goes_through_ieustudias_own_link_so_its_opening_is_noticed(openai):
+    events, links = [], []
+    r = chatgpt.start_sign_in(events.append, open_browser=lambda link: links.append(link) or True)
+    assert r["state"] == "waiting" and r["launched"] and r["link"] == links[0]
+    port = urllib.parse.urlsplit(r["link"]).port
+    si = chatgpt.status()["sign_in"]
+    assert si == {"state": "waiting", "error": "", "link": r["link"], "page": r["page"], "opened": False, "launched": True}
+    assert r["page"].startswith(chatgpt.AUTHORIZE_URL)      # to copy by hand: straight to OpenAI
+    status, url = _follow(r["link"])
+    assert status == 302 and url == r["page"]
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+    assert q["redirect_uri"] == f"http://127.0.0.1:{port}{chatgpt.CALLBACK}" and q["state"]
+    assert chatgpt.status()["sign_in"]["opened"]
+    assert events == [{"type": "chatgpt", "state": "waiting", "opened": True, "error": "", "email": ""}]
+    _follow(r["link"])                                       # opened again: said once
+    assert len(events) == 1
+    chatgpt.cancel_sign_in()
+    assert chatgpt.status()["sign_in"] == {"state": "", "error": "", "opened": True, "launched": True}
+    assert events == [events[0]]                             # stopping says nothing more
+
+
+def test_no_browser_is_said_and_the_page_can_be_opened_again_or_stopped(openai):
+    def broken(link):
+        raise OSError("No application is associated with the specified file for this operation")
+
+    r = chatgpt.start_sign_in(open_browser=broken)
+    assert r["state"] == "waiting" and r["launched"] is False
+    assert chatgpt.status()["sign_in"]["launched"] is False
+    assert chatgpt.start_sign_in(open_browser=lambda link: False)["launched"] is False
+    again = []
+    r2 = chatgpt.reopen_sign_in(open_browser=lambda link: again.append(link) or True)
+    si = chatgpt.status()["sign_in"]
+    assert r2 == {"state": "waiting", "link": si["link"], "page": si["page"], "launched": True} and again == [r2["link"]]
+    assert _follow(r2["link"])[0] == 302                     # the same sign-in: OpenAI still comes back to it
+    chatgpt.cancel_sign_in()
+    assert "link" not in chatgpt.status()["sign_in"] and "page" not in chatgpt.status()["sign_in"]
+    assert chatgpt.reopen_sign_in(open_browser=lambda link: pytest.fail("nothing to open")) == {"state": ""}
+
+
+def test_a_page_that_never_opened_says_so_when_time_runs_out(openai, monkeypatch):
+    monkeypatch.setattr(chatgpt, "SIGN_IN_TIMEOUT_S", 1.0)
+    for open_it, said in ((False, "never opened in a browser"), (True, "not completed in time")):
+        events, done = [], threading.Event()
+        r = chatgpt.start_sign_in(lambda e: (events.append(e), e["state"] != "waiting" and done.set()),
+                                  open_browser=lambda link: True)
+        if open_it:
+            _follow(r["link"])
+        assert done.wait(10)
+        assert events[-1]["state"] == "error" and said in events[-1]["error"]
+        assert chatgpt.status()["sign_in"]["state"] == "error" and "link" not in chatgpt.status()["sign_in"]
+
+
+def test_a_connection_the_browser_never_uses_holds_nothing_up(openai):
+    ahead = []
+
+    def browser(link):
+        u = urllib.parse.urlsplit(link)
+        ahead.append(socket.create_connection((u.hostname, u.port), timeout=5))   # opened ahead, never used
+        return _browser(openai)(link)
+
+    events, done = [], threading.Event()
+    chatgpt.start_sign_in(lambda e: (events.append(e), e["state"] != "waiting" and done.set()), open_browser=browser)
+    try:
+        assert done.wait(10), "the unused connection held the sign-in up"
+        assert events[-1]["state"] == "done"
+    finally:
+        for s_ in ahead:
+            s_.close()
+
+
+def test_listening_refused_by_security_software_is_said(openai, monkeypatch):
+    def refused(*a, **kw):
+        raise PermissionError(10013, "An attempt was made to access a socket in a way forbidden by its access permissions")
+
+    monkeypatch.setattr(chatgpt.http.server, "ThreadingHTTPServer", refused)
+    with pytest.raises(RuntimeError, match="security program"):
+        chatgpt.start_sign_in(open_browser=lambda link: pytest.fail("no page without a way back"))
+    si = chatgpt.status()["sign_in"]
+    assert si["state"] == "error" and "security program" in si["error"] and "link" not in si
 
 
 def test_signed_in_without_plan_use_is_said(openai):

@@ -182,10 +182,20 @@
     const waiting = si.state === "waiting" || (U.busy["login:chatgpt"] && !a.signed_in && si.state !== "error");
     const noPlanUse = a.signed_in && !a.plan_allowed;
     const notEligible = test.ok === false && test.code === "plan_not_eligible";
+    // while it waits: whether the page really opened in a browser (it goes through IEUStudia's own link first), and a
+    // way out: the page again, its link to paste by hand, or stop
+    const since = U.busy["login:chatgpt"], slow = !since || Date.now() - since > 15000;
+    const waitText = si.opened ? t("Finish on the sign-in page in your browser (look in the taskbar if it isn't in front). This list notices when you're done.")
+      : si.launched === false ? t("No browser could be opened on this PC. Click Copy link and paste it into your browser's address bar.")
+      : slow ? t("Your browser hasn't shown the sign-in page yet. It may be behind this window; or click Copy link and paste it into your browser's address bar.")
+      : t("Finish on the page that opened in your browser. This list notices when you're done.");
+    const waitBtns = `<div class="cn-wait"><button class="btn sm" data-act="ai-login-again">${I("external", "sm")} ${t("Open the page again")}</button>
+      ${si.page ? `<button class="btn ghost sm" data-act="ai-copy" data-text="${esc(si.page)}">${I("copy", "sm")} ${t("Copy link")}</button>` : ""}
+      <button class="btn ghost sm" data-act="ai-login-cancel">${t("Cancel")}</button></div>`;
     return [
       { id: "signin", ok: ready, title: t("Continue with ChatGPT"), okText: a.email ? t.html("Signed in as {email}", { email: a.email }) : t("Signed in"),
         text: t("Opens OpenAI's sign-in page in your browser. Sign in, then allow IEUStudia to use your ChatGPT plan."),
-        busy: waiting && !noPlanUse ? t("Finish on the page that opened in your browser. This list notices when you're done.") : "",
+        busy: waiting ? waitText : "", busyMore: si.state === "waiting" ? waitBtns : "",
         error: si.state === "error" ? esc(si.error) : noPlanUse ? t("You're signed in, but IEUStudia may not use your ChatGPT plan yet. Click Allow it and accept on OpenAI's page.") : "",
         btn: noPlanUse ? `<button class="btn sm" data-act="ai-login" data-id="chatgpt" data-consent="1">${t("Allow it")}</button>`
           : `<button class="btn sm" data-act="ai-login" data-id="chatgpt">${t("Continue with ChatGPT")}</button>` },
@@ -237,7 +247,7 @@
       const detail = st === "ok" ? s.okText : st === "busy" ? esc(s.busy) : st === "err" ? s.error : st === "unknown" ? s.unknown : s.text;
       const btn = (st === "now" || st === "err") && s.btn ? s.btn : "";
       return `<div class="cn-step ${st}"><span class="cn-ico">${ico}</span><div class="grow"><b>${s.title}</b><div class="d">${detail}</div>
-        ${st === "now" && s.hint ? `<div class="d dim">${esc(s.hint)}</div>` : ""}</div>${btn}</div>`;
+        ${st === "now" && s.hint ? `<div class="d dim">${esc(s.hint)}</div>` : ""}${st === "busy" && s.busyMore ? s.busyMore : ""}</div>${btn}</div>`;
     }).join("");
     const ready = steps.every((s) => s.ok);
     return `<p class="cn-intro">${v.intro}</p><div class="cn-steps">${rows}</div>
@@ -421,6 +431,11 @@
   };
   // "Continue with ChatGPT" finished in the browser (chatgpt.py)
   St.onEvents.chatgpt = (e) => {
+    if (e.state === "waiting") {                   // the sign-in page opened in a browser: still waiting for it
+      if (U.ai && U.ai.chatgpt) U.ai.chatgpt.sign_in = { ...(U.ai.chatgpt.sign_in || {}), opened: true };
+      rerenderAi();
+      return;
+    }
     delete U.busy["login:chatgpt"];
     if (e.state === "error") toast(e.error, "error");
     if (U.ai && U.ai.chatgpt) U.ai.chatgpt.sign_in = { state: e.state, error: e.error || "" };
@@ -437,16 +452,35 @@
       pollAi(true); rerenderAi();
     },
     "ai-login": async (el) => {
-      const key = el.dataset.id;
+      const key = el.dataset.id, at = Date.now();
+      U.busy["login:" + key] = at; U.autoTested[key] = false;        // at once: opening the browser can take a moment
+      rerenderAi();
       const r = await call("ai_login", key, !!el.dataset.consent);
-      if (!r.ok) { toast(r.error, "error"); return; }
-      U.busy["login:" + key] = Date.now(); U.autoTested[key] = false;
+      if (!r.ok) { if (U.busy["login:" + key] === at) delete U.busy["login:" + key]; toast(r.error, "error"); rerenderAi(); return; }
       if (U.ai && U.ai[key]) {
         delete U.ai[key].test;
-        if (key === "chatgpt") U.ai.chatgpt.sign_in = { state: "waiting", error: "" };
+        if (key === "chatgpt") U.ai.chatgpt.sign_in = { state: "waiting", error: "", link: r.link || "", page: r.page || "", launched: r.launched !== false, opened: false };
       }
-      setTimeout(() => { if (U.busy["login:" + key]) { delete U.busy["login:" + key]; rerenderAi(); } }, 10 * 60000);
+      setTimeout(() => { if (U.busy["login:" + key] === at) { delete U.busy["login:" + key]; rerenderAi(); } }, 10 * 60000);
+      if (key === "chatgpt") setTimeout(() => {      // no page yet: say what to do
+        const si = (U.ai && U.ai.chatgpt && U.ai.chatgpt.sign_in) || {};
+        if (U.busy["login:chatgpt"] === at && si.state === "waiting" && !si.opened) rerenderAi();
+      }, 15500);
       pollAi(true); rerenderAi();
+    },
+    "ai-login-again": async () => {
+      const r = await call("ai_login_again");
+      if (!r.ok) { toast(r.error, "error"); return; }
+      if (r.state !== "waiting") { delete U.busy["login:chatgpt"]; loadAi("chatgpt"); rerenderAi(); return; }   // it ended meanwhile
+      if (U.ai && U.ai.chatgpt) U.ai.chatgpt.sign_in = { ...(U.ai.chatgpt.sign_in || {}), state: "waiting", link: r.link || "", page: r.page || "", launched: r.launched !== false };
+      if (r.launched === false) toast(t("No browser could be opened on this PC. Click Copy link and paste it into your browser's address bar."), "error");
+      rerenderAi();
+    },
+    "ai-login-cancel": async () => {
+      await call("ai_login_cancel");
+      delete U.busy["login:chatgpt"];
+      if (U.ai && U.ai.chatgpt) U.ai.chatgpt.sign_in = {};
+      loadAi("chatgpt"); rerenderAi();
     },
     "ai-signout": async (el) => {
       if (!confirm(t("Sign out of ChatGPT in IEUStudia? OpenAI ends the session; you can sign in again any time."))) return;
@@ -676,13 +710,18 @@
     return { ok: true, job: { state: "running", line: "Starting…", error: "" } };
   };
   St.mocks.ai_login = (which) => {
-    if (which === "chatgpt") {          // "Continue with ChatGPT": the browser comes back after a while
-      setTimeout(() => { M.login.chatgpt = true; window.__lsEvent({ type: "chatgpt", state: "done", error: "", email: "student@example.com" }); }, 2500);
-      return { ok: true, state: "waiting" };
+    if (which === "chatgpt") {          // "Continue with ChatGPT": the browser opens the page, then comes back after a while
+      const link = "http://127.0.0.1:52817/sign-in", page = "https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client";
+      if (location.hash.includes("nobrowser")) return { ok: true, state: "waiting", link, page, launched: false };    // a PC where nothing opens
+      setTimeout(() => window.__lsEvent({ type: "chatgpt", state: "waiting", opened: true, error: "", email: "" }), 800);
+      M.signIn = setTimeout(() => { M.login.chatgpt = true; window.__lsEvent({ type: "chatgpt", state: "done", error: "", email: "student@example.com" }); }, 2500);
+      return { ok: true, state: "waiting", link, page, launched: true };
     }
     setTimeout(() => { M.login[which] = true; }, 3000);
     return { ok: true };
   };
+  St.mocks.ai_login_again = () => ({ ok: true, state: "waiting", link: "http://127.0.0.1:52817/sign-in", page: "https://auth.openai.com/api/accounts/authorize?client_id=dynamic_agent_client", launched: !location.hash.includes("nobrowser") });
+  St.mocks.ai_login_cancel = () => { clearTimeout(M.signIn); return { ok: true }; };
   St.mocks.ai_sign_out = () => { M.login.chatgpt = false; delete M.test.chatgpt; return { ok: true, revoked: true }; };
   St.mocks.ai_test = (which) => new Promise((res) => setTimeout(() => { M.test[which] = { ok: true, seconds: 3.4, error: "", at: Date.now() / 1000 }; res({ ok: true, test: M.test[which] }); }, 1500));
   St.mocks.setup_plan = (speech, llm) => {

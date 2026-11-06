@@ -16,6 +16,7 @@ from studia.config import Settings
 from studia.coursesite import Announcement, Resource, Unit
 from studia.domain import Course, Recording
 from studia.library import Library
+from studia.net import NetworkError
 
 H = 1800.0                                   # the default interval: 30 minutes
 
@@ -257,24 +258,40 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
         def has_credentials(self):
             return True
 
-        def sync(self, full_every=None, dashboard=True):
+        def sync(self, full_every=None, dashboard=True, partial=lambda ids: None):
             assert full_every == self.HELPER_PANOPTO_EVERY          # the helper probes Panopto's folders
             assert dashboard is False                               # ... and reads the small course list
+            if found.get("fail"):                                   # merged, then IEULearn failed (sync.sync says)
+                partial(found["rec"])
+                raise found["fail"]
             return types.SimpleNamespace(new_ids=found["rec"])
 
         def sync_content(self, progress=None, units_every=None):
+            if found.get("content_fails"):
+                raise RuntimeError("500")
             return {"new_announcements": found["ann"], "new_materials": found["mat"]}
 
     monkeypatch.setattr(sync, "SyncService", FakeSync)
     monkeypatch.setattr(calendar_export, "assessment_events", lambda lib, settings: [])
     saved = []
     monkeypatch.setattr(agent, "_save_seen", saved.append)
-    h = types.SimpleNamespace(cfg=appconfig.load(), paused=False, told_rejected=False, last="",
+    h = types.SimpleNamespace(cfg=appconfig.load(), paused=False, told_rejected=False, last="", untold=[],
                               tray=types.SimpleNamespace(set_tooltip=lambda t: None, notify=lambda *a: None))
     assert agent.Helper._check(h) is False and saved == []                    # nothing new: notified.json stays
     found["ann"] = ["x1"]
     agent.Helper._check(h)
     assert saved and saved[-1]["ann"] == ["x1"]
+
+    told = []
+    monkeypatch.setattr(agent, "summarize", lambda lib, settings, cfg, recs, *rest: told.append(recs))
+    found.update(ann=[], rec=["r1"], fail=NetworkError("IEULearn isn't responding right now."))
+    agent.Helper._check(h)                               # r1 was merged before IEULearn failed: kept, not lost
+    found.update(rec=["r2"], fail=None, content_fails=True)
+    agent.Helper._check(h)                               # the course content failed: the recordings wait too
+    assert told == []
+    found.update(rec=[], content_fails=False)
+    agent.Helper._check(h)
+    assert told == [["r1", "r2"]] and h.untold == []
 
 
 # ----------------------------------------------------------------------------- the reminders' plan

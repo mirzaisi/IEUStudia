@@ -173,6 +173,30 @@ def _close(s):
     s.lib.close()
 
 
+@pytest.mark.parametrize("app_open", [True, False])
+def test_the_command_line_leaves_the_open_apps_queue_and_plans_alone(monkeypatch, app_open):
+    import datetime as dt
+
+    from studia.domain import Recording
+
+    lib = Library(paths.db_path())
+    lib.upsert_courses([Course(id="c", title="t", code="MATH 240", name="P")])
+    lib.merge_recordings("c", [Recording(delivery_id="r1", course_id="c", folder_id="f", folder_path="", name="r1",
+                                         start=dt.datetime(2026, 10, 13, 11), duration_s=2400, viewer_url="u")],
+                         first_sync=True)
+    lib.set_status("r1", "transcribing")
+    lib.create_plan("p1", "c", {"kind": "prep"})
+    lib.update_plan("p1", status="running")
+    lib.close()
+    monkeypatch.setattr(services, "_app_open", lambda: app_open)
+    s = Services(migrate_output=False)                    # `studia list` while the app is (or isn't) open
+    try:
+        assert s.lib.get_recording("r1").status == ("transcribing" if app_open else "available")
+        assert s.lib.plan("p1")["status"] == ("running" if app_open else "paused")
+    finally:
+        _close(s)
+
+
 @pytest.mark.parametrize("old_name", ["Studia", "LectureScribe"])
 def test_output_folder_is_renamed_and_the_stored_paths_follow(tmp_path, monkeypatch, old_name):
     _real_mode(tmp_path, monkeypatch)

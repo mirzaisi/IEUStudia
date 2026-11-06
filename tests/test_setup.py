@@ -25,6 +25,26 @@ def _facts(**over):
     return f
 
 
+def test_removing_a_speech_model_found_only_in_the_shared_cache_says_why_it_stays(tmp_path, monkeypatch):
+    from studia.engine import models
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
+    snap = tmp_path / "hf" / "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo" / "snapshots" / "abc"
+    snap.mkdir(parents=True)
+    for name in ("model.bin", "config.json", "tokenizer.json"):
+        (snap / name).write_bytes(b"x")
+    assert models.model_is_downloaded("large-v3-turbo")              # Settings → Storage lists it
+    with pytest.raises(RuntimeError, match="shared Hugging Face cache") as err:
+        models.delete_model("large-v3-turbo")
+    assert str(snap.parents[1]) in str(err.value) and (snap / "model.bin").is_file()     # left there, and said so
+    own = models._models_root() / "large-v3-turbo"                     # IEUStudia's own copy is removed as before
+    own.mkdir()
+    for name in ("model.bin", "config.json", "tokenizer.json", ".complete"):
+        (own / name).write_bytes(b"x")
+    models.delete_model("large-v3-turbo")
+    assert not own.exists()
+
+
 def test_hardware_verdicts():
     good = hardware.assess(_facts())
     assert good["ok"] and good["gpu"] and good["recommended_model"] == "large-v3-turbo" and good["recommended_llm"] == "qwen3-4b"

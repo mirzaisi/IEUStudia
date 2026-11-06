@@ -222,6 +222,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
     """Everything about one course, organised by week: topics (EN/TR), readings, materials, lecture days, when the
     course meets in each week, and what the lecturer said about quizzes, exams, projects and homework (``alerts``)."""
     from .alerts import course_alerts
+    from .chatslides import _UNIT_WEEKS, title_weeks
     from .materials import unit_week, week_of, week_starts
 
     course = lib.get_course(course_id)
@@ -271,6 +272,10 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         w["units"].append(item)
         if not w["readings"] and u.get("readings"):
             w["readings"] = u["readings"]
+        if not u.get("start_date") and _UNIT_WEEKS.search(u["title"] or ""):     # "Hafta 6 ve 7": week 7's too
+            for extra in title_weeks(u["title"]):
+                if extra != n:
+                    week(extra)["units"].append(item)
     known_units = {u["unit_id"] for u in units}
     stray = [m for uid, ms in mats.items() if uid not in known_units for m in ms]
     if stray:          # downloaded files of a week that left the plan: still on your PC, so still listed

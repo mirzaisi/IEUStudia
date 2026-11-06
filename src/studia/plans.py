@@ -296,9 +296,13 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         out += [f"  [{a['category']}] {a['text'][:300]}" for a in keys[:12]]
     used, missing, budget = [], [], PACK_CHARS - sum(len(x) + 1 for x in out)
     mat_budget = int(budget * 0.62)
+    seen: set[str] = set()                  # a unit for two weeks ("Hafta 6 ve 7") is in both: its files once
     for w in weeks:
         for u in w["units"]:
             for m in u["materials"]:
+                if m["id"] in seen:
+                    continue
+                seen.add(m["id"])
                 if not m["downloaded"] or m["text"] != "done":
                     missing.append({"id": m["id"], "title": m["title"], "week": w["no"]})
                     continue
@@ -1174,7 +1178,8 @@ class PlanRunner:
         self._queue: list[str] = []
         self._cancel: dict[str, threading.Event] = {}
         self._worker: Optional[threading.Thread] = None
-        services.lib.pause_running_plans()
+        if not getattr(services, "beside_app", False):      # (a command line next to the open app: its plans run)
+            services.lib.pause_running_plans()
 
     # ---- public
     def create(self, course_id: str, scope: dict[str, Any], parent_id: str = "") -> str:
@@ -1321,7 +1326,7 @@ class PlanRunner:
         facts = data["gather"]
         check()
         if scope.kind == "prep":
-            self._write_prep(plan, scope, facts, model, cancel, add_usage, save)
+            self._write_prep(plan, scope, facts, model, cancel, add_usage, save, data)
             return
         # concepts
         if "concepts" not in data:
@@ -1573,7 +1578,7 @@ class PlanRunner:
         result["days_left_out"] = len(facts.get("days_left_out", []))
         result["materials_used"] = len(facts.get("materials_used", []))
         try:
-            result["file"] = str(self._write_markdown(plan, result, facts, scope))
+            result["file"] = str(self._write_markdown(plan, result, facts, scope, data, save))
         except OSError:
             log.warning("Could not write the plan file", exc_info=True)
         save(result=result, title=result["title"], status="done", stage="done", progress=1.0,
@@ -1602,7 +1607,8 @@ class PlanRunner:
         return out
 
     def _write_prep(self, plan: dict[str, Any], scope: Scope, facts: dict[str, Any], model: str,
-                    cancel: threading.Event, add_usage: Callable[[str, dict], None], save: Callable[..., None]) -> None:
+                    cancel: threading.Event, add_usage: Callable[[str, dict], None], save: Callable[..., None],
+                    data: Optional[dict[str, Any]] = None) -> None:
         """An exam review sheet: one request that writes a Markdown sheet from the gathered material."""
         from .ai import one_shot
 
@@ -1634,27 +1640,37 @@ class PlanRunner:
                   "days_left_out": len(facts.get("days_left_out", []))}
         try:
             result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
-                                                  f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Review sheets"))
+                                                  f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Review sheets",
+                                                  data, save))
         except OSError:
             log.warning("Could not write the review sheet file", exc_info=True)
         save(result=result, title=title, status="done", stage="done", progress=1.0, message=t("Review sheet ready"))
 
-    def _write_file(self, plan: dict[str, Any], title: str, text: str, sub: str) -> Path:
+    def _write_file(self, plan: dict[str, Any], title: str, text: str, sub: str,
+                    data: Optional[dict[str, Any]] = None, save: Callable[[], None] = lambda: None) -> Path:
+        """<course>/<sub>/<date> - <title>.md: a name of its own (studypack.file_stem: " (2)" when another plan's file
+        has it), kept in ``data`` and saved before the file is written, so writing again keeps it."""
         from .outputs.mathmd import dollar_math
-        from .outputs.writer import course_dir, safe_name
+        from .outputs.writer import course_dir
+        from .studypack import file_stem
 
         course = self._s.lib.get_course(plan["course_id"])
         folder = course_dir(self._s.output_root, course, self._s.lib.courses(True)) / sub
         folder.mkdir(parents=True, exist_ok=True)
-        stamp = (plan.get("created_at") or dt.datetime.now().isoformat())[:10]
-        path = folder / (safe_name(f"{stamp} - {title}", 117) + ".md")        # a long title keeps its .md
+        data = {} if data is None else data
+        if not data.get("stem"):
+            file_stem(plan, title, folder, (".md",), data)          # a long title keeps its .md
+            save()
+        path = folder / (data["stem"] + ".md")
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_bytes(dollar_math(text).encode("utf-8"))
         tmp.replace(path)
         return path
 
-    def _write_markdown(self, plan: dict[str, Any], result: dict[str, Any], facts: dict[str, Any], scope: Scope) -> Path:
-        return self._write_file(plan, result["title"], plan_markdown(result, facts["course"], scope), "Study plans")
+    def _write_markdown(self, plan: dict[str, Any], result: dict[str, Any], facts: dict[str, Any], scope: Scope,
+                        data: Optional[dict[str, Any]] = None, save: Callable[[], None] = lambda: None) -> Path:
+        return self._write_file(plan, result["title"], plan_markdown(result, facts["course"], scope), "Study plans",
+                                data, save)
 
 
 def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> dict[str, Any]:

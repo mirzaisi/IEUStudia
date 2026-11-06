@@ -207,6 +207,22 @@ def test_an_edited_announcement_brings_its_new_text(tmp_path):
     assert [(e["name"], e["week"]) for e in course_alerts(lib, "c")["plan"]] == [("Quiz 2", 5)]
 
 
+def test_an_announcement_whose_title_was_edited_stays_one_announcement(tmp_path):
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c1", title="t", code="MATH 240", name="P"),
+                        Course(id="c2", title="t", code="MATH 250", name="L")])
+    when = dt.datetime(2026, 10, 1, 9)
+    hw = Announcement("h", "Homework 1", "Dr X", when, "Due Friday")      # another post in the same minute
+    for cid in ("c1", "c2"):
+        assert lib.merge_announcements(cid, [Announcement("a1", "Quiz 2 on Thursady", "Dr X", when, "Room 301"), hw],
+                                       first_sync=False) == (["a1", "h"] if cid == "c1" else [])
+    for _ in range(2):                                  # (and the syncs after that: still the one kept)
+        for cid in ("c1", "c2"):                        # the title corrected a minute later: a new id from its title
+            assert lib.merge_announcements(cid, [Announcement("a2", "Quiz 2 on Thursday", "Dr X", when, "Room 301"),
+                                                 hw], first_sync=False) == []
+            assert sorted(a["title"] for a in lib.announcements(cid)) == ["Homework 1", "Quiz 2 on Thursday"]
+
+
 def test_the_same_post_in_two_courses_is_kept_in_both(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c1", title="t", code="MATH 240", name="P"),
@@ -275,6 +291,46 @@ def test_numbered_units_and_the_term_calendar(tmp_path):
     w3 = next(w for w in d["weeks"] if w["no"] == 3)
     assert w3["start"] == "2026-10-05" and [u["title"] for u in w3["units"]] == ["Konu 3"] and len(w3["days"]) == 1
     assert d["alerts"]["items"] == [] and d["alerts"]["plan"] == []
+
+
+def test_a_unit_for_two_weeks_shows_its_files_in_both(tmp_path):
+    """EEE 215's undated "Hafta 6 ve 7 Capacitive and Inductive circuits": its files are week 7's too (the current
+    week said "No files for this week"), the weekly digest offers them, and a plan over both weeks reads them once."""
+    from studia.digest import weekly_digest
+    from studia.plans import Scope, gather
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="e", title="2026-1 EEE 215 X 1", code="EEE 215", name="Circuits", term="T")])
+    first = dt.date(2026, 9, 21)
+    files = [Resource(f"r{i}", f"Slides {i}", f"Slides{i}.pdf", "pdf", "pdf", "u", "d") for i in (1, 2, 3)]
+    lib.merge_units("e", [Unit(f"u{n}", n, f"Hafta {n}", first + dt.timedelta(weeks=n - 1),
+                               first + dt.timedelta(weeks=n - 1, days=6)) for n in range(1, 6)]
+                    + [Unit("u67", 6, "Hafta 6 ve 7 Capacitive and Inductive circuits", resources=files),
+                       Unit("k8", 8, "Konu 8 and 9 review")], first_sync=True)
+    now = dt.datetime(2026, 11, 6, 12, 0)
+    d = course_detail(lib, Settings(), "e", now=now)
+    weeks = {w["no"]: w for w in d["weeks"]}
+    for n in (6, 7):
+        assert [m["id"] for u in weeks[n]["units"] for m in u["materials"]] == ["r1", "r2", "r3"]
+    assert weeks[7]["current"]
+    assert [u["title"] for u in weeks[8]["units"]] == ["Konu 8 and 9 review"] and 9 not in weeks   # a topic number
+    dg = weekly_digest(lib, Settings(), 0, today=now.date(), now=now)
+    assert sorted(x["resource_id"] for x in dg["todo"] if x["kind"] == "download") == ["r1", "r2", "r3"]
+    pack = gather(lib, Settings(), "e", Scope(kind="prep", weeks=[6, 7]))
+    assert sorted(m["id"] for m in pack["materials_missing"]) == ["r1", "r2", "r3"]
+
+
+def test_a_file_asked_for_twice_in_one_go_is_downloaded_once():
+    import threading
+
+    from studia.api import Api
+
+    a = Api.__new__(Api)
+    a._mat_lock, a._mat_queue, a._mat_running = threading.Lock(), [], True     # (a download is running already)
+    pushed = []
+    a._push = pushed.append
+    assert a.materials_download(["r1", "r2", "r1"])["queued"] == 2 and a._mat_queue == ["r1", "r2"]
+    assert len(pushed) == 2
 
 
 def _rec(cid, i, day, hour, minutes=45):

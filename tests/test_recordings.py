@@ -106,6 +106,24 @@ def test_one_being_recorded_is_new_when_it_has_finished(tmp_path):
     assert new == ["b"] and not b.live and b.status == "available" and b.error == "" and lib.live_courses() == set()
 
 
+def test_one_that_was_not_ready_on_panopto_after_it_finished_is_tried_again_by_a_batch(tmp_path):
+    """A lecture queued just after it finished, while Panopto still encodes it, gets "not ready": the next listing
+    (unchanged) makes it ready to try again, and a full or course sync takes it."""
+    lib = _lib(tmp_path)
+    recs = [_rec("a", D(2026, 10, 28, 8, 30)), _rec("b", D(2026, 11, 4, 8, 31))]
+    lib.merge_recordings("c", recs, first_sync=True)
+    lib.set_status("b", "processing", "Panopto is still processing this recording. Try again later.")
+    assert [d for d, _ in course_needs(lib, Settings())[0].lectures] == ["a"]
+    assert lib.merge_recordings("c", recs, first_sync=False) == []          # (not new again)
+    b = lib.get_recording("b")
+    assert (b.status, b.error) == ("available", "")
+    assert [d for d, _ in course_needs(lib, Settings())[0].lectures] == ["b", "a"]
+    lib.merge_recordings("c", [_rec("b", D(2026, 11, 4, 8, 31), True)], first_sync=False)
+    lib.set_status("b", "processing", "This lecture is still being recorded.")
+    lib.merge_recordings("c", [_rec("b", D(2026, 11, 4, 8, 31), True)], first_sync=False)
+    assert lib.get_recording("b").status == "processing"                   # still being recorded: stays
+
+
 def test_an_upload_gets_its_names_date_and_a_transcribed_one_is_noted_to_move(tmp_path):
     lib = _lib(tmp_path)
     late = D(2026, 11, 3, 8, 11)

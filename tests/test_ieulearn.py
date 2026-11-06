@@ -93,6 +93,14 @@ def test_a_course_list_that_moved_or_is_refused_leaves_it_to_the_dashboard():
         assert IEULearn(session).course_list() is None
 
 
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+def test_an_error_page_instead_of_a_courses_panopto_page_is_tried_again_not_no_panopto(status):
+    """Only a page that has no Panopto in it means the course has none (it is then not asked again for a day)."""
+    with pytest.raises(RuntimeError, match="did not open"):
+        IEULearn(Site((status, "<h1>Service Unavailable</h1>", "/student/panopto"), (200, "", "/"))).launch_panopto("c1")
+    assert IEULearn(Site((200, "<h1>Course</h1>", "/student/panopto"), (200, "", "/"))).launch_panopto("c1") is None
+
+
 def test_the_sign_in_form_after_a_server_error_without_a_word_of_refusal_is_not_one():
     with pytest.raises(NetworkError, match="isn't responding right now.*not rejected"):
         IEULearn(Site((200, FORM, "/login"), (500, FORM, "/login"))).login("student", "right")

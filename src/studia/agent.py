@@ -260,6 +260,7 @@ class Helper:
         self.screen_on = True
         self.back_at = 0.0               # when the screen last came on or the PC woke up (wall clock)
         self.told_rejected = False       # said once that IEULearn refused the saved password
+        self.untold: list[str] = []      # new recordings found by a check that then failed (see _check)
         self.asking = False              # "Turn off background checks" asks first; the question is showing
         from .osutil import Tray
 
@@ -407,16 +408,25 @@ class Helper:
                     self.tray.set_tooltip(t("IEUStudia · sign in in the app to get notifications"))
             else:
                 self.told_rejected = False
+                # new recordings merged by a check that then failed (IEULearn down, a changed password): told about
+                # at the next good check, as the library no longer calls them new
+                waiting = list(self.untold)
+
+                def found(ids: list[str]) -> None:
+                    self.untold = list(dict.fromkeys(waiting + ids))
                 try:
                     # probes, and a full listing now and then; the courses from the small list, not the dashboard
-                    res = sync.sync(full_every=sync.HELPER_PANOPTO_EVERY, dashboard=False)
+                    res = sync.sync(full_every=sync.HELPER_PANOPTO_EVERY, dashboard=False, partial=found)
+                    new_ids = list(dict.fromkeys(waiting + res.new_ids))
+                    found(new_ids)
                     content = sync.sync_content(units_every=None if self.cfg.notify_materials else sync.HELPER_UNITS_EVERY)
-                    note = summarize(lib, settings, self.cfg, res.new_ids, content["new_announcements"],
+                    note = summarize(lib, settings, self.cfg, new_ids, content["new_announcements"],
                                      content["new_materials"], seen)
+                    self.untold = []
                     self.last = time.strftime("%H:%M")
                     self.tray.set_tooltip(t("IEUStudia · checked {time}", time=self.last))
                     log.info("Helper: checked IEULearn (%d new recordings, %d announcements, %d files)",
-                             len(res.new_ids), len(content["new_announcements"]), len(content["new_materials"]))
+                             len(new_ids), len(content["new_announcements"]), len(content["new_materials"]))
                 except Exception:  # noqa: BLE001 - IEULearn can't be reached: the reminders still come
                     log.warning("Helper: check failed", exc_info=True)
             if note is None and self.cfg.notify_reminders and not self.paused:     # one notification at a time

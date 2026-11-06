@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -98,23 +99,43 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
     return s
 
 
+_unreadable: set[str] = set()      # settings files that couldn't be read: kept aside before one is saved over them
+
+
+def unreadable() -> bool:
+    """The active profile's settings.json couldn't be read at the last load: the defaults are in use."""
+    return str(settings_path()) in _unreadable
+
+
 def load_settings() -> Settings:
     path = settings_path()
     with _lock:
         try:
             raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            _unreadable.discard(str(path))
         except (OSError, ValueError):
-            log.warning("settings.json is unreadable; using defaults")
+            log.warning("settings.json is unreadable; using defaults (the file is kept aside, not written over)")
+            _unreadable.add(str(path))
             raw = {}
     return _from_dict(raw if isinstance(raw, dict) else {})
 
 
 def save_settings(settings: Settings, path: Optional[Path] = None) -> None:
-    """Write the settings (of the active profile, or to ``path`` for a profile being set up)."""
+    """Write the settings (of the active profile, or to ``path`` for a profile being set up). One that couldn't be read
+    is first kept as settings.json.unreadable-<time>; the file is on the disk before the swap (a power cut)."""
     path = path or settings_path()
     tmp = path.with_name(path.name + ".tmp")
     with _lock:
-        tmp.write_text(json.dumps(settings.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
+        if str(path) in _unreadable:
+            try:
+                os.replace(path, path.with_name(f"{path.name}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}"))
+            except FileNotFoundError:
+                pass
+            _unreadable.discard(str(path))
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(settings.to_json(), ensure_ascii=False, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
 
 

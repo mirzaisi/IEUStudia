@@ -288,9 +288,35 @@ def test_a_failed_screen_stream_keeps_the_others_and_is_tried_again(tmp_path, is
     job = types.SimpleNamespace(id="r1", cancel=None)
     screens = [(MediaSource("hls", "https://p/bad.m3u8"), 0.0), (MediaSource("hls", "https://p/ok.m3u8"), 30.0)]
     assert len(Services.slides_task(svc, job, screens, None)) == 1
-    assert store.slides_path("r1").with_suffix(".key").read_text(encoding="utf-8") == ""     # not complete
+    assert store.slides_path("r1").with_suffix(".key").read_text(encoding="utf-8").startswith("failed 1\n")
     with pytest.raises(RuntimeError):
         Services.slides_task(svc, job, screens[:1], None)
+
+
+def test_a_capture_that_lost_its_connection_keeps_its_slides_and_is_tried_again(tmp_path, isolated_home, monkeypatch):
+    from studia import slides, store
+    from studia.panopto import MediaSource
+    from studia.services import SLIDES_TRIES, Services, _slides_done, _slides_key
+    from studia.slides import Incomplete, Slide
+
+    calls = []
+
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None):
+        calls.append(url)
+        raise Incomplete(200, 300, [Slide(1, offset, offset + 5, "", "")])    # the Wi-Fi dropped after slide 1
+
+    monkeypatch.setattr(slides, "extract_slides", extract)
+    svc = _services(tmp_path, isolated_home)
+    job = types.SimpleNamespace(id="r1", cancel=None)
+    screens = [(MediaSource("hls", "https://p/s.m3u8"), 0.0)]
+    assert len(Services.slides_task(svc, job, screens, None)) == 1          # what came is kept meanwhile
+    assert [s.index for s in store.load_slides("r1")] == [1]
+    assert not _slides_done("r1", _slides_key(screens), 1)                  # not complete: made again next time
+    for _ in range(SLIDES_TRIES - 1):
+        Services.slides_task(svc, job, screens, None)
+    assert len(calls) == SLIDES_TRIES and _slides_done("r1", _slides_key(screens), 1)    # a limit: then kept
+    Services.slides_task(svc, job, screens, None)
+    assert len(calls) == SLIDES_TRIES
 
 
 def test_old_downloaded_audio_is_swept_unless_its_lecture_is_queued(tmp_path, isolated_home):

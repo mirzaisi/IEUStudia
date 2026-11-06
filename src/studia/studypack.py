@@ -138,11 +138,13 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
         topic = " / ".join(x for x in (w["topic_en"], w["topic_tr"]) if x) or ", ".join(u["title"] for u in w["units"])
         head.append(f"  Week {w['no']}: {topic}")
     files, lectures, missing, days_missing = [], [], [], []
+    seen: set[str] = set()                  # a unit for two weeks ("Hafta 6 ve 7") is in both: its files once
     for w in weeks:
         for u in w["units"]:
             for m in u["materials"]:
-                if only_f and m["id"] not in pick_f:
+                if (only_f and m["id"] not in pick_f) or m["id"] in seen:
                     continue
+                seen.add(m["id"])
                 if not m["downloaded"] or m["text"] != "done":
                     missing.append({"id": m["id"], "title": m["title"], "week": w["no"]})
                     continue

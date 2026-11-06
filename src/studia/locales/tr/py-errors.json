@@ -27,6 +27,7 @@
   "This course is no longer in your list.": "Bu ders artık listende yok.",
   "Download failed": "İndirilemedi",
   "Download it first.": "Önce dosyayı indir.",
+  "This file is no longer in its folder (moved or deleted). Download it again.": "Bu dosya artık klasöründe değil (taşınmış ya da silinmiş). Yeniden indir.",
   "File not found.": "Dosya bulunamadı.",
   "The folder for your transcripts ({folder}) can't be created. {error} You can choose another folder in Settings → Files.": "Ders metinlerinin klasörü ({folder}) oluşturulamıyor. {error} Ayarlar → Dosyalar bölümünden başka bir klasör seçebilirsin.",
   "No quiz or exam with a known week has been announced yet.": "Haftası belli bir quiz ya da sınav henüz duyurulmadı.",

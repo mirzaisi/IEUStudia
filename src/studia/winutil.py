@@ -5,12 +5,15 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.wintypes as wt
+import logging
 import os
 import queue
 import subprocess
 import threading
 from pathlib import Path
 from typing import Iterable, Iterator
+
+log = logging.getLogger("studia")
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
@@ -511,11 +514,143 @@ def normal_priority() -> Iterator[None]:
                 _efficiency(True)
 
 
-def open_in_browser(url: str) -> None:
-    import webbrowser
+class _ShellExecuteInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("fMask", wt.ULONG), ("hwnd", wt.HWND), ("lpVerb", wt.LPCWSTR),
+                ("lpFile", wt.LPCWSTR), ("lpParameters", wt.LPCWSTR), ("lpDirectory", wt.LPCWSTR), ("nShow", ctypes.c_int),
+                ("hInstApp", wt.HINSTANCE), ("lpIDList", ctypes.c_void_p), ("lpClass", wt.LPCWSTR), ("hkeyClass", wt.HKEY),
+                ("dwHotKey", wt.DWORD), ("hIcon", wt.HANDLE), ("hProcess", wt.HANDLE)]
 
+
+def _site(url: str) -> str:
+    """A link for the log without its query (a sign-in's carries codes)."""
+    import urllib.parse
+
+    u = urllib.parse.urlsplit(url)
+    return f"{u.scheme}://{u.netloc}{u.path}"
+
+
+def _shell_open(target: str, wait_s: float = 20.0) -> tuple[bool, str]:
+    """ShellExecuteEx from a thread of its own with COM set up: pywebview's calls come on bare threads that end at
+    once, and some default browsers (the Microsoft Store ones among them) are started through COM. No error box and
+    no "pick an app" window: a failure comes back here instead."""
+    out: dict[str, object] = {}
+
+    def run() -> None:
+        ole32 = ctypes.WinDLL("ole32")
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_ShellExecuteInfo)]
+        shell32.ShellExecuteExW.restype = wt.BOOL
+        hr = ole32.CoInitializeEx(None, 0x2 | 0x4)       # COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+        try:
+            info = _ShellExecuteInfo(cbSize=ctypes.sizeof(_ShellExecuteInfo), lpFile=target, nShow=1,
+                                     fMask=0x100 | 0x400)  # SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI; SW_SHOWNORMAL
+            if shell32.ShellExecuteExW(ctypes.byref(info)):
+                out["ok"] = True
+            else:
+                out["error"] = str(ctypes.WinError(ctypes.get_last_error()))
+        except Exception as exc:  # noqa: BLE001 - said by the caller
+            out["error"] = str(exc)
+        finally:
+            if hr in (0, 1):                               # S_OK, S_FALSE: this thread set COM up
+                ole32.CoUninitialize()
+
+    th = threading.Thread(target=run, name="open-url", daemon=True)
+    th.start()
+    th.join(wait_s)
+    if th.is_alive():                                      # still starting a browser that takes its time
+        return True, ""
+    return bool(out.get("ok")), str(out.get("error", ""))
+
+
+def _edge() -> str:
+    """Microsoft Edge's program, on every Windows 10 and 11 PC (unless removed)."""
+    import winreg
+
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe") as k:
+                exe = str(winreg.QueryValueEx(k, "")[0]).strip('"')
+            if exe and Path(exe).is_file():
+                return exe
+        except OSError:
+            pass
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+        exe = Path(base or "-") / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+        if base and exe.is_file():
+            return str(exe)
+    return ""
+
+
+def _default_browser(scheme: str) -> tuple[bool, str]:
+    """The program Windows opens ``scheme`` links with, as (known, program). known False: Windows didn't say, so
+    only the shell can tell. program "": none is set, or it was removed. Asking first matters: the shell answers a
+    link without a program with a "Pick an app" window and reports success, and http and https have separate
+    settings (a PC can have only https set)."""
+    try:
+        query = ctypes.WinDLL("shlwapi").AssocQueryStringW
+        query.argtypes = [wt.DWORD, ctypes.c_int, wt.LPCWSTR, wt.LPCWSTR, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
+        query.restype = ctypes.c_long
+        buf, size = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
+        hr = query(0x1000 | 0x20, 2, scheme, "open", buf, ctypes.byref(size))   # IS_PROTOCOL | NOTRUNCATE; EXECUTABLE
+    except (OSError, AttributeError, ValueError):
+        return False, ""
+    if hr == 0:
+        program = buf.value
+        gone = "windowsapps" not in program.lower() and not Path(program).is_file()   # Store apps can't be looked at
+        return True, "" if gone else program
+    return (True, "") if hr & 0xFFFFFFFF == 0x80070483 else (False, "")         # ERROR_NO_ASSOCIATION
+
+
+def _start(program: str, url: str) -> bool:
+    try:
+        subprocess.Popen([program, url], close_fds=True)
+        log.info("Opened %s with %s", _site(url), Path(program).name)
+        return True
+    except OSError as exc:
+        log.warning("%s did not start: %s", Path(program).name, exc)
+        return False
+
+
+def _elevated() -> bool:
+    """Run as administrator. A browser started from here would run so too, and can't reach the browser already open."""
+    try:
+        return bool(ctypes.WinDLL("shell32").IsUserAnAdmin())
+    except (OSError, AttributeError):
+        return False
+
+
+def open_in_browser(url: str) -> bool:
+    """Open a web page in the default browser, allowed to come to the front. When Windows has no working default
+    browser (none set, or one that was removed), Microsoft Edge. False when nothing could be started: the caller
+    says so and offers the link to copy."""
     with normal_priority():
-        webbrowser.open(url)
+        try:                                               # we are in front (the user just clicked): so may it be
+            ctypes.WinDLL("user32").AllowSetForegroundWindow(wt.DWORD(0xFFFFFFFF))   # ASFW_ANY
+        except (OSError, AttributeError):
+            pass
+        scheme = url.partition(":")[0].lower()
+        known, program = _default_browser(scheme)
+        log.info("Opening %s; default browser: %s", _site(url), program or ("none" if known else "not known"))
+        if _elevated() and _start("explorer.exe", url):    # explorer runs as the signed-in user, and passes it on
+            return True
+        if program or not known:
+            ok, error = _shell_open(url)
+            if ok:
+                return True
+            log.warning("The default browser did not open %s: %s", _site(url), error or "no reason given")
+        else:
+            log.warning("Windows has no working browser set for %s links", scheme)
+            other = _default_browser("https")[1] if scheme == "http" else ""
+            if other and "windowsapps" not in other.lower() and _start(other, url):
+                return True
+        edge = _edge()
+        if edge and _start(edge, url):
+            return True
+        ok, error = _shell_open("microsoft-edge:" + url)
+        if ok:
+            return True
+        log.warning("No browser could be started for %s: %s", _site(url), error or "no reason given")
+        return False
 
 
 def open_path(path: str | Path) -> None:

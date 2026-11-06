@@ -99,10 +99,12 @@
     if (e.phase === "start") { S.sync = { running: true, message: e.message, error: "" }; }
     else if (e.phase === "progress") { S.sync.message = e.message; }
     else if (e.phase === "done") {
-      S.sync = { running: false, message: e.message, error: "" }; S.lastSync = e.last_sync || new Date().toISOString();
+      // what it couldn't check (Panopto down, a course's recordings): the top bar and Home keep saying so, calmly
+      const errs = (e.errors || []).join(" ");
+      S.sync = { running: false, message: e.message, error: errs, partial: !!errs }; S.lastSync = e.last_sync || new Date().toISOString();
       if (e.profile) S.profile = e.profile;
       if (e.new_count) toast(t.n(e.new_count, "{n} new recording found", "{n} new recordings found"), "success");
-      if (!e.quiet) (e.errors || []).forEach((m) => toast(m, "warning"));   // the app's own half-hourly sync stays quiet
+      if (!e.quiet) (e.errors || []).forEach((m) => toast(m, "warning"));   // the app's own half-hourly sync: nothing pops up
       renderSidebar();
       if (S.view.name === "home") renderView();          // its greeting line said "Syncing…"
     } else if (e.phase === "error") {
@@ -165,7 +167,12 @@
   }
   function onExport(e) {
     if (e.phase === "start") { S.exporting = e.day_key; toast(t("Making the PDF, with the slides next to the transcript…"), "info"); }
-    else if (e.phase === "done") { S.exporting = null; toast(t("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude."), "success"); if (S.view.name === "day") openDay(S.view.dayKey, true); }
+    else if (e.phase === "done") {
+      S.exporting = null;
+      if (e.files && !e.files.pdf) toast(t("The PDF couldn't be made: the pack has the transcript and slides without it. It's shown in Explorer."), "warning");
+      else toast(t("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude."), "success");
+      if (S.view.name === "day") openDay(S.view.dayKey, true);
+    }
     else { S.exporting = null; toast(e.message || t("Export failed"), "error"); }
     if (S.view.name === "day") renderDayActions();
   }
@@ -308,7 +315,7 @@
     const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="${t.html("Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB", { name: g.name, mb: g.vram_mb })}"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
       : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="${t("Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.")}"><span class="dot"></span>${t("Graphics card not set up")}</span>` : "";
     const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
-      : S.sync.error ? `${I("alert-circle", "sm")} ${t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
+      : S.sync.error ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
     const up = S.update || {};
     const app = (S.boot || {}).app || {};          // background checks turned off (the tray menu, or Settings): said calmly
     const bgOff = app.onboarded && app.tray === false && S.view.name !== "settings"
@@ -361,7 +368,8 @@
     if (S.qpOpen) closePane();     // a sidebar or toast button: the page is not drawn under the pane
     saveChatScroll();
     if (S.view.name === "day" && view.name !== "day") S.day = null;
-    if (!["course", "new", "home"].includes(view.name)) S.selected.clear();
+    // ticked recordings belong to the page they were ticked on (another course's "Transcribe 2 selected" queued these)
+    if (view.name !== S.view.name || view.courseId !== S.view.courseId) S.selected.clear();
     if (view.name === "chat" && view.chatId) { S.chat.id = view.chatId; S.chat.draft = null; }
     S.view = view;
     $("#view").scrollTo({ top: 0, behavior: "instant" });   // before rendering (an after-hook may scroll elsewhere); not animated
@@ -386,6 +394,7 @@
       case "transcribing": return `<span class="pill active">${I("wave")}${prog ? t("Transcribing {pct}", { pct: pctText(prog) }) : t("Transcribing")}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
       case "done": return `<span class="pill done">${I("check")}${t("Transcribed")}</span>`;
       case "failed":
+        if (noiseOnly(r)) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No speech found")}</span><span class="detail" title="${esc(r.error || "")}">${t("only noise or music — check it on Panopto")}</span>`;
         if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No sound on Panopto")}</span><span class="detail" title="${esc(r.error || "")}">${t("microphone was off")}</span>`;
         return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}${t("Failed")}</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
       case "processing": return `<span class="pill processing" title="${t("Panopto is still preparing this recording. Try again later.")}">${I("hourglass")}${t("Not ready on Panopto yet")}</span>`;
@@ -395,6 +404,11 @@
     if (r.too_short) return `<span class="pill">${t("Too short")}</span>`;
     if (r.is_new) return `<span class="pill new">${I("sparkle")}${t("NEW")}</span>`;
     return `<span class="detail">${t("Not transcribed")}</span>`;
+  }
+  // sound, but no speech in it (only noise or music): not "the microphone was off" (its error, in either language)
+  function noiseOnly(r) {
+    const said = t("No speech was found in this recording (only noise or music). Check it on Panopto.");
+    return [r.error, ...(r.warnings || []).map((w) => w.message)].some((m) => m && (m === said || /only noise or music/i.test(m)));
   }
   function selectable(r) { return !r.duplicate && !r.too_short && !["queued", "downloading", "transcribing", "live"].includes(r.status); }
   // what looks off about a recording (anomalies.py): a small mark, its texts shown on hover and focus
@@ -782,7 +796,7 @@
       .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*?[^*\s])?)\*(?![\w*])/g, "$1<i>$2</i>")
       .replace(/(^|[^\w])_([^_\s](?:[^_\n]*?[^_\s])?)_(?!\w)/g, "$1<i>$2</i>")
       .replace(/~~([^~\n]+)~~/g, "<s>$1</s>");
-    out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, txt, url) => hold(`<a class="ext" data-act="url" data-url="${url}" title="${url}">${emph(txt)}</a>`));
+    out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, txt, url) => hold(`<a class="ext" role="link" tabindex="0" data-act="url" data-url="${url}" title="${url}">${emph(txt)}</a>`));
     if (opts.cites) out = out.replace(/\[([^[\]\n]{1,160})\]|\(([^()\n]{1,160})\)/g, (m, a, b) => citeGroup(a != null ? a : b, hold) ?? m);
     out = emph(out);
     for (let k = 0; k < 4 && out.includes("\u0000"); k++) out = out.replace(/\u0000(\d+)\u0000/g, (_, n) => keep[+n]);   // held parts may hold others
@@ -1955,7 +1969,10 @@
     "open-day": (el) => openDay(el.dataset.day),
     "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
     "open-mat-hit": (el) => call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); }),
-    url: (el) => call("open_url", el.dataset.url),
+    url: async (el) => {                       // no browser could be started: said, and the link is copied
+      const r = await call("open_url", el.dataset.url);
+      if (!r.ok && r.error) toast(r.error, r.copied ? "info" : "error");
+    },
     "update-open": () => updateModal(),
     "update-page": () => call("open_url", (S.update || {}).page || "https://github.com/mirzaisi/IEUStudia/releases/latest"),
     "update-go": async () => {
@@ -2288,7 +2305,8 @@
       const pass = $(e.target.id === "si-user" ? "#si-pass" : "#aa-pass");
       if (pass && !pass.value) { e.preventDefault(); pass.focus(); return; }
     }
-    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.matches && e.target.matches("[data-act][role=button]:not(button)")) {
+    if ((e.key === "Enter" || e.key === " ") && e.target && e.target.matches && (e.target.matches("[data-act][role=button]:not(button)")
+        || (e.key === "Enter" && e.target.matches("a[data-act][role=link]")))) {   // (a link in an answer or notes: Enter, as links do)
       e.preventDefault(); e.target.click(); return;          // a result, a slide, a highlight… with the keyboard
     }
     if (e.key === "Tab") { const m = $("#overlay .modal"); if (m) trapTab(e, m); }
@@ -2331,6 +2349,7 @@
     if (!(age >= 0 && age < 5 * 60000)) A.sync();                    // synced minutes ago: not again (F5 still syncs)
     if (S.boot && S.boot.open) openTarget(S.boot.open);
     else if (S.boot && S.boot.updated_from) whatsNew();
+    ((S.boot && S.boot.notes) || []).forEach((m) => toast(m, "error"));   // e.g. settings that couldn't be read
   }
   function whatsNew() {             // the first start after an update
     const u = S.update || {}, v = S.boot.version;
@@ -2516,7 +2535,7 @@
         notes: "**Transcription**\n- Faster on laptops without a graphics card.\n- The time left is shown for the whole queue.", checked_at: Date.now() / 1000, error: "" }),
       update_install: () => { [0, 25, 60, 100].forEach((p, i) => setTimeout(() => emit({ type: "update", state: p < 100 ? "downloading" : "installing", done: p * 750000, total: 75000000 }), 500 * i)); return { ok: true }; },
       update_cancel: () => ({ ok: true }),
-      copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }), export_pack: (k) => { emit({ type: "export", phase: "start", day_key: k }); setTimeout(() => emit({ type: "export", phase: "done", day_key: k, files: {} }), 1500); return { ok: true }; },
+      copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }), export_pack: (k) => { emit({ type: "export", phase: "start", day_key: k }); setTimeout(() => emit({ type: "export", phase: "done", day_key: k, files: location.hash.includes("nopdf") ? { zip: "pack.zip" } : { pdf: "pack.pdf", zip: "pack.zip" } }), 1500); return { ok: true }; },
       ai_estimate: (k, s) => ({ ok: true, estimate: { input: s ? 38400 : 11800, output: 3500, images: s ? 33 : 0 }, ai: { available: true }, model: "sonnet" }),
       ai_notes: (k, kind = "notes") => { const label = { notes: "Study notes", exam: "Exam focus", flashcards: "Flashcards" }[kind]; emit({ type: "ai", phase: "start", day_key: k, kind, label }); let i = 0; const txt = "# Overview\nThis lecture covered **conditional probability** and Bayes' theorem.\n\n## Topics\n1. Multiplication rule — $P(A\\cap B)=P(A\\mid B)P(B)$ (Part 1, 00:31)\n2. Screening example (Part 1, 08:00)\n\n## What the lecturer emphasised\n- The denominator in Bayes' theorem — *likely midterm question* (Part 1, 18:41)\n";
         const iv = setInterval(() => { i += 40; emit({ type: "ai", phase: i >= txt.length ? "done" : "progress", day_key: k, kind, label, text: txt.slice(0, i), path: "notes.md" }); if (i >= txt.length) clearInterval(iv); }, 120); return { ok: true }; },

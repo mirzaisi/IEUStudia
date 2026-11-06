@@ -7,10 +7,13 @@
   // made when drawn: the Turkish table arrives after this file has loaded
   const CAT = () => ({ final: t("Final"), midterm: t("Midterm"), quiz: t("Quiz"), exam: t("Exam"), project: t("Project"), homework: t("Homework"), schedule: t("Schedule") });
 
-  S.digest = { offset: 0, data: null, summary: null, running: false, busyOffset: null, text: "" };   // busyOffset: the week being written
+  // busyOffset: the week being written; getting: the to-do files downloading
+  S.digest = { offset: 0, data: null, summary: null, running: false, busyOffset: null, text: "", getting: new Set() };
 
   async function load() {
-    const r = await call("digest", S.digest.offset);
+    const off = S.digest.offset;
+    const r = await call("digest", off);
+    if (off !== S.digest.offset) return;          // you clicked on to another week meanwhile: only its answer counts
     if (!r.ok) { toast(r.error, "error"); return; }
     S.digest.data = r.digest;
     S.digest.summary = r.summary && r.summary.text ? r.summary : null;
@@ -40,7 +43,8 @@
     if (!d) return `<div class="view-inner">${St.skeleton()}</div>`;
     const todo = d.todo.map((item) => {
       const act = item.kind === "transcribe" ? `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(item.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`
-        : item.kind === "download" ? `<button class="btn ghost sm" data-act="mat-get" data-id="${esc(item.resource_id)}">${I("download", "sm")} ${t.c("button", "Download")}</button>`
+        : item.kind === "download" ? (g.getting.has(item.resource_id) ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Downloading")}</button>`
+          : `<button class="btn ghost sm" data-act="dg-get" data-id="${esc(item.resource_id)}">${I("download", "sm")} ${t.c("button", "Download")}</button>`)
           : item.kind === "prepare" ? (item.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(item.course_id)}" data-name="${esc(item.name)}">${I("list-checks", "sm")} ${t("Get ready")}</button>`
             : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(item.course_id)}">${I("youtube", "sm")} ${t("Make a plan")}</button>`) : "";
       return `<div class="dg-todo"><span class="dg-code">${esc(item.course)}</span><span class="grow">${esc(item.text)}</span>${act}</div>`;
@@ -77,7 +81,25 @@
     else if (e.phase === "error") { g.running = false; g.busyOffset = null; toast(e.message || t("The AI could not finish"), "error"); }
     if (S.view.name === "digest") renderView();
   };
+  // a to-do's file: says it is downloading, and the digest is read again once it is in (its to-do then goes)
+  const onMaterial = St.onEvents.material;
+  St.onEvents.material = (e) => {
+    if (onMaterial) onMaterial(e);
+    const g = S.digest;
+    if (!g.getting.has(e.id) || !["done", "error"].includes(e.state)) return;
+    g.getting.delete(e.id);
+    if (S.view.name !== "digest") return;
+    if (e.state === "done") load(); else renderView();
+  };
   Object.assign(A, {
+    "dg-get": async (el) => {
+      const id = el.dataset.id, g = S.digest;
+      g.getting.add(id); renderView();               // (before the answer: a small file can be in before it)
+      const r = await call("materials_download", [id]);
+      if (r.ok) toast(t.n(1, "Downloading {n} file", "Downloading {n} files"), "success");
+      else { g.getting.delete(id); toast(r.error, "error"); }
+      if (S.view.name === "digest") renderView();
+    },
     "dg-week": (el) => { const d = +el.dataset.d; S.digest.offset = d === 0 ? 0 : S.digest.offset + d; S.digest.data = null; renderView(); load(); },
     "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset, St.effortPick && St.isChatGPT() ? St.effortPick("dg") : ""); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.busyOffset = S.digest.offset; S.digest.text = ""; renderView(); } },
     "dg-file": (el) => call("open_output_file", el.dataset.path),

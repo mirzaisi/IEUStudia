@@ -46,7 +46,11 @@ def _run(monkeypatch, tmp_path, shown, held=None, real=False, min_slide_s=12.0):
     monkeypatch.setattr(slides, "parse_playlist", lambda text, url: (("init", 0, 0), [
         Segment(i * 9.0, 9.0, str(i), 0, 10) for i in range(len(shown))]))
     monkeypatch.setattr(slides, "find_avcc", lambda b: b"avcc")
-    monkeypatch.setattr(slides, "_fetch_keyframe", lambda session, seg, avcc: shown[int(seg.url)])
+    def fetch(session, seg, avcc):
+        if shown[int(seg.url)] is None:                           # None: the request fails
+            raise ConnectionError("no connection")
+        return shown[int(seg.url)]
+    monkeypatch.setattr(slides, "_fetch_keyframe", fetch)
     asked = []
 
     def after(session, seg, init, s):
@@ -107,3 +111,14 @@ def test_a_darker_screen_after_a_light_slide_keeps_the_slide(tmp_path, monkeypat
 @pytest.mark.parametrize("name", ["build_a", "other_a", "ink_a"])
 def test_real_slides_are_not_blank(name):
     assert not slides.is_blank(_f(name))
+
+
+def test_a_capture_that_loses_its_connection_is_incomplete(tmp_path, monkeypatch):
+    # the connection drops after slide 2: the slides so far come with the error, so they are kept but not final
+    with pytest.raises(slides.Incomplete) as err:
+        _run(monkeypatch, tmp_path, [1, 1, 2, 2] + [None] * 6, min_slide_s=1)
+    assert [s.index for s in err.value.slides] == [1, 2]
+    with pytest.raises(slides.Incomplete):                       # no slide at all: the same
+        _run(monkeypatch, tmp_path, [None] * 12)
+    out, _ = _run(monkeypatch, tmp_path, [1, None, 1, 1, 2, 2, 2, 2, 2, 2, 2], min_slide_s=1)
+    assert [s.index for s in out] == [1, 2]                      # one frame missing now and then: complete

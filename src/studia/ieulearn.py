@@ -208,6 +208,8 @@ class IEULearn:
             if "login" in (r.headers.get("Location") or ""):
                 raise NeedLogin(t("Your IEULearn session has expired."))
             return None
+        if r.status_code not in (200, 403, 404):    # a server error, throttling: not "no Panopto" (tried again)
+            raise RuntimeError(t("Panopto did not open the folder of course {course}.", course=course_id))
         frames = [f for f in parse_iframes(r.text) if "lti/course-launch" in f]
         if not frames:
             return None  # this course has no Panopto tool

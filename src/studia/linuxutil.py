@@ -361,10 +361,18 @@ def process_age() -> float:
 
 
 # ----------------------------------------------------------------------------- files, links, clipboard
-def open_in_browser(url: str) -> None:
+def open_in_browser(url: str) -> bool:
+    """False when no browser could be started: the caller says so and offers the link to copy."""
     import webbrowser
 
-    webbrowser.open(url)
+    try:
+        if webbrowser.open(url):
+            return True
+    except Exception as exc:  # noqa: BLE001 - said by the caller
+        log.warning("No browser could be started: %s", exc)
+        return False
+    log.warning("No browser could be started for %s", url.split("?", 1)[0])
+    return False
 
 
 def open_path(path: str | Path) -> None:

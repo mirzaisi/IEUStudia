@@ -50,7 +50,7 @@
 .cs-doc .katex { font-size: 1.06em; }
 .cs-t { margin-top: 1px; }
 .cs-w, .cs-if { color: var(--cs-dim); font-size: .9em; line-height: 1.35; }
-.cs-w > span { white-space: nowrap; }
+.cs-doc .cs-w, .cs-doc .cs-if, .cs-doc .cs-t { overflow-wrap: anywhere; }
 .cs-if b { color: var(--cs-accent); font-weight: 600; margin-right: .15em; }
 
 /* the page of its own (the file and the PDF): the PDF's width on screen too */

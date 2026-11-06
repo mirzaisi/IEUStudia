@@ -45,7 +45,9 @@ class CourseNeeds:
 
 
 def _downloaded(m: dict[str, Any]) -> bool:
-    return bool(m.get("local_path")) and Path(m["local_path"]).is_file()
+    """The material's file is here and is the version on IEULearn now (one replaced there is downloaded again)."""
+    return (bool(m.get("local_path")) and Path(m["local_path"]).is_file()
+            and not (m.get("downloaded_url") and m["downloaded_url"] != m.get("url")))
 
 
 def no_sound(rec: Any, warnings: Iterable[dict[str, Any]]) -> bool:

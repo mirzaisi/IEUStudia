@@ -18,6 +18,7 @@
   "{course} · {date}: part {part} of the lecture is ready to read": "{course} · {date}: ders kaydının {part}. bölümü okumaya hazır",
   "{course} · {date}: the lecture is ready to read": "{course} · {date}: ders kaydı okumaya hazır",
   "PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude.": "PDF hazır ve Dosya Gezgini'nde gösteriliyor. İstersen ChatGPT'ye ya da Claude'a da yükleyebilirsin.",
+  "The PDF couldn't be made: the pack has the transcript and slides without it. It's shown in Explorer.": "PDF oluşturulamadı: pakette PDF olmadan ders metni ve slaytlar var. Paket Dosya Gezgini'nde gösteriliyor.",
   "Copied {chars} characters (~{k}k tokens). Paste it into ChatGPT or Claude.": "{chars} karakter kopyalandı (~{k} bin token). ChatGPT'ye ya da Claude'a yapıştırabilirsin.",
   "{title} could not be transcribed again: {error}. The earlier transcript is kept.": "{title} yeniden yazıya dökülemedi: {error}. Önceki ders metni duruyor.",
   "Cancel all {n} lectures in the queue? To stop for a while instead, use Pause.": "Sıradaki {n} dersin hepsi iptal edilsin mi? Bir süreliğine durdurmak istiyorsan Duraklat'ı kullan.",

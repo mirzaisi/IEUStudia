@@ -160,7 +160,7 @@ Rules:
 - tex: the formula in LaTeX without dollars ("" if there is none). Related forms may share one entry with \\\\begin{aligned}…\\\\end{aligned}; matrices with pmatrix or bmatrix, piecewise definitions with cases, units upright (\\\\,\\\\mathrm{V}, \\\\Omega).
 - text: at most 25 words, maths in $...$, only what the formula doesn't already say ("" if nothing). A definition: the definition itself. A method: its steps as "1) … 2) … 3) …" (at most 5).
 - where: the symbols of tex a student could misread, each with its meaning and unit (sym in LaTeX without dollars; means is plain text with any maths, units like $\\\\Omega$ too, in $...$), at most 4. A symbol is explained once on the whole sheet: not again in later entries. [] when none.
-- when: only a condition under which it holds or is used, in lowercase, without "if" (e.g. "$\\\\alpha > \\\\omega_0$", "no load on the output"); "" if none. Never a remark or a description.
+- when: only a condition under which it holds or is used, without "if", starting in lowercase but keeping names and abbreviations as they are written (RC, RL, RLC, DC, KCL, Thevenin), e.g. "$\\\\alpha > \\\\omega_0$", "no load on the output", "source-free RL circuit"; "" if none. Never a remark or a description.
 - covers: the items of the list above that this entry holds, written exactly as in the list.
 - Every entry has a name and a tex or a text. No two entries the same. No explanations, derivations or worked examples.
 - The material's notation; every backslash doubled as JSON needs."""

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 import requests
 
 from . import __version__, store
-from .config import Settings, apply_patch, load_settings, save_settings
+from .config import Settings, apply_patch, load_settings, save_settings, unreadable as config_unreadable
 from .domain import Course, Recording
 from .i18n import N_, t
 from .library import Library
@@ -41,10 +41,24 @@ def _slides_key(screens: list[tuple[Any, float]]) -> str:
     return "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}" for src, offset in screens)
 
 
+SLIDES_TRIES = 3          # captures of the same streams that came out incomplete before what they got is kept as it is
+
+
+def _failed_tries(text: str, key: str) -> int:
+    """How many captures from these screen streams came out incomplete (a key file "failed N" + the key)."""
+    head, _, rest = text.partition("\n")
+    if rest != key or not head.startswith("failed "):
+        return 0
+    try:
+        return int(head[7:])
+    except ValueError:
+        return 0
+
+
 def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
     """The recording's slides exist (index and every image) and were made from these screen streams. An index from
     before the key was kept counts if the recording has one screen stream (older versions read only the first); it
-    gets the key, so a change is noticed from then on."""
+    gets the key, so a change is noticed from then on. An incomplete capture is made again, up to SLIDES_TRIES times."""
     from .slides import load_index
 
     index = store.slides_path(delivery_id)
@@ -52,7 +66,8 @@ def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
         return False
     key_file = index.with_suffix(".key")
     try:
-        return key_file.read_text(encoding="utf-8") == key
+        text = key_file.read_text(encoding="utf-8")
+        return text == key or _failed_tries(text, key) >= SLIDES_TRIES
     except FileNotFoundError:
         if streams != 1:
             return False
@@ -96,6 +111,17 @@ def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
     return n
 
 
+def _app_open() -> bool:
+    """The app's window is open (in another process: it holds the single-instance lock)."""
+    try:
+        from .agent import ui_running
+
+        return ui_running()
+    except Exception:  # noqa: BLE001 - unknown: as before
+        log.debug("Checking for the open app failed", exc_info=True)
+        return False
+
+
 def _file_warnings(lib: Library, course_recs: list[Recording]) -> dict[str, list[dict[str, Any]]]:
     """The recordings' warnings as the files show them: "could not be written" never goes into the files themselves."""
     every = lib.all_warnings()
@@ -111,8 +137,19 @@ class Services:
         self._lock = threading.RLock()
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self.settings: Settings = load_settings()
+        self.notes: list[str] = []                 # told on the first screen (get_bootstrap)
+        if config_unreadable():
+            from .paths import settings_path
+
+            self.notes.append(t("IEUStudia couldn't read your settings, so it started with the default ones. Check "
+                                "your sections and your IEUStudia folder in Settings. The old file is kept in {folder}.",
+                                folder=str(settings_path().parent)))
         self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
-        self.lib.reset_interrupted()
+        # a command-line run while the app is open (it holds its single-instance lock): the lectures, chats and plans
+        # the app is working on, and its files, are its own; nothing of theirs is reset, moved or swept from here
+        self.beside_app = not migrate_output and _app_open()
+        if not self.beside_app:
+            self.lib.reset_interrupted()
         if migrate_output:
             self._migrate_output_root()
         self.sync = SyncService(self.lib, lambda: self.settings, self.log)
@@ -127,6 +164,9 @@ class Services:
         from .plans import PlanRunner
 
         self.plans = PlanRunner(self)
+        if self.beside_app:
+            self.log.info("The app is open: its queue, plans and files are left to it")
+            return
         self._write_unwritten()
         self.sync.after_sync = self.move_days
         try:
@@ -454,7 +494,7 @@ class Services:
         through, a slide shown again in a later stream kept once. Slides made before from the same streams are
         kept as they are."""
         from .cancel import Cancelled
-        from .slides import extract_slides
+        from .slides import Incomplete, extract_slides
 
         rec = self.lib.get_recording(job.id)
         course = self.lib.get_course(rec.course_id) if rec else None
@@ -468,6 +508,10 @@ class Services:
         folder = course_dir(self.output_root, course, self.lib.courses(True)) / "slides" / stem
         key_file = store.slides_path(job.id).with_suffix(".key")
         key_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            tries = _failed_tries(key_file.read_text(encoding="utf-8"), key)
+        except OSError:
+            tries = 0
         key_file.write_text("", encoding="utf-8")   # being made (images are written over): not done until the end
         slides: list[Any] = []
         seen: list[Any] = []                      # the slides kept so far, shared by the streams
@@ -480,12 +524,14 @@ class Services:
                 raise
             except Exception as exc:  # noqa: BLE001 - the other streams' slides are still worth having
                 self.log.info("A screen stream of %s failed: %s", job.id, exc)
+                if isinstance(exc, Incomplete):    # the connection dropped: what came is kept meanwhile
+                    slides += exc.slides
                 failed = exc
         if failed is not None and not slides:
             raise failed
         store.save_slides(job.id, slides)
-        if failed is None:                        # a stream failed: made again next time
-            key_file.write_text(key, encoding="utf-8")
+        # complete; or a stream failed: made again next time, its slides so far kept after SLIDES_TRIES tries
+        key_file.write_text(key if failed is None else f"failed {tries + 1}\n{key}", encoding="utf-8")
         self.log.info("%d slides for %s", len({s.index for s in slides}), job.id)
         return slides
 

@@ -125,6 +125,125 @@ def test_a_folder_that_comes_back_empty_is_opened_again_through_ieulearn(site, t
     assert site.launches == [] and res.new_ids == []
 
 
+def test_a_course_with_no_recordings_yet_is_opened_again_now_and_then(site, tmp_path, monkeypatch):
+    """A new course (no lecture yet) lists empty, and so does one whose access ran out: it is opened again too, at
+    most every few hours, so its first recordings show up."""
+    lib, sync = _service(tmp_path)
+    site.listing["b"] = []
+    sync.sync()                                          # the first sync opens every course once
+    assert sorted(site.launches) == ["a", "b"] and not lib.has_recordings("b")
+    site.launches.clear()
+    assert sync.sync().errors == [] and site.launches == []      # opened lately: not again
+    hours_ago = (dt.datetime.now() - sync.REOPEN_EMPTY_EVERY - dt.timedelta(minutes=1)).isoformat()
+    lib.set_meta("launched:b", hours_ago)
+    lib.set_meta("listed:b", hours_ago)                  # (first listed then: a lecture since is new)
+    orig = sync_mod.IEULearn.launch_panopto
+
+    def launch(self, cid):
+        site.listing["b"] = [Recording(**{**vars(_rec("b", 1)), "start": dt.datetime.now() - dt.timedelta(hours=2)})]
+        return orig(self, cid)
+
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", launch)
+    res = _helper_sync(sync)
+    assert site.launches == ["b"] and res.new_ids == ["b1"] and res.errors == []
+
+
+def test_a_course_with_no_recordings_whose_reopen_fails_is_tried_again_only_now_and_then(site, tmp_path, monkeypatch):
+    """IEULearn failing to open a course with no recordings is said once, not at every sync; a course page that has
+    no Panopto any more takes the course off Panopto (as for a new course), without an error."""
+    lib, sync = _service(tmp_path)
+    site.listing["b"] = []
+    sync.sync()
+    hours_ago = (dt.datetime.now() - sync.REOPEN_EMPTY_EVERY - dt.timedelta(minutes=1)).isoformat()
+    lib.set_meta("launched:b", hours_ago)
+
+    def launch(self, cid):
+        site.launches.append(cid)
+        raise RuntimeError("IEULearn answered 503")
+
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", launch)
+    site.launches.clear()
+    assert len(sync.sync().errors) == 1 and site.launches == ["b"]     # said
+    res = sync.sync()
+    assert site.launches == ["b"] and res.errors == []                 # tried at the first sync, not again
+    lib.set_meta("launched:b", hours_ago)
+    site.launches.clear()
+    res = _helper_sync(sync)
+    assert site.launches == ["b"] and len(res.errors) == 1             # tried (and said) once more after a while
+    lib.set_meta("launched:b", hours_ago)
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", lambda self, cid: None)
+    res = sync.sync()
+    assert res.errors == [] and lib.get_course("b").folder_id is None and not lib.get_course("b").has_panopto
+
+
+def test_an_empty_folder_is_never_taken_as_unchanged_by_a_probe_and_a_failed_reopen_is_said(site, tmp_path, monkeypatch):
+    """The stored heads of an empty listing would match the probe of a folder whose access ran out: the helper lists
+    such a course in full and opens it again; IEULearn not opening it is an error, not "Up to date"."""
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.listing["a"] = []                               # access gone, and IEULearn doesn't open the course again
+
+    def launch(self, cid):
+        site.launches.append(cid)
+        raise RuntimeError("Panopto did not open the folder of course a.")
+
+    monkeypatch.setattr(sync_mod.IEULearn, "launch_panopto", launch)
+    site.launches.clear()
+    for i in range(2):                                   # (the first probe sees the count change; then no probe)
+        site.asked.clear()
+        res = _helper_sync(sync)
+        assert ("list", "a") in site.asked and (("probe", "a") not in site.asked or i == 0) and site.launches[-1] == "a"
+        assert res.errors == ["Couldn't check new recordings for MATH 240: Panopto didn't answer. They're checked "
+                              "again next time."]
+    assert lib.has_recordings("a")                       # (an empty answer marks nothing gone)
+    lib.set_meta("folders:a", '{"fa": [0, "", null]}')  # what 3.2.1 stored from such a listing
+    site.asked.clear()
+    _helper_sync(sync)
+    assert ("list", "a") in site.asked and ("probe", "a") not in site.asked
+
+
+def test_recordings_merged_before_the_sync_failed_are_still_handed_on(site, tmp_path, monkeypatch):
+    """A new lecture is merged, then the sync fails (IEULearn down, a changed password): the library no longer calls
+    it new at the next sync, so the sync hands it on (``partial``) before it raises."""
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.listing["a"] = [_rec("a", 0), _rec("a", 1)]
+    site.logged_in = False                               # ... and no saved password to sign in again with
+    told = []
+    with pytest.raises(NeedLogin):                       # (merged by the early listing, before the dashboard)
+        sync.sync(partial=told.append, full_every=sync.HELPER_PANOPTO_EVERY, dashboard=False)
+    assert told[-1] == ["a1"] and lib.get_recording("a1").is_new
+    site.logged_in = True
+    site.listing["a"] = [_rec("a", 0), _rec("a", 1), _rec("a", 2)]
+    orig, asked = sync_mod.Panopto.list_recordings, []
+
+    def flaky(self, cid, folder, heads=None):            # the early listing of a fails; the second one works
+        asked.append(cid)
+        if asked.count(cid) == 1 and cid == "a":
+            raise RuntimeError("500")
+        return orig(self, cid, folder, heads)
+
+    monkeypatch.setattr(sync_mod.Panopto, "list_recordings", flaky)
+    monkeypatch.setattr(sync, "_reopen_empty", lambda *a: (_ for _ in ()).throw(NeedLogin("expired")))
+    told.clear()
+    with pytest.raises(NeedLogin):                       # merged after the dashboard, then the sync failed
+        sync.sync(partial=told.append)
+    assert told[-1] == ["a2"]
+
+
+def test_a_download_panopto_refused_opens_its_course_again_although_the_sign_in_works(site, tmp_path):
+    """DeliveryInfo says "unauthorized" once a course's access ran out, while the sign-in cookie still works: the
+    download's retry opens that course through IEULearn again (not only when Panopto's sign-in is gone)."""
+    lib, sync = _service(tmp_path)
+    sync.sync()
+    site.launches.clear()
+    site.folders["a"] = "fa2"                            # (and the course moved to another folder meanwhile)
+    sync.ensure_panopto("a")
+    assert site.launches == ["a"] and lib.get_course("a").folder_id == "fa2"
+    sync.ensure_panopto()                                # without a course: only when Panopto's sign-in is gone
+    assert site.launches == ["a"]
+
+
 def test_with_panopto_down_ieulearn_still_syncs(site, tmp_path):
     lib, sync = _service(tmp_path)
     site.panopto = NetworkError("Can't reach panopto.ieu.edu.tr. Check your internet connection.")

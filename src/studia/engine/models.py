@@ -98,13 +98,18 @@ def local_model_path(model: str) -> Optional[Path]:
     return _hf_cache_path(model)
 
 
-def _hf_cache_has(model: str) -> bool:
-    """The model is complete in the Hugging Face cache — a plain folder check (importing huggingface_hub to ask
-    takes ~1 s, too slow for the settings page)."""
+def _hf_cache_dir(model: str) -> Path:
+    """The model's folder in the shared Hugging Face cache (there or not)."""
     env = os.environ
     root = Path(env.get("HF_HUB_CACHE") or (Path(env["HF_HOME"]) / "hub" if env.get("HF_HOME") else
                                              Path.home() / ".cache" / "huggingface" / "hub"))
-    snaps = root / f"models--{_repo(model).replace('/', '--')}" / "snapshots"
+    return root / f"models--{_repo(model).replace('/', '--')}"
+
+
+def _hf_cache_has(model: str) -> bool:
+    """The model is complete in the Hugging Face cache — a plain folder check (importing huggingface_hub to ask
+    takes ~1 s, too slow for the settings page)."""
+    snaps = _hf_cache_dir(model) / "snapshots"
     try:
         return any(_complete(d) for d in snaps.iterdir() if d.is_dir())
     except OSError:
@@ -167,9 +172,15 @@ def download_model(model: str, progress: Callable[[int, int], None],
 
 
 def delete_model(model: str) -> None:
+    """Remove IEUStudia's own copy. A copy only in the shared Hugging Face cache (another program downloaded it, and
+    may use it) is left there, and the error says so (Settings → Storage shows it)."""
     own = _models_root() / model
     if own.exists():
         shutil.rmtree(own, ignore_errors=True)
+    elif _hf_cache_has(model):
+        raise RuntimeError(t("IEUStudia didn't download this speech model: it uses the copy in the shared Hugging Face "
+                             "cache, which other programs may need too, so it leaves it there. If nothing else uses "
+                             "it, you can delete {folder} yourself.", folder=str(_hf_cache_dir(model))))
 
 
 # ----------------------------------------------------------------------------- GPU / device

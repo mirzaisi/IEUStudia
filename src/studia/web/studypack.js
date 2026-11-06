@@ -41,7 +41,8 @@
   function pickWeek(no, on) {
     const w = P.opts.weeks.find((x) => x.no === no); if (!w) return;
     if (on) P.weeks.add(no); else P.weeks.delete(no);
-    w.files.forEach((f) => { if (on && f.ready) P.files.add(f.id); else if (!on) P.files.delete(f.id); });
+    const kept = new Set(P.opts.weeks.filter((x) => P.weeks.has(x.no)).flatMap((x) => x.files.map((f) => f.id)));   // a unit for two weeks
+    w.files.forEach((f) => { if (on && f.ready) P.files.add(f.id); else if (!on && !kept.has(f.id)) P.files.delete(f.id); });
     w.days.forEach((d) => { if (on && d.ready && d.mine) P.days.add(d.day_key); else if (!on) P.days.delete(d.day_key); });
   }
   function costHTML() {
@@ -61,7 +62,7 @@
     const r = P.opts, courses = S.courses.filter((c) => c.code);
     const old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
     const picked = r.weeks.filter((w) => P.weeks.has(w.no));
-    const missing = picked.flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id));
+    const missing = [...new Set(picked.flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id)))];   // (a file of two weeks once)
     const todo = picked.flatMap((w) => w.days.filter((d) => !d.ready && d.mine).map((d) => d.day_key));
     const ai = r.ai || {};
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
@@ -218,7 +219,7 @@
     },
     "pk-download": async () => {
       readInputs();
-      const ids = P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id));
+      const ids = [...new Set(P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id)))];
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file — pick it once it is in", "Downloading {n} files — pick them once they are in"), "success");
     },

@@ -35,6 +35,7 @@
   "Small": "Küçük",
   "The one for PCs without an NVIDIA graphics card: fast enough on the processor, a bit less accurate.": "NVIDIA ekran kartı olmayan bilgisayarlar için: işlemcide yeterince hızlı, biraz daha az doğru.",
   "Model files for {model} were not found on Hugging Face.": "{model} modelinin dosyaları Hugging Face'te bulunamadı.",
+  "IEUStudia didn't download this speech model: it uses the copy in the shared Hugging Face cache, which other programs may need too, so it leaves it there. If nothing else uses it, you can delete {folder} yourself.": "Bu konuşma tanıma modelini IEUStudia indirmedi: ortak Hugging Face önbelleğindeki kopyayı kullanıyor. Başka programlar da ona ihtiyaç duyabileceği için IEUStudia onu silmiyor. Başka bir şey kullanmıyorsa {folder} klasörünü kendin silebilirsin.",
   "The recording has no audio.": "Kayıtta ses yok.",
   "The downloaded audio is shorter than the recording ({got} of {total}). The end may be missing.": "İndirilen ses kaydın kendisinden kısa ({total} yerine {got}). Sonu eksik olabilir.",
   "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent — check it on Panopto or ask the lecturer.": "Bu kaydın Panopto'da sesi yok (mikrofon büyük ihtimalle kapalıydı). Tüm ses akışları sessiz: Panopto'da kontrol et ya da hocana sor.",

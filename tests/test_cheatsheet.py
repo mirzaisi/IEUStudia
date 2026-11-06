@@ -7,6 +7,7 @@ import copy
 import re
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -316,3 +317,30 @@ def test_a_formula_too_wide_for_its_column_is_made_smaller(tmp_path, edge):
         assert "a15" in tp.get_text_range() and "b15" in tp.get_text_range()          # all of it (not cut off)
     finally:
         doc.close()
+
+
+def test_a_long_symbol_legend_wraps_inside_its_column(tmp_path, edge):
+    """A symbol's meaning used to stay on one line and ran over the next column (and off the page in the last one)."""
+    long = "inductor voltage, positive where the referenced current enters the terminal of the element (V)"
+    sheet = {"title": "S", "topics": [{"id": "t1", "title": "One"}]}
+    entries = {"t1": [{"kind": "rule", "name": "Inductor", "tex": "v_L = 0", "text": "",
+                       "where": [{"sym": "v_L", "means": long}], "when": "", "covers": []}]}
+    doc = printed(tmp_path, sheet, entries, "legend")
+    try:
+        w = doc[0].get_size()[0]
+        tp = doc[0].get_textpage()
+        words = [tp.get_charbox(i) for i in range(tp.count_chars())]
+        col_right = 8 / 25.4 * 72 + (w - 16 / 25.4 * 72) / 3 + 2
+        assert "terminal of the element" in " ".join(tp.get_text_range().split())   # all of it
+        name = boxes(doc, 0, "Inductor")
+        below = [c for c in words if c[3] < name[1] and c[1] > 60 and c[2] > c[0]]    # below its name, above the footer
+        assert len(below) > 40 and max(c[2] for c in below) < col_right               # none of it in the next column
+    finally:
+        doc.close()
+
+
+def test_conditions_keep_their_abbreviations():
+    """"in lowercase" made the model write "source-free rl circuit" and "dc steady state"."""
+    prompt = cs.ENTRIES_RULES if hasattr(cs, "ENTRIES_RULES") else ""
+    source = Path(cs.__file__).read_text(encoding="utf-8")
+    assert "in lowercase, without" not in source and "keeping names and abbreviations" in source + prompt

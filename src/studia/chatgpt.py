@@ -47,6 +47,7 @@ PLAN_SCOPE = "chatgpt.tokens.use.direct"
 APP_NAME = "IEUStudia"
 FIRST_CLIENT = "dynamic_agent_client"         # the registration entry point, never saved as the client id
 CALLBACK = "/auth/callback"
+START = "/sign-in"                              # IEUStudia's own link to the sign-in page (forwards to OpenAI)
 SIGN_IN_TIMEOUT_S = 600
 REFRESH_MARGIN_S = 120
 USAGE_URL = "https://chatgpt.com/settings/usage"
@@ -127,7 +128,10 @@ def signed_in() -> bool:
 def status() -> dict[str, Any]:
     rec = _load()
     with _lock:
-        attempt = {k: v for k, v in _attempt.items() if k in ("state", "error")}
+        attempt = {k: v for k, v in _attempt.items() if k in ("state", "error", "link", "page", "opened", "launched")}
+        if attempt.get("state") != "waiting":
+            attempt.pop("link", None)
+            attempt.pop("page", None)
     return {"signed_in": bool(rec.get("refresh_token")), "email": rec.get("email", ""),
             "plan_allowed": PLAN_SCOPE in (rec.get("scopes") or []), "registered": bool(rec.get("client_id")),
             "sign_in": attempt}
@@ -166,16 +170,32 @@ _PAGE = """<!doctype html><meta charset="utf-8"><title>IEUStudia</title>
 <div style="max-width:440px;text-align:center"><h2 style="margin:0 0 8px">{title}</h2><p style="color:#555">{text}</p></div>"""
 
 
+def _launch(open_browser: Callable[[str], Any], link: str) -> bool:
+    """Ask for the sign-in page in the browser; False when no browser could be started (None: the opener doesn't
+    say, taken as started)."""
+    try:
+        return open_browser(link) is not False
+    except Exception as exc:  # noqa: BLE001 - the set-up offers the link to copy
+        log.warning("ChatGPT sign-in: no browser could be started: %s", exc)
+        return False
+
+
 def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, consent: bool = False,
                   open_browser: Callable[[str], Any] = webbrowser.open) -> dict[str, Any]:
     """Open OpenAI's sign-in page in the browser and wait (in the background) for it to come back to IEUStudia.
-    The outcome goes to ``emit`` as {"type": "chatgpt", "state": "done"|"error", "error", "email"}."""
+
+    The browser is sent to a page of IEUStudia's own first (``link``, on 127.0.0.1), which forwards it to OpenAI.
+    That way IEUStudia knows when the page really opened in a browser (``opened``: on some PCs nothing opens, or it
+    opens behind the window). ``page`` is OpenAI's page itself, to copy into a browser by hand: it works even where
+    something blocks the first link. The outcome goes to ``emit`` as
+    {"type": "chatgpt", "state": "done"|"error", "error", "email"}; the page opening as
+    {"type": "chatgpt", "state": "waiting", "opened": True}."""
     with _lock:
         if _attempt.get("state") == "waiting":
             _attempt["cancel"].set()                     # a new click replaces an attempt that was left open
         cancel = threading.Event()
         _attempt.clear()
-        _attempt.update(state="waiting", error="", cancel=cancel)
+        _attempt.update(state="", error="", cancel=cancel)      # "waiting" once IEUStudia listens for the browser
     rec = _load()
     client_id = rec.get("client_id") or FIRST_CLIENT
     state, nonce, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(48)
@@ -200,19 +220,46 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
             return {"state": "error", "error": str(exc)[:300] or t("Signing in did not work.")}
         return {"state": "done", "error": "", "email": new.get("email", "")}
 
+    claim = threading.Lock()                       # one callback is taken (requests come on threads of their own)
+
+    def opened() -> None:
+        with _lock:
+            first = _attempt.get("cancel") is cancel and not _attempt.get("opened")
+            if first:
+                _attempt["opened"] = True
+        if first:
+            log.info("ChatGPT sign-in: the browser opened the sign-in page")
+            emit({"type": "chatgpt", "state": "waiting", "opened": True, "error": "", "email": ""})
+
     class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 15                               # a connection a browser opens ahead and never uses holds nothing up
+
         def do_GET(self) -> None:  # noqa: N802 - http.server's naming
             url = urllib.parse.urlsplit(self.path)
+            if url.path == START:                  # our own link: on to OpenAI's sign-in page
+                if result or cancel.is_set():
+                    self._page(t("Sign-in not completed"), t("This sign-in has ended. Start it again from IEUStudia."), 410)
+                    return
+                opened()
+                self.send_response(302)
+                self.send_header("Location", auth_url)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if url.path != CALLBACK:
                 self.send_error(404)
                 return
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
-            if result or not hmac.compare_digest(q.get("state", ""), state):
-                self._page(t("Sign-in not completed"), t("This page did not come from the sign-in IEUStudia started. "
-                           "Close it and try again from IEUStudia."), 400)
-                return
-            out = complete(q)                      # before answering, so the page tells the truth
-            result.update(out)
+            with claim:
+                if result or not hmac.compare_digest(q.get("state", ""), state):
+                    self._page(t("Sign-in not completed"), t("This page did not come from the sign-in IEUStudia "
+                               "started. Close it and try again from IEUStudia."), 400)
+                    return
+                opened()                           # a copied OpenAI link can come back without our page
+                out = complete(q)                  # before answering, so the page tells the truth
+                result.update(out)
             if out["state"] == "done":
                 self._page(t("You're signed in"), t("IEUStudia can now use your ChatGPT plan. You can close this tab."))
             else:
@@ -230,11 +277,22 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
         def log_message(self, *args: Any) -> None:   # the callback URL holds a code: keep it out of the logs
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except OSError as exc:                         # security software that forbids listening, even on 127.0.0.1
+        log.warning("ChatGPT sign-in: could not wait for the browser on 127.0.0.1: %s", exc)
+        why = t("IEUStudia could not wait for the browser to come back ({why}). A security program may be blocking "
+                "it; allow IEUStudia in it and try again.", why=exc)
+        with _lock:
+            if _attempt.get("cancel") is cancel:
+                _attempt.update(state="error", error=why)
+        raise RuntimeError(why) from exc
     server.timeout = 0.5
-    redirect_uri = f"http://127.0.0.1:{server.server_address[1]}{CALLBACK}"
-    url = authorize_url(client_id=client_id, redirect_uri=redirect_uri, state=state, nonce=nonce, challenge=challenge,
-                        rec=rec, consent=consent)
+    port = server.server_address[1]
+    redirect_uri = f"http://127.0.0.1:{port}{CALLBACK}"
+    link = f"http://127.0.0.1:{port}{START}"
+    auth_url = authorize_url(client_id=client_id, redirect_uri=redirect_uri, state=state, nonce=nonce,
+                             challenge=challenge, rec=rec, consent=consent)
 
     def finish(state_: str, error: str = "", email: str = "") -> None:
         with _lock:
@@ -248,10 +306,18 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
             while not result and not cancel.is_set() and time.monotonic() - started < SIGN_IN_TIMEOUT_S:
                 server.handle_request()
             if cancel.is_set() and not result:
+                log.info("ChatGPT sign-in: stopped before it came back")
                 return
             if not result:
-                finish("error", t("The sign-in page was not completed in time. Try again."))
+                with _lock:
+                    seen = bool(_attempt.get("opened")) if _attempt.get("cancel") is cancel else True
+                log.warning("ChatGPT sign-in: nothing came back in %d min (the page %s)", SIGN_IN_TIMEOUT_S // 60,
+                            "opened in a browser" if seen else "never opened in a browser")
+                finish("error", t("The sign-in page was not completed in time. Try again.") if seen else
+                       t("The sign-in page never opened in a browser. Try again; if nothing opens, click Copy link "
+                         "and paste it into your browser's address bar."))
                 return
+            log.info("ChatGPT sign-in: %s", "signed in" if result["state"] == "done" else "came back without it")
             finish(result["state"], result.get("error", ""), result.get("email", ""))
         except Exception as exc:  # noqa: BLE001 - shown in the set-up
             log.warning("ChatGPT sign-in failed: %s", exc)
@@ -259,9 +325,30 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
         finally:
             server.server_close()
 
+    with _lock:
+        if _attempt.get("cancel") is cancel:
+            _attempt.update(state="waiting", link=link, page=auth_url, opened=False, launched=False)
     threading.Thread(target=run, name="chatgpt-sign-in", daemon=True).start()
-    open_browser(url)
-    return {"state": "waiting"}
+    launched = _launch(open_browser, link)
+    log.info("ChatGPT sign-in: waiting on 127.0.0.1:%d; %s", port,
+             "the browser was asked to open the page" if launched else "no browser could be started")
+    with _lock:
+        if _attempt.get("cancel") is cancel:
+            _attempt["launched"] = launched
+    return {"state": "waiting", "link": link, "page": auth_url, "launched": launched}
+
+
+def reopen_sign_in(open_browser: Callable[[str], Any] = webbrowser.open) -> dict[str, Any]:
+    """The sign-in page once more for the sign-in under way (it didn't show up, or its tab was closed): the same
+    link, so OpenAI's answer still comes back to it. Nothing under way: {"state": ""}."""
+    with _lock:
+        waiting = _attempt.get("state") == "waiting"
+        link, page = (_attempt.get("link", ""), _attempt.get("page", "")) if waiting else ("", "")
+    if not link:
+        return {"state": ""}
+    launched = _launch(open_browser, link)
+    log.info("ChatGPT sign-in: the page asked for again (%s)", "started" if launched else "no browser could be started")
+    return {"state": "waiting", "link": link, "page": page, "launched": launched}
 
 
 def cancel_sign_in() -> None:
@@ -269,6 +356,8 @@ def cancel_sign_in() -> None:
         if _attempt.get("state") == "waiting":
             _attempt["cancel"].set()
             _attempt.update(state="", error="")
+            _attempt.pop("link", None)
+            _attempt.pop("page", None)
 
 
 def _post_form(url: str, data: dict[str, str]) -> dict[str, Any]:

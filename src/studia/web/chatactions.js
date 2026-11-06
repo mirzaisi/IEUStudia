@@ -90,7 +90,7 @@
       }
       case "download_files": {
         const weeks = new Set(a.weeks || []);
-        const ids = d ? d.weeks.filter((w) => !weeks.size || weeks.has(w.no)).flatMap((w) => w.units.flatMap((u) => u.materials)).filter((m) => !m.downloaded && !m.gone).map((m) => m.id) : [];
+        const ids = d ? [...new Set(d.weeks.filter((w) => !weeks.size || weeks.has(w.no)).flatMap((w) => w.units.flatMap((u) => u.materials)).filter((m) => !m.downloaded && !m.gone).map((m) => m.id))] : [];
         if (!ids.length) { toast(t("Those files are already on this PC."), "info"); return; }
         const r = await call("materials_download", ids);
         if (r.ok) toast(t.n(ids.length, "Downloading {n} file", "Downloading {n} files"), "success");
@@ -101,7 +101,10 @@
         if (!k) { toast(t("That lecture was not found in this course."), "info"); return; }
         await St.openDay(k);
         if (a.action === "study_notes") setTimeout(() => A.claude(), 300);
-        else if (a.at) { const [mm, ss] = String(a.at).split(":").map(Number); setTimeout(() => St.jumpTo(+a.part || 1, (mm || 0) * 60 + (ss || 0)), 300); }
+        else if (a.at) {             // "mm:ss", or "h:mm:ss" past the first hour (as the transcript's labels read)
+          const secs = String(a.at).split(":").reduce((s, x) => s * 60 + (+x || 0), 0);
+          setTimeout(() => St.jumpTo(+a.part || 1, secs), 300);
+        }
         return;
       }
       case "weekly_digest": return go({ name: "digest" });

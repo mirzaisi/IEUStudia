@@ -139,6 +139,8 @@
   "Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone": "Duyurulan quizleri ve sınavları Google Takvim, Outlook ya da telefonun için bir takvim dosyası (.ics) olarak kaydet",
   "Add to calendar": "Takvime ekle",
   "IEUStudia couldn't check IEULearn.": "IEUStudia, IEULearn'ü kontrol edemedi.",
+  "Not everything could be checked.": "Her şey kontrol edilemedi.",
+  "Some courses' files and announcements couldn't be checked. They're checked again at the next sync.": "Bazı derslerin dosyaları ve duyuruları kontrol edilemedi. Bir sonraki eşitlemede yeniden kontrol edilecek.",
   "Your courses and transcripts on this PC still work.": "Bu bilgisayardaki derslerine ve ders metinlerine yine de ulaşabilirsin.",
   "{n} lecture was still waiting to be transcribed when IEUStudia closed": "IEUStudia kapandığında {n} ders hâlâ yazıya dökülmeyi bekliyordu",
   "{time} of recordings": "toplam {time} kayıt",

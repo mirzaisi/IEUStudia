@@ -45,6 +45,17 @@ log = logging.getLogger("studia")
 FETCH_AHEAD = 16          # screen frames fetched ahead of the one being compared
 HOLD_S = 5.0              # a slide seen in one keyframe only counts when it is still there this much later
 STEADY = 0.03             # ... changed by less than this (share of the thumbnail)
+MISSED_SHARE = 0.1        # more keyframes than this share failed to arrive: the capture is incomplete
+MISSED_RUN = 5            # ... or this many at the end in a row (the connection was lost)
+
+
+class Incomplete(RuntimeError):
+    """Too many of the screen recording's keyframes failed to arrive (the connection dropped): ``slides`` are the
+    ones captured anyway, kept, but the capture isn't done."""
+
+    def __init__(self, missed: int, total: int, slides: list["Slide"]):
+        super().__init__(f"{missed} of {total} screen frames couldn't be fetched")
+        self.slides = slides
 
 
 @dc.dataclass
@@ -248,6 +259,7 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
     cur_start, cur_thumb, cur_frame, cur_last_t = None, None, None, 0.0
     cur_seg, cur_n = None, 0                            # the current slide's last keyframe's segment, its keyframes
     total = len(segs)
+    missed, run = 0, 0                                  # keyframes that failed to arrive, those at the end in a row
 
     def finish(end_t: float) -> None:
         if cur_frame is None or cur_start is None:
@@ -306,6 +318,9 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
             except Exception as exc:  # noqa: BLE001 - a missing frame only lowers time precision
                 log.debug("Keyframe %d failed: %s", i, exc)
                 frame = None
+                missed, run = missed + 1, run + 1
+            else:
+                run = 0
             progress(i + 1, total)
             if frame is None:
                 continue
@@ -321,6 +336,8 @@ def extract_slides(session: requests.Session, master_url: str, out_dir: Path, re
                 cur_n += 1
             cur_seg, cur_last_t = seg, seg.t + seg.dur
         finish(cur_last_t)
+    if missed > total * MISSED_SHARE or run >= min(MISSED_RUN, total):
+        raise Incomplete(missed, total, slides)
     return slides
 
 

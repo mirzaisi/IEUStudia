@@ -178,6 +178,26 @@ def test_a_long_plan_title_keeps_its_md(tmp_path):
     assert path.suffix == ".md" and path.read_text(encoding="utf-8") == "# t\n"
 
 
+def test_two_review_sheets_with_one_title_on_one_day_keep_their_own_files(tmp_path):
+    from studia.plans import PlanRunner
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="t", code="MATH 240", name="P")])
+    runner = PlanRunner.__new__(PlanRunner)
+    runner._s = types.SimpleNamespace(lib=lib, output_root=tmp_path / "out")
+    first, second, saved = {}, {}, []
+    a = runner._write_file({"course_id": "c", "created_at": "2026-10-27T10:00"}, "Weeks 1–6 review sheet", "# a\n",
+                           "Review sheets", first, lambda: saved.append(dict(first)))
+    b = runner._write_file({"course_id": "c", "created_at": "2026-10-27T15:00"}, "Weeks 1–6 review sheet", "# b\n",
+                           "Review sheets", second)
+    assert a.name == "2026-10-27 - Weeks 1–6 review sheet.md" and b.name == "2026-10-27 - Weeks 1–6 review sheet (2).md"
+    assert a.read_text(encoding="utf-8") == "# a\n" and b.read_text(encoding="utf-8") == "# b\n"
+    assert saved == [{"stem": a.stem}]                          # the name is kept before the file is written
+    again = runner._write_file({"course_id": "c", "created_at": "2026-10-27T10:00"}, "Weeks 1–6 review sheet",
+                               "# a2\n", "Review sheets", first)
+    assert again == a and b.read_text(encoding="utf-8") == "# b\n"     # written again (a resume): its own name
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows file locking and its message")
 def test_a_pdf_held_open_by_a_viewer_is_named(tmp_path, monkeypatch):
     from studia import export
@@ -197,6 +217,21 @@ def test_a_pdf_held_open_by_a_viewer_is_named(tmp_path, monkeypatch):
         export.build_ai_pack(tmp_path, course, [course], [r], {"a": t}, {})
     assert err.value.filename.endswith("AI pack.pdf")
     assert plain_error(err.value).startswith("Windows did not let IEUStudia use MATH 240") and "open in" in plain_error(err.value)
+
+
+def test_an_ai_pack_whose_pdf_fails_never_hands_back_the_earlier_pdf(tmp_path, monkeypatch):
+    from studia import export
+
+    course = Course(id="c", title="t", code="MATH 240", name="P")
+    r = _rec("a", "c", dt.datetime(2026, 10, 14, 8, 30))
+    t = Transcript(delivery_id="a", segments=[Segment(0, 5, "hello", "en", 0.9)], duration_s=5, speech_s=5,
+                   language_seconds={"en": 5}, model="m", device="cpu", engine_version="x", created_at="2026-10-20")
+    monkeypatch.setattr(export, "html_to_pdf", lambda html, pdf, timeout=180: pdf.write_bytes(b"%PDF part 1") or True)
+    first = export.build_ai_pack(tmp_path, course, [course], [r], {"a": t}, {})
+    assert first["pdf"].read_bytes() == b"%PDF part 1"
+    monkeypatch.setattr(export, "html_to_pdf", lambda html, pdf, timeout=180: False)    # Edge timed out this time
+    again = export.build_ai_pack(tmp_path, course, [course], [r], {"a": t}, {})
+    assert "pdf" not in again and again["zip"].is_file() and not first["pdf"].exists()
 
 
 def test_file_downloads_wait_out_a_short_wifi_drop(monkeypatch):

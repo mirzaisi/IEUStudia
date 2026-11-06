@@ -15,6 +15,7 @@ from .domain import Course, Recording, Transcript
 
 log = logging.getLogger("studia")
 SCHEMA_VERSION = 1
+_NO_SOUND = re.compile(r"no sound|no speech", re.I)     # a "no sound" failure from before its warning (catchup's too)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -332,6 +333,10 @@ class Library:
                 for gone in existing - seen:
                     if not stored[gone][-1]:
                         self.db.execute("UPDATE recordings SET gone=1 WHERE delivery_id=?", (gone,))
+                # one a try found "not ready on Panopto yet" (still being encoded) and that is listed finished: ready
+                # to try again, so a batch takes it (a try that still finds it not ready says so again)
+                self.db.execute("UPDATE recordings SET status='available', error='' WHERE course_id=? AND "
+                                "status='processing' AND live=0 AND gone=0", (course_id,))
             dups = self._mark_duplicates(course_id)
             if moves:
                 self._note_day_moves(moves)
@@ -380,11 +385,15 @@ class Library:
 
     def _mark_duplicates(self, course_id: str) -> set[str]:
         rows = self.db.execute(
-            "SELECT r.delivery_id, r.start, r.duration_s, r.kind, r.first_seen, t.delivery_id AS done "
-            "FROM recordings r LEFT JOIN transcripts t ON t.delivery_id=r.delivery_id "
+            "SELECT r.delivery_id, r.start, r.duration_s, r.kind, r.first_seen, t.delivery_id AS done, r.status, "
+            "r.error, r.warnings FROM recordings r LEFT JOIN transcripts t ON t.delivery_id=r.delivery_id "
             "WHERE r.course_id=? AND r.gone=0 ORDER BY r.start", (course_id,)).fetchall()
+        # a copy whose try found no sound (as catchup.no_sound) goes behind the others: the lecturer's re-upload with
+        # sound is the one kept, and the silent one is its duplicate
         items = [(dt.datetime.fromisoformat(r["start"]), float(r["duration_s"] or 0), r["kind"], r["delivery_id"],
-                  bool(r["done"]), r["first_seen"] or "") for r in rows]
+                  bool(r["done"]), r["first_seen"] or "",
+                  '"no_speech"' in (r["warnings"] or "")
+                  or (r["status"] == "failed" and bool(_NO_SOUND.search(r["error"] or "")))) for r in rows]
         dup_of: dict[str, Optional[str]] = {i[3]: None for i in items}
         used = [False] * len(items)
         for i, a in enumerate(items):
@@ -398,7 +407,7 @@ class Library:
                 if not used[j] and b[2] == a[2] and abs(b[1] - a[1]) <= 2.0 and a[1] > 0:
                     cluster.append(j)
             if len(cluster) > 1:
-                canon = min(cluster, key=lambda k: (not items[k][4], items[k][5], items[k][3]))
+                canon = min(cluster, key=lambda k: (not items[k][4], items[k][6], items[k][5], items[k][3]))
                 for k in cluster:
                     used[k] = True
                     if k != canon:
@@ -699,6 +708,16 @@ class Library:
                 copy = held is not None and held[0] != course_id
                 if copy:                               # kept here too, but it is no news: another course has it
                     aid = f"{a.id}-{course_id}"
+                posted = a.posted_at.isoformat(timespec="minutes") if a.posted_at else ""
+                if posted and not self.db.execute("SELECT 1 FROM announcements WHERE id=?", (aid,)).fetchone():
+                    # its title edited on IEULearn (a new id): the post of the same author and minute whose title
+                    # isn't on the page any more is this one, updated below, not a second one; at the next syncs it
+                    # is the one already holding the new title (its id stays the old one)
+                    shown = {x.title for x in items if x.author == a.author and x.posted_at == a.posted_at}
+                    rows = [r for r in self.db.execute(
+                        "SELECT id, title FROM announcements WHERE course_id=? AND author=? AND posted_at=?",
+                        (course_id, a.author, posted)) if r[1] == a.title or r[1] not in shown]
+                    aid = min(rows, key=lambda r: r[1] != a.title)[0] if rows else aid
                 news = not first_sync and not copy
                 cur = self.db.execute("INSERT OR IGNORE INTO announcements(id, course_id, title, author, posted_at, body, "
                                       "first_seen, is_new) VALUES(?,?,?,?,?,?,?,?)",

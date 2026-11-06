@@ -61,8 +61,9 @@
     if (homeFrame) return;
     homeFrame = requestAnimationFrame(() => { homeFrame = 0; if (S.view.name === "home") renderView(); });
   }
-  function allMaterials(d) { return d ? [...d.general.flatMap((u) => u.materials), ...d.weeks.flatMap((w) => w.units.flatMap((u) => u.materials))] : []; }
-  function findMaterial(id) {
+  // each file once (a unit for two weeks, "Hafta 6 ve 7", is listed in both)
+  const eachOnce = (ms) => [...new Map(ms.map((m) => [m.id, m])).values()];
+  function allMaterials(d) { return d ? eachOnce([...d.general.flatMap((u) => u.materials), ...d.weeks.flatMap((w) => w.units.flatMap((u) => u.materials))]) : []; }  function findMaterial(id) {
     for (const cid in S.cd) { const m = allMaterials(S.cd[cid]).find((x) => x.id === id); if (m) return { cid, m }; }
     return null;
   }
@@ -366,7 +367,7 @@
   function materialsHTML(c, d) {
     const groups = [...(d.general.length ? [{ label: t("Course-wide"), mats: d.general.flatMap((u) => u.materials) }] : []),
       ...d.weeks.filter((w) => w.units.some((u) => u.materials.length)).map((w) => ({ label: `${t("Week {n}", { n: w.no })} · ${w.topic_en || w.units.map((u) => u.title).join(" · ")}`, sub: range(w.start, w.end), mats: w.units.flatMap((u) => u.materials) }))];
-    const all = groups.flatMap((g) => g.mats);
+    const all = eachOnce(groups.flatMap((g) => g.mats));
     const missing = all.filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
     let h = `<div class="toolbar"><span class="dim">${t.n(all.length, "{n} file on IEULearn · {local} on this PC", "{n} files on IEULearn · {local} on this PC", { local: all.filter((m) => m.downloaded).length })}</span><span class="spacer"></span>
       ${d.materials.new ? `<button class="btn ghost sm" data-act="course-seen" data-id="${c.id}" data-what="materials">${t("Mark as seen")}</button>` : ""}
@@ -473,7 +474,7 @@
           <button class="btn sm" data-act="export-calendar" title="${t("Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone")}">${I("calendar", "sm")} ${t("Add to calendar")}</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
     if (S.sync.error && !S.sync.running) {
-      h += `<div class="callout warning">${I("alert")}<div><b>${t("IEUStudia couldn't check IEULearn.")}</b> ${esc(S.sync.error)}
+      h += `<div class="callout warning">${I("alert")}<div><b>${S.sync.partial ? t("Not everything could be checked.") : t("IEUStudia couldn't check IEULearn.")}</b> ${esc(S.sync.error)}
         ${t("Your courses and transcripts on this PC still work.")} <button class="link" data-act="sync">${t("Try again")}</button></div></div>`;
     }
     if (S.resume && S.resume.count) {
@@ -537,7 +538,7 @@
     const nos = new Set(e.week ? coveredWeeks(d, e) : []);
     const weeks = d.weeks.filter((w) => nos.has(w.no));
     const days = weeks.flatMap((w) => w.days.filter((x) => x.mine !== false && x.parts));
-    const mats = weeks.flatMap((w) => w.units.flatMap((u) => u.materials)).filter((m) => !m.gone);
+    const mats = eachOnce(weeks.flatMap((w) => w.units.flatMap((u) => u.materials))).filter((m) => !m.gone);
     const inWeeks = (a) => { const dd = (a.date || "").slice(0, 10); return weeks.some((w) => w.start && dd >= w.start && dd <= (w.end || w.start)); };
     const kinds = e.kind === "quiz" ? ["quiz"] : [e.kind, "exam"];
     const sources = new Set(e.sources.map((s) => s.id));
@@ -673,6 +674,14 @@
         announcements: t.n(na, "{n} new announcement", "{n} new announcements") }), "success");
     } else if (nm) toast(t.n(nm, "{n} new material on IEULearn", "{n} new materials on IEULearn"), "success");
     else if (na) toast(t.n(na, "{n} new announcement on IEULearn", "{n} new announcements on IEULearn"), "success");
+    if ((e.errors || []).length) {       // a course page IEULearn didn't give: said in the top bar and on Home (aloud if you asked)
+      const msg = `${t("Some courses' files and announcements couldn't be checked. They're checked again at the next sync.")} ${e.errors.join(" ")}`;
+      if (!e.quiet) toast(msg, "warning");
+      if (!S.sync.running) {
+        S.sync = { ...S.sync, error: [S.sync.error, msg].filter(Boolean).join(" "), partial: true };
+        St.renderTop(); redrawHome();
+      }
+    }
     S.courses.forEach((c) => { if (S.cd[c.id] || S.view.name === "home") reloadSoon(c.id); });
   };
   St.onEvents.material = (e) => {
@@ -693,6 +702,18 @@
     updateMatRow(e.id);
   };
 
+  // open a downloaded file (or show it in its folder); one deleted or moved meanwhile is said so and can be
+  // downloaded again (its row gets the Download button back; the course's details are read again)
+  function openMaterial(id, reveal) {
+    return call("material_open", id, reveal).then((r) => {
+      if (r.ok) return;
+      toast(r.error, "error");
+      const hit = r.missing && findMaterial(id);
+      if (!hit) return;
+      hit.m.downloaded = false; hit.m.outdated = false;
+      updateMatRow(id); reloadSoon(hit.cid);
+    });
+  }
   function download(ids, open) {
     ids.forEach((id) => { S.mat[id] = { ...(S.mat[id] || {}), state: "queued", open: open || (S.mat[id] || {}).open }; updateMatRow(id); });
     return call("materials_download", ids).then((r) => { if (!r.ok) toast(r.error, "error"); });
@@ -735,10 +756,10 @@
     "mat-get": (el) => download([el.dataset.id], false),
     "mat-open": (el) => {
       const hit = findMaterial(el.dataset.id); if (!hit) return;
-      if (hit.m.downloaded) call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); });
+      if (hit.m.downloaded) openMaterial(el.dataset.id, false);
       else download([el.dataset.id], true);
     },
-    "mat-reveal": (el) => call("material_open", el.dataset.id, true),
+    "mat-reveal": (el) => openMaterial(el.dataset.id, true),
     "mat-all": (el) => {
       const d = S.cd[el.dataset.id]; if (!d) return;
       const ids = allMaterials(d).filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state))).map((m) => m.id);

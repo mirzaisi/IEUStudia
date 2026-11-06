@@ -153,16 +153,24 @@ class SyncService:
             self._save_cookies()
 
     def ensure_panopto(self, course_id: Optional[str] = None) -> None:
+        """Panopto signed in. With ``course_id`` (Panopto refused one of that course's recordings) the course is
+        opened through IEULearn again even while the sign-in works: the access a launch gives a course runs out
+        before the sign-in cookie does (see _reopen_empty)."""
         with self._lock:
-            if Panopto(self._session).is_authenticated():
+            if course_id is None and Panopto(self._session).is_authenticated():
                 return
             self.ensure_login()
             cid = course_id or next((c.id for c in self.lib.courses() if c.has_panopto), None)
             if cid is None:
                 raise RuntimeError(t("None of your courses has Panopto."))
-            IEULearn(self._session).launch_panopto(cid)
+            folder = IEULearn(self._session).launch_panopto(cid)
             if not Panopto(self._session).is_authenticated():
                 raise RuntimeError(t("Could not open Panopto through IEULearn. Try again in a moment."))
+            known = self.lib.get_course(cid)
+            if folder and known is not None and folder != known.folder_id:     # the course moved to another folder
+                self.lib.set_course_folder(cid, folder, True)
+            if folder:
+                self._launched(cid)
             self._save_cookies()
 
     # ------------------------------------------------------------------ sync
@@ -198,17 +206,25 @@ class SyncService:
         if first and not since:
             self.lib.set_meta(key, dt.datetime.now().isoformat(timespec="seconds"))
         new = self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "")
-        if heads != self._heads(course_id):
+        if heads != self._heads(course_id, empty_too=True):
             self.lib.set_meta(f"folders:{course_id}", json.dumps(heads))
         self.lib.set_meta(f"listed_full:{course_id}", dt.datetime.now().isoformat(timespec="seconds"))
         return new
 
+    def _launched(self, course_id: str) -> None:
+        """IEULearn opened the course's Panopto folder now, or was asked to for a course with no recordings yet (see
+        _reopen_empty)."""
+        self.lib.set_meta(f"launched:{course_id}", dt.datetime.now().isoformat(timespec="seconds"))
+
     def _reopen_empty(self, courses: list[Course], listed: dict[str, Optional[list]], failed: list[str],
                       progress: Callable[[str], None]) -> list[str]:
-        """Courses whose folder came back empty although it had recordings: Panopto shows a course's folder only for a
-        while after IEULearn opened it for this account, and the sign-in cookie outlives that (the listing then says
-        0 recordings, without an error). Each is opened again through IEULearn and listed once more. New ids."""
-        empty = [c for c in courses if listed.get(c.id) == [] and self.lib.has_recordings(c.id)]
+        """Courses whose folder came back empty: Panopto shows a course's folder only for a while after IEULearn
+        opened it for this account, and the sign-in cookie outlives that (the listing then says 0 recordings, without
+        an error). Each is opened again through IEULearn and listed once more: one that had recordings each time, one
+        that never had any (a new course, no lecture yet) at most every REOPEN_EMPTY_EVERY. New ids."""
+        empty = [c for c in courses if listed.get(c.id) == [] and (
+            self.lib.has_recordings(c.id)
+            or self._stale(self.lib.get_meta(f"launched:{c.id}") or "", self.REOPEN_EMPTY_EVERY))]
         if not empty:
             return []
         progress(t("Connecting to Panopto…"))
@@ -218,8 +234,19 @@ class SyncService:
             launched = list(pool.map(self._launch, [c.id for c in empty], sessions))
         for c, (cid, folder, s) in zip(empty, launched):
             merge_cookies(self._session, s)
-            if not folder:                              # IEULearn didn't open it: tried again next time
+            had = self.lib.has_recordings(cid)
+            if not had:                                 # tried: a failing course isn't opened again at every sync
+                self._launched(cid)
+            if folder is None and not had:              # its page has no Panopto any more (as for a new course)
+                self.lib.set_course_folder(cid, None, False)
+                self.lib.set_meta(f"nofolder:{cid}", dt.datetime.now().isoformat(timespec="seconds"))
                 continue
+            if not folder:                              # IEULearn didn't open it: said, and tried again next time
+                self.log.warning("Panopto listed no recordings for %s and IEULearn didn't open it again",
+                                 c.code or c.id)
+                failed.append(c.code or c.name or c.id)
+                continue
+            self._launched(cid)
             if folder != c.folder_id:                   # the course moved to another folder
                 self.lib.set_course_folder(cid, folder, True)
                 c = dc.replace(c, folder_id=folder)
@@ -237,12 +264,18 @@ class SyncService:
         self._save_cookies()
         return new_ids
 
-    def _heads(self, course_id: str) -> Optional[dict]:
-        """What the course's folders' first rows said at its last full listing (None: never listed in full)."""
+    def _heads(self, course_id: str, empty_too: bool = False) -> Optional[dict]:
+        """What the course's folders' first rows said at its last full listing (None: never listed in full). Folders
+        that were all empty give None too (``empty_too``: as stored): a probe can't tell an empty folder from one whose
+        access ran out, so such a course is listed in full and opened again if need be (see _reopen_empty)."""
         try:
-            return json.loads(self.lib.get_meta(f"folders:{course_id}") or "null") or None
+            heads = json.loads(self.lib.get_meta(f"folders:{course_id}") or "null") or None
         except ValueError:
             return None
+        if not empty_too and isinstance(heads, dict) and all(
+                isinstance(v, list) and v and not v[0] for v in heads.values()):
+            return None
+        return heads
 
     @staticmethod
     def _list(course: Course, s: requests.Session, heads: Optional[dict] = None
@@ -284,10 +317,21 @@ class SyncService:
         each time, so its end is noticed. Each course keeps its own clock: one that keeps failing doesn't stop the
         others' probes. None (the app): every folder in full, each time. ``dashboard`` False (the tray helper): the
         courses come from the small "My courses" list and the profile stays as stored (see _course_list); an expired
-        session is noticed the same way and signs in again with the dashboard. The app always loads the dashboard."""
+        session is noticed the same way and signs in again with the dashboard. The app always loads the dashboard.
+        ``partial``: the new ids found so far, before the dashboard arrives; also when the sync then fails (IEULearn
+        down, a changed password), so what was merged before is still told about."""
+        found: list[str] = []
+        try:
+            return self._sync(progress, partial, full_every, dashboard, found)
+        except BaseException:
+            if found:
+                partial(list(found))
+            raise
+
+    def _sync(self, progress: Callable[[str], None], partial: Callable[[list[str]], None],
+              full_every: Optional[dt.timedelta], dashboard: bool, new_ids: list[str]) -> SyncResult:
         t0 = time.monotonic()
         errors: list[str] = []
-        new_ids: list[str] = []
         with self._lock:
             progress(t("Checking IEULearn and Panopto…"))
             listed: dict[str, Optional[list]] = {}
@@ -363,6 +407,7 @@ class SyncService:
                         merge_cookies(self._session, s)
                         if folder:
                             self.lib.set_course_folder(cid, folder, True)
+                            self._launched(cid)
                         elif folder is None and cid in todo:   # "" = launch failed, retry next time
                             self.lib.set_course_folder(cid, None, False)
                             self.lib.set_meta(f"nofolder:{cid}", dt.datetime.now().isoformat(timespec="seconds"))
@@ -410,6 +455,8 @@ class SyncService:
     HELPER_UNITS_EVERY = dt.timedelta(hours=6)    # the tray helper, when it doesn't tell about new files
     HELPER_PANOPTO_EVERY = dt.timedelta(hours=6)  # the tray helper's full Panopto listing (probes in between)
     LIVE_LISTED = dt.timedelta(hours=12)          # (one "being recorded" for longer is stuck: the 6-hourly listing)
+    REOPEN_EMPTY_EVERY = dt.timedelta(hours=4)    # a course with no recordings yet whose folder lists empty is opened
+                                                  # through IEULearn again at most this often
 
     @staticmethod
     def _stale(stamp: str, every: dt.timedelta) -> bool:

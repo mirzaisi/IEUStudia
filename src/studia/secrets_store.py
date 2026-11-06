@@ -117,15 +117,37 @@ def _file_lock(path: Path) -> Iterator[None]:
         os.close(fd)                                     # closing it lets go of the lock
 
 
-def _load(folder: Optional[Path] = None) -> dict[str, Any]:
+class Unreadable(OSError):
+    """secrets.bin is there but couldn't be read or decrypted (a read blocked for a moment, say): it is never written
+    over with less than it holds."""
+
+
+def _load(folder: Optional[Path] = None, strict: bool = False) -> dict[str, Any]:
+    """What secrets.bin holds; {} when there is none or it can't be read. ``strict`` (before writing it back): one
+    that can't be read raises Unreadable instead, so the username and password in it aren't lost."""
     path = _file(folder)
     if not path.exists():
         return {}
     try:
         data = json.loads(unprotect(path.read_bytes()).decode("utf-8"))
         return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        if strict:
+            log.warning("Stored credentials could not be read; secrets.bin is left as it is")
+            raise Unreadable(f"secrets.bin could not be read: {exc}") from exc
         log.warning("Stored credentials could not be decrypted; they will be asked for again")
+        return {}
+
+
+def _load_for_new(folder: Optional[Path] = None) -> dict[str, Any]:
+    """Before the user's own sign-in or sign-out is stored: a secrets.bin that can't be read is kept aside as
+    secrets.bin.unreadable, not written over."""
+    try:
+        return _load(folder, strict=True)
+    except Unreadable:
+        path = _file(folder)
+        os.replace(path, path.with_name(path.name + ".unreadable"))
+        log.warning("The unreadable secrets.bin was kept as secrets.bin.unreadable")
         return {}
 
 
@@ -155,7 +177,7 @@ def get_credentials() -> Optional[tuple[str, str]]:
 
 def set_credentials(username: str, password: str, folder: Optional[Path] = None) -> None:
     with _turn(folder):
-        d = _load(folder)
+        d = _load_for_new(folder)
         d.update(username=username, password=password)
         d.pop("rejected", None)
         _save(d, folder)
@@ -164,9 +186,12 @@ def set_credentials(username: str, password: str, folder: Optional[Path] = None)
 def mark_rejected(password: str) -> None:
     """IEULearn refused ``password`` (it was changed): stop signing in with it until the user signs in again, so
     nothing keeps trying a wrong password in the background. A newer password stored meanwhile (by the app while
-    the tray helper was signing in, say) is left alone."""
+    the tray helper was signing in, say) is left alone, and so is a secrets.bin that can't be read now."""
     with _turn():
-        d = _load()
+        try:
+            d = _load(strict=True)
+        except Unreadable:
+            return
         if d.get("password") and d["password"] == password:
             d["rejected"] = _digest(password)
             _save(d)
@@ -179,7 +204,7 @@ def rejected() -> bool:
 
 def clear_credentials() -> None:
     with _turn():
-        d = _load()
+        d = _load_for_new()
         d.pop("username", None)
         d.pop("password", None)
         d.pop("rejected", None)
@@ -193,8 +218,10 @@ def load_cookies() -> list[dict[str, Any]]:
 
 
 def save_cookies(cookies: list[dict[str, Any]], folder: Optional[Path] = None) -> None:
+    """Raises Unreadable (an OSError: the caller logs it, and tries again with the next cookies) rather than write
+    a secrets.bin that can't be read now over with cookies only."""
     with _turn(folder):
-        d = _load(folder)
+        d = _load(folder, strict=True)
         d["cookies"] = cookies
         _save(d, folder)
 
