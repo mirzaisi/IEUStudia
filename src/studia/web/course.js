@@ -268,6 +268,7 @@
       <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available && (c.counts.done_any ?? c.counts.done) ? "" : "disabled"} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? t.html("Chat with {name} about this course", { name: St.aiName() }) : t("Transcribe a lecture first")) : St.aiHint()}">${I("chat", "sm")} ${t.html("Ask {name}", { name: St.aiName() })}</button>
         <button class="btn sm" data-act="course-sync" data-id="${c.id}" title="${t("Sync, then transcribe this course's lectures that aren't transcribed yet (your section) and download its materials")}">${I("zap", "sm")} ${t("Sync course")}</button>
         <button class="btn sm" data-act="plan-new" data-id="${c.id}" ${ai.available && ai.can_plans !== false ? "" : "disabled"} title="${ai.available ? t("Find YouTube videos that teach this course's weeks, checked through their captions") : St.aiHint()}">${I("youtube", "sm")} ${t("Video plan")}</button>
+        <button class="btn sm" data-act="cx-open" data-id="${c.id}" title="${t("A zip of this course for ChatGPT: the transcripts, the screens with what was said, the course files and the announcements of the weeks you pick, in a folder for each week")}">${I("archive", "sm")} ${t("Export for AI chat")}</button>
         <button class="btn sm" data-act="open-folder" data-id="${c.id}" title="${t("Open this course's folder")}">${I("folder-open", "sm")} ${t("Folder")}</button></div></div>`;
   }
   function tabsHTML(c, d, tab) {
@@ -474,7 +475,8 @@
         <div class="home-acts"><button class="btn sm" data-act="go" data-view="digest">${I("calendar", "sm")} ${t("Weekly digest")}</button>
           <button class="btn sm" data-act="plan-new">${I("youtube", "sm")} ${t("New study plan")}</button>
           <button class="btn sm" data-act="full-sync" title="${t("Sync every course, then transcribe your untranscribed lectures and download the materials (asks first)")}">${I("zap", "sm")} ${t("Full sync")}</button>
-          <button class="btn sm" data-act="export-calendar" title="${t("Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone")}">${I("calendar", "sm")} ${t("Add to calendar")}</button></div></div>
+          <button class="btn sm" data-act="export-calendar" title="${t("Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone")}">${I("calendar", "sm")} ${t("Add to calendar")}</button>
+          <button class="btn sm" data-act="cx-open" data-id="" title="${t("A zip of all your courses for ChatGPT: the transcripts, the screens with what was said, the course files and the announcements of the weeks you pick, in a folder for each course and week")}">${I("archive", "sm")} ${t("Export for AI chat")}</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
     if (wait.offline) {
       h += `<div class="callout warning home-wait">${I("wifi-off")}<div><b>${esc(waitLabel)}</b> ${esc(wait.message || "")}

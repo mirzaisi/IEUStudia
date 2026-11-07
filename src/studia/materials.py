@@ -223,6 +223,11 @@ class MaterialStore:
     def lib(self) -> Any:
         return self._s.lib
 
+    def busy(self, resource_id: str) -> bool:
+        """Is this file being downloaded right now (by the course page, or an export)?"""
+        with self._lock:
+            return resource_id in self._busy
+
     def folder_for(self, material: dict[str, Any]) -> Path:
         course = self.lib.get_course(material["course_id"])
         units = self.lib.units(material["course_id"])

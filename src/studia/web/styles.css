@@ -405,6 +405,8 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .composer .btn { height: 32px; }
 .composer-note { max-width: 820px; margin: 6px auto 0; color: var(--text-3); font-size: 11.5px; text-align: center; }
 .hero-acts { display: flex; gap: 6px; align-items: center; }
+/* a course's five buttons: in rows on the right, so the course's name keeps its room */
+.course-hero .hero-acts { flex-wrap: wrap; justify-content: flex-end; max-width: 450px; }
 .course-group-title .spacer { flex: 1; }
 
 /* "new chat" picker */
@@ -577,6 +579,7 @@ body:has(.queuebar:not(.hidden)) .toasts { bottom: calc(var(--queue-h, 60px) + 1
   .hero { flex-wrap: wrap; }
   .hero .grow { flex: 1 1 calc(100% - 70px); }
   .hero-acts { order: 3; flex-basis: 100%; padding-left: 70px; flex-wrap: wrap; }
+  .course-hero .hero-acts { max-width: none; justify-content: flex-start; }
 }
 @media (max-width: 1040px) { :root { --sidebar: 228px; } .view { padding: 18px 18px 26px; } }
 

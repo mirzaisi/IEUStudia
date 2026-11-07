@@ -314,6 +314,8 @@ class Api:
                     latest[f"mat:{e['id']}"] = e
                 elif e.get("type") == "plan":        # and per study plan
                     latest[f"plan:{e['id']}"] = e
+                elif e.get("type") == "course_export":     # and per export for an AI chat (its end wins)
+                    latest[f"cexp:{e['id']}"] = e
                 elif e.get("type") in ("queue", "engine", "ai"):
                     latest[e["type"]] = e
                 else:
@@ -1646,6 +1648,200 @@ class Api:
                 exporting.discard(day_key)
             raise
         return {"ok": True}
+
+    # ------------------------------------------------------------------ export for an AI chat (course_export.py)
+    @safe
+    def course_export_options(self, course_id: str = "") -> dict[str, Any]:
+        """What the "Export for AI chat" dialog offers for a course (``""``: every course): the weeks and what each
+        holds, about how big each makes the zip, where the zip goes and the free space there."""
+        from .course_export import options
+
+        return {"ok": True, **options(self._s.lib, self._s.settings, self._s.output_root, course_id or "")}
+
+    @safe
+    def course_export_start(self, course_id: str = "", choice: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Make the zip in the background; how far it is, its end or why it failed come as "course_export" events.
+        One export at a time: asked again while one is being made (a double click, a click repeated while the window
+        was slow to answer, the dialog opened again), that one answers and no second one starts."""
+        import uuid
+
+        from .course_export import Choice
+
+        ch = Choice.of(choice)
+        if ch.weeks is not None and not ch.weeks:
+            return {"ok": False, "error": t("Pick at least one week.")}
+        with self._starts_lock:
+            run = self.__dict__.get("_cexp")
+            if run is not None and run["running"]:
+                return {"ok": True, "running": True, "id": run["id"], "export": dict(run["last"])}
+            run = {"id": uuid.uuid4().hex[:12], "course_id": course_id or "", "running": True,
+                   "cancel": threading.Event(), "last": {}}
+            self._cexp = run
+        try:
+            threading.Thread(target=self._course_export, args=(run, ch), name="course-export", daemon=True).start()
+        except RuntimeError:                       # no thread could be started: nothing is being made
+            run["running"] = False
+            raise
+        return {"ok": True, "id": run["id"]}
+
+    def _course_export(self, run: dict[str, Any], choice: Any) -> None:
+        from . import course_export
+        from .net import plain_error
+
+        cid = run["course_id"]
+        end: dict[str, Any] = {}
+        try:
+            course = self._s.lib.get_course(cid) if cid else None
+            title = (course.code or course.name) if course else t("All courses")
+            base: dict[str, Any] = {"type": "course_export", "id": run["id"], "course_id": cid, "title": title}
+            said = [0.0]
+
+            def say(evt: dict[str, Any]) -> None:
+                if evt.get("quiet"):               # a download's bytes: a few times a second is plenty
+                    now = time.monotonic()
+                    if now - said[0] < 0.2:
+                        return
+                    said[0] = now
+                if "estimate" in evt:              # (said once; every later event carries it)
+                    base["estimate"] = evt["estimate"]
+                e = {**base, "phase": "progress", **{k: v for k, v in evt.items() if k != "quiet"}}
+                run["last"] = e
+                self._push(e)
+
+            fetch, finish = self._export_fetcher(run["cancel"])
+            run["last"] = {**base, "phase": "start"}
+            self._push(run["last"])
+            try:
+                out = course_export.build(self._s.lib, self._s.settings, self._s.output_root, cid, choice,
+                                          download=fetch, progress=say, cancel=run["cancel"])
+                end = {**base, "phase": "done", **out}
+            finally:
+                finish()
+        except Cancelled:
+            end = {**run["last"], "phase": "cancelled"}
+        except course_export.ExportError as exc:
+            end = {**run["last"], "phase": "error", "message": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - said in plain words (a full disk, a folder Windows won't let us use)
+            log.exception("Export for an AI chat failed")
+            end = {**run["last"], "phase": "error", "message": plain_error(exc)}
+        end = {"type": "course_export", "id": run["id"], "course_id": cid, **end}
+        with self._starts_lock:
+            run["running"], run["last"] = False, end
+        self._push(end)
+
+    def _export_fetcher(self, cancel: threading.Event) -> tuple[Callable[..., Any], Callable[[], None]]:
+        """The export's download of a course file not on this PC: the app's own (MaterialStore), through a short drop
+        of the connection and one new sign-in if IEULearn asks; the file's row on the course page follows it. A file
+        the page is downloading already is waited for, not downloaded twice."""
+        from .cancel import check
+        from .ieulearn import NeedLogin
+        from .materials import LEARN_HOST
+
+        state: dict[str, Any] = {"session": None, "relogged": set(), "used": False}
+
+        def session() -> Any:
+            if state["session"] is None:
+                state["session"] = self._s.sync.worker_session()
+            return state["session"]
+
+        def get(rid: str, progress: Callable[[int, int], None]) -> Any:
+            shown = [0.0]
+
+            def bytes_in(done: int, total: int) -> None:
+                progress(done, total)
+                now = time.monotonic()
+                if now - shown[0] > 0.25:
+                    shown[0] = now
+                    self._push({"type": "material", "id": rid, "state": "downloading", "done": done, "total": total})
+
+            waits = [3, 8]
+            while True:
+                check(cancel)
+                if self._s.materials.busy(rid):          # the page's own download of it: that one is waited for
+                    return self._downloaded(rid, cancel)
+                try:
+                    return self._s.materials.download(rid, session(), bytes_in, cancel)
+                except NeedLogin:
+                    if rid in state["relogged"]:
+                        raise RuntimeError(t(
+                            "IEULearn asked to sign in again for this file although IEUStudia had just signed in. Open "
+                            "it from the course's page on learn.ieu.edu.tr.")) from None
+                    state["relogged"].add(rid)
+                    self._s.sync.ensure_login()
+                    state["session"] = None
+                except NetworkError as exc:
+                    other = (exc.host or "").lower()
+                    if other and other != LEARN_HOST and not other.endswith(".ieu.edu.tr"):
+                        raise RuntimeError(t("This material is a link to {host}, which can't be reached (the site may "
+                                             "be gone, or blocked on this network). Open it from the course's page on "
+                                             "learn.ieu.edu.tr.", host=other)) from exc
+                    if not waits:
+                        raise
+                    cancel.wait(waits.pop(0))
+
+        def fetch(rid: str, progress: Callable[[int, int], None]) -> Any:
+            with self._mat_lock:                         # queued on the page as well: downloaded here, once
+                if rid in self._mat_queue:
+                    self._mat_queue.remove(rid)
+            state["used"] = True
+            self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0})
+            try:
+                path = get(rid, progress)
+            except Cancelled:
+                self._push({"type": "material", "id": rid, "state": "idle"})
+                raise
+            except Exception as exc:
+                self._push({"type": "material", "id": rid, "state": "error", "quiet": True,
+                            "error": net.plain_error(exc) if str(exc) else t("Download failed")})
+                raise
+            pages = self._s.materials.index_text(rid)
+            self._push({"type": "material", "id": rid, "state": "done", "path": str(path), "pages": pages})
+            return path
+
+        def finish() -> None:
+            if state["session"] is not None:
+                self._s.sync.absorb(state["session"])
+            if state["used"]:
+                self._courses_dirty.set()
+
+        return fetch, finish
+
+    def _downloaded(self, rid: str, cancel: threading.Event, wait_s: float = 600.0) -> Any:
+        """A course file another download (the course page's) has: its path once that one is done."""
+        end = time.monotonic() + wait_s
+        while self._s.materials.busy(rid) and time.monotonic() < end:
+            if cancel.wait(0.25):
+                raise Cancelled()
+        m = self._s.lib.get_material(rid) or {}
+        if m.get("local_path") and Path(m["local_path"]).is_file():
+            return m["local_path"]
+        raise RuntimeError(t("Download failed"))
+
+    @safe
+    def course_export_cancel(self) -> dict[str, Any]:
+        """Stop the export being made: its unfinished zip is removed (course files it downloaded stay)."""
+        run = self.__dict__.get("_cexp")
+        if run is not None and run["running"]:
+            run["cancel"].set()
+        return {"ok": True}
+
+    @safe
+    def course_export_state(self) -> dict[str, Any]:
+        """The export being made, or the last one (its last event), for the dialog opened again."""
+        run = self.__dict__.get("_cexp")
+        return {"ok": True, "running": bool(run and run["running"]), "export": dict(run["last"]) if run else None}
+
+    @safe
+    def course_export_show(self, path: str) -> dict[str, Any]:
+        """An export's zip, selected in Explorer (only one IEUStudia wrote in its folder)."""
+        p = Path(path or "")
+        try:
+            inside = p.is_file() and p.resolve().is_relative_to(self._s.output_root.resolve())
+        except OSError:
+            inside = False
+        if not inside:
+            return {"ok": False, "error": t("This zip is no longer there (moved or deleted). Export it again.")}
+        return self._open_here(p, show=True)
 
     @safe
     def ai_estimate(self, day_key: str, include_slides: bool = False) -> dict[str, Any]:
