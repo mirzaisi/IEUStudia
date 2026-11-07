@@ -415,7 +415,7 @@ out.noDefault = waiting({ edge: true, browser: "Microsoft Edge", via: "edge", wh
 U.busy["login:chatgpt"] = Date.now() - 100000;
 out.lost = waiting({ step: "opened", opened: true, browser: "Brave", via: "default" });
 console.log(JSON.stringify(out));
-process.exit(0);
+process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 """
 # the buttons the Turkish texts name ("Sayfayı yeniden aç'a tıkla"), and what the card needs for each
 WAYS_TR = {"Bağlantıyı kopyala": 'data-act="ai-copy"', "Sayfayı yeniden aç": 'data-act="ai-login-again"',
