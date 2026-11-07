@@ -90,6 +90,39 @@ def test_stuck_again_after_a_restart_asks(tmp_path, monkeypatch):
     assert len(s.buttons) == 2 and s.status == "IEUStudia is stuck again"
 
 
+@pytest.mark.parametrize("phase,said", [("window", True), ("", True), ("crashed", False), ("shown", False)])
+def test_an_app_that_ends_before_its_window_without_a_word_is_said(tmp_path, monkeypatch, phase, said):
+    """An antivirus ending IEUStudia as it starts: the start-up window used to just disappear, and nothing came.
+    An error the app shows itself marks "crashed" first, and then only its own message speaks."""
+    marker = tmp_path / "instance.json"
+    marker.write_text(json.dumps({"pid": 4321, "phase": phase, "phase_at": time.time()}), encoding="utf-8")
+    fake = _FakeUser32()
+    monkeypatch.setattr(splash, "user32", fake)
+    monkeypatch.setattr(splash, "_alive", lambda pid: False)
+    s = splash.Splash(4321, "light", False, "app-pythonw.exe", str(marker), str(tmp_path / "logs"))
+    s.fonts = {"button": 0}
+    for _ in range(18):
+        s._tick()
+    if said:
+        assert s.vanished and s.status == "IEUStudia closed while it was starting" and "antivirus" in s.detail
+        assert len(s.buttons) == 2 and "DestroyWindow" not in fake.calls     # Restart and Close stay
+    else:
+        assert not s.vanished and "DestroyWindow" in fake.calls
+
+
+def test_the_app_marks_a_start_that_failed_with_its_own_message(isolated_home, monkeypatch):
+    from studia import app, osutil
+
+    monkeypatch.setattr(osutil.impl(), "message_box", lambda text, title="", flags=0: 1)
+
+    def fail(argv):
+        raise RuntimeError("something else")
+
+    monkeypatch.setattr(app, "_main", fail)
+    app.main([])
+    assert winutil.read_instance(winutil.instance_name()).get("phase") == "crashed"
+
+
 def test_stall_diagnostics_list_modules_and_dump_stacks(tmp_path):
     splash.save_diagnostics(os.getpid(), tmp_path / "logs")
     txt = (tmp_path / "logs" / "startup-stall.txt").read_text(encoding="utf-8").lower()

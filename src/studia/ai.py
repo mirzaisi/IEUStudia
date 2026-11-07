@@ -67,13 +67,24 @@ USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def _npm_folders() -> list[str]:
+    """npm's global folders: the usual one, and the folder of a "claude"/"codex" shim found on PATH (another prefix).
+    The shims (claude.cmd, codex.cmd) start Node.js, which starts the real program: IEUStudia runs that program itself,
+    so Node.js is not needed and Cancel ends the program, not only its shim."""
+    out = [os.path.join(os.environ.get("APPDATA", ""), "npm")]
+    for name in ("claude", "codex"):
+        shim = shutil.which(name) or ""
+        if shim and not shim.lower().endswith(".exe"):
+            out.append(os.path.dirname(shim))
+    return list(dict.fromkeys(x for x in out if x))
+
+
 def _candidates() -> list[str]:
     env = os.environ
-    c = [
-        os.path.join(env.get("APPDATA", ""), "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
-        os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "claude.exe"),
-        shutil.which("claude.exe") or "",
-    ]
+    c = [os.path.join(npm, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe") for npm in _npm_folders()]
+    c += [os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "claude.exe"),       # Anthropic's installer
+          os.path.join(env.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links", "claude.exe"),   # winget
+          shutil.which("claude.exe") or ""]
     c += sorted(glob.glob(os.path.join(env.get("USERPROFILE", ""), ".vscode", "extensions",
                                        "anthropic.claude-code-*", "resources", "native-binary", "claude.exe")),
                 reverse=True)
@@ -81,46 +92,116 @@ def _candidates() -> list[str]:
         home = os.path.expanduser("~")
         c += [os.path.join(home, ".local", "bin", "claude"), os.path.join(home, ".claude", "local", "claude"),
               shutil.which("claude") or ""]
-    return [p for p in c if p and os.path.isfile(p)]
+    return list(dict.fromkeys(p for p in c if p and os.path.isfile(p)))
+
+
+_failed: dict[str, tuple[str, float, str]] = {}      # path → (size:modified, when, why): a copy that did not start
+FAILED_FOR_S = 300                                   # is not asked again for 5 minutes (one that hangs took 20 s each
+                                                     # time, and the set-up asks every 4 s), or until the file changes
+
+
+def _failed_before(path: str, stamp: str) -> str:
+    known = _failed.get(path)
+    if known and known[0] == stamp and time.monotonic() - known[1] < FAILED_FOR_S:
+        return known[2]
+    return ""
+
+
+def _version_of(text: str) -> tuple[int, ...]:
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(x) for x in m.groups()) if m else ()
+
+
+def _probe(cmd: list[str], timeout: float = 20, env: Optional[dict[str, str]] = None) -> tuple[int, str, str]:
+    """Run a CLI to ask it something: (exit code, its output, why it could not run)."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=_NO_WINDOW,
+                           encoding="utf-8", errors="replace", env=env)
+        return r.returncode, (r.stdout or "") + (r.stderr or ""), ""
+    except subprocess.TimeoutExpired:
+        return -1, "", t("it did not answer within {s} seconds", s=int(timeout))
+    except OSError as exc:
+        from .net import plain_error
+
+        if getattr(exc, "winerror", None) == 225:
+            return -1, "", t("Windows Security (or your antivirus) blocked it")
+        if getattr(exc, "winerror", None) in (193, 216):         # not a valid program: a cut-off file, another CPU's
+            return -1, "", t("the file is damaged or not made for this PC")
+        return -1, "", plain_error(exc)
+
+
+# Claude Code: the version IEUStudia's flags were checked with (newer versions keep them); an older one is asked for
+# its --help, and one that lacks a flag (an old npm or VS Code copy that doesn't update itself) is passed over
+CLAUDE_KNOWN_GOOD = (2, 1, 287)
+CLAUDE_FLAGS = ("--restricted", "--strict-mcp-config", "--no-session-persistence", "--permission-prompts", "--effort",
+                "--tools", "--input-format")
 
 
 @functools.lru_cache(maxsize=1)
 def claude_cli_info() -> dict[str, Any]:
-    """Where Claude Code is and its version. ``claude --version`` takes ~1 s, so the answer is remembered
-    until the program file changes (Claude Code updates itself)."""
+    """Where Claude Code is and its version: the first copy that runs and takes the flags IEUStudia passes.
+    ``claude --version`` takes ~1 s, so the answer is remembered until the program file changes (Claude Code updates
+    itself). Without one that works: "too_old" (a copy that lacks them) or "problem" (a copy that does not start)."""
     from .paths import app_dir
 
     cache = app_dir() / "claude-version.json"
     try:
         known = json.loads(cache.read_text(encoding="utf-8"))
+        known = known if isinstance(known, dict) else {}
     except (OSError, ValueError):
         known = {}
+    if "path" in known:                                       # the earlier form: one program
+        known = {known["path"]: known}
+    old: dict[str, str] = {}
+    problem: dict[str, str] = {}
     for path in _candidates():
         try:
             st = os.stat(path)
         except OSError:
             continue
         stamp = f"{st.st_size}:{st.st_mtime_ns}"
-        if known.get("path") == path and known.get("stamp") == stamp and known.get("version"):
-            return {"available": True, "path": path, "version": known["version"]}
-        try:
-            out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=20,
-                                 creationflags=_NO_WINDOW, env=_claude_env())
-            ver = (out.stdout or "").strip().split(" ")[0]
-            if out.returncode == 0 and ver:
-                try:
-                    cache.write_text(json.dumps({"path": path, "stamp": stamp, "version": ver}), encoding="utf-8")
-                except OSError:
-                    pass
-                return {"available": True, "path": path, "version": ver}
-        except (OSError, subprocess.TimeoutExpired):
+        k = known.get(path) or {}
+        if k.get("stamp") == stamp and k.get("version") and "ok" in k:
+            ver, ok = k["version"], bool(k["ok"])
+        elif failed := _failed_before(path, stamp):
+            problem = problem or {"path": path, "error": failed}
             continue
-    return {"available": False, "path": "", "version": ""}
+        else:
+            code, out, why = _probe([path, "--version"], 20, _claude_env())
+            ver = (out or "").strip().split(" ")[0] if code == 0 else ""
+            if not _version_of(ver):
+                log.warning("Claude Code at %s did not start: %s", path, why or f"exit code {code}: {out.strip()[-200:]}")
+                why = why or t("it ended with code {code}", code=code)
+                _failed[path] = (stamp, time.monotonic(), why)
+                problem = problem or {"path": path, "error": why}
+                continue
+            ok = _version_of(ver) >= CLAUDE_KNOWN_GOOD
+            if not ok:
+                code, out, _ = _probe([path, "--help"], 30, _claude_env())
+                ok = code == 0 and all(f in out for f in CLAUDE_FLAGS)
+                if not ok:
+                    log.warning("Claude Code %s at %s is too old for IEUStudia; looking for another copy", ver, path)
+            known[path] = {"stamp": stamp, "version": ver, "ok": ok}
+            try:
+                cache.write_text(json.dumps(known), encoding="utf-8")
+            except OSError:
+                pass
+        if ok:
+            return {"available": True, "path": path, "version": ver}
+        old = old or {"path": path, "version": ver}
+    out_: dict[str, Any] = {"available": False, "path": "", "version": ""}
+    if old:
+        out_["too_old"] = old
+    elif problem:
+        out_["problem"] = problem
+    return out_
 
 
 def _require_claude() -> str:
     info = claude_cli_info()
     if not info["available"]:
+        if info.get("too_old"):
+            raise RuntimeError(t(CLAUDE_OLD, version=info["too_old"]["version"]))
         raise RuntimeError(t("Claude Code is not installed on this PC. Settings → AI installs it for you."))
     return info["path"]
 
@@ -299,12 +380,44 @@ def _said_when(said: str) -> str:
 
 # friendly_error's own messages: given to it again (the set-up's test does), they are left as they are, in English
 # or in the language shown
+KEY_REFUSED = N_("Claude Code is set to use an API key that Anthropic refused. Remove the key from Claude Code's settings "
+                 "(settings.json in the .claude folder of your user folder), then sign in with Claude under Settings → "
+                 "AI.")
+NO_CREDIT = N_("The Anthropic API account Claude Code is signed in with has no credit left. To use your Claude Pro or Max "
+               "plan instead, sign in again with your Claude account under Settings → AI.")
+TOKEN_REFUSED = N_("Claude Code uses the CLAUDE_CODE_OAUTH_TOKEN set on this PC, and Anthropic refused it (it expired or "
+                   "was revoked). Make a new one with claude setup-token, or remove the variable and sign in under "
+                   "Settings → AI.")
+UNREACHABLE = N_("Claude could not be reached: check your internet connection (on campus Wi-Fi, make sure you are signed "
+                 "in to it), then try again.")
+INSECURE = N_("Claude Code could not make a secure connection to Anthropic: an antivirus that scans HTTPS (or a Wi-Fi "
+              "sign-in page) may be in the way. Open any website in your browser, then try again; if it keeps "
+              "happening, turn off HTTPS scanning in your antivirus.")
+BLOCKED = N_("Windows Security (or your antivirus) blocked Claude Code. Claude Code comes from Anthropic: if your "
+             "antivirus put it in quarantine, restore it there, then try again.")
+RENEWING = N_("Claude Code was renewing your sign-in in another window. Try again in a minute.")
+CLAUDE_OLD = N_("The Claude Code on this PC ({version}) is too old for IEUStudia. Settings → AI: Update Claude Code.")
+# a copy not older than the one IEUStudia was checked with turned down a flag: updating it can't help (it is the newest
+# already), and it is not passed over; a newer IEUStudia knows what changed
+CLAUDE_NEWER = N_("This Claude Code ({version}) is newer than this IEUStudia knows, and it turned down how IEUStudia "
+                  "asks it. Look for a new version of IEUStudia in Settings → About.")
+START_FAILED = N_("Claude Code could not be started: {error} Install it again under Settings → AI.")
 _OWN = (N_("You have reached your Claude usage limit — it resets {when}."),
         N_("You have reached your Claude usage limit — it resets at {time}."),
         N_("You have reached your Claude usage limit."),
         N_("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max."),
         N_("Claude Code is not signed in. Settings → AI → Sign in with Claude."),
-        N_("Claude Code is not installed on this PC. Settings → AI installs it for you."))
+        N_("Claude Code is not installed on this PC. Settings → AI installs it for you."),
+        KEY_REFUSED, NO_CREDIT, TOKEN_REFUSED, UNREACHABLE, INSECURE, BLOCKED, RENEWING, CLAUDE_OLD, START_FAILED,
+        N_("Claude took too long to answer. Try again; if it keeps happening, pick a lower reasoning level."),
+        N_("Claude did not return a result."), CLAUDE_NEWER,
+        N_("Claude Code stopped unexpectedly. Try again."))
+_CLAUDE_NETWORK = ("unable to connect", "connection error", "connection refused", "connection reset", "econnrefused",
+                   "econnreset", "enotfound", "eai_again", "getaddrinfo", "fetch failed", "socket hang up",
+                   "network is unreachable", "request timed out", "no response from api")
+_CERTIFICATE = ("self signed certificate", "self-signed certificate", "unable to get local issuer certificate",
+                "unable_to_get_issuer_cert", "certificate verify failed", "unable to verify the first certificate",
+                "cert_has_expired")
 
 
 def _explained(m: str) -> bool:
@@ -333,6 +446,30 @@ def friendly_error(message: str) -> str:
         return t("You have reached your Claude usage limit.")
     if "does not have access to claude code" in low or "free plan" in low:
         return t("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.")
+    if re.search(r"unknown option|unknown argument|unexpected argument", low):     # older than the flags IEUStudia passes
+        version = claude_cli_info().get("version") or ""
+        if version and _version_of(version) >= CLAUDE_KNOWN_GOOD:
+            return t(CLAUDE_NEWER, version=version)
+        return t(CLAUDE_OLD, version=version or "?")
+    if "contains a virus" in low or "potentially unwanted software" in low:
+        return t(BLOCKED)
+    if "fix external api key" in low:                     # a key from Claude Code's settings, refused or malformed
+        return t(KEY_REFUSED)
+    if "credit balance is too low" in low:
+        return t(NO_CREDIT)
+    if "another claude code process" in low and "refresh" in low:
+        return t(RENEWING)
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and any(k in low for k in ("oauth token", "401", "revoked",
+                                                                           "failed to authenticate")):
+        return t(TOKEN_REFUSED)
+    from .net import cert_date_said, clock_tls_text
+
+    if cert_date_said(m):                                 # a wrong date on this PC, not an antivirus
+        return clock_tls_text()
+    if any(k in low for k in _CERTIFICATE):
+        return t(INSECURE)
+    if any(k in low for k in _CLAUDE_NETWORK):
+        return t(UNREACHABLE)
     if any(k in low for k in ("/login", "not logged in", "invalid api key", "authentication", "oauth")):
         return t("Claude Code is not signed in. Settings → AI → Sign in with Claude.")
     service = aierrors.from_message("Claude", m)        # "API Error: 500 …", "529 Overloaded": on Anthropic's side
@@ -344,12 +481,37 @@ def friendly_error(message: str) -> str:
 def _claude_failure(message: str) -> RuntimeError:
     """Claude Code's error as the exception raised: a ServiceError when it failed on Anthropic's side (Claude Code
     has already asked again by then), with its own words kept in the log."""
+    if re.search(r"unknown option|unknown argument|unexpected argument", (message or "").lower()):
+        text = friendly_error(message)                # (with its version, before it is passed over)
+        info = claude_cli_info()
+        if _version_of(info.get("version") or "") >= CLAUDE_KNOWN_GOOD:
+            log.warning("Claude Code %s turned down a flag IEUStudia passes: %s", info.get("version"),
+                        (message or "")[:300])
+            return RuntimeError(text)                 # not older: kept (an update of it can't help)
+        log.warning("Claude Code is too old for IEUStudia: %s", (message or "")[:300])
+        _claude_too_old(info.get("path", ""))
+        return RuntimeError(text)
     text = friendly_error(message)
     service = aierrors.from_message("Claude", message)
     if service is not None and text == str(service):
         log.warning("Claude failed on its side: %s", (message or "")[:800])
         return service
     return RuntimeError(text)
+
+
+def _claude_too_old(path: str) -> None:
+    """Claude Code turned down a flag IEUStudia passes: that copy is passed over from now on (until it updates)."""
+    from .paths import app_dir
+
+    cache = app_dir() / "claude-version.json"
+    try:
+        known = json.loads(cache.read_text(encoding="utf-8"))
+        if isinstance(known, dict) and isinstance(known.get(path), dict):
+            known[path]["ok"] = False
+            cache.write_text(json.dumps(known), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    claude_cli_info.cache_clear()
 
 
 def usage_of(result: dict[str, Any]) -> dict[str, int]:
@@ -482,18 +644,25 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
         sp = Path(work) / "system.txt"
         sp.write_text(system_prompt, encoding="utf-8")
         started = time.monotonic()
-        proc = subprocess.Popen(_command(model, effort, sp), cwd=work, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=env)
+        try:
+            proc = subprocess.Popen(_command(model, effort, sp), cwd=work, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=env)
+        except OSError as exc:
+            log.warning("Claude Code did not start: %r", exc)
+            raise _start_failure("claude", exc) from None
         assert proc.stdin and proc.stdout
         proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
         proc.stdin.close()
         result: dict[str, Any] = {}
         text_parts: list[str] = []
         killer_stop = threading.Event()
+        timed_out: list[bool] = []
 
         def killer() -> None:
             while not killer_stop.wait(0.5):
                 if (cancel is not None and cancel.is_set()) or time.monotonic() - started > timeout_s:
+                    if not (cancel is not None and cancel.is_set()):
+                        timed_out.append(True)
                     proc.kill()
                     return
 
@@ -520,6 +689,10 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
+    if timed_out and not result:
+        log.warning("Claude Code did not answer within %s s: %s", timeout_s, err[-400:])
+        raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
+                             "reasoning level."))
     if not result or result.get("is_error") or result.get("subtype") not in (None, "success"):
         msg = result.get("result") or (err.strip().splitlines() or [t("Claude did not return a result.")])[-1]
         raise _claude_failure(msg)
@@ -554,9 +727,10 @@ class ClaudeSession:
             self._proc = subprocess.Popen(_command(model, effort, sp, partial=True), cwd=self._work,
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                           creationflags=_NO_WINDOW, env=_claude_env())
-        except OSError:
+        except OSError as exc:
             shutil.rmtree(self._work, ignore_errors=True)
-            raise
+            log.warning("Claude Code did not start: %r", exc)
+            raise _start_failure("claude", exc) from None
         self._events: "queue.Queue[Optional[dict[str, Any]]]" = queue.Queue()
         self._stderr: "collections.deque[str]" = collections.deque(maxlen=40)
         self._turn = threading.Lock()
@@ -668,7 +842,8 @@ class ClaudeSession:
                     break
             self.last_used = time.monotonic()
             if timed_out:
-                raise RuntimeError(t("Claude took too long to answer."))
+                raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
+                                     "reasoning level."))
             text = _join(blocks)
             if interrupted_at is None:
                 if result is None or result.get("is_error") or result.get("subtype") not in (None, "success"):
@@ -807,55 +982,124 @@ def claude_auth() -> dict[str, Any]:
         d = json.loads(out[out.find("{"):out.rfind("}") + 1])
     except ValueError:
         return {"logged_in": False, "plan": "", "email": "", "error": out.strip()[-300:]}
-    plan = str(d.get("subscriptionType") or ("api" if d.get("authMethod") in ("apiKey", "console") else ""))
-    return {"logged_in": bool(d.get("loggedIn")), "plan": plan, "email": str(d.get("email") or "")}
+    # authMethod: "claude.ai" (the subscription), "api_key" (apiKeySource: ANTHROPIC_API_KEY, "/login managed key" for
+    # an Anthropic Console sign-in, apiKeyHelper), "api_key_helper", "oauth_token" (CLAUDE_CODE_OAUTH_TOKEN),
+    # "third_party", "none"; before 2.1: "apiKey", "console"
+    method = str(d.get("authMethod") or "")
+    plan = str(d.get("subscriptionType") or "")
+    if not plan and method in ("api_key", "api_key_helper", "apiKey", "console"):
+        plan = "api"
+    return {"logged_in": bool(d.get("loggedIn")), "plan": plan, "email": str(d.get("email") or ""),
+            "method": method, "key_source": str(d.get("apiKeySource") or "")}
 
 
 # ----------------------------------------------------------------------- ChatGPT through the Codex CLI
 def _codex_candidates() -> list[str]:
-    """Where the Codex CLI can be: the user's own install (npm, PATH) first, then the copy IEUStudia installed."""
+    """Where the Codex CLI can be: the user's own install (npm, PATH) first, then the copy IEUStudia installed. npm's
+    shims start Node.js, which starts the program: the program in the npm package is used (x64 and Arm builds, and
+    the older layout of the package)."""
     from .ai_setup import codex_exe
 
     env = os.environ
-    npm = os.path.join(env.get("APPDATA", ""), "npm")
-    c = [os.path.join(npm, "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-win32-x64", "vendor",
-                      "x86_64-pc-windows-msvc", "bin", "codex.exe"),
-         os.path.join(env.get("LOCALAPPDATA", ""), "Programs", "codex", "codex.exe"),
-         os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "codex.exe"),
-         shutil.which("codex.exe") or "", shutil.which("codex") or "", codex_exe()]
+    c: list[str] = []
+    for npm in _npm_folders():
+        pkg = os.path.join(npm, "node_modules", "@openai", "codex")
+        c += [os.path.join(pkg, "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin",
+                           "codex.exe"),
+              os.path.join(pkg, "node_modules", "@openai", "codex-win32-arm64", "vendor", "aarch64-pc-windows-msvc",
+                           "bin", "codex.exe"),
+              os.path.join(pkg, "vendor", "x86_64-pc-windows-msvc", "codex", "codex.exe")]
+    c += [os.path.join(env.get("LOCALAPPDATA", ""), "Programs", "codex", "codex.exe"),
+          os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "codex.exe"),
+          shutil.which("codex.exe") or ""]
     if sys.platform != "win32":
         c.insert(0, os.path.join(os.path.expanduser("~"), ".local", "bin", "codex"))
-    return [x for x in c if x and os.path.isfile(x)]
+        c.append(shutil.which("codex") or "")
+    c.append(codex_exe())
+    return list(dict.fromkeys(x for x in c if x and os.path.isfile(x)))
 
 
-_codex_versions: dict[str, tuple[str, str]] = {}      # path → (size:modified, version): the same file, the same answer
+# the Codex CLI: the version IEUStudia's flags were checked with; an older one is asked for `codex exec --help`, and one
+# without a flag the app passes is passed over (it failed every request with "unexpected argument", shown as "ChatGPT
+# did not return an answer"), so IEUStudia's own copy is used instead
+CODEX_KNOWN_GOOD = (0, 156, 1)
+CODEX_FLAGS = ("--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check")
+_codex_versions: dict[str, tuple[str, str, bool]] = {}   # path → (size:modified, version, takes the flags)
+
+
+def _codex_stamp(path: str) -> str:
+    try:
+        st = os.stat(path)
+        return f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        return ""
 
 
 @functools.lru_cache(maxsize=1)
 def codex_cli_info() -> dict[str, Any]:
+    """The Codex CLI to use: the first copy that runs and takes the flags IEUStudia passes. Without one: "too_old"
+    (a copy that lacks them) or "problem" (a copy that does not start)."""
+    old: dict[str, str] = {}
+    problem: dict[str, str] = {}
     for path in _codex_candidates():
-        try:
-            st = os.stat(path)
-            stamp = f"{st.st_size}:{st.st_mtime_ns}"
-        except OSError:
-            stamp = ""
+        stamp = _codex_stamp(path)
         known = _codex_versions.get(path)
         if stamp and known and known[0] == stamp:
-            return {"available": True, "path": path, "version": known[1]}
-        code, out = _run([path, "--version"], 20)
-        ver = out.strip().split()[-1] if code == 0 and out.strip() else ""
-        if ver:
+            ver, ok = known[1], known[2]
+        elif failed := _failed_before(path, stamp):
+            problem = problem or {"path": path, "error": failed}
+            continue
+        else:
+            code, out, why = _probe([path, "--version"], 20)
+            ver = out.strip().split()[-1] if code == 0 and out.strip() else ""
+            if not ver:
+                log.warning("The Codex CLI at %s did not start: %s", path, why or f"exit code {code}: {out.strip()[-200:]}")
+                why = why or t("it ended with code {code}", code=code)
+                _failed[path] = (stamp, time.monotonic(), why)
+                problem = problem or {"path": path, "error": why}
+                continue
+            ok = _version_of(ver) >= CODEX_KNOWN_GOOD
+            if not ok:
+                code, out, _ = _probe([path, "exec", "--help"], 20)
+                ok = code == 0 and all(f in out for f in CODEX_FLAGS)
+                if not ok:
+                    log.warning("The Codex CLI %s at %s is too old for IEUStudia; looking for another copy", ver, path)
             if stamp:
-                _codex_versions[path] = (stamp, ver)
+                _codex_versions[path] = (stamp, ver, ok)
+        if ok:
             return {"available": True, "path": path, "version": ver}
-    return {"available": False, "path": "", "version": ""}
+        old = old or {"path": path, "version": ver}
+    out_: dict[str, Any] = {"available": False, "path": "", "version": ""}
+    if old:
+        out_["too_old"] = old
+    elif problem:
+        out_["problem"] = problem
+    return out_
+
+
+def _codex_too_old(path: str) -> None:
+    """The Codex CLI turned down a flag IEUStudia passes: that copy is passed over from now on."""
+    stamp = _codex_stamp(path)
+    known = _codex_versions.get(path)
+    if stamp:
+        _codex_versions[path] = (stamp, known[1] if known else "", False)
+    codex_cli_info.cache_clear()
+
+
+CODEX_NOT_PASSED_ON = ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL")
+
+
+def _codex_env() -> dict[str, str]:
+    """The environment for the Codex CLI: without an OpenAI API key or another server set on this PC (for coursework,
+    another tool), so it uses the ChatGPT sign-in and plan, as Claude Code uses the Claude subscription."""
+    return {k: v for k, v in os.environ.items() if k.upper() not in CODEX_NOT_PASSED_ON}
 
 
 def codex_auth() -> dict[str, Any]:
     info = codex_cli_info()
     if not info["available"]:
         return {"logged_in": False, "plan": "", "email": ""}
-    code, out = _run([info["path"], "login", "status"])
+    code, out = _run([info["path"], "login", "status"], env=_codex_env())
     low = out.lower()
     logged = code == 0 and "logged in" in low and "not logged in" not in low
     return {"logged_in": logged, "plan": "chatgpt" if "chatgpt" in low else ("api" if "api key" in low else ""), "email": ""}
@@ -935,9 +1179,16 @@ def _model_refused(message: str) -> bool:
     return "not supported" in low and "model" in low
 
 
+def _codex_old_message(version: str) -> str:
+    return t("The Codex CLI on this PC ({version}) is too old for IEUStudia. In Settings → AI click Install Codex CLI: "
+             "IEUStudia then uses its own, newer copy (yours stays as it is).", version=version or "?")
+
+
 def _codex_command(work: Path, model: str, effort: str, images: Sequence[Path] = ()) -> list[str]:
     info = codex_cli_info()
     if not info["available"]:
+        if info.get("too_old"):
+            raise RuntimeError(_codex_old_message(info["too_old"]["version"]))
         raise RuntimeError(t("The Codex CLI is not installed on this PC (Settings → AI)."))
     cmd = [info["path"], "exec", "--json", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
            "-s", "read-only", "-C", str(work), "-c", f'model_reasoning_effort="{effort or CODEX_EFFORT.get(model, "medium")}"']
@@ -966,18 +1217,47 @@ def _codex_text(system_prompt: str, content: list[dict[str, Any]], work: Path) -
     return f"{system_prompt}\n\n{CODEX_RULES}\n\n" + "\n\n".join(texts), images
 
 
+_CODEX_NETWORK = ("stream disconnected", "error sending request", "dns error", "connection refused", "connection reset",
+                  "failed to connect", "timed out", "network is unreachable", "no route to host")
+
+
 def _codex_error(message: str) -> str:
     low = (message or "").lower()
     if "usage limit" in low or "rate limit" in low or "too many requests" in low:
         return t("You have reached your ChatGPT usage limit for Codex. Try again later.")
-    if "not logged in" in low or "login" in low or "unauthorized" in low or "401" in low:
+    if ("not logged in" in low or "login" in low or "unauthorized" in low or "401" in low or "refresh token" in low
+            or "sign in again" in low or "log in again" in low):
         return t("The Codex CLI is not signed in. Sign in under Settings → AI.")
     if _model_refused(message):
         return t("Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default.")
     service = aierrors.from_message("ChatGPT", message)  # "unexpected status 500 …": on OpenAI's side
     if service is not None:
         return str(service)
+    from .net import cert_date_said, clock_tls_text
+
+    if cert_date_said(message):                       # a wrong date on this PC ("error sending request" comes with it)
+        return clock_tls_text()
+    if any(k in low for k in _CODEX_NETWORK):
+        return t("ChatGPT could not be reached through the Codex CLI: check your internet connection (on campus Wi-Fi, "
+                 "make sure you are signed in to it), then try again.")
+    if "contains a virus" in low or "potentially unwanted software" in low:
+        return t("Windows Security (or your antivirus) blocked the Codex CLI. It comes from OpenAI: if your antivirus "
+                 "put it in quarantine, restore it there, then try again.")
+    if "panicked at" in low:                          # the program itself crashed: its own words mean nothing here
+        return t("The Codex CLI stopped unexpectedly. Try again; if it keeps happening, restart the PC, or use plain "
+                 "ChatGPT (Continue with ChatGPT) in Settings → AI.")
     return f"ChatGPT: {message}"[:400] if message else t("ChatGPT did not return an answer.")
+
+
+def _codex_last_words(err: str) -> str:
+    """What the Codex CLI said went wrong: its error line ("ERROR …" in its log, "error: …" about its arguments), or
+    else its last line that says something (not a warning, a tip or its usage)."""
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ("ERROR" in ln and "rmcp" not in ln) or ln.lower().startswith("error"):
+            return ln
+    return next((ln for ln in reversed(lines) if not ln.lower().startswith(
+        ("warning", "tip:", "usage:", "for more information", "note:"))), "")
 
 
 def _codex_failure(message: str) -> RuntimeError:
@@ -1029,16 +1309,24 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
     with tempfile.TemporaryDirectory(prefix="studia-codex-") as tmp:
         work = Path(tmp)
         prompt, images = _codex_text(system_prompt, content, work)
-        proc = subprocess.Popen(_codex_command(work, model, effort, images), cwd=work, stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW)
+        cmd = _codex_command(work, model, effort, images)
+        try:
+            proc = subprocess.Popen(cmd, cwd=work, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=_codex_env())
+        except OSError as exc:
+            log.warning("The Codex CLI did not start: %r", exc)
+            raise _start_failure("codex", exc) from None
         assert proc.stdin and proc.stdout
         proc.stdin.write(prompt.encode("utf-8"))
         proc.stdin.close()
         stop = threading.Event()
+        timed_out: list[bool] = []
 
         def killer() -> None:
             while not stop.wait(0.5):
                 if (cancel is not None and cancel.is_set()) or time.monotonic() - started > timeout_s:
+                    if not (cancel is not None and cancel.is_set()):
+                        timed_out.append(True)
                     proc.kill()
                     return
 
@@ -1070,8 +1358,26 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
+    if not texts and timed_out:
+        log.warning("The Codex CLI did not answer within %s s: %s", timeout_s, err[-400:])
+        raise RuntimeError(t("ChatGPT took too long to answer through the Codex CLI. Try again; if it keeps happening, "
+                             "pick a lower reasoning level."))
     if not texts:
-        last = error or next((ln for ln in reversed(err.splitlines()) if "ERROR" in ln and "rmcp" not in ln), "")
+        last = error or _codex_last_words(err)
+        if not error and re.search(r"unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)",
+                                   last, re.I):          # a CLI too old for the flags IEUStudia passes
+            known = _codex_versions.get(cmd[0])
+            version = known[1] if known else ""
+            if version and _version_of(version) >= CODEX_KNOWN_GOOD:     # not older: an update of it can't help
+                log.warning("The Codex CLI %s turned down a flag IEUStudia passes: %s", version, last)
+                raise RuntimeError(t("This Codex CLI ({version}) is newer than this IEUStudia knows, and it turned "
+                                     "down how IEUStudia asks it. Look for a new version of IEUStudia in Settings → "
+                                     "About.", version=version))
+            log.warning("The Codex CLI at %s is too old for IEUStudia: %s", cmd[0], last)
+            _codex_too_old(cmd[0])
+            raise RuntimeError(_codex_old_message(version))
+        if not last:
+            log.warning("The Codex CLI ended with %s and said nothing: %s", proc.returncode, err[-800:])
         raise _codex_failure(last)
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
             "model": _codex_model() or "Codex's default model"}
@@ -1195,8 +1501,9 @@ def ai_status(which: str = "") -> dict[str, Any]:
         c = claude_cli_info()
         auth = claude_auth() if c["available"] else {"logged_in": False, "plan": "", "email": ""}
         return {**c, **auth, "needs": "Claude Pro or Max subscription",
-                "plan_status": ai_setup.plan_status("claude", auth["plan"], auth["logged_in"]),
-                "job": ai_setup.job("claude"), "test": ai_setup.last_test("claude")}
+                "plan_status": ai_setup.plan_status("claude", auth["plan"], auth["logged_in"],
+                                                    source=auth.get("key_source", ""), ignored=ai_setup.left_out()),
+                "job": ai_setup.job("claude"), "test": ai_setup.last_test("claude"), "login": login_state("claude")}
 
     def codex_status() -> dict[str, Any]:
         codex_cli_info.cache_clear()
@@ -1205,7 +1512,7 @@ def ai_status(which: str = "") -> dict[str, Any]:
         return {**x, **auth, "model": cfg.codex_model, "models": codex_models(),
                 "needs": "a ChatGPT plan with Codex", "ours": bool(ai_setup.codex_exe()),
                 "plan_status": ai_setup.plan_status("codex", auth["plan"], auth["logged_in"]),
-                "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex")}
+                "job": ai_setup.job("codex"), "test": ai_setup.last_test("codex"), "login": login_state("codex")}
 
     asked = {k: f for k, f in (("chatgpt", chatgpt_status), ("claude", claude_status), ("codex", codex_status))
              if which in ("", k)}
@@ -1246,40 +1553,306 @@ def codex_models() -> list[str]:
         return []
 
 
-_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+# ----------------------------------------------------------------------- signing in: Claude Code's and Codex's own flow
+# The vendor's sign-in command runs hidden (no console window): it opens the sign-in page in the browser and ends by
+# itself once the browser has signed in. IEUStudia reads what it prints: the page's link (so the page can be opened
+# again or its link copied), Claude Code's "paste the code" prompt (the code is typed in IEUStudia and passed on), the
+# Codex device code, and, when it ends without signing in, why. It used to run in a console window whose end nobody
+# noticed: closing that window, or a sign-in failing at once, left the list waiting ten minutes with no button.
+LOGIN_LIMIT_S = 15 * 60               # a sign-in left open is ended (Codex's device code also expires after 15 minutes)
+_URL = re.compile(r"https://[^\s'\"<>\x1b\x07]+")
+_DEVICE_CODE = re.compile(r"\b([A-Z0-9]{4,5}-[A-Z0-9]{4,6})\b")
+_TERMINAL = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]")
+_logins: dict[str, dict[str, Any]] = {}       # "claude" | "codex" -> the sign-in under way (or the last one's end)
+_logins_lock = threading.Lock()
+_end_at_exit = False
+LoginEmit = Callable[[dict[str, Any]], None]
 
 
-def _console(cmd: list[str], env: Optional[dict[str, str]] = None) -> None:
-    """A console window of its own for ``cmd`` (on Linux, a terminal window)."""
-    if sys.platform == "win32":
-        subprocess.Popen(cmd, creationflags=_NEW_CONSOLE, env=env)
-        return
-    import shlex
-
-    from .osutil import run_in_terminal
-
-    if not run_in_terminal(cmd, env):
-        command = shlex.join(cmd)
-        if env and env.get("CLAUDE_CONFIG_DIR"):          # IEUStudia's own Claude Code profile, not your personal one
-            command = f"CLAUDE_CONFIG_DIR={shlex.quote(env['CLAUDE_CONFIG_DIR'])} {command}"
-        raise RuntimeError(t("No terminal app was found. Run this in a terminal: {command}", command=command))
-
-
-def start_login(which: str) -> None:
-    """Open the vendor's own sign-in: a small console window from the vendor's tool, which opens the sign-in page in
-    the browser and finishes by itself (IEUStudia never sees the password)."""
-    from .ai_setup import forget_test
-
+def _login_command(which: str, device: bool = False) -> tuple[list[str], Optional[dict[str, str]]]:
     if which == "claude":
         info = claude_cli_info()
         if not info["available"]:
             raise RuntimeError(t("Install Claude Code first."))
-        _console([info["path"], "auth", "login", "--claudeai"], _claude_env())
-    elif which == "codex":
+        return [info["path"], "auth", "login", "--claudeai"], _claude_env()
+    if which == "codex":
         info = codex_cli_info()
         if not info["available"]:
             raise RuntimeError(t("Install the Codex CLI first."))
-        _console([info["path"], "login"])
-    else:
-        raise ValueError(which)
+        return [info["path"], "login", *(["--device-auth"] if device else [])], _codex_env()
+    raise ValueError(which)
+
+
+def _start_failure(which: str, exc: OSError) -> RuntimeError:
+    """Claude Code or the Codex CLI would not start at all: an antivirus, or the program gone."""
+    from .ai_setup import _install_error
+    from .net import plain_error
+
+    if getattr(exc, "winerror", None) == 225:                 # quarantined by Windows Security or another antivirus
+        return RuntimeError(_install_error(which, exc))
+    error = plain_error(exc)
+    return RuntimeError(t(START_FAILED, error=error) if which == "claude" else
+                        t("The Codex CLI could not be started: {error} Install it again under Settings → AI.",
+                          error=error))
+
+
+def _allow_foreground() -> None:
+    """The sign-in program opens the browser: it may come to the front (the student just clicked)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.WinDLL("user32").AllowSetForegroundWindow(0xFFFFFFFF)       # ASFW_ANY
+    except (OSError, AttributeError):
+        pass
+
+
+def _end_process(proc: subprocess.Popen) -> None:
+    """End the sign-in program itself, not the programs it started: a browser it opened (a child of codex.exe when no
+    browser was running yet) must stay open."""
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def login_state(which: str) -> dict[str, Any]:
+    """The sign-in under way, for the page: {"state": "waiting"|"done"|"error"|"", "page", "code", "device",
+    "asks_code", "error", "started"}."""
+    with _logins_lock:
+        a = _logins.get(which) or {}
+        return {k: a.get(k, d) for k, d in (("state", ""), ("page", ""), ("code", ""), ("device", False),
+                                              ("asks_code", False), ("error", ""), ("started", 0.0))}
+
+
+def start_login(which: str, emit: LoginEmit = lambda e: None, device: bool = False) -> dict[str, Any]:
+    """Start Claude Code's or the Codex CLI's own sign-in (``device``: Codex's sign-in with a code typed on OpenAI's
+    page, for when the browser can't return to this PC). ``emit`` hears {"type": "ai_cli_login", "which", ...state}
+    whenever it changes: the link found, then "done" or "error" (or "" once cancelled)."""
+    from .ai_setup import forget_test
+
+    global _end_at_exit
+    cmd, env = _login_command(which, device)
+    cancel_login(which, quiet=True)          # a new click replaces an attempt left open (two would fight over a port)
+    if not _end_at_exit:
+        import atexit
+
+        atexit.register(end_logins)
+        _end_at_exit = True
+    _allow_foreground()
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                creationflags=_NO_WINDOW, env=env)
+    except OSError as exc:
+        log.warning("The sign-in program of %s did not start: %r", which, exc)
+        raise _start_failure(which, exc) from None
+    attempt: dict[str, Any] = {"proc": proc, "state": "waiting", "page": "", "code": "", "device": device,
+                               "asks_code": False, "error": "", "started": time.time(), "ended": "",
+                               "lines": collections.deque(maxlen=80)}
+    with _logins_lock:
+        _logins[which] = attempt
+    log.info("Sign-in to %s started (%s)", which, " ".join(cmd[1:]))
+    threading.Thread(target=_watch_login, args=(which, attempt, emit), name=f"login-{which}", daemon=True).start()
     forget_test(which)
+    return login_state(which)
+
+
+def _login_event(which: str, attempt: dict[str, Any], emit: LoginEmit) -> None:
+    with _logins_lock:
+        if _logins.get(which) is not attempt:        # replaced by a newer attempt: that one speaks now
+            return
+    try:
+        emit({"type": "ai_cli_login", "which": which, **login_state(which)})
+    except Exception:  # noqa: BLE001 - the page may be gone
+        log.debug("Could not tell the page about the sign-in", exc_info=True)
+
+
+def _read_login(which: str, attempt: dict[str, Any], lines: list[str], prompt: str, emit: LoginEmit) -> None:
+    """What the sign-in printed: in whole ``lines``, the link and a device code; a prompt for a code can come without a
+    line end (``prompt``: the start of a line still being written)."""
+    changed = False
+    with _logins_lock:
+        for line in lines:
+            if not attempt["page"] and (m := _URL.search(line)):
+                attempt["page"] = m.group(0).rstrip(".,;:)")
+                changed = True
+            if attempt["device"] and attempt["page"] and not attempt["code"] and (m := _DEVICE_CODE.search(line)):
+                attempt["code"] = m.group(1)
+                changed = True
+        if not attempt["asks_code"] and any("paste code" in x.lower() for x in [*lines, prompt]):
+            attempt["asks_code"] = True
+            changed = True
+    if changed:
+        _login_event(which, attempt, emit)
+
+
+def _plain_lines(text: str) -> list[str]:
+    return [x for x in (" ".join(ln.split()) for ln in _TERMINAL.sub("", text).replace("\r", "\n").split("\n")) if x]
+
+
+def _watch_login(which: str, attempt: dict[str, Any], emit: LoginEmit) -> None:
+    import codecs
+
+    proc: subprocess.Popen = attempt["proc"]
+    started = time.monotonic()
+
+    def limit() -> None:
+        if proc.poll() is None:
+            attempt["ended"] = attempt["ended"] or "time"
+            _end_process(proc)
+
+    timer = threading.Timer(LOGIN_LIMIT_S, limit)
+    timer.daemon = True
+    timer.start()
+
+    def read() -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending = ""
+        assert proc.stdout
+        try:
+            while chunk := proc.stdout.read1(4096):          # as it comes: a prompt has no line end after it
+                done, _, pending = (pending + decoder.decode(chunk)).rpartition("\n")
+                lines = _plain_lines(done)
+                attempt["lines"].extend(lines)
+                _read_login(which, attempt, lines, pending, emit)
+            lines = _plain_lines(pending + decoder.decode(b"", final=True))
+            attempt["lines"].extend(lines)
+            _read_login(which, attempt, lines, "", emit)
+        except (OSError, ValueError):
+            pass
+
+    reader = threading.Thread(target=read, name=f"login-{which}-out", daemon=True)
+    reader.start()
+    try:
+        code = proc.wait()                                   # it ends by itself, or by Cancel or the time limit
+    finally:
+        timer.cancel()
+    reader.join(timeout=2)        # the last of what it printed (a program it started may keep the output open)
+    seconds = time.monotonic() - started
+    said = list(attempt["lines"].copy())                     # (copy: the reader may still be adding to it)
+    log.info("Sign-in to %s ended with code %s after %.0f s%s:\n%s", which, code, seconds,
+             f" ({attempt['ended']})" if attempt["ended"] else "", "\n".join(said[-12:]) or "(it printed nothing)")
+    if attempt["ended"] == "cancel":
+        state, error = "", ""
+    elif attempt["ended"] == "time":
+        state, error = "error", t("The sign-in waited 15 minutes and was stopped. Click the button to start it again.")
+    else:
+        auth = claude_auth() if which == "claude" else codex_auth()
+        if auth.get("logged_in"):
+            state, error = "done", ""
+        else:
+            state, error = "error", _login_failure(which, code, said, seconds)
+            log.warning("Sign-in to %s did not sign in: %s", which, error)
+    with _logins_lock:
+        attempt.update(state=state, error=error)
+    _login_event(which, attempt, emit)
+
+
+_NETWORK = ("unable to connect", "could not connect", "connection refused", "connection reset", "econnrefused",
+            "econnreset", "enotfound", "getaddrinfo", "fetch failed", "network", "error sending request",
+            "dns error", "could not resolve", "timed out", "socket hang up", "connection error", "connect error",
+            "timeout of", "etimedout", "econnaborted")      # (axios: "Login failed: timeout of 15000ms exceeded")
+
+
+def _login_failure(which: str, code: int, said: list[str], seconds: float) -> str:
+    """Why the sign-in ended without signing in, and what to do."""
+    claude = which == "claude"
+    text = " ".join(said)
+    low = text.lower()
+    last = next((ln for ln in reversed(said) if re.search(r"error|failed|couldn't|could not|unable|denied|invalid",
+                                                           ln, re.I) and not ln.lower().startswith("warning")), "")
+    if last and not last.endswith((".", "!", "?")):
+        last += "."
+    if "already in use" in low or "address in use" in low or "eaddrinuse" in low:
+        return (t("Claude Code could not receive the sign-in from your browser: another program uses its port. Click "
+                  "the button to try again.") if claude else
+                t("Another program is using the port the Codex CLI signs in through (often a Codex sign-in that is still "
+                  "open somewhere). Close other Codex windows and try again, or sign in with a code instead."))
+    if "local listener" in low or "oauth callback server" in low:
+        return t("Claude Code could not open the local connection your browser signs in through (a security program "
+                 "may block it). Try again; if it happens again, update Claude Code in Settings → AI.")
+    if "couldn't save your login" in low or "could not save" in low:
+        return t("Claude Code could not save your sign-in on this PC. Click the button to try again.")
+    if "error loading configuration" in low or "config.toml" in low:
+        return t("The Codex CLI could not read its settings file (config.toml in the .codex folder of your user "
+                 "folder): {error} Fix or rename that file, then try again.", error=last or text[-200:])
+    if "device code" in low and "not enabled" in low:
+        return t("Signing in with a code isn't turned on for your ChatGPT account. Use the normal sign-in, or turn on "
+                 "device code sign-in for Codex in ChatGPT's security settings.")
+    from .net import cert_date_said, clock_tls_text
+
+    if cert_date_said(text):                         # (before "expired": a certificate's, not the code's)
+        return clock_tls_text()
+    if "timed out after 15 minutes" in low or ("expired" in low and not claude):
+        return t("The code expired before the sign-in was finished. Click the button to get a new one.")
+    if any(k in low for k in _NETWORK):
+        return (t("Claude Code could not reach Anthropic: check your internet connection (on campus Wi-Fi, make sure "
+                  "you are signed in to it), then try again.") if claude else
+                t("The Codex CLI could not reach OpenAI: check your internet connection (on campus Wi-Fi, make sure you "
+                  "are signed in to it), then try again."))
+    if last:
+        return (t("The Claude Code sign-in stopped: {error}", error=last[:300]) if claude else
+                t("The Codex CLI sign-in stopped: {error}", error=last[:300]))
+    if code == 0:
+        return (t("Claude Code said the sign-in worked, but it still reports you as signed out. Click the button to try "
+                  "again.") if claude else
+                t("The Codex CLI said the sign-in worked, but it still reports you as signed out. Click the button to "
+                  "try again."))
+    return (t("The Claude Code sign-in ended before you were signed in (code {code}). Click the button to try again.",
+              code=code) if claude else
+            t("The Codex CLI sign-in ended before you were signed in (code {code}). Click the button to try again.",
+              code=code))
+
+
+def cancel_login(which: str, quiet: bool = False) -> bool:
+    """Stop the sign-in under way (Cancel, or a new attempt replacing it: ``quiet``)."""
+    with _logins_lock:
+        attempt = _logins.get(which)
+        proc = attempt.get("proc") if attempt else None
+        if proc is None or proc.poll() is not None:
+            return False
+        attempt["ended"] = "cancel"
+        if quiet:
+            _logins.pop(which, None)                 # the new attempt takes its place before its end is heard
+    log.info("Sign-in to %s: cancelled%s", which, " (started again)" if quiet else "")
+    _end_process(proc)
+    return True
+
+
+def reopen_login(which: str) -> dict[str, Any]:
+    """The sign-in page once more (it didn't show up, or its tab was closed), opened by IEUStudia: {"launched"}."""
+    from .osutil import open_in_browser
+
+    state = login_state(which)
+    if state["state"] != "waiting" or not state["page"]:
+        return {"launched": False, **state}
+    launched = bool(open_in_browser(state["page"]))
+    log.info("Sign-in to %s: the page asked for again (%s)", which, "opened" if launched else "no browser started")
+    return {"launched": launched, **state}
+
+
+def login_code(which: str, code: str) -> None:
+    """The code Anthropic's page shows when the browser can't return to Claude Code: passed on to the sign-in."""
+    code = "".join((code or "").split())
+    if "#" not in code:
+        raise RuntimeError(t("That isn't the whole code: copy all of it from the page (it has a # in the middle), "
+                             "then paste it here again."))
+    with _logins_lock:
+        attempt = _logins.get(which) or {}
+        proc = attempt.get("proc")
+        if proc is None or proc.poll() is not None or attempt.get("state") != "waiting":
+            raise RuntimeError(t("The sign-in isn't waiting any more. Click the button to start it again."))
+    try:
+        assert proc.stdin
+        proc.stdin.write((code + "\n").encode("utf-8"))
+        proc.stdin.flush()
+    except (OSError, ValueError):
+        raise RuntimeError(t("The sign-in isn't waiting any more. Click the button to start it again.")) from None
+    log.info("Sign-in to %s: a code from the page was passed on", which)
+
+
+def end_logins() -> None:
+    """When IEUStudia closes: no sign-in program is left waiting in the background."""
+    for which in list(_logins):
+        cancel_login(which, quiet=True)

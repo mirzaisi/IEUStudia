@@ -18,7 +18,6 @@
   "{name} · Linux {version}": "{name} · Linux {version}",
   "IEUStudia isn't allowed to use {name}: check that your user account may read and write it.": "IEUStudia'nın {name} dosyasını kullanma izni yok: hesabının bu dosyayı okuyup yazabildiğine bak.",
   "IEUStudia isn't allowed to use a file: check that your user account may read and write it.": "IEUStudia'nın bir dosyayı kullanma izni yok: hesabının o dosyayı okuyup yazabildiğine bak.",
-  "No terminal app was found. Run this in a terminal: {command}": "Terminal uygulaması bulunamadı. Bunu bir terminalde çalıştır: {command}",
   "On Linux, install the Codex CLI yourself (npm install -g @openai/codex), then check again.": "Linux'ta Codex CLI'ı kendin kur (npm install -g @openai/codex), sonra tekrar kontrol et.",
   "The secretstorage package is missing, so IEUStudia can't use the keyring.": "secretstorage paketi eksik, bu yüzden IEUStudia anahtarlığı kullanamıyor.",
   "No keyring is available to keep IEUStudia's sign-in safe ({error}).": "IEUStudia'nın girişini güvende tutacak bir anahtarlık yok ({error}).",

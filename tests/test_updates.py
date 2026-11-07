@@ -139,3 +139,97 @@ def test_the_first_start_after_an_update_is_noticed_once(monkeypatch):
     assert updates.note_version() == ""                       # the first start ever: nothing was updated
     monkeypatch.setattr(updates, "__version__", "99.0.0")
     assert updates.note_version() == __version__ and updates.note_version() == ""
+
+
+class _Installer:
+    """The update's installer as Popen sees it: ``code`` is how it ended within the first seconds (None: still
+    installing)."""
+    started: list = []
+
+    def __init__(self, code):
+        self.code = code
+
+    def __call__(self, cmd, **kw):
+        _Installer.started.append(cmd)
+        return self
+
+    def wait(self, timeout=None):
+        import subprocess
+
+        if self.code is None:
+            raise subprocess.TimeoutExpired("IEUStudia-Setup.exe", timeout)
+        return self.code
+
+
+@pytest.mark.parametrize("code,started", [(None, True), (0, True), (1, False), (-1073741819, False)])
+def test_an_installer_that_ends_at_once_did_not_run(monkeypatch, tmp_path, code, started):
+    """An antivirus that stops the installer as it starts: the window had closed and nothing came back. Now the app
+    says so and opens again (app.py), as when Windows doesn't let it start at all."""
+    monkeypatch.setattr(updates.subprocess, "Popen", _Installer(code))
+    assert updates.run_installer(tmp_path / "IEUStudia-Setup-99.0.0.exe") is started
+    cmd = _Installer.started[-1]
+    assert cmd[1:4] == ["/SILENT", "/NORESTART", "/RELAUNCH=1"]
+    assert cmd[4].startswith("/LOG=") and cmd[4].endswith("update-install-99.0.0.log")    # beside IEUStudia's log
+
+
+def test_windows_not_starting_the_installer_at_all_is_false(monkeypatch, tmp_path):
+    def refused(cmd, **kw):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(updates.subprocess, "Popen", refused)
+    assert updates.run_installer(tmp_path / "IEUStudia-Setup-99.0.0.exe") is False
+
+
+def test_an_update_that_did_not_finish_is_said_at_the_next_start_once(monkeypatch, tmp_path):
+    """The installer started, then was stopped, cancelled or failed: the next start used to show the old version and
+    the same 'Update' button, unexplained. Now it says what happened and what to do, once."""
+    from studia import __version__
+
+    monkeypatch.setattr(updates, "installed", lambda: True)
+    updates.check(force=True, session=Site())
+    updates.note_version()                                   # (the start before the update)
+    monkeypatch.setattr(updates.subprocess, "Popen", _Installer(None))
+    assert updates.run_installer(tmp_path / "IEUStudia-Setup-9.9.0.exe")
+    st = updates.status()                                    # the next start: still the old version
+    assert st["failed"] == "9.9.0" and st["state"] == "error" and st["available"] and st["can_install"]
+    assert "didn't finish" in st["error"] and __version__ in st["error"] and "release page" in st["error"]
+    assert updates.note_version() == ""                      # the start has seen it: not again
+    assert "failed" not in updates.status() and updates.status()["error"] == ""
+    # it worked: the new version runs and says nothing of the kind
+    assert updates.run_installer(tmp_path / "IEUStudia-Setup-9.9.0.exe")
+    monkeypatch.setattr(updates, "__version__", "9.9.0")
+    assert "failed" not in updates.status() and updates.note_version() == __version__
+    assert "attempt" not in json.loads(updates._state_file().read_text(encoding="utf-8"))
+
+
+def test_an_update_without_room_on_the_disk_says_so_before_it_starts(monkeypatch):
+    import shutil
+
+    from studia import httpdl
+
+    monkeypatch.setattr(updates, "installed", lambda: True)
+    monkeypatch.setattr(updates, "_session", lambda: Site())
+    updates.check(force=True, session=Site())
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: types.SimpleNamespace(free=300 * 1024 * 1024))
+    monkeypatch.setattr(httpdl, "download", lambda *a, **k: pytest.fail("nothing is downloaded"))
+    with pytest.raises(RuntimeError, match="needs about 700 MB of free disk space") as err:
+        updates.download()
+    assert "300 MB are free" in str(err.value)
+
+
+def test_an_update_download_that_stops_says_why(monkeypatch):
+    import requests
+
+    from studia import httpdl, net
+
+    monkeypatch.setattr(updates, "installed", lambda: True)
+    monkeypatch.setattr(updates, "_session", lambda: Site())
+    monkeypatch.setattr(net, "online", lambda timeout=5.0: True)
+    updates.check(force=True, session=Site())
+
+    def blocked(url, dest, **kw):
+        raise requests.ConnectionError("getaddrinfo failed")
+
+    monkeypatch.setattr(httpdl, "download", blocked)
+    with pytest.raises(net.NetworkError, match="github.com can't be reached from this network"):
+        updates.download()

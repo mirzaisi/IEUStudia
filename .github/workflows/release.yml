@@ -31,6 +31,9 @@ jobs:
           $p = Start-Process "build\dist\IEUStudia\IEUStudia.exe" -ArgumentList "--selftest", "`"$report`"" -Wait -PassThru
           Get-Content $report
           if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      - name: Self-test of a copy marked as downloaded from the internet (the portable zip after Extract All)
+        shell: pwsh
+        run: .\scripts\selftest_marked.ps1 -Dist build\dist\IEUStudia
       - name: Installer and portable zip
         shell: pwsh
         run: |

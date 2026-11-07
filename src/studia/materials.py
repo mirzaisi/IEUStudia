@@ -12,16 +12,17 @@ import threading
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 from .cancel import check
 from .i18n import t
-from .outputs.writer import course_dir, safe_name
+from .outputs.writer import MAX_PATH_CHARS, course_dir, fit_name, safe_name
 from .paths import app_dir
 
 log = logging.getLogger("studia")
+LEARN_HOST = "learn.ieu.edu.tr"
 TEXT_KINDS = {"pdf", "pptx", "docx", "txt", "md"}
 # PDFium (pypdfium2) is not thread-safe, and the viewer, a chat, an upload and a study pack can each be in it at once:
 # every use of it holds this lock (a crash in it would close the whole app)
@@ -42,18 +43,20 @@ def week_of(day: dt.date, first: Optional[dt.date]) -> Optional[int]:
     return n if 1 <= n <= 30 else None
 
 
-_NUMBERED = re.compile(r"^\s*(?:hafta|week|konu|topic|unit|ünite|bölüm|chapter)\s*(\d{1,2})\b", re.I)
+_NUMBERED = re.compile(r"^\s*(?:(?:hafta|week|konu|topic|unit|ünite|bölüm|chapter)\s*(\d{1,2})\b"
+                       r"|(\d{1,2})\s*\.?\s*(?:hafta|week|konu|ünite|bölüm)\b)", re.I)
 
 
 def unit_week(unit: dict[str, Any], first: Optional[dt.date]) -> Optional[int]:
     """A unit's week: from its dates (their middle, so a plan whose week starts a day early still lands right),
-    else from a numbered title ("Konu 5", "Hafta 5", "Week 5")."""
+    else from a numbered title ("Konu 5", "Hafta 5", "Week 5", "5. Hafta")."""
     if unit.get("start_date"):
         start = dt.date.fromisoformat(unit["start_date"])
         end = dt.date.fromisoformat(unit["end_date"]) if unit.get("end_date") else start
         return week_of(start + (end - start) / 2 if end > start else start, first)
     m = _NUMBERED.match(unit.get("title") or "")
-    return int(m.group(1)) if m and 1 <= int(m.group(1)) <= 30 else None
+    n = int(m.group(1) or m.group(2)) if m else 0
+    return n if 1 <= n <= 30 else None
 
 
 # ------------------------------------------------------------------ text extraction
@@ -160,6 +163,56 @@ def page_image(pdf_path: Path, page_no: int, width: int = 1280, folder: Optional
 
 
 # ------------------------------------------------------------------ downloads
+PART = ".part"           # a course file being downloaded (renamed when it is complete)
+NAME_ROOM = 60           # a course file's name keeps this much before its unit's folder name is shortened
+OLD_ROOM = 30            # ... and at least this much in a folder its unit's earlier files are already in
+MIN_LABEL = 12           # a unit's folder name keeps at least this much ("Week 05 - Co")
+
+
+def check_answer(r: requests.Response) -> None:
+    """The answer to a file's link: the file, or why it isn't, in words for the student. Only IEULearn's own sign-in
+    page means the session ran out (NeedLogin: signing in again helps). A material can also be a link to another
+    site: one that wants its own sign-in (OneDrive, Microsoft Forms: login.microsoftonline.com) or a web page is no
+    file to download, and signing in to IEULearn again would never change that."""
+    from .ieulearn import NeedLogin
+    from .net import NetworkError
+
+    final = urlparse(r.url or "")
+    host = (final.hostname or "").lower()
+    page = "text/html" in r.headers.get("content-type", "")
+    if host == LEARN_HOST:
+        if "/login" in final.path:
+            raise NeedLogin(t("Your IEULearn session has expired."))
+        if r.status_code >= 500 or r.status_code == 429:            # the rest of the files would fail the same way
+            raise NetworkError(t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
+        if r.status_code in (404, 410):
+            raise RuntimeError(t("This file is no longer on IEULearn (it was removed or replaced). Sync to see the "
+                                 "course's files as they are now."))
+        if r.status_code in (401, 403):
+            raise RuntimeError(t("IEULearn didn't let IEUStudia download this file: you may no longer have access "
+                                 "to it. Open the course on learn.ieu.edu.tr to check."))
+        if page:
+            raise RuntimeError(t("IEULearn showed a page instead of this file: it may have been removed, or its "
+                                 "course can't be opened any more. Open the course on learn.ieu.edu.tr to check."))
+    elif host:
+        if page and "login" in f"{host}{final.path}".lower():
+            raise RuntimeError(t("This material is a link to {host}, which wants you to sign in there, so IEUStudia "
+                                 "can't download it. Open it from the course's page on learn.ieu.edu.tr.", host=host))
+        if r.status_code in (401, 403):
+            raise RuntimeError(t("{host} refused this file, so IEUStudia couldn't download it. Open it from the "
+                                 "course's page on learn.ieu.edu.tr.", host=host))
+        if r.status_code in (404, 410):
+            raise RuntimeError(t("This material's link ({host}) leads nowhere any more. Open it from the course's page "
+                                 "on learn.ieu.edu.tr, or ask your lecturer.", host=host))
+        if r.status_code >= 500 or r.status_code == 429:
+            raise RuntimeError(t("{host} isn't responding right now, so this material couldn't be downloaded. Try "
+                                 "again later, or open it from the course's page on learn.ieu.edu.tr.", host=host))
+        if page:
+            raise RuntimeError(t("This material is a link to a web page on {host}, not a file IEUStudia can download. "
+                                 "Open it from the course's page on learn.ieu.edu.tr.", host=host))
+    r.raise_for_status()
+
+
 class MaterialStore:
     def __init__(self, services: Any) -> None:
         self._s = services
@@ -177,22 +230,43 @@ class MaterialStore:
         first = week_starts(units)
         week = unit_week(unit, first) if unit else None
         label = (f"Week {week:02d} - {unit['title']}" if week else unit["title"]) if unit else "Other"
-        return course_dir(self._s.output_root, course, self.lib.courses(True)) / "Materials" / safe_name(label, 90)
+        base = course_dir(self._s.output_root, course, self.lib.courses(True)) / "Materials"
+        # the whole path must stay within Windows' limit (see fit_name): under a deep output folder the unit's name
+        # gives way first, so its files keep NAME_ROOM characters of their own names (".part" while downloading)
+        room = MAX_PATH_CHARS - len(PART) - len(str(base)) - 2 - NAME_ROOM
+        new = base / safe_name(label, max(MIN_LABEL, min(90, room)))
+        # the unit's earlier files were saved under its folder name as it was before the path limit counted the whole
+        # path (90 characters): its new files go there too while that still fits, not to an almost identical second
+        # folder ("Week 01 - <88 characters>" beside "Week 01 - <90 characters>"); its files' names then give way a
+        # little more (OLD_ROOM of their own at least)
+        for m in self.lib.materials(material["course_id"], include_gone=True):
+            if m.get("unit_id") != material.get("unit_id") or not m.get("local_path"):
+                continue
+            old = Path(m["local_path"]).parent
+            if (old != new and old.parent == base and old.name.startswith(new.name.rstrip(" .-"))
+                    and len(str(old)) + 2 + OLD_ROOM + len(PART) <= MAX_PATH_CHARS):
+                return old
+            break
+        return new
 
     def target_path(self, material: dict[str, Any]) -> Path:
         """Where a course file is saved: its own name (a long one is shortened before the extension, which Windows
-        needs to open it), and the IEULearn id added when another file of the course already has that name."""
+        needs to open it, also to keep the whole path within Windows' limit), and the IEULearn id added when another
+        file of the course already has that name. Raises outputs.writer.PathTooLong (with what to do) when the output
+        folder is too deep for any name."""
         name = material.get("file_name") or f"{material['title']}.{material.get('ext') or 'bin'}"
         if material.get("ext") and not name.lower().endswith("." + material["ext"]):
             name += "." + material["ext"]
         stem, ext = os.path.splitext(name)
         ext = re.sub(r'[<>:"/\\|?*\x00-\x1f\s]', "", ext)[:12]
-        path = self.folder_for(material) / (safe_name(stem, 120 - len(ext)) + ext)
+        folder = self.folder_for(material)
+        path = folder / fit_name(folder, stem, ext, 120, spare=len(PART))
         others = self.lib.materials(material.get("course_id"), include_gone=True)
         taken = {os.path.normcase(m["local_path"]) for m in others
                  if m.get("local_path") and m.get("resource_id") != material.get("resource_id")}
         if os.path.normcase(str(path)) in taken:
-            path = path.with_name(f"{safe_name(stem, 100 - len(ext))} ({material.get('resource_id')}){ext}")
+            rid = f" ({material.get('resource_id')}){ext}"
+            path = folder / fit_name(folder, stem, rid, 100 + len(rid) - len(ext), spare=len(PART))
         return path
 
     def download(self, resource_id: str, session: requests.Session,
@@ -211,22 +285,25 @@ class MaterialStore:
             dest.parent.mkdir(parents=True, exist_ok=True)
             part = dest.with_name(dest.name + ".part")
             url = m.get("download_url") or m.get("url")
-            with session.get(urljoin("https://learn.ieu.edu.tr/", url), stream=True, timeout=60) as r:
-                if "text/html" in r.headers.get("content-type", ""):
-                    if "login" in r.url:
-                        from .ieulearn import NeedLogin
-
-                        raise NeedLogin(t("Your IEULearn session has expired."))
-                    raise RuntimeError(t("IEULearn sent a web page instead of the file. Try again later."))
-                r.raise_for_status()
+            with session.get(urljoin(f"https://{LEARN_HOST}/", url), stream=True, timeout=60) as r:
+                check_answer(r)
                 total = int(r.headers.get("content-length") or 0)
                 done = 0
-                with open(part, "wb") as f:
-                    for chunk in r.iter_content(256 * 1024):
-                        check(cancel)
-                        f.write(chunk)
-                        done += len(chunk)
-                        progress(done, total)
+                try:
+                    with open(part, "wb") as f:
+                        for chunk in r.iter_content(256 * 1024):
+                            check(cancel)
+                            f.write(chunk)
+                            done += len(chunk)
+                            progress(done, total)
+                except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+                    from .net import NetworkError        # (it stopped halfway: not a raw "HTTPSConnectionPool(...)")
+
+                    host = urlparse(r.url or "").hostname or LEARN_HOST
+                    err = NetworkError(t("The connection to {host} broke off during the download. Check your internet "
+                                         "connection.", host=host))
+                    err.host = host
+                    raise err from exc
             os.replace(part, dest)
             self.lib.set_material_file(resource_id, str(dest), dest.stat().st_size, m.get("url") or "")
             log.info("Downloaded %s (%d KB)", dest.name, dest.stat().st_size // 1024)

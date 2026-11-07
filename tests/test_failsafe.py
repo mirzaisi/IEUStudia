@@ -171,7 +171,7 @@ def test_a_whole_transcript_leaves_no_checkpoint_and_a_cancel_or_old_one_is_dele
 def offline(monkeypatch):
     state = {"online": False, "asked": 0}
 
-    def online(timeout=5.0):
+    def online(timeout=5.0, stop=None):
         state["asked"] += 1
         return state["online"]
 
@@ -269,7 +269,7 @@ def test_a_sync_you_asked_for_waits_for_the_connection(offline):
     ns = types.SimpleNamespace(_push=pushed.append, _sync_lock=lock, _remind=lambda: None,
                                _courses_dirty=threading.Event(),   # (the courses after the content: one build, see _dispatch)
                                _course_views=lambda: [], _own_new=lambda views, ids: 0,
-                               _s=types.SimpleNamespace(sync=types.SimpleNamespace(sync=sync, sync_content=lambda: content),
+                               _s=types.SimpleNamespace(sync=types.SimpleNamespace(sync=sync, sync_content=lambda progress=None: content),
                                                         lib=types.SimpleNamespace(get_meta=lambda k: "")))
     assert Api._run_sync(ns) is True and len(runs) == 2
     assert any(e.get("offline") and e["message"].startswith("Waiting for the internet connection") for e in pushed)
@@ -301,7 +301,7 @@ def test_course_files_wait_for_the_connection(monkeypatch, offline):
     a._ready = threading.Event()
     a._ready.set()
     a._material_worker()
-    assert [(e["id"], e["state"]) for e in pushed if e["state"] in ("done", "error")] == [("m1", "done"), ("m2", "done")]
+    assert [(e["id"], e["state"]) for e in pushed if e.get("state") in ("done", "error")] == [("m1", "done"), ("m2", "done")]
     assert {e["id"] for e in pushed if e.get("offline")} == {"m1", "m2"}     # both said they wait for it
 
 

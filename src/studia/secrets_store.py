@@ -180,13 +180,16 @@ def set_credentials(username: str, password: str, folder: Optional[Path] = None)
         d = _load_for_new(folder)
         d.update(username=username, password=password)
         d.pop("rejected", None)
+        d.pop("rejected_for", None)
         _save(d, folder)
 
 
-def mark_rejected(password: str) -> None:
+def mark_rejected(password: str, why: str = "") -> None:
     """IEULearn refused ``password`` (it was changed): stop signing in with it until the user signs in again, so
     nothing keeps trying a wrong password in the background. A newer password stored meanwhile (by the app while
-    the tray helper was signing in, say) is left alone, and so is a secrets.bin that can't be read now."""
+    the tray helper was signing in, say) is left alone, and so is a secrets.bin that can't be read now. ``why``:
+    IEULearn took it but wants something done on its site first ("action", "password_change"), kept so that a
+    restart says that, not that the password was refused."""
     with _turn():
         try:
             d = _load(strict=True)
@@ -194,6 +197,10 @@ def mark_rejected(password: str) -> None:
             return
         if d.get("password") and d["password"] == password:
             d["rejected"] = _digest(password)
+            if why:
+                d["rejected_for"] = why
+            else:
+                d.pop("rejected_for", None)
             _save(d)
 
 
@@ -202,12 +209,20 @@ def rejected() -> bool:
         return _refused(_load())
 
 
+def rejected_for() -> str:
+    """Why the saved password isn't used: "" (IEULearn refused it), or what IEULearn wanted first (mark_rejected)."""
+    with _turn():
+        d = _load()
+    return str(d.get("rejected_for") or "") if _refused(d) else ""
+
+
 def clear_credentials() -> None:
     with _turn():
         d = _load_for_new()
         d.pop("username", None)
         d.pop("password", None)
         d.pop("rejected", None)
+        d.pop("rejected_for", None)
         _save(d)
 
 

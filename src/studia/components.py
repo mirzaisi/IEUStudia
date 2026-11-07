@@ -171,7 +171,9 @@ def _sha256(path: Path) -> str:
 
 
 def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) -> Path:
-    """cuBLAS + the CUDA runtime DLLs from NVIDIA's wheels on PyPI into ``<app data>\\cuda`` (resumable, verified)."""
+    """cuBLAS + the CUDA runtime DLLs from NVIDIA's wheels on PyPI into ``<app data>\\cuda`` (resumable, verified).
+    Every wheel is downloaded first, then checked and unpacked: the page's progress reaches the end with the last
+    byte, and the quiet seconds of checking come after it (the page says "Finishing" then, not "nothing arrives")."""
     session = _session()
     wheels = [(_pypi_wheel(pkg, prefix, session), member) for pkg, prefix, member in CUDA_WHEELS]
     total = sum(w["size"] for w, _ in wheels)
@@ -190,6 +192,11 @@ def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) 
 
         if not (dest.is_file() and dest.stat().st_size == w["size"]):
             httpdl.download(w["url"], dest, session=session, progress=cb, cancel=cancel, parts=8)
+        done += w["size"]
+        progress(done, total)
+    for w, member in wheels:
+        check(cancel)
+        dest = tmp / w["filename"]
         if _sha256(dest) != w["sha256"]:
             dest.unlink(missing_ok=True)
             raise RuntimeError(t("The download of {name} was damaged. Try again.", name=w["filename"]))
@@ -201,10 +208,8 @@ def download_cuda(progress: Progress, cancel: Optional[threading.Event] = None) 
                     part = out.with_name(out.name + ".part")
                     with z.open(info) as src, open(part, "wb") as dst:
                         shutil.copyfileobj(src, dst, 4 * MB)
-                    os.replace(part, out)             # never a half-written DLL under its real name
+                    httpdl.move_into_place(part, out, cancel)   # never a half-written DLL under its real name
         dest.unlink(missing_ok=True)
-        done += w["size"]
-        progress(done, total)
     shutil.rmtree(tmp, ignore_errors=True)
     (target / ".complete").write_text(json.dumps({w["filename"]: w["version"] for w, _ in wheels}), encoding="utf-8")
     from .engine.models import reset_gpu_cache
@@ -232,6 +237,10 @@ def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress
         raise RuntimeError(t("The model files of {repo} were not found on Hugging Face.", repo=repo))
     total = sum(size for _, size in files) or fallback_mb * MB
     done = 0
+    damaged = target / ".damaged"          # it didn't load (local_llm): every file afresh, also those of the right size
+    if damaged.is_file():
+        for name, _ in files:
+            (target / name).unlink(missing_ok=True)
     for name, size in sorted(files, key=lambda f: f[1]):
         check(cancel)
         base = done
@@ -244,6 +253,7 @@ def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress
             httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest, session=session,
                             progress=cb, cancel=cancel, parts=8)
         done += size or dest.stat().st_size
+    damaged.unlink(missing_ok=True)
     (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
     progress(total, total)
     return target
@@ -321,18 +331,22 @@ def ready(component: str) -> bool:
 
 
 def download(component: str, progress: Progress, cancel: Optional[threading.Event] = None) -> None:
-    """One component of :func:`plan` by its id."""
+    """One component of :func:`plan` by its id. When it stops, the error says why in plain words (no internet, the
+    site blocked on this network, a full disk, an antivirus) and what to do: see httpdl.explain."""
     from .engine.models import download_model
 
     kind, _, key = component.partition(":")
-    if kind == "speech":
-        download_model(key, progress, cancel)
-    elif kind == "cuda":
-        download_cuda(progress, cancel)
-    elif kind == "llm":
-        download_llm(key, progress, cancel)
-    else:
-        raise ValueError(f"Unknown component {component!r}")
+    try:
+        if kind == "speech":
+            download_model(key, progress, cancel)
+        elif kind == "cuda":
+            download_cuda(progress, cancel)
+        elif kind == "llm":
+            download_llm(key, progress, cancel)
+        else:
+            raise ValueError(f"Unknown component {component!r}")
+    except Exception as exc:  # noqa: BLE001 - the same error, worded for the student
+        httpdl.raise_explained(exc, "pypi.org" if kind == "cuda" else "huggingface.co")
 
 
 def disk_usage(output_dir: Optional[Path] = None) -> dict[str, int]:

@@ -269,15 +269,18 @@ AI_ERRORS = [
     ("The connection to ChatGPT ended before the answer was complete. Try again.", {}, "offline"),
     ("The connection to ChatGPT broke off ({error}). Try again.", {"error": "Read timed out"}, "offline"),
     ("{host} took too long to answer. Check your internet connection and try again.", {"host": "chatgpt.com"}, "offline"),
-    ("Claude took too long to answer.", {}, "other"),
+    ("Claude took too long to answer. Try again; if it keeps happening, pick a lower reasoning level.", {}, "other"),
     ("Claude did not return an answer.", {}, "other"),
     ("Claude did not return a result.", {}, "other"),
     ("Claude Code stopped unexpectedly. Try again.", {}, "other"),
     ("ChatGPT did not return an answer.", {}, "other"),
     ("{ai}'s answer could not be read (it was not valid JSON). Try again.", {"ai": "ChatGPT"}, "other"),
     ("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.", {}, "other"),
-    ("OpenAI doesn't let apps like IEUStudia use your ChatGPT plan. ChatGPT Plus and Pro can be used (for Free and Go, "
-     "OpenAI decides).", {}, "other"),
+    ("OpenAI doesn't let apps use the ChatGPT plan of this account or workspace. Plus and Pro can be used (for Free and "
+     "Go, OpenAI decides). If you have Plus or Pro in another account or workspace, switch to it: Settings → AI → Use "
+     "another account or workspace.", {}, "other"),
+    ("OpenAI doesn't offer ChatGPT to apps in the country or region you are in, as OpenAI sees it (a VPN or proxy "
+     "changes that). If you use one, turn it off and try again.", {}, "other"),
     ("ChatGPT can't check your plan right now. Try again in a few minutes.", {}, "other"),
     ("ChatGPT lists no models for your account.", {}, "other"),
     ("ChatGPT stopped before answering ({why}).", {"why": "max_output_tokens"}, "other"),

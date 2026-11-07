@@ -95,6 +95,32 @@ def _no_sound_error() -> Exception:
     return NoAudioTrack(t("Panopto has no sound for this recording (only a picture), so there's nothing to transcribe."))
 
 
+class ModelFailed(RuntimeError):
+    """The speech model couldn't be downloaded or loaded for a lecture; the message says why and what to do."""
+
+
+def model_failure(phase: str, exc: BaseException) -> str:
+    """What a lecture says when the speech model couldn't be downloaded (``phase`` "download") or loaded ("load")."""
+    why = plain_error(exc)
+    if phase == "download":
+        if why.rstrip(".") == str(exc).rstrip("."):          # the error's own words, not written for people:
+            if isinstance(exc, requests.HTTPError):          # e.g. "expected HTTP 206, got 403" (a link that expired)
+                why = t("The download server answered with an error.")
+            elif isinstance(exc, (requests.RequestException, ConnectionError)):    # "Connection broken: ..."
+                why = t("The connection broke off before the download was complete. Check your internet connection "
+                        "(on campus Wi-Fi, make sure you are signed in to it).")
+        return t("The speech model couldn't be downloaded. {error} What was downloaded is kept: transcribing the "
+                 "lecture again goes on from there.", error=why)
+    text = str(exc).lower()
+    if isinstance(exc, MemoryError) or "bad_alloc" in text or "out of memory" in text:
+        return t("There wasn't enough free memory to load the speech model. Close other programs (a browser with many "
+                 "tabs uses a lot) or choose a smaller model in Settings → Transcription, then transcribe the lecture "
+                 "again.")
+    return t("The speech model couldn't be loaded: {error} Close IEUStudia, open it again and transcribe the lecture "
+             "again. If it keeps happening, send the log (Settings → About → Logs) to the person who helps you with "
+             "IEUStudia.", error=why)
+
+
 def _to_int16(audio: np.ndarray) -> np.ndarray:
     """A decoded lecture waiting for its turn, in half the memory. The decoder's samples are whole numbers / 32768,
     so _to_float32 gives back the very same values. Scales ``audio`` in place: it is dropped right after."""
@@ -180,6 +206,7 @@ class Job:
     audio_s: float = 0.0             # the decoded audio's length
     passages: list = dc.field(default_factory=lambda: [0, 0])     # transcribed so far, of all its passages
     own_speed: bool = True           # its transcribing time is its own: not gone on from a checkpoint, the card unshared
+    model_phase: str = ""            # what the speech model was doing for it last: "download" or "load" (see _ensure_model)
 
     def spent(self, step: str) -> float:
         """Seconds it has spent in this step so far (all its times in it)."""
@@ -1215,7 +1242,11 @@ class JobManager:
     def _engine_progress(self, job: Job, stage: str, frac: float, detail: str) -> None:
         phase = {"model-download": "download", "model-load": "load"}.get(stage)
         if phase:
-            self.emit({"type": "engine", "phase": phase, "progress": round(frac, 3), "message": detail})
+            job.model_phase = phase
+            # the load's last step is "ready": also when the engine loads the model again on its own (in transcribe)
+            done = phase == "load" and frac >= 1.0
+            self.emit({"type": "engine", "phase": "ready" if done else phase, "progress": round(frac, 3),
+                       "message": detail})
             self._update(job, "transcribing", 0.0, detail, step="model")
             return
         paused = job.paused_s             # this message's estimate was made before any pause that starts now
@@ -1238,6 +1269,63 @@ class JobManager:
         self._update(job, "transcribing", frac, detail, force=not m,    # a message without a time left is rare: show it
                      step="speech" if stage == "vad" else "transcribe")
 
+    def _ensure_model(self, engine: Any, job: Job) -> None:
+        """Download (the first time) and load the speech model for this lecture. However that ends, the page hears
+        it: its queue bar shows "Downloading the speech model" until "ready" or "failed", and a cancel, a lost
+        connection or a model that won't load used to leave that bar spinning, with no button, over an empty
+        queue. A download or load that fails says so, with what to do (model_failure)."""
+        job.model_phase = ""
+        try:
+            engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
+        except BaseException as exc:
+            self.emit({"type": "engine", "phase": "failed", "progress": 0.0, "message": ""})
+            if job.model_phase and isinstance(exc, Exception) and not isinstance(exc, Cancelled):
+                raise ModelFailed(model_failure(job.model_phase, exc)) from exc     # (_gpu_loop logs both)
+            raise
+
+    def _card_note(self, engine: Any, model: str) -> str:
+        """The graphics card couldn't run the speech model and the processor took over (Engine.ensure_model): that is
+        remembered for this PC (hardware.remember_card_failed), so the next starts go to the processor at once and the
+        setup and Settings say why; said once at once, and in each such lecture's note. A card that was only full
+        (another program's memory) is not remembered: that passes. One that runs it again (chosen in Settings) is
+        used again. "": nothing to say."""
+        from . import hardware
+
+        err = getattr(engine, "gpu_error", "") or ""
+        chosen = getattr(engine, "device_pref", "auto") == "cuda"        # "Graphics card" chosen: tried every time
+        try:
+            if getattr(engine, "device", "") == "cuda":
+                hardware.forget_card_failed()
+                return ""
+            if not err:
+                # passed over at once because it failed before (Automatic): each such lecture says so, not only
+                # Settings after a restart
+                if getattr(engine, "device_pref", "auto") == "auto" and hardware.card_failed():
+                    return t("The processor transcribed this lecture: your graphics card couldn't run the speech model "
+                             "before. To try the card again, choose Graphics card in Settings → Transcription.")
+                return ""
+            if hardware.card_error_kind(err) == "passing":   # only full, or a one-off fault: the next lecture tries it
+                return ""
+            was = bool(hardware.card_failed())
+            first = hardware.remember_card_failed(err, model) and not was
+            if not hardware.card_failed():                   # seen once: the next lecture tries the card again
+                return t("Your graphics card couldn't run the speech model this time, so the processor transcribed "
+                         "this lecture. The next lecture tries the card again.")
+        except Exception:  # noqa: BLE001 - only a memory for the next starts
+            self.log.warning("Remembering the graphics card's failure failed", exc_info=True)
+            first = False
+        note = (t("Your graphics card couldn't run the speech model, so the processor transcribed this lecture. "
+                  "Graphics card is chosen in Settings → Transcription, so each lecture tries it first; choose "
+                  "Automatic there to go to the processor at once.") if chosen else
+                t("Your graphics card couldn't run the speech model, so the processor transcribed this lecture. "
+                  "IEUStudia uses the processor from now on.") if model == "small" else
+                t("Your graphics card couldn't run the speech model, so the processor transcribed this lecture, which "
+                  "is much slower with this model. IEUStudia uses the processor from now on: choose the Small model "
+                  "in Settings → Transcription for faster transcripts."))
+        if first:
+            self.emit({"type": "toast", "level": "warning", "message": note})
+        return note
+
     def _transcribe(self, job: Job) -> None:
         if self.setup_busy():                     # the speech model (or the graphics card's files) are on their way
             self._update(job, "transcribing", 0.0, t("Waiting for the speech model to finish downloading"), force=True,
@@ -1257,13 +1345,14 @@ class JobManager:
                              force=True, step="transcribe")
             elif not getattr(engine, "loaded", False):
                 self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
-            engine.ensure_model(lambda st, f, d: self._engine_progress(job, st, f, d), job.cancel)
+            self._ensure_model(engine, job)
             self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
             self._drive_card(engine)
             info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
             job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
-            if info.get("warning") and info["warning"] not in job.notes:
-                job.notes.append(info["warning"])
+            note = self._card_note(engine, job.model) or info.get("warning")
+            if note and note not in job.notes:
+                job.notes.append(note)
             job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
             found = {"speech": job.speech} if job.speech is not None else {}
             transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d),

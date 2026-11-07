@@ -24,8 +24,103 @@ from .ieulearn import BASE, NeedLogin
 
 log = logging.getLogger("studia")
 
-TR_MONTHS = {"oca": 1, "şub": 2, "sub": 2, "mar": 3, "nis": 4, "may": 5, "haz": 6, "tem": 7, "ağu": 8, "agu": 8,
-             "eyl": 9, "eki": 10, "kas": 11, "ara": 12}
+_FOLD = str.maketrans("İIıŞşÇçĞğÜüÖö", "iiissccgguuoo")
+# months by their names and short forms in Turkish and in English: IEULearn writes "23 Eyl - 29 Eyl" for a student
+# whose IEULearn is in Turkish, and "23 Sep - 29 Sep" in English (its sign-in page is in English until you switch it)
+MONTHS = {name: no for no, names in enumerate((
+    "ocak oca january jan", "subat sub february feb", "mart mar march", "nisan nis april apr", "mayis may",
+    "haziran haz june jun", "temmuz tem july jul", "agustos agu august aug", "eylul eyl september sept sep",
+    "ekim eki october oct", "kasim kas november nov", "aralik ara december dec"), start=1) for name in names.split()}
+_FULL = [name for name in MONTHS if len(name) > 4]
+_DATE = re.compile(
+    r"(?P<iy>\d{4})-(?P<im>\d{1,2})-(?P<id>\d{1,2})"                                  # 2026-09-23
+    r"|\b(?P<na>\d{1,2})[./](?P<nb>\d{1,2})(?:[./](?P<ny>\d{4}|\d{2}))?\b"             # 23.09.2026, 9/23/2026, 23.09
+    r"|\b(?P<dd>\d{1,2})\.?\s*(?P<dm>[^\W\d_]{3,})\.?(?:,?\s+(?P<dy>\d{4}))?"         # 23 Eyl, 23 Sep 2026
+    r"|\b(?P<mm>[^\W\d_]{3,})\.?\s+(?P<md>\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(?P<my>\d{4}))?")   # Sep 23, Sep 23, 2026
+_CLOCK = re.compile(r"\s*,?\s*(?:at\s+|saat\s+)?(\d{1,2})[:.](\d{2})(?::\d{2})?(?:\s*([AaPp])\.?[Mm]\.?)?")
+_undated: set[str] = set()          # courses whose unit plan had a subtitle without a date in it (said once in the log)
+
+
+def _fold(word: str) -> str:
+    """Turkish letters as plain ones, in lower case: "Şub" -> "sub", "NİSAN" -> "nisan", "Ağu" -> "agu"."""
+    return word.translate(_FOLD).lower()
+
+
+def month_of(word: str) -> Optional[int]:
+    """A month from its name, its short form or a longer cut of it, in Turkish or English ("Eylül", "Eyl.", "Sept",
+    "Agus"); None for any other word ("Hafta", "Week", "Marks")."""
+    w = _fold(word.rstrip("."))
+    if w in MONTHS:
+        return MONTHS[w]
+    return MONTHS.get(w[:3]) if len(w) > 3 and any(full.startswith(w) for full in _FULL) else None
+
+
+def _in_term(month: int, year: int, semester: int) -> int:
+    """The calendar year of a month in a term's academic year: fall (semester 1) runs from August of ``year`` to
+    February; spring and summer are in ``year`` + 1."""
+    return year + (1 if semester != 1 or month < 8 else 0)
+
+
+def _date_of(m: re.Match, year: int, semester: int, us: bool = False) -> Optional[dt.date]:
+    """The date one match of _DATE stands for (None when it is no date: "Hafta 1"). ``us``: a date in numbers is
+    month first (9/23/2026, as English IEULearn may write it next to an AM/PM time); day first otherwise, unless the
+    second number can't be a month."""
+    g = m.groupdict()
+    explicit: Optional[int] = None
+    if g["iy"]:
+        explicit, month, day = int(g["iy"]), int(g["im"]), int(g["id"])
+    elif g["na"]:
+        day, month = int(g["na"]), int(g["nb"])
+        if (us and day <= 12) or month > 12:
+            day, month = month, day
+        if g["ny"]:
+            explicit = int(g["ny"]) + (2000 if len(g["ny"]) == 2 else 0)
+    elif g["dd"]:
+        day, month = int(g["dd"]), month_of(g["dm"]) or 0
+        explicit = int(g["dy"]) if g["dy"] else None
+    else:
+        day, month = int(g["md"]), month_of(g["mm"]) or 0
+        explicit = int(g["my"]) if g["my"] else None
+    if not 1 <= month <= 12:
+        return None
+    try:
+        return dt.date(explicit or _in_term(month, year, semester), month, day)
+    except ValueError:
+        return None
+
+
+def find_dates(text: str, year: int, semester: int) -> list[dt.date]:
+    """The dates in a text, in order: "21 Eyl - 27 Eyl", "21 Sep - 27 Sep", "Sep 21 - Sep 27", "21.09.2026 -
+    27.09.2026", "2026-09-21". A date without its year is in the course's term (see _in_term)."""
+    return [d for d in (_date_of(m, year, semester) for m in _DATE.finditer(text or "")) if d]
+
+
+def posted_when(text: str, today: Optional[dt.date] = None) -> Optional[dt.datetime]:
+    """When an announcement was posted, from its card: "19.10.2026 15:53" (IEULearn in Turkish), and as another
+    language may write it: "10/19/2026 3:53 PM", "19 Oct 2026 15:53", "Oct 19, 2026, 3:53 PM", "2026-10-19 15:53".
+    Without a time it is the start of that day; without a year, the last such day up to today."""
+    today = today or dt.date.today()
+    us = bool(re.search(r"\d\s*[AaPp]\.?[Mm]\b", text or ""))
+    for m in _DATE.finditer(text or ""):
+        day = _date_of(m, today.year, 1, us)
+        if day is None:
+            continue
+        if not any(m.group(k) for k in ("iy", "ny", "dy", "my")):              # no year written
+            try:
+                day = day.replace(year=today.year)
+                if day > today:
+                    day = day.replace(year=today.year - 1)
+            except ValueError:                                                 # 29 February
+                continue
+        c = _CLOCK.match(text, m.end())
+        hour, minute = (int(c.group(1)), int(c.group(2))) if c else (0, 0)
+        if c and c.group(3):
+            hour = hour % 12 + (12 if c.group(3).lower() == "p" else 0)
+        try:
+            return dt.datetime(day.year, day.month, day.day, hour, minute)
+        except ValueError:
+            continue
+    return None
 
 
 @dc.dataclass
@@ -141,21 +236,6 @@ def term_year(course_title: str) -> tuple[int, int]:
     return (today.year if today.month >= 8 else today.year - 1), (1 if today.month >= 8 or today.month == 1 else 2)
 
 
-def _tr_date(text: str, year: int, semester: int) -> Optional[dt.date]:
-    m = re.match(r"\s*(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]{3})", text or "")
-    if not m:
-        return None
-    key = m.group(2).lower()
-    month = TR_MONTHS.get(key) or TR_MONTHS.get(key.replace("ı", "i").replace("ş", "s").replace("ğ", "g"))
-    if not month:
-        return None
-    y = year + (1 if semester != 1 or month < 8 else 0)          # fall: Sep-Dec this year, Jan-Feb next year
-    try:
-        return dt.date(y, month, int(m.group(1)))
-    except ValueError:
-        return None
-
-
 def parse_unit_plan(page: str, course_title: str = "") -> list[Unit]:
     year, sem = term_year(course_title)
     units: list[Unit] = []
@@ -169,11 +249,15 @@ def parse_unit_plan(page: str, course_title: str = "") -> list[Unit]:
         sub = re.search(r'class="item-subtitle"[^>]*>(.*?)</div>', block, re.S)
         start = end = None
         if sub:
-            parts = [p.strip() for p in _text(sub.group(1)).split("-")]
-            start = _tr_date(parts[0], year, sem) if parts else None
-            end = _tr_date(parts[1], year, sem) if len(parts) > 1 else None
+            words = _text(sub.group(1))
+            dates = find_dates(words, year, sem)
+            start = dates[0] if dates else None
+            end = dates[1] if len(dates) > 1 else None
             if start and end and end < start:          # a unit across New Year
                 end = end.replace(year=end.year + 1)
+            if words and start is None and course_title not in _undated:
+                _undated.add(course_title)             # the weeks then come from numbered titles only: said, once
+                log.warning("A unit of %s has no date IEUStudia can read: %r", course_title[:40], words[:60])
         desc = re.search(r'class="ovup-syl-desc-body"[^>]*>(.*?)</div>', block, re.S)
         unit = Unit(head.group(1), len(units), title, start, end, _text(desc.group(1)) if desc else "")
         for raw in re.findall(r'data-rv-payload="([^"]+)"', block):
@@ -199,15 +283,8 @@ def parse_announcements(page: str) -> list[Announcement]:
         meta = re.search(r'class="ov-ann-card-meta"[^>]*>(.*?)</div>', card, re.S)
         spans = [_text(s) for s in re.findall(r"<span[^>]*>(.*?)</span>", meta.group(1), re.S)] if meta else []
         author = spans[0] if spans else ""
-        when = None
-        for s in spans:
-            m = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})", s)
-            if m:
-                d, mo, y, h, mi = map(int, m.groups())
-                try:
-                    when = dt.datetime(y, mo, d, h, mi)
-                except ValueError:
-                    pass
+        found = [w for w in (posted_when(s) for s in spans) if w]
+        when = found[-1] if found else None            # (the date comes after the author's name)
         body = re.search(r'class="st-ov-ann-full"[^>]*>(.*)', card, re.S)
         body_text = _text(body.group(1)) if body else ""
         key = hashlib.sha1(f"{title_text}|{author}|{when}".encode("utf-8")).hexdigest()[:16]
@@ -216,14 +293,31 @@ def parse_announcements(page: str) -> list[Announcement]:
     return out
 
 
+class CourseClosed(RuntimeError):
+    """IEULearn sent a course's page elsewhere (to the course list): the course isn't open to students yet, or you
+    no longer have access to it. That course only: signing in again wouldn't change it."""
+
+
 class CourseSite:
     def __init__(self, session: requests.Session) -> None:
         self.s = session
 
     def _get(self, path: str) -> str:
+        from urllib.parse import urljoin, urlparse
+
+        from .ieulearn import Busy
+
         r = self.s.get(f"{BASE}{path}", allow_redirects=False, timeout=(6, 30))
-        if r.status_code in (301, 302, 303):
-            raise NeedLogin(t("Your IEULearn session has expired."))
+        if r.status_code in (301, 302, 303, 307, 308):
+            where = urlparse(urljoin(BASE + "/", r.headers.get("Location") or "")).path
+            if "/login" in where:           # (a course you can't open goes to /student/courses: not an expired session)
+                raise NeedLogin(t("Your IEULearn session has expired."))
+            raise CourseClosed(t("IEULearn didn't open this course's page: the course may not be open to students "
+                                 "yet, or you no longer have access to it."))
+        if r.status_code >= 500:
+            raise Busy(t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
+        if r.status_code == 429:
+            raise Busy(t("IEULearn is busy right now (too many requests). Try again in a few minutes."))
         r.raise_for_status()
         return r.text
 

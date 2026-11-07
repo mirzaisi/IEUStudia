@@ -1225,6 +1225,22 @@ button.link:hover { text-decoration-color: currentColor; }
 .cn-manual > .dim { margin: 6px 0 4px; }
 .cn-cmd { display: grid; grid-template-columns: 210px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 3px 0; }
 .cn-cmd code { font: 12px var(--mono); background: var(--surface-2); border-radius: 6px; padding: 4px 8px; overflow-x: auto; white-space: nowrap; user-select: text; }
+/* ChatGPT's sign-in while it waits: what IEUStudia noticed, and the less common ways under "Trouble?" */
+.cn-note { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+.cn-note .link { font-size: inherit; }
+.cn-trouble { margin-top: 8px; font-size: 12.5px; }
+.cn-trouble summary { cursor: pointer; color: var(--text-3); width: fit-content; }
+.cn-trouble summary:hover { color: var(--text); }
+.cn-tr { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.cn-tr > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.cn-tr > div > .dim { flex: 1 1 200px; min-width: 0; line-height: 1.4; }
+.cn-tr > b { font-weight: 600; margin-top: 4px; }
+.cn-tr > ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; line-height: 1.4; overflow-wrap: anywhere; }
+.cn-tr > ul .link { font-size: inherit; }
+.cn-clock { margin-top: 10px; }
+.gpt-paste { width: 100%; font: 12.5px var(--mono); margin: 6px 0 2px; }
+.cn-copybox { display: block; width: 100%; height: auto; padding: 8px 12px; font: 12.5px/1.45 var(--mono); resize: vertical; overflow-wrap: anywhere; margin: 0 0 4px; }
+.cn-copyerr:empty { display: none; }
 .set-connect { padding: 4px 0 8px; }
 .su-dls { padding: 4px 16px; }
 .su-dl { display: flex; gap: 14px; align-items: center; padding: 11px 0; font-size: 13.5px; }

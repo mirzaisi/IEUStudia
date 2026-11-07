@@ -28,6 +28,7 @@ AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, mat
 # the page gets its events at most this often (each time all that came, coalesced); a running job reports every 0.25 s,
 # so more often only meant more calls into the window (each one waits for its thread and Python's lock)
 EVENT_GAP_S = 0.25
+DOUBLE_START_S = 30.0        # the same plan asked for again this soon, while the first one runs: the first one answers
 _EVENTS_JS = ("(function (a) { var f = window.__lsEvent; if (!f) return; "
               "for (var i = 0; i < a.length; i++) { try { f(a[i]); } catch (x) { console.error(x); } } })(%s)")
 
@@ -43,13 +44,40 @@ def events_script(events: list[dict[str, Any]]) -> str:
     return _EVENTS_JS % ("[" + ",".join(parts).replace("</", "<\\/") + "]")
 
 
+STALL_S = 20.0               # a sync that said nothing this long, while a request waits as long: it says what for
+
+
+def stall_text(service: str, courses: list[str], seconds: float) -> str:
+    """What a sync that seems to stand still waits for, and how long it has waited (each request ends by itself:
+    its time-outs, then a reason)."""
+    s, names = int(seconds), ", ".join(courses)
+    if service == "Panopto":
+        return (t("Panopto is slow to answer ({courses}): still waiting, {seconds} s…", courses=names, seconds=s)
+                if courses else t("Panopto is slow to answer: still waiting, {seconds} s…", seconds=s))
+    return (t("IEULearn is slow to answer ({courses}): still waiting, {seconds} s…", courses=names, seconds=s)
+            if courses else t("IEULearn is slow to answer: still waiting, {seconds} s…", seconds=s))
+
+
+def _site_hint(exc: BaseException) -> dict[str, Any]:
+    """IEULearn wants something done on its site (its terms, a new password): the page offers to open it."""
+    return {"open_site": True} if getattr(exc, "open_site", False) else {}
+
+
+def same_username(a: str, b: str) -> bool:
+    """One EkoID however it was typed: case, spaces around it, and a Turkish keyboard's capital İ or dotless ı (the
+    university's usernames have plain letters), so typing "İlker.x" again isn't taken for another person."""
+    fold = str.maketrans("İIıŞşÇçĞğÜüÖö", "iiissccgguuoo")
+    return (a or "").strip().translate(fold).casefold() == (b or "").strip().translate(fold).casefold()
+
+
 def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     def wrapper(self: "Api", *args: Any, **kwargs: Any) -> Any:
         try:
             return fn(self, *args, **kwargs)
         except (AuthError, NeedLogin, NetworkError) as exc:
-            return {"ok": False, "error": str(exc), "need_login": isinstance(exc, (AuthError, NeedLogin))}
+            return {"ok": False, "error": str(exc), "need_login": isinstance(exc, (AuthError, NeedLogin)),
+                    **_site_hint(exc)}
         except Exception as exc:  # noqa: BLE001
             log.exception("API %s failed", fn.__name__)
             msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc   # KeyError's str() adds quotes
@@ -68,6 +96,7 @@ class Api:
         self._last_sync_ok = False        # how the last sync went (set before it lets go of _sync_lock)
         self._sync_ask = threading.Lock()   # (sync() asking while one runs vs. that one ending)
         self._sync_asked = False
+        self._sync_stop = threading.Event()  # Stop waiting (a sync you asked for waits for the internet)
         self._ai_cancel: Optional[threading.Event] = None
         self._courses_dirty = threading.Event()
         self._mat_lock = threading.Lock()
@@ -107,6 +136,11 @@ class Api:
         jobs.setup_busy = lambda: self._setup_running and any(
             c == "cuda" or c == f"speech:{jobs.settings().model}" for c in self._setup_left)
         services.subscribe(self._on_service_event)
+        from . import hardware
+
+        # the graphics card's failure remembered or forgotten (a lecture, the offline AI): Settings says it at once,
+        # not after a restart, as the toast that told the student to look there does
+        hardware.on_card_change = lambda: threading.Thread(target=self._system_info, daemon=True).start()
         self._ready.set()
         threading.Thread(target=self._auto_sync_loop, name="auto-sync", daemon=True).start()
         threading.Thread(target=self._watch_open_requests, name="open-requests", daemon=True).start()
@@ -387,7 +421,7 @@ class Api:
         try:
             from .ai import claude_info
             from .engine.models import MODEL_PRESETS, model_is_downloaded
-            from .hardware import MIN_CUDA_DRIVER, _driver_number, nvidia_gpu
+            from .hardware import MIN_COMPUTE, MIN_CUDA_DRIVER, _cap_number, _driver_number, card_failed, nvidia_gpu
 
             nv = nvidia_gpu()                        # one nvidia-smi run: the card for the display and its driver
             gpu = {"available": nv["present"], "name": nv["name"], "vram_mb": nv["vram_mb"]}
@@ -395,11 +429,17 @@ class Api:
                         "downloaded": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()]
             from .components import cuda_ready
 
-            used = bool(gpu.get("available")) and cuda_ready() and self._s.settings.device != "cpu"
+            # a card too old for the speech model, or one that failed to run it with this driver (hardware.py): the
+            # processor transcribes unless "Graphics card" is chosen in Settings
+            cap = _cap_number(nv.get("compute_cap"))
+            old, failed = bool(cap and cap < MIN_COMPUTE), bool(nv["present"] and card_failed(nv))
+            used = (bool(gpu.get("available")) and cuda_ready() and self._s.settings.device != "cpu"
+                    and (self._s.settings.device == "cuda" or not (old or failed)))
             # a card the setup would set up: enough graphics memory and a recent driver (as hardware.assess)
             fits = (bool(gpu.get("available")) and int(gpu.get("vram_mb") or 0) >= 3500
-                    and _driver_number(nv.get("driver", "")) >= MIN_CUDA_DRIVER)
-            info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used, "fits": fits}, "presets": presets,
+                    and _driver_number(nv.get("driver", "")) >= MIN_CUDA_DRIVER and not old)
+            info = {"gpu": {**gpu, "libraries": cuda_ready(), "used": used, "fits": fits, "old": old,
+                            "failed": failed}, "presets": presets,
                     "ai": claude_info(),
                     "engine": {"model": self._s.settings.model, "loaded": self._s.jobs.engine_loaded()}}
             self._s.lib.set_meta("system_info", json.dumps(info))
@@ -618,26 +658,40 @@ class Api:
         return {"ok": True, **ai_status(which or "")}
 
     @safe
-    def ai_login(self, which: str, consent: bool = False) -> dict[str, Any]:
+    def ai_login(self, which: str, consent: bool = False, device: bool = False) -> dict[str, Any]:
         """Sign in: "chatgpt" is "Continue with ChatGPT" in the browser (events: type "chatgpt"); "claude" and "codex"
-        open Claude Code's or the Codex CLI's own sign-in."""
+        start Claude Code's or the Codex CLI's own sign-in (events: type "ai_cli_login"; ``device``: Codex's sign-in
+        with a code instead of the browser's return). ChatGPT's own sign-in has no sign-in with a code (OpenAI turns
+        IEUStudia's client down for it: HTTP 400 invalid_client), so ``device`` changes nothing for it."""
         from . import ai_setup, chatgpt
         from .ai import start_login
 
         if which == "chatgpt":
+            from .osutil import open_link
+
             ai_setup.forget_test("chatgpt")
-            return {"ok": True, **chatgpt.start_sign_in(self._ai_event, consent=bool(consent),
-                                                        open_browser=open_in_browser)}
+            return {"ok": True, **chatgpt.start_sign_in(self._ai_event, consent=bool(consent), open_browser=open_link,
+                                                        in_front=self._in_front)}
         with normal_priority():
-            start_login(which)
-        return {"ok": True}
+            return {"ok": True, **start_login(which, self._ai_event, device=bool(device) and which == "codex")}
 
     @safe
     def ai_login_again(self) -> dict[str, Any]:
-        """"Continue with ChatGPT": its sign-in page once more (it didn't show up, or its tab was closed)."""
+        """"Continue with ChatGPT": its sign-in page once more (it didn't show up, or its tab was closed), another way
+        each time while it doesn't open: the default browser, Microsoft Edge, Windows' own open."""
         from . import chatgpt
+        from .osutil import open_link
 
-        return {"ok": True, **chatgpt.reopen_sign_in(open_browser=open_in_browser)}
+        return {"ok": True, **chatgpt.reopen_sign_in(open_browser=open_link)}
+
+    @safe
+    def ai_login_edge(self) -> dict[str, Any]:
+        """"Open in Microsoft Edge": IEUStudia's own sign-in link in Edge, whatever the default browser is (one that
+        starts but shows nothing, or is closed by Family Safety)."""
+        from . import chatgpt
+        from .osutil import open_link
+
+        return {"ok": True, **chatgpt.reopen_sign_in(open_browser=open_link, way="edge")}
 
     @safe
     def ai_login_cancel(self) -> dict[str, Any]:
@@ -646,6 +700,50 @@ class Api:
 
         chatgpt.cancel_sign_in()
         return {"ok": True}
+
+    @safe
+    def ai_login_paste(self, text: str) -> dict[str, Any]:
+        """"Paste the address from your browser": the address OpenAI sent it back to finishes the sign-in."""
+        from . import chatgpt
+
+        return {"ok": True, **chatgpt.paste_address(str(text or ""))}
+
+    @safe
+    def ai_login_details(self) -> dict[str, Any]:
+        """"Copy details": a short report of the ChatGPT sign-in (no secrets), on the clipboard."""
+        from . import chatgpt
+
+        text = chatgpt.details()
+        ok = set_clipboard(text)
+        return {"ok": ok, "text": text, "error": None if ok else t("Could not access the clipboard.")}
+
+    @safe
+    def ai_switch_account(self) -> dict[str, Any]:
+        """"Use another account or workspace": signed out here, then a fresh sign-in, so OpenAI asks again which
+        account and workspace IEUStudia may use."""
+        from . import ai_setup, chatgpt
+        from .osutil import open_link
+
+        ai_setup.forget_test("chatgpt")
+        chatgpt.sign_out()
+        # signed out now: Ask and New chat say so until the new sign-in is through (cancelled, it stays signed out)
+        threading.Thread(target=self._system_info, daemon=True).start()
+        return {"ok": True, **chatgpt.start_sign_in(self._ai_event, open_browser=open_link, fresh=True,
+                                                    in_front=self._in_front)}
+
+    def _in_front(self) -> bool:
+        """IEUStudia's window is the one in front (ChatGPT's sign-in: a page that opened behind it is said)."""
+        return bool(self._hwnd) and is_foreground(self._hwnd)
+
+    @safe
+    def open_default_apps(self) -> dict[str, Any]:
+        """Windows' Settings at Default apps (to pick a default browser)."""
+        from .osutil import open_default_apps
+
+        if open_default_apps():
+            return {"ok": True}
+        return {"ok": False, "error": t("Windows' Settings didn't open. Open Settings yourself, then Apps → Default "
+                                        "apps.")}
 
     def _ai_event(self, e: dict[str, Any]) -> None:
         """A sign-in or an install to the page; once it is through, whether the AI can be used changed."""
@@ -671,6 +769,35 @@ class Api:
         from .ai_setup import start_install
 
         return {"ok": True, "job": start_install(which, self._ai_event)}
+
+    @safe
+    def ai_cli_cancel(self, which: str, what: str = "") -> dict[str, Any]:
+        """Stop what is under way for Claude Code or the Codex CLI: its install (``what`` "install") or its sign-in
+        ("login"); both when ``what`` is empty."""
+        from . import ai, ai_setup
+
+        if which not in ("claude", "codex"):
+            raise ValueError(which)
+        stopped = ai_setup.cancel_install(which, self._ai_event) if what in ("", "install") else False
+        if what in ("", "login"):
+            stopped = ai.cancel_login(which) or stopped
+        return {"ok": True, "stopped": stopped}
+
+    @safe
+    def ai_cli_open(self, which: str) -> dict[str, Any]:
+        """Claude Code's or the Codex CLI's sign-in page once more, opened by IEUStudia (it didn't show up)."""
+        from .ai import reopen_login
+
+        with normal_priority():
+            return {"ok": True, **reopen_login(which)}
+
+    @safe
+    def ai_cli_code(self, which: str, code: str) -> dict[str, Any]:
+        """The code Anthropic's page shows when the browser can't return to Claude Code, passed on to its sign-in."""
+        from .ai import login_code
+
+        login_code(which, code)
+        return {"ok": True}
 
     @safe
     def ai_test(self, which: str) -> dict[str, Any]:
@@ -739,7 +866,7 @@ class Api:
         from . import accounts
 
         cur = accounts.active()
-        if cur.username and cur.username.strip().casefold() != (username or "").strip().casefold():
+        if cur.username and not same_username(cur.username, username):
             # someone else: their courses and transcripts get a profile of their own (then the UI switches to it)
             res = self.profile_add(username, password)
             if not res.get("ok"):
@@ -777,9 +904,12 @@ class Api:
         if not username or not password:
             return {"ok": False, "error": t("Enter the username and password.")}
         cur = accounts.active()
-        if cur.username and cur.username.casefold() == username.casefold():
+        if cur.username and same_username(cur.username, username):
             return {"ok": False, "error": t("That is the profile you are using now.")}
         profile, courses, cookies = SyncService.check_account(username, password)
+        # a profile of this account already (typed another way): its own spelling, so it isn't made twice
+        username = next((a.username for a in accounts.load()[1] if a.username and same_username(a.username, username)),
+                        username)
         acc = accounts.find(username)
         created = acc is None
         if acc is None:
@@ -803,6 +933,10 @@ class Api:
         busy = self._services is not None and self._services.jobs.busy()
         if busy and not force:
             return {"ok": False, "busy": True, "error": t("A transcription is still running.")}
+        if self._setup_running and not force:          # the speech model (or the card's files) still on their way
+            return {"ok": False, "busy": True, "error": t("IEUStudia is still downloading what it needs."),
+                    "ask": t("IEUStudia is still downloading what it needs. Switch profiles anyway? The download "
+                             "stops now, and you can go on with it afterwards from where it stopped.")}
         acc = accounts.set_active(profile_id)
         if busy:
             self._services.jobs.shutdown()           # what is still waiting is kept for this profile
@@ -860,6 +994,12 @@ class Api:
         threading.Thread(target=self._run_sync, name="sync", daemon=True).start()
         return {"ok": True}
 
+    @safe
+    def sync_stop(self) -> dict[str, Any]:
+        """Stop a sync that waits for the internet connection (it then ends, saying so)."""
+        self._sync_stop.set()
+        return {"ok": True}
+
     def _run_sync(self, quiet: bool = False) -> bool:
         """One sync (the caller holds ``_sync_lock``; released here). True when it worked. ``quiet``: started by the
         app itself (the page then shows errors in the top bar only), until you ask for a sync while it runs: then
@@ -868,6 +1008,7 @@ class Api:
         asked = lambda: getattr(self, "_sync_asked", False)    # noqa: E731
         q: dict[str, Any] = {"quiet": True} if quiet and not asked() else {}
         ok = answered = False
+        moved = {"at": time.monotonic(), "type": "sync", "offline": False}     # when it last said something (_watch)
 
         def push(evt: dict[str, Any]) -> None:
             nonlocal answered
@@ -875,15 +1016,34 @@ class Api:
                 q.clear()
             if evt["type"] == "sync" and evt["phase"] in ("done", "error"):
                 answered = asked()
+            if evt.get("phase") in ("start", "progress"):
+                moved.update(at=time.monotonic(), type=evt["type"], offline=bool(evt.get("offline")))
             self._push({**evt, **q})
 
-        def again(fn: Callable[[], Any], partial: Callable[[Any], bool]) -> Any:
-            # no internet connection (the PC just woke up, say): a sync you asked for waits for it and goes on
-            return fn() if quiet else net.until_online(fn, lambda: self._push({
-                "type": "sync", "phase": "progress", "offline": True,
-                "message": t("Waiting for the internet connection. The sync goes on by itself.")}), partial)
+        done = threading.Event()
+
+        stop = getattr(self, "_sync_stop", None) or threading.Event()
+        stop.clear()
+
+        def again(fn: Callable[[], Any], partial: Callable[[Any], bool], kind: str = "sync") -> Any:
+            # no internet connection (the PC just woke up, say): a sync you asked for waits for it, says why it can't
+            # get through (what Windows says about the connection), and goes on; Stop ends the wait, and it never
+            # waits endlessly (net.wait_online: then it ends with the reason). ``kind``: the step it is in (the
+            # recordings, or the files and announcements after them), where the page shows it
+            return fn() if quiet else net.until_online(fn, lambda: push({
+                "type": kind, "phase": "progress", "offline": True,
+                "message": t("Waiting for the internet connection. The sync goes on by itself.")}), partial,
+                stop=stop.is_set, told=lambda why: push({
+                    "type": kind, "phase": "progress", "offline": True, "why": why,
+                    "message": net.waiting_text(why)}))
         try:
             push({"type": "sync", "phase": "start", "message": t("Syncing…")})
+            slow = getattr(self._s.sync, "slow", None)
+            if callable(slow):                             # a sync that seems to stand still says what it waits for
+                threading.Thread(target=self._watch, args=(slow, moved, push, done), name="sync-watch",
+                                 daemon=True).start()
+            if not quiet:                                  # you asked: a sign-in that failed a moment ago may try again
+                getattr(self._s.sync, "allow_sign_in", lambda: None)()
             res = again(lambda: self._s.sync.sync(
                 lambda m: push({"type": "sync", "phase": "progress", "message": m}),
                 lambda ids: self._push({"type": "courses", "courses": self._course_views()})),
@@ -895,19 +1055,23 @@ class Api:
                   "message": t("{n} new recording(s)", n=new) if new else t("Up to date"),
                   "last_sync": self._s.lib.get_meta("last_sync"),
                   "profile": res.profile.__dict__ if res.profile else None, "errors": res.errors})
-            # then each course's weekly materials, announcements, outcomes (listed, nothing downloaded)
+            # then each course's weekly materials, announcements, outcomes (listed, nothing downloaded): how far it is
+            # shows in the top bar
             push({"type": "content", "phase": "start"})
-            content = again(self._s.sync.sync_content, lambda c: bool(c["errors"]))
+            content = again(lambda: self._s.sync.sync_content(lambda m: push({"type": "content", "phase": "progress",
+                                                                              "message": m})),
+                            lambda c: bool(c["errors"]), "content")
             self._courses_dirty.set()                     # (built once with whatever else changed meanwhile)
             push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
                   "new_announcements": len(content["new_announcements"]), "errors": content["errors"]})
             ok = True
         except (AuthError, NeedLogin) as exc:
-            push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc)})
+            push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc), **_site_hint(exc)})
         except Exception as exc:  # noqa: BLE001
             log.log(logging.WARNING if quiet else logging.ERROR, "sync failed", exc_info=True)
             push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed")})
         finally:
+            done.set()
             self._last_sync_ok = ok                       # (for a full sync that waited for this one)
             with getattr(self, "_sync_ask", contextlib.nullcontext()):
                 more = asked() and not answered           # you asked after its result went out: one more, yours
@@ -921,6 +1085,23 @@ class Api:
             except Exception:  # noqa: BLE001 - a reminder never fails a sync
                 log.warning("Reminders failed", exc_info=True)
         return ok
+
+    @staticmethod
+    def _watch(slow: Callable[[float], list], moved: dict[str, Any], push: Callable[[dict[str, Any]], None],
+               done: threading.Event, every_s: float = 2.0) -> None:
+        """While a sync runs: when it hasn't said anything for STALL_S and a request has waited as long, it says what
+        it still waits for, and how long ("IEULearn is slow to answer (EEE 215): still waiting, 40 s…"), so a slow
+        IEULearn or Panopto doesn't look like a hang. Not while it waits for the internet (that says so itself)."""
+        while not done.wait(every_s):
+            if moved["offline"] or time.monotonic() - moved["at"] < STALL_S:
+                continue
+            try:
+                waits = slow(STALL_S)
+            except Exception:  # noqa: BLE001 - only words on the page
+                log.debug("stall check failed", exc_info=True)
+                continue
+            if waits and not done.is_set():
+                push({"type": moved["type"], "phase": "progress", "message": stall_text(*waits[0]), "slow": True})
 
     @staticmethod
     def _own_new(course_views: list[dict[str, Any]], new_ids: list[str]) -> int:
@@ -947,7 +1128,7 @@ class Api:
             gpu = json.loads(self._s.lib.get_meta("system_info") or "{}").get("gpu") or {}
         except ValueError:
             return False
-        return bool(gpu.get("available") and gpu.get("libraries"))
+        return bool(gpu.get("available") and gpu.get("libraries") and gpu.get("used", True))
 
     @safe
     def catch_up_estimate(self, course_id: Optional[str] = None) -> dict[str, Any]:
@@ -1198,7 +1379,8 @@ class Api:
 
     def _material_worker(self) -> None:
         session = self._s.sync.worker_session()
-        while True:
+        relogged: set[str] = set()      # files IEULearn's sign-in page came back for: signed in again once each, so a
+        while True:                     # file that keeps asking (a link to another site's sign-in) can't go round forever
             with self._mat_lock:
                 if not self._mat_queue:
                     self._mat_running = False
@@ -1214,51 +1396,91 @@ class Api:
 
             try:
                 self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0})
-                waits = [5, 15, 30]                    # no connection (Wi-Fi coming back after sleep): wait it out
-                while True:
-                    try:
-                        path = self._s.materials.download(rid, session, progress)
-                        break
-                    except NetworkError:               # no connection, or a timeout
-                        if waits:
-                            time.sleep(waits.pop(0))
-                            continue
-                        if net.online():               # the internet is there, IEULearn isn't
-                            raise
-                    # none at all, for longer (the PC asleep): the files wait for it, then go on by themselves
-                    with self._mat_lock:
-                        rest = self._mat_queue[:]
-                    for one in [rid, *rest]:
-                        self._push({"type": "material", "id": one, "state": "queued", "offline": True})
-                    net.wait_online()
-                    waits = [5, 15, 30]
-                    self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0,
-                                "offline": False})
-                    for one in rest:
-                        self._push({"type": "material", "id": one, "state": "queued", "offline": False})
+                path = self._fetch_material(rid, session, progress)
                 pages = self._s.materials.index_text(rid)
                 self._push({"type": "material", "id": rid, "state": "done", "path": str(path), "pages": pages})
             except NetworkError as exc:                # still none: the rest would fail the same way, say it once
-                with self._mat_lock:
-                    rest, self._mat_queue = self._mat_queue[:], []
                 log.warning("Materials stopped: %s", exc)
-                for i, one in enumerate([rid, *rest]):
-                    self._push({"type": "material", "id": one, "state": "error", "error": str(exc), "quiet": i > 0})
+                self._stop_materials(rid, str(exc))
             except NeedLogin:
+                if rid in relogged:                    # signed in a moment ago, and IEULearn asks again for this one
+                    log.warning("Material %s: IEULearn asked for a sign-in again right after one", rid)
+                    self._push({"type": "material", "id": rid, "state": "error", "error": t(
+                        "IEULearn asked to sign in again for this file although IEUStudia had just signed in. Open "
+                        "it from the course's page on learn.ieu.edu.tr.")})
+                    continue
+                relogged.add(rid)
                 try:
                     self._s.sync.ensure_login()
-                    session = self._s.sync.worker_session()
-                    with self._mat_lock:
-                        self._mat_queue.insert(0, rid)
+                except Exception as exc:  # noqa: BLE001 - a changed password, IEULearn busy: the rest too, said once
+                    log.warning("Materials stopped, no sign-in: %s", exc)
+                    self._stop_materials(rid, self._signin_problem(exc))
                     continue
-                except Exception as exc:  # noqa: BLE001
-                    self._push({"type": "material", "id": rid, "state": "error", "error": str(exc)})
+                session = self._s.sync.worker_session()
+                with self._mat_lock:
+                    self._mat_queue.insert(0, rid)
             except Exception as exc:  # noqa: BLE001 - reported per file
                 log.warning("Material %s failed: %s", rid, exc)
-                self._push({"type": "material", "id": rid, "state": "error", "error": str(exc) or t("Download failed")})
+                self._push({"type": "material", "id": rid, "state": "error",
+                            "error": net.plain_error(exc) if str(exc) else t("Download failed")})
         self._s.sync.absorb(session)
         self._courses_dirty.set()
         self._push({"type": "material", "id": "", "state": "idle"})
+
+    def _fetch_material(self, rid: str, session: Any, progress: Callable[[int, int], None]) -> Any:
+        """One file, through a short drop of the connection (Wi-Fi coming back after sleep). With none for longer, the
+        files say they wait for it and why (net.wait_online: never endlessly), then go on by themselves; a connection
+        that keeps coming and going stops them after a few rounds. A link to another site that can't be reached is
+        that file's problem alone (the site is gone or blocked): it fails without the files behind it."""
+        from .materials import LEARN_HOST
+
+        waits = [5, 15, 30]
+        rounds = 0
+        while True:
+            try:
+                return self._s.materials.download(rid, session, progress)
+            except NetworkError as exc:                # no connection, or a timeout
+                other = (exc.host or "").lower()
+                if other and other != LEARN_HOST and not other.endswith(".ieu.edu.tr"):
+                    log.warning("Material %s: its link to %s can't be reached: %s", rid, other, exc)
+                    raise RuntimeError(t("This material is a link to {host}, which can't be reached (the site may be "
+                                         "gone, or blocked on this network). Open it from the course's page on "
+                                         "learn.ieu.edu.tr.", host=other)) from exc
+                if waits:
+                    time.sleep(waits.pop(0))
+                    continue
+                if net.online():                       # the internet is there, IEULearn isn't
+                    raise
+                rounds += 1
+                if rounds > 3:
+                    raise NetworkError(t("The connection keeps dropping, so the course files stopped. Download them "
+                                         "again when it is steady.")) from exc
+            with self._mat_lock:
+                rest = self._mat_queue[:]
+            for one in [rid, *rest]:
+                self._push({"type": "material", "id": one, "state": "queued", "offline": True})
+            net.wait_online(told=lambda why: self._push({"type": "toast", "level": "warning",
+                                                         "message": net.waiting_text(why, files=True)}))
+            waits = [5, 15, 30]
+            self._push({"type": "material", "id": rid, "state": "downloading", "done": 0, "total": 0, "offline": False})
+            for one in rest:
+                self._push({"type": "material", "id": one, "state": "queued", "offline": False})
+
+    def _stop_materials(self, rid: str, message: str) -> None:
+        """The files still queued would fail for the same reason: each says so, aloud only once."""
+        with self._mat_lock:
+            rest, self._mat_queue = self._mat_queue[:], []
+        for i, one in enumerate([rid, *rest]):
+            self._push({"type": "material", "id": one, "state": "error", "error": message, "quiet": i > 0})
+
+    @staticmethod
+    def _signin_problem(exc: BaseException) -> str:
+        """Why the files stopped when signing in again failed, and what to do."""
+        from .ieulearn import AccountAction
+
+        if isinstance(exc, (AuthError, NeedLogin)) and not isinstance(exc, AccountAction):
+            return t("{error} Press Sync to sign in again, then download the files again.", error=str(exc).rstrip())
+        return net.plain_error(exc)
 
     @safe
     def material_open(self, resource_id: str, reveal_only: bool = False) -> dict[str, Any]:
@@ -1280,14 +1502,28 @@ class Api:
         return {"ok": True, "courses": self._course_views()}
 
     # ------------------------------------------------------------------ files & links
+    def _open_here(self, path: Path, *, show: bool = False, make: bool = False) -> dict[str, Any]:
+        """Open a file or folder in Windows (``show``: selected in Explorer instead); a folder that isn't there yet is
+        made first (``make``: the course's folder before its first transcript). A failure says why in plain words
+        (the page shows it), never Windows' own error text."""
+        from .net import plain_error
+
+        try:
+            if make:
+                path.mkdir(parents=True, exist_ok=True)
+            (reveal if show else open_path)(path)
+        except OSError as exc:
+            log.warning("Opening %s failed: %s", path, exc)
+            return {"ok": False, "error": plain_error(exc)}
+        return {"ok": True}
+
     @safe
     def open_file(self, day_key: str, what: str = "md") -> dict[str, Any]:
         files = self._s.day_files(day_key)
         target = files.get(what) or files.get("folder")
         if not target:
             return {"ok": False, "error": t("File not found.")}
-        (reveal if what in ("zip", "pdf_folder") else open_path)(target)
-        return {"ok": True}
+        return self._open_here(Path(target), show=what in ("zip", "pdf_folder"), make=target == files.get("folder"))
 
     @safe
     def open_output(self) -> dict[str, Any]:
@@ -1308,8 +1544,7 @@ class Api:
 
         course = self._s.lib.get_course(course_id)
         folder = course_dir(self._s.output_root, course, self._s.lib.courses(True)) if course else self._s.output_root
-        open_path(folder if folder.exists() else self._s.output_root)
-        return {"ok": True}
+        return self._open_here(folder, make=True)
 
     @safe
     def export_calendar(self) -> dict[str, Any]:
@@ -1331,15 +1566,13 @@ class Api:
         root = self._s.output_root.resolve()
         if not p.is_file() or not p.resolve().is_relative_to(root):
             return {"ok": False, "error": t("File not found.")}
-        open_path(p)
-        return {"ok": True}
+        return self._open_here(p)
 
     @safe
     def open_logs(self) -> dict[str, Any]:
         from .paths import logs_dir
 
-        open_path(logs_dir())
-        return {"ok": True}
+        return self._open_here(logs_dir(), make=True)
 
     @safe
     def open_url(self, url: str) -> dict[str, Any]:
@@ -1376,8 +1609,20 @@ class Api:
                 "error": None if ok else t("Could not access the clipboard.")}
 
     # ------------------------------------------------------------------ export / AI
+    # pywebview runs each call from the page on a thread of its own: a double click asks twice at the same time
+    _starts_lock = threading.Lock()
+
     @safe
     def export_pack(self, day_key: str) -> dict[str, Any]:
+        """The day's AI pack (PDF + ZIP), made in the background. Asked again while it is being made (a double click,
+        or a click repeated while the window was slow to answer): that export answers, no second one writes the same
+        files at the same time."""
+        with self._starts_lock:
+            exporting = self.__dict__.setdefault("_exporting", set())
+            if day_key in exporting:
+                return {"ok": True, "running": True}
+            exporting.add(day_key)
+
         def run() -> None:
             try:
                 self._push({"type": "export", "phase": "start", "day_key": day_key})
@@ -1390,8 +1635,16 @@ class Api:
                 from .net import plain_error
 
                 self._push({"type": "export", "phase": "error", "day_key": day_key, "message": plain_error(exc)})
+            finally:
+                with self._starts_lock:
+                    exporting.discard(day_key)
 
-        threading.Thread(target=run, name="export", daemon=True).start()
+        try:
+            threading.Thread(target=run, name="export", daemon=True).start()
+        except RuntimeError:                       # no thread could be started: nothing is being made
+            with self._starts_lock:
+                exporting.discard(day_key)
+            raise
         return {"ok": True}
 
     @safe
@@ -1412,7 +1665,6 @@ class Api:
             return {"ok": False, "error": t("{ai} is already working on something.", ai=ai_name())}
         template = template if template in NOTE_KINDS else "notes"
         cancel = threading.Event()
-        self._ai_cancel = cancel
         kind = {"kind": template, "label": t(NOTE_KINDS[template])}
         level = resolve("chat", level, settings=self._s.settings)      # this request's reasoning level, else Settings'
 
@@ -1433,12 +1685,21 @@ class Api:
                             **kind, **cards})
             except Cancelled:
                 self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": "", "cancelled": True, **kind})
-            except Exception as exc:  # noqa: BLE001
-                self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": str(exc), **kind})
+            except Exception as exc:  # noqa: BLE001 - the AI's own errors are plain already; a file one is made so
+                log.warning("Study notes for %s failed: %s", day_key, exc)
+                self._push({"type": "ai", "phase": "error", "day_key": day_key, "message": net.plain_error(exc), **kind})
             finally:
                 self._ai_cancel = None
 
-        threading.Thread(target=run, name="claude", daemon=True).start()
+        with self._starts_lock:                  # (a double click: the second call is told, not run as well)
+            if self._ai_cancel is not None:
+                return {"ok": False, "error": t("{ai} is already working on something.", ai=ai_name())}
+            self._ai_cancel = cancel
+        try:
+            threading.Thread(target=run, name="claude", daemon=True).start()
+        except BaseException:                    # nothing runs: the AI isn't left "working" for good
+            self._ai_cancel = None
+            raise
         return {"ok": True}
 
     @safe
@@ -1497,8 +1758,23 @@ class Api:
         if info.get("can_plans") is False:
             return {"ok": False, "error": t("Study plans need ChatGPT or Claude — the offline model is too small for "
                                             "them.")}
-        pid = self._s.plans.create(course_id, scope or {})
-        self._s.plans.start(pid)
+        return self._start_plan(["new", course_id, scope or {}], lambda: self._s.plans.create(course_id, scope or {}))
+
+    def _start_plan(self, ask: list[Any], create: Callable[[], str]) -> dict[str, Any]:
+        """Create a plan (a study pack, a cheatsheet, a review sheet) and start it, once. The same one asked for again
+        within seconds while the first is still waiting or running (a double click on the dialog's button, or a click
+        repeated while the window was slow to answer during a full sync) gets the first one back: a second run would
+        use the student's AI plan twice."""
+        key = json.dumps(ask, sort_keys=True, default=str)
+        with self._starts_lock:
+            starts = self.__dict__.setdefault("_plan_starts", {})
+            at, pid = starts.get(key, (0.0, ""))
+            brief = self._s.lib.plan_brief(pid) if pid and time.monotonic() - at < DOUBLE_START_S else None
+            if brief is not None and brief.get("status") in ("new", "queued", "running"):
+                return {"ok": True, "plan": brief}
+            pid = create()
+            starts[key] = (time.monotonic(), pid)
+            self._s.plans.start(pid)
         return {"ok": True, "plan": self._s.lib.plan_brief(pid)}
 
     @safe
@@ -1558,9 +1834,8 @@ class Api:
         if old is None:
             return {"ok": False, "error": t("This plan no longer exists.")}
         scope = {**(old.get("scope") or {}), **(patch or {})}
-        pid = self._s.plans.create(old["course_id"], scope, parent_id=plan_id)
-        self._s.plans.start(pid)
-        return {"ok": True, "plan": self._s.lib.plan_brief(pid)}
+        return self._start_plan(["update", plan_id, scope],
+                                lambda: self._s.plans.create(old["course_id"], scope, parent_id=plan_id))
 
     @safe
     def plan_open_file(self, plan_id: str) -> dict[str, Any]:
@@ -1633,6 +1908,22 @@ class Api:
             return {"ok": False, "error": t("This plan no longer exists.")}
         return {"ok": True, "html": shown_body(self._s, p)}
 
+    _pdf_lock = threading.Lock()
+
+    @staticmethod
+    def _pdf_failed(plan: dict[str, Any]) -> str:
+        """Why a pack's (or cheatsheet's) PDF couldn't be made, and what to do."""
+        from .export import find_browser
+
+        html = Path(str((plan.get("result") or {}).get("file") or ""))
+        if not html.name or not html.is_file():
+            return t("The pack's file is no longer in its folder (moved or deleted), so its PDF can't be made. Put it "
+                     "back (it may be in the Recycle Bin), or make it again.")
+        if not find_browser():
+            return t("The PDF could not be made: Microsoft Edge was not found.")
+        return t("Microsoft Edge couldn't print the PDF (it stopped, or took more than 3 minutes). Try once more; if "
+                 "it fails again, open {file} in your browser and print it with Save as PDF.", file=str(html))
+
     @safe
     def pack_pdf(self, plan_id: str, how: str = "open") -> dict[str, Any]:
         """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save") or shown in its
@@ -1646,9 +1937,10 @@ class Api:
         p = self._s.lib.plan(plan_id)
         if p is None:
             return {"ok": False, "error": t("This plan no longer exists.")}
-        pdf = make_pdf(self._s, p)
+        with self._pdf_lock:                     # Save and Open pressed together: printed once, the second one waits
+            pdf = make_pdf(self._s, self._s.lib.plan(plan_id) or p)      # (read again: printed meanwhile?)
         if pdf is None:
-            return {"ok": False, "error": t("The PDF could not be made: Microsoft Edge was not found.")}
+            return {"ok": False, "error": self._pdf_failed(self._s.lib.plan(plan_id) or p)}
         if how == "folder":
             reveal(pdf)
         elif how == "save":
@@ -1712,9 +2004,10 @@ class Api:
                 saved["file"] = str(path)
                 self._s.lib.set_meta(f"digest:{d['week']['start']}", json.dumps(saved, ensure_ascii=False))
                 self._push({"type": "digest", "phase": "done", "offset": offset, **saved})
-            except Exception as exc:  # noqa: BLE001
-                self._push({"type": "digest", "phase": "error", "offset": offset,
-                            "message": str(exc) or t("{ai} could not write the summary.", ai=ai_name())})
+            except Exception as exc:  # noqa: BLE001 - said plainly (a file OneDrive or ransomware protection holds:
+                self._push({"type": "digest", "phase": "error", "offset": offset,   # not "[Errno 13] Permission …")
+                            "message": net.plain_error(exc) if str(exc) else t("{ai} could not write the summary.",
+                                                                                ai=ai_name())})
             finally:
                 self._ai_cancel = None
 

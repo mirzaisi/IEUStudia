@@ -19,7 +19,7 @@ def _ns(sync, sync_content):
     return ns, pushed
 
 
-def _content():
+def _content(progress=None):
     return {"new_materials": [], "new_announcements": [], "errors": []}
 
 
@@ -62,7 +62,7 @@ def test_pressing_sync_after_the_quiet_sync_told_its_result_runs_one_more_for_yo
         runs.append(1)
         return types.SimpleNamespace(new_ids=[], profile=None, errors=[])
 
-    def sync_content():
+    def sync_content(progress=None):
         contents.append(1)
         if len(contents) == 1:
             assert Api.sync(ns)["running"]                          # the files and announcements were being checked

@@ -466,13 +466,20 @@
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
     const twin = (c) => S.courses.filter((x) => x.code === c.code).length > 1;     // FENG 495 twice: which one
     const dateLine = t("{weekday}, {date}", { weekday: t.date(now, "weekday"), date: t.date(now, "dmy") });   // Tue, 27 Oct 2026 · 27 Eki 2026 Sal
+    // a sync (or its files and announcements) waiting for the connection: why, and Stop waiting, on the page itself
+    const wait = S.sync.running ? S.sync : S.content || {};
+    const waitLabel = wait.why === "internet" ? t("IEULearn doesn't answer…") : t("Waiting for the internet…");
     let h = `<div class="view-inner home">
-      <div class="home-hero"><div><h1>${greet}${first ? `, ${esc(first)}` : ""}</h1><div class="dim">${dateLine}${S.sync.running ? ` · ${SPIN()} ${esc(S.sync.message || t("Syncing…"))}` : ""}</div>
+      <div class="home-hero"><div><h1>${greet}${first ? `, ${esc(first)}` : ""}</h1><div class="dim">${dateLine}${S.sync.running ? ` · ${SPIN()} ${esc(wait.offline ? waitLabel : S.sync.message || t("Syncing…"))}` : ""}</div>
         <div class="home-acts"><button class="btn sm" data-act="go" data-view="digest">${I("calendar", "sm")} ${t("Weekly digest")}</button>
           <button class="btn sm" data-act="plan-new">${I("youtube", "sm")} ${t("New study plan")}</button>
           <button class="btn sm" data-act="full-sync" title="${t("Sync every course, then transcribe your untranscribed lectures and download the materials (asks first)")}">${I("zap", "sm")} ${t("Full sync")}</button>
           <button class="btn sm" data-act="export-calendar" title="${t("Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone")}">${I("calendar", "sm")} ${t("Add to calendar")}</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
+    if (wait.offline) {
+      h += `<div class="callout warning home-wait">${I("wifi-off")}<div><b>${esc(waitLabel)}</b> ${esc(wait.message || "")}
+        <div style="margin-top:8px">${S.stopping ? `<button class="btn sm" disabled>${SPIN()} ${t("Stopping…")}</button>` : `<button class="btn sm" data-act="sync-stop">${I("stop", "sm")} ${t("Stop waiting")}</button>`}</div></div></div>`;
+    }
     if (S.sync.error && !S.sync.running) {
       h += `<div class="callout warning">${I("alert")}<div><b>${S.sync.partial ? t("Not everything could be checked.") : t("IEUStudia couldn't check IEULearn.")}</b> ${esc(S.sync.error)}
         ${t("Your courses and transcripts on this PC still work.")} <button class="link" data-act="sync">${t("Try again")}</button></div></div>`;
@@ -691,7 +698,7 @@
     const hit = findMaterial(e.id);
     if (e.state === "done" && hit) {
       hit.m.downloaded = true; hit.m.outdated = false; hit.m.is_new = false; hit.m.pages = e.pages || hit.m.pages;
-      if (prev.open) call("material_open", e.id);
+      if (prev.open) openMaterial(e.id);                  // a failure (moved meanwhile, blocked) is said there
       delete S.mat[e.id];
       // its row shows it already; the course's details once its last file is in (a full sync downloads dozens)
       const ids = new Set(allMaterials(S.cd[hit.cid]).map((m) => m.id));

@@ -39,6 +39,9 @@
     return Promise.resolve(fn ? fn(...args) : { ok: false, error: "not in mock" });
   }
   window.__lsEvent = (e) => { try { onEvent(e); } catch (err) { console.error(err); reportError("event " + (e && e.type), err); } };
+  // an open that didn't happen (a link, a folder, a file) says why, instead of a click that seems to do nothing; a link
+  // copied instead (no browser) says so calmly. The open's answer is passed on.
+  Studia.said = (p) => p.then((r) => { if (r && r.ok === false && r.error) toast(r.error, r.copied ? "info" : "error"); return r; });
 
   // script errors go to the app's log (they are otherwise invisible in the desktop window)
   let reported = 0;
@@ -74,12 +77,23 @@
         const had = new Map((S.queue || []).map((j) => [j.id, j]));
         if (S.paused && !e.paused && S.pausedAt) had.forEach((j) => { if (j._etaAt) j._etaAt += performance.now() - S.pausedAt; });   // the time left stood still while paused
         S.queue = e.jobs || []; S.queue.forEach((j) => stamp(j, had.get(j.id)));
+        if (!S.queue.length) S.engine = null;            // the speech model is downloaded or loaded only for a lecture
         S.batch = e.batch || {}; S.batch._at = performance.now();
         if (!!e.paused !== !!S.paused) S.pausedAt = e.paused ? performance.now() : 0;
         S.paused = !!e.paused; renderQueue(); break;
       }
-      case "engine": S.engine = e.phase === "ready" ? null : e; renderQueue(); break;
+      case "engine":                                    // (a download's pace, for its time left: engDetail)
+        if (e.phase !== "download") S.engDl = null;
+        else {
+          // a new baseline: the first event, one counted afresh (lower), or a jump right at the start: a download
+          // that resumes reports the parts already on disk at once, which is no speed (it said "less than a minute
+          // left" for minutes)
+          const p = e.progress || 0, d = S.engDl, at = performance.now();
+          if (!d || p < d.p0 || (p - d.p0 > 0.05 && at - d.t0 < 3000)) S.engDl = { t0: at, p0: p };
+        }
+        S.engine = e.phase === "ready" ? null : e; renderQueue(); break;
       case "sync": onSync(e); break;
+      case "content": onContent(e); break;
       case "system":
         S.system = { ...S.system, ...e }; if (S.view.name === "settings") renderView(); renderTop();
         renderSidebar();                                    // "Ask {ai}": the start-up snapshot may name another AI
@@ -95,9 +109,31 @@
       default: if (Studia.onEvents[e.type]) Studia.onEvents[e.type](e);
     }
   }
+  // after the recordings, each course's files and announcements: the top bar says how far (or what is slow)
+  function onContent(e) {
+    const was = waitKey();
+    S.content = e.phase === "progress" ? { message: e.message || "", offline: !!e.offline, why: e.why || "" }
+      : e.phase === "start" ? { message: "" } : null;
+    if (!(S.content || {}).offline) S.stopping = false;
+    renderTop();
+    homeWaitChanged(was);
+    if (Studia.onEvents.content) Studia.onEvents.content(e);
+  }
+  // while a sync (or its files and announcements after it) waits for the connection, Home says why and offers Stop
+  // waiting: drawn again when the wait starts, its reason changes, or it ends (its reason used to be in a tooltip only)
+  function waitKey() {
+    const step = S.sync.running ? S.sync : S.content || {};
+    return step.offline ? `${step.why}|${step.message}` : "";
+  }
+  function homeWaitChanged(was) {
+    if (waitKey() !== was && S.mode === "app" && S.view.name === "home") renderView();
+  }
   function onSync(e) {
+    const was = waitKey();
+    if (e.phase !== "progress") S.content = null;
+    if (e.phase !== "progress" || !e.offline) S.stopping = false;
     if (e.phase === "start") { S.sync = { running: true, message: e.message, error: "" }; }
-    else if (e.phase === "progress") { S.sync.message = e.message; }
+    else if (e.phase === "progress") { S.sync.message = e.message; S.sync.offline = !!e.offline; S.sync.why = e.why || ""; homeWaitChanged(was); }
     else if (e.phase === "done") {
       // what it couldn't check (Panopto down, a course's recordings): the top bar and Home keep saying so, calmly
       const errs = (e.errors || []).join(" ");
@@ -111,7 +147,7 @@
       S.sync = { running: false, message: "", error: e.message };
       if (S.view.name === "home" && S.mode === "app") renderView();
       if (e.quiet) { renderTop(); return; }          // the app's own half-hourly sync: the top bar shows it, nothing pops up
-      if (e.need_login) { S.mode = "signin"; S.signin.error = e.message; render(); return; }
+      if (e.need_login) { S.mode = "signin"; S.signin.error = e.message; S.signin.openSite = !!e.open_site; render(); return; }
       toast(e.message || t("Sync failed"), "error");
     }
     renderTop();
@@ -314,8 +350,16 @@
     const g = S.system.gpu;
     const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="${t.html("Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB", { name: g.name, mb: g.vram_mb })}"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
       : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="${t("Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.")}"><span class="dot"></span>${t("Graphics card not set up")}</span>` : "";
-    const syncLabel = S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
+    // waiting for the connection (for the recordings, or the files and announcements after them): a short label (the
+    // reason is on Home and in the tooltip) and a way to stop waiting
+    const step = S.sync.running ? S.sync : S.content || {};
+    const waiting = !!step.offline;
+    const syncLabel = waiting ? `${I("wifi-off", "sm")} ${step.why === "internet" ? t("IEULearn doesn't answer…") : t("Waiting for the internet…")}`
+      : S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
+      : S.content && S.content.message ? `${SPIN()} ${esc(S.content.message)}`
       : S.sync.error ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
+    const stopWaiting = !waiting ? "" : S.stopping ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Stopping…")}</button>`
+      : `<button class="btn ghost sm" data-act="sync-stop" title="${esc(step.message || "")}">${I("stop", "sm")} ${t("Stop waiting")}</button>`;
     const up = S.update || {};
     const app = (S.boot || {}).app || {};          // background checks turned off (the tray menu, or Settings): said calmly
     const bgOff = app.onboarded && app.tray === false && S.view.name !== "settings"
@@ -324,7 +368,7 @@
       ${Studia.downloadChip ? Studia.downloadChip() : ""}
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
       ${bgOff}
-      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running ? "disabled" : ""} title="${S.sync.error && !S.sync.running ? t.html("{error} Click to try again.", { error: S.sync.error }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>
+      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running || waiting ? "disabled" : ""} title="${waiting ? esc(step.message || "") : S.sync.error && !S.sync.running ? t.html("{error} Click to try again.", { error: S.sync.error }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>${stopWaiting}
       <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="${t("Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)")}">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} ${t("Full sync")}</button>
       ${gpu}
       <button class="btn ghost icon sm" data-act="menu-more" title="${t("More")}">${I("more")}</button>`;
@@ -972,6 +1016,8 @@
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
         ${row(t("Transcribe with"), !g ? t("Checking…") : s.device === "cpu" && g.available ? t.html("Processor only, as chosen here: your {name} is not used.", { name: g.name || t("NVIDIA graphics card") })
             : gpuUsed(g) ? t.html("Your NVIDIA graphics card: {name} ({mb} MB)", { name: g.name, mb: g.vram_mb })
+            : g.available && g.old ? t.html("Your {name} is too old a graphics card for the speech recognition (it needs a GeForce GTX 10 series or newer): the processor transcribes, slower.", { name: g.name || t("NVIDIA graphics card") })
+            : g.available && g.failed ? t.html("Your {name} couldn't run the speech model when IEUStudia tried it, so the processor transcribes, slower. After an NVIDIA driver update the card is tried again; to try it now, choose Graphics card here.", { name: g.name || t("NVIDIA graphics card") })
             : gpuFits(g) && !g.libraries ? t.html("Your {name} needs a one-time download from NVIDIA before it can transcribe (About → Run setup again, below). Until then the processor does it, more slowly.", { name: g.name || t("NVIDIA graphics card") })
             : g.available ? t.html("Your {name} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.", { name: g.name || t("NVIDIA graphics card") })
             : t("No NVIDIA graphics card found: the processor transcribes (slower)."),
@@ -1032,7 +1078,8 @@
       : ai.label ? t("Connect {ai} in Settings → AI to use this", { ai: ai.label }) : t("Turn on AI in Settings → AI to use this"); };
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons (effort.js)
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
-  const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu";    // does the graphics card transcribe?
+  const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu"     // does the graphics card transcribe?
+    && (S.settings.device === "cuda" || !(g.old || g.failed));    // (too old, or it failed with this driver: Automatic skips it)
   const gpuFits = (g) => !!g && g.available && (g.fits != null ? g.fits : (g.vram_mb || 0) >= 3500);   // what the setup asks of a card
   const modelsFor = () => (isChatGPT() ? [] : MODELS());
   const dec = (x, digits) => t.num(+x.toFixed(digits), digits);    // rounded as toFixed rounds, written the language's way: 11.4 · 11,4
@@ -1429,7 +1476,7 @@
     renderPane();
     qpClock();
     const jobs = S.queue || [];
-    const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+    const eng = engNow();
     if (jobs.length < 2) S.qList = false;         // the list of lectures: shut with the last but one (the next batch starts small)
     if (!jobs.length && !eng) { el.classList.add("hidden"); el.classList.remove("open"); el.innerHTML = ""; return; }
     el.classList.remove("hidden");
@@ -1444,7 +1491,7 @@
     let title = cur ? `${paused ? t("Paused") : label(cur)} · ${esc(cur.title)}` : t("Preparing");
     let detail = cur ? esc(jobDetail(cur)) : "";
     let p = cur ? cur.progress : 0;
-    if (eng) { title = engTitle(eng); detail = eng.message && eng.message !== title ? esc(eng.message) : ""; p = eng.progress || 0; }
+    if (eng) { title = engTitle(eng); detail = esc(engDetail(eng, title)); p = eng.progress || 0; }
     const more = jobs.length > 1 ? `<button class="btn ghost sm" data-act="queue-toggle" aria-expanded="${open}">${open ? t("Hide") : t("+{n} more", { n: jobs.length - 1 })}</button>` : "";
     const b = S.batch || {};
     const batch = b.total > 1 ? `<span class="q-batch" title="${esc(t("Lectures finished in this batch"))}">${esc(qBatchText(b))}</span>` : "";
@@ -1615,10 +1662,24 @@
     if (left) parts.push(t("ends around {time} ({left})", { time: t.date(new Date(Date.now() + left * 1000), "time"), left: t.left(left) }));
     return parts.filter(Boolean).join(" · ");
   }
+  // The speech model being downloaded or loaded, shown in the queue bar and the pane: only while lectures wait for it.
+  // A download that was cancelled or failed with its lecture leaves nothing spinning (no lecture, no buttons).
+  function engNow() {
+    return (S.queue || []).length && S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+  }
   function qpSummary() {
-    const eng = S.engine && ["download", "load"].includes(S.engine.phase) ? S.engine : null;
+    const eng = engNow();
     return `<span class="qp-sumt">${esc(qpSumText())}</span>` + (S.paused ? ` <span class="pill">${t("Paused")}</span>` : "")
-      + (eng ? `<div class="qp-eng">${SPIN()} ${engTitle(eng)}${eng.message && eng.message !== engTitle(eng) ? ` · ${esc(eng.message)}` : ""}</div>` : "");
+      + (eng ? `<div class="qp-eng">${SPIN()} ${engTitle(eng)}${engDetail(eng, engTitle(eng)) ? ` · ${esc(engDetail(eng, engTitle(eng)))}` : ""}</div>` : "");
+  }
+  // what the speech model's download or load says under its title, and, for a download, about how long it still takes
+  // at its pace so far (once it has gone on for a few seconds)
+  function engDetail(eng, title) {
+    const said = eng.message && eng.message !== title ? eng.message : "";
+    const d = S.engDl, p = eng.progress || 0;
+    const secs = d && eng.phase === "download" ? (performance.now() - d.t0) / 1000 : 0, done = d ? p - d.p0 : 0;
+    const left = secs >= 5 && done >= 0.02 && p < 1 ? Math.round(secs / done * (1 - p)) : 0;
+    return [said, left ? t.left(left) : ""].filter(Boolean).join(" · ");
   }
   function engTitle(eng) {       // the engine's message can repeat it (then it is left out)
     return eng.phase === "download" ? t("Downloading the speech model (one time)") : t("Loading the speech model");
@@ -1717,17 +1778,22 @@
   }
 
   // ---- sign-in
+  // the sign-in button while it waits: after a while it says IEULearn is slow (the request ends by itself, with a reason)
+  const signinBusy = () => SPIN() + " " + (S.signin.slow ? t("Still signing in: IEULearn is slow to answer…") : t("Signing in…"));
   function signinHTML() {
     const s = S.signin;
     const others = (S.profiles || []).filter((x) => !x.active && x.has_login);
+    const user = s.user != null ? s.user : (S.profile || {}).username || "";      // what you typed stays after an error
     return `<div class="signin"><form class="card signin-card" data-form="signin" autocomplete="on">
       <div class="brand"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</div>
       <p class="lead">${t("Sign in with your IEULearn (EkoID) account. IEUStudia finds your courses and their Panopto recordings.")}</p>
-      <div class="field"><label for="si-user">${t("EkoID / username")}</label><input id="si-user" class="input" name="username" autocomplete="username" value="${esc((S.profile || {}).username || "")}"></div>
+      <div class="field"><label for="si-user">${t("EkoID / username")}</label><input id="si-user" class="input" name="username" autocomplete="username" value="${esc(user)}"></div>
       <div class="field"><label for="si-pass">${t("Password")}</label><div class="input-wrap"><input id="si-pass" class="input" type="password" name="password" autocomplete="current-password">
-        <button type="button" class="btn ghost icon sm" data-act="peek" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
+        <button type="button" class="btn ghost icon sm" data-act="peek" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div>
+        <div class="note-sm" id="si-caps" style="display:none">${I("keyboard", "sm")}<span>${t("Caps Lock is on.")}</span></div></div>
       ${s.error ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(s.error)}</span></div>` : ""}
-      <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? SPIN() + " " + t("Signing in…") : t("Sign in")}</button>
+      ${s.error && s.openSite ? `<button type="button" class="btn block" data-act="url" data-url="https://learn.ieu.edu.tr/login">${I("external", "sm")} ${t("Open learn.ieu.edu.tr in your browser")}</button>` : ""}
+      <button class="btn primary block" type="submit" ${s.busy ? "disabled" : ""}>${s.busy ? signinBusy() : t("Sign in")}</button>
       <div class="note">${I("lock", "sm")}<span>${window.LS_LINUX ? t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with a key in your desktop's keyring, so only your user account can read it. It never goes to any other server: IEUStudia has none.") : t("Your password is sent only to learn.ieu.edu.tr. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: IEUStudia has none.")}</span></div>
       <div class="note">${I("info", "sm")}<span>${t("IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.")}</span></div>
       ${others.length ? `<div class="si-others"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
@@ -1736,7 +1802,7 @@
   }
 
   // ---- profiles: several IEULearn accounts on this PC (switching restarts the app with that account's data)
-  function addAccountDialog(err = "", busy = false, user = "") {
+  function addAccountDialog(err = "", busy = false, user = "", openSite = false) {
     modal(`<form data-form="add-account" autocomplete="off">
       <h2>${t("Add another account")}</h2>
       <p class="lead">${t("Sign in with another IEULearn (EkoID) account. It gets a profile of its own — its own courses, transcripts, notes and settings — and you can switch between profiles from the menu at the bottom left.")}</p>
@@ -1744,25 +1810,27 @@
       <div class="field"><label for="aa-pass">${t("Password")}</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
         <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
       ${err ? `<div class="err">${I("alert-circle", "sm")}<span>${esc(err)}</span></div>` : ""}
+      ${err && openSite ? `<button type="button" class="btn block" data-act="url" data-url="https://learn.ieu.edu.tr/login">${I("external", "sm")} ${t("Open learn.ieu.edu.tr in your browser")}</button>` : ""}
       <div class="note">${I("lock", "sm")}<span>${window.LS_LINUX ? t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only your user account can read it.") : t("The password is only sent to learn.ieu.edu.tr. On this PC it is stored encrypted for each profile separately, so only this Windows account can read it.")}</span></div>
       <div class="actions"><button type="button" class="btn" data-act="modal-close">${t("Cancel")}</button>
         <button class="btn primary" type="submit" ${busy ? "disabled" : ""}>${busy ? SPIN() + " " + t("Signing in…") : t("Sign in and switch")}</button></div></form>`);
     setTimeout(() => { const f = $(user && !busy ? "#aa-pass" : "#aa-user"); if (f && !busy) f.focus(); }, 30);
   }
-  async function switchProfile(x, force = false) {
-    if (!x || x.active) return;
+  async function switchProfile(x, force = false) {       // true: switching (this window goes)
+    if (!x || x.active) return false;
     const r = await call("profile_switch", x.id, force);
     if (!r.ok) {
-      if (r.busy) { if (confirm(t("A transcription is still running. Cancel it and switch profiles?"))) switchProfile(x, true); return; }
+      if (r.busy) { if (confirm(r.ask || t("A transcription is still running. Cancel it and switch profiles?"))) return switchProfile(x, true); return false; }
       toast(r.error || t("Could not switch profiles"), "error");
-      return;
+      return false;
     }
-    if (r.same) return;
+    if (r.same) return false;
     closeMenu(); closeModal();
     $("#overlay").innerHTML = `<div class="switching" role="status"><img class="logo-img" src="../assets/logo.svg" alt="">
       <div class="t">${x.name || x.username ? t.html("Opening {name}…", { name: x.name || x.username }) : t("Opening the profile…")}</div><div class="d">${t("IEUStudia restarts with this account's courses and transcripts.")}</div>
       <div class="splash-bar"><i></i></div></div>`;
     if (!REAL) setTimeout(() => { location.hash = "profile=" + x.id; location.reload(); }, 900);   // browser preview
+    return true;
   }
 
   // ------------------------------------------------------------------ overlays
@@ -1802,6 +1870,10 @@
   function onUpdate(e) {
     const was = (S.update || {}).state;
     S.update = { ...S.update, ...e };
+    if (e.state === "downloading" && Studia.pace) {       // its speed and time left (setup.js), counted afresh per try
+      if (was !== "downloading") Object.assign(S.update, { marks: null, began: 0, moved: 0, top: 0 });
+      Studia.pace(S.update, e.done || 0, e.total || 0);
+    }
     if (e.state === "downloading" && was === "downloading") { updateProgress(); return; }   // only the bar moves
     if ($("#update-modal") || e.state === "installing" || (e.state === "downloading" && was !== "downloading")) updateModal();
     else if (e.state === "error") toast(e.error, "error");
@@ -1809,7 +1881,13 @@
     if (S.view.name === "settings") renderView();
   }
   const updatePc = (u) => (u.total ? Math.round((u.done / u.total) * 100) : 0);
-  const updateText = (u, pc) => (u.total ? t("Downloading the new version · {pct} of {mb} MB", { pct: t.pct(pc / 100), mb: t.num(Math.round(u.total / 1e6)) }) : t("Downloading the new version…"));
+  const updateText = (u, pc) => {
+    const how = Studia.paceText ? Studia.paceText(u, u.done || 0, u.total || 0) : "";     // speed · time left, a stall
+    return (u.total ? t("Downloading the new version · {pct} of {mb} MB", { pct: t.pct(pc / 100), mb: t.num(Math.round(u.total / 1e6)) }) : t("Downloading the new version…")) + (how ? ` · ${how}` : "");
+  };
+  // while it connects (the checksum file, the server's first answer) no event comes: the line is written again each
+  // second all the same, so "Still connecting" and a stall show up when they are true
+  setInterval(() => { if ((S.update || {}).state === "downloading" && $("#update-modal")) updateProgress(); }, 1000);
   // the download goes on: its bar and line change in place (drawing the dialog again replays its opening animation)
   function updateProgress() {
     const m = $("#update-modal"), bar = m && m.querySelector(".up-bar"), txt = m && m.querySelector(".up-txt");
@@ -1926,7 +2004,17 @@
       go({ ...f, jumpWeek: false });
       if (f.scroll) $("#view").scrollTo({ top: f.scroll, behavior: "instant" });
     },
-    sync: () => { S.sync = { running: true, message: "", error: "" }; renderTop(); if (S.view.name === "home") renderView(); call("sync"); },
+    // while one runs or waits, asking again only makes the rest of it yours (api.py): what the page shows of it stays
+    // (F5, or a click on the waiting label, replaced it with "Syncing…", and Stop waiting was gone)
+    sync: () => {
+      if (S.sync.running || (S.content || {}).offline) { call("sync"); return; }
+      S.sync = { running: true, message: "", error: "" }; renderTop(); if (S.view.name === "home") renderView(); call("sync");
+    },
+    "sync-stop": async () => {                  // said at once: the wait ends at its next look, a few seconds at most
+      S.stopping = true; renderTop(); if (S.view.name === "home") renderView();
+      const r = await call("sync_stop");
+      if (!r.ok) { S.stopping = false; renderTop(); toast(r.error, "error"); }
+    },
     sel: (el) => { el.checked ? S.selected.add(el.dataset.id) : S.selected.delete(el.dataset.id); updateSelectionUI(); },
     "sel-day": (el) => { const card = el.closest(".day"); $$(".rec .check:not(:disabled)", card).forEach((cb) => { cb.checked = el.checked; el.checked ? S.selected.add(cb.dataset.id) : S.selected.delete(cb.dataset.id); }); updateSelectionUI(); },
     "select-new": (el) => {
@@ -1974,9 +2062,12 @@
       if (!r.ok && r.error) toast(r.error, r.copied ? "info" : "error");
     },
     "update-open": () => updateModal(),
-    "update-page": () => call("open_url", (S.update || {}).page || "https://github.com/mirzaisi/IEUStudia/releases/latest"),
+    "update-page": () => Studia.said(call("open_url", (S.update || {}).page || "https://github.com/mirzaisi/IEUStudia/releases/latest")),
     "update-go": async () => {
-      S.update = { ...S.update, state: "downloading", done: 0, total: 0, error: "" }; updateModal();
+      // its speed and time left counted afresh from this click (a Try again kept the last try's start: "Still
+      // connecting" at once)
+      S.update = { ...S.update, state: "downloading", done: 0, total: 0, error: "", marks: null, began: Date.now(), moved: 0, top: 0 };
+      updateModal();
       const r = await call("update_install");
       if (!r.ok) { S.update = { ...S.update, state: "error", error: r.error }; updateModal(); }
     },
@@ -1992,7 +2083,7 @@
       else toast(r.error, "error");
       renderTop(); if (S.view.name === "settings") renderView();
     },
-    ts: (el) => call("open_url", `${el.dataset.url}&start=${Math.floor(+el.dataset.t)}`),
+    ts: (el) => Studia.said(call("open_url", `${el.dataset.url}&start=${Math.floor(+el.dataset.t)}`)),
     "copy-moment": async (el) => {     // for a study group: each classmate opens it on Panopto with their own login
       const d = S.day; if (!d) return;
       const p = d.parts.find((x) => x.index === +el.dataset.part) || {};
@@ -2006,10 +2097,16 @@
     "show-mode": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { show_mode: el.dataset.mode }); if (r.ok) { setCourses(r.courses); renderView(); } },
     "mark-seen": async (el) => { const r = await call("mark_seen", el.dataset.id || null); if (r.ok) { setCourses(r.courses); renderSidebar(); renderView(); } },
     "toggle-others": (el) => { S.expanded.has(el.dataset.id) ? S.expanded.delete(el.dataset.id) : S.expanded.add(el.dataset.id); renderView(); },
-    "open-folder": (el) => call("open_course_folder", el.dataset.id),
+    "open-folder": (el) => Studia.said(call("open_course_folder", el.dataset.id)),
     "open-output": async () => { const r = await call("open_output"); if (!r.ok) toast(r.error, "error"); },
-    file: (el) => call("open_file", S.day.day_key, el.dataset.what),
-    export: () => call("export_pack", S.day.day_key),
+    file: (el) => Studia.said(call("open_file", S.day.day_key, el.dataset.what)),
+    export: async () => {
+      const key = S.day && S.day.day_key;
+      if (!key || S.exporting === key) return;
+      S.exporting = key; renderDayActions();      // at once, not when its "start" comes: a second click makes no second one
+      const r = await call("export_pack", key);
+      if (!r.ok) { S.exporting = null; if (S.view.name === "day") renderDayActions(); toast(r.error || t("Export failed"), "error"); }
+    },
     claude: () => claudeDialog(),
     "ai-cancel": () => call("ai_cancel"),
     "cl-tpl": (el) => { window.__cl.tpl = el.dataset.val; },
@@ -2177,7 +2274,7 @@
       if (S.view.name === "settings") renderView();
       renderSidebar();
     },
-    logs: () => call("open_logs"),
+    logs: () => Studia.said(call("open_logs")),
     reload: () => location.reload(),
     peek: (el) => { const p = $("#" + (el.dataset.for || "si-pass")); if (p) p.type = p.type === "password" ? "text" : "password"; },
     "modal-close": () => closeModal(),
@@ -2260,18 +2357,33 @@
       const u = f.username.value.trim(), p = f.password.value;
       if (!u || !p) { addAccountDialog(t("Enter the username and password."), false, u); return; }
       addAccountDialog("", true, u);
+      const slow = setTimeout(() => {                // (it ends by itself, with a reason)
+        const b = $("form[data-form='add-account'] button[type='submit']");
+        if (b && b.disabled) b.innerHTML = SPIN() + " " + t("Still signing in: IEULearn is slow to answer…");
+      }, 12000);
       const r = await call("profile_add", u, p);
-      if (!r.ok) { addAccountDialog(r.error || t("Sign-in failed"), false, u); return; }
-      switchProfile(r.profile);
+      clearTimeout(slow);
+      if (!r.ok) { addAccountDialog(r.error || t("Sign-in failed"), false, u, !!r.open_site); return; }
+      // not switched now (No to "switch anyway?" while something runs): the dialog's "Signing in…" spun on for ever,
+      // although the profile was made
+      if (!(await switchProfile(r.profile))) {
+        closeModal();
+        toast(t("The account was added as a profile of its own. Open it any time from the profile menu."), "success");
+      }
       return;
     }
     if (f.dataset.form !== "signin") return;
     e.preventDefault();
     const u = f.username.value.trim(), p = f.password.value;
-    if (!u || !p) { S.signin.error = t("Enter your username and password."); render(); return; }
-    S.signin = { busy: true, error: "" }; render();
+    if (!u || !p) { S.signin = { busy: false, error: t("Enter your username and password."), user: u }; render(); return; }
+    S.signin = { busy: true, error: "", user: u }; render();
+    const slow = setTimeout(() => {                  // only the button: what is typed stays as it is
+      S.signin.slow = true;
+      const b = $("form[data-form='signin'] button[type='submit']"); if (b && S.signin.busy) b.innerHTML = signinBusy();
+    }, 12000);
     const r = await call("sign_in", u, p);
-    if (!r.ok) { S.signin = { busy: false, error: r.error || t("Sign-in failed") }; render(); return; }
+    clearTimeout(slow);
+    if (!r.ok) { S.signin = { busy: false, error: r.error || t("Sign-in failed"), openSite: !!r.open_site, user: u }; render(); return; }
     S.signin = { busy: false, error: "" };
     if (r.switch_to) { switchProfile(r.profile); return; }           // another person: their own profile
     S.profile = r.profile; S.mode = "app"; S.sync.running = true;
@@ -2299,7 +2411,14 @@
     else if (e.shiftKey && at === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
   }
+  // Caps Lock on while the password is typed: said under the field (a refused password is often only that)
+  const capsLock = (e) => {
+    const note = $("#si-caps");
+    if (note && e.getModifierState) note.style.display = e.target && e.target.id === "si-pass" && e.getModifierState("CapsLock") ? "" : "none";
+  };
+  document.addEventListener("keyup", capsLock);
   document.addEventListener("keydown", (e) => {
+    capsLock(e);
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.id === "chat-input") { e.preventDefault(); sendChat(); return; }
     if (e.key === "Enter" && e.target && ["si-user", "aa-user"].includes(e.target.id)) {    // on to the password first
       const pass = $(e.target.id === "si-user" ? "#si-pass" : "#aa-pass");
@@ -2349,6 +2468,7 @@
     if (!(age >= 0 && age < 5 * 60000)) A.sync();                    // synced minutes ago: not again (F5 still syncs)
     if (S.boot && S.boot.open) openTarget(S.boot.open);
     else if (S.boot && S.boot.updated_from) whatsNew();
+    else if ((S.update || {}).failed) updateModal();        // the last update's installer didn't finish: why, what now
     ((S.boot && S.boot.notes) || []).forEach((m) => toast(m, "error"));   // e.g. settings that couldn't be read
   }
   function whatsNew() {             // the first start after an update
@@ -2409,7 +2529,7 @@
     const today = new Date();
     const iso = (d) => d.toISOString().slice(0, 10);
     const addDays = (n) => { const d = new Date(today); d.setDate(d.getDate() + n); return d; };
-    let seq = 0;
+    let seq = 0, syncing = false;            // (a sync asked for while one runs only answers "running", as api.py)
     const rec = (date, time, mins, o = {}) => {
       const [h, m] = time.split(":").map(Number); const end = new Date(2000, 0, 1, h, m + mins);
       return { id: `r${++seq}`, name: o.name || `Lecture ${seq}`, start: `${iso(date)}T${time}:00`, time, end_time: `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`,
@@ -2518,7 +2638,7 @@
       },
       i18n: () => ({ ok: true, ...(window.__I18N_PREVIEW || { lang: "en", table: {} }), setting: "", windows: "en" }),
       set_language: (code) => ({ ok: true, ...(code === "tr" && window.__I18N_PREVIEW ? window.__I18N_PREVIEW : { lang: "en", table: {} }), setting: code, windows: "en" }),
-      sync: () => { emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }), 1400); return { ok: true }; },
+      sync: () => { if (syncing) return { ok: true, running: true }; syncing = true; emit({ type: "sync", phase: "start", message: "Checking IEULearn and Panopto…" }); setTimeout(() => { syncing = false; emit({ type: "sync", phase: "done", new_count: 0, message: "Up to date", last_sync: new Date().toISOString() }); }, 1400); return { ok: true }; },
       transcribe: (ids) => { simulate(ids); return { ok: true, queued: ids.length }; },
       transcribe_day: (k) => { const d = courses.flatMap((c) => c.days).find((x) => x.day_key === k); const ids = d.recordings.filter((r) => !r.duplicate && !r.too_short && r.status !== "done").map((r) => r.id); simulate(ids); return { ok: true, queued: ids.length }; },
       cancel: () => ({ ok: true }), get_day: () => ({ ok: true, day: JSON.parse(JSON.stringify(detail)) }),
@@ -2553,6 +2673,7 @@
       ...mockChat(emit),
     };
   })();
+  Studia.Mock = Mock;              // (the page tests answer as the app would in a case the preview doesn't show)
 
   function mockChat(emit) {   // browser preview of the chat
     const now = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19); };

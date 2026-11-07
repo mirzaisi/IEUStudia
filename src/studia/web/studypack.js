@@ -92,7 +92,7 @@
       </div></div>
       <div class="cp-foot"><div class="cp-cost" id="pk-cost">${costHTML()}</div>
         <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
-          <button class="btn primary" data-act="pk-go" ${(P.files.size || P.days.size) && ai.available && ai.can_plans !== false ? "" : "disabled"}>${sheet() ? `${I("sigma", "sm")} ${t("Make cheatsheet")}` : `${I("book", "sm")} ${t("Write study pack")}`}</button></div></div>`);
+          <button class="btn primary" data-act="pk-go" ${(P.files.size || P.days.size) && ai.available && ai.can_plans !== false && !P.starting ? "" : "disabled"}>${sheet() ? `${I("sigma", "sm")} ${t("Make cheatsheet")}` : `${I("book", "sm")} ${t("Write study pack")}`}</button></div></div>`);
     $(".modal").classList.add("pd", "pk");
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keep;
   }
@@ -112,6 +112,13 @@
   }
   function readInputs() {
     document.querySelectorAll(".modal [data-pk]").forEach((el) => { P[el.dataset.pk] = el.value; });
+  }
+  // the dialog's go button while its pack is being started: disabled, saying so; given back as it was if that failed
+  function goBusy(el, on) {
+    if (!el) return;
+    if (on) { el.dataset.label = el.innerHTML; el.innerHTML = `${SPIN()} ${t("Starting…")}`; }
+    else if (el.dataset.label) { el.innerHTML = el.dataset.label; delete el.dataset.label; }
+    el.disabled = on;
   }
   const scope = () => ({ kind: P.kind, weeks: [...P.weeks].sort((a, b) => a - b), files: [...P.files], days: [...P.days], picked: true,
     difficulties: P.difficulties, model: P.model, effort: P.effort || "" });
@@ -222,18 +229,26 @@
       const ids = [...new Set(P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id)))];
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file — pick it once it is in", "Downloading {n} files — pick them once they are in"), "success");
+      else toast(r.error || t("Download failed"), "error");
     },
     "pk-transcribe": async () => {
       readInputs();
       const days = P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.days.filter((d) => !d.ready && d.mine).map((d) => d.day_key));
-      let n = 0;
-      for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) n += r.queued || 0; }
+      let n = 0, error = "";
+      for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) n += r.queued || 0; else error = error || r.error || ""; }
+      if (!n && error) { toast(error, "error"); return; }       // not "nothing left": it couldn't be queued
       toast(n ? t.n(n, "{n} recording queued for transcription", "{n} recordings queued for transcription") : t("Nothing left to transcribe there"), n ? "success" : "info");
     },
-    "pk-go": async () => {
+    "pk-go": async (el) => {
+      // one click writes one pack (or cheatsheet): a double click, or a second click while the window is slow to
+      // answer (a full sync), used to start two runs and use the student's AI plan twice
+      if (!P || P.starting) return;
       readInputs();
+      const asked = P;
+      asked.starting = true; goBusy(el, true);
       const r = await call("plan_create", P.courseId, scope());
-      if (!r.ok) { toast(r.error, "error"); return; }
+      asked.starting = false;
+      if (!r.ok) { goBusy($(".modal [data-act='pk-go']"), false); toast(r.error, "error"); return; }
       closeModal();
       S.plans = [r.plan, ...(S.plans || []).filter((p) => p.id !== r.plan.id)];
       S.planCache[r.plan.id] = { ...r.plan, stages_done: [], chapters: [] };

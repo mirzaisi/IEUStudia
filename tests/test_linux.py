@@ -211,17 +211,15 @@ def test_a_click_on_open_calls_back_and_a_failure_is_logged(monkeypatch, caplog)
 
 
 # ----------------------------------------------------------------------------- signing in to Claude Code
-def test_without_a_terminal_the_sign_in_command_keeps_the_apps_claude_profile(monkeypatch):
-    from studia import ai, osutil
+def test_the_sign_in_needs_no_terminal_and_keeps_the_apps_claude_profile(monkeypatch):
+    """Claude Code's sign-in runs without a window (IEUStudia reads its link and its end), so no terminal app is
+    needed; it signs in IEUStudia's own Claude Code profile, not a developer's personal one."""
+    from studia import ai, ai_setup
 
-    monkeypatch.setattr(ai, "sys", types.SimpleNamespace(platform="linux"))
-    monkeypatch.setattr(osutil, "WINDOWS", False)
-    monkeypatch.setattr(linuxutil, "run_in_terminal", lambda cmd, env=None: False)
-    env = {"PATH": "/usr/bin", "CLAUDE_CONFIG_DIR": "/home/ali/.local/share/IEUStudia/tools/claude config"}
-    with pytest.raises(RuntimeError) as err:
-        ai._console(["/home/ali/.local/bin/claude", "auth", "login", "--claudeai"], env)
-    assert str(err.value).endswith(": CLAUDE_CONFIG_DIR='/home/ali/.local/share/IEUStudia/tools/claude config' "
-                                   "/home/ali/.local/bin/claude auth login --claudeai")
-    with pytest.raises(RuntimeError) as err:
-        ai._console(["/opt/my tools/codex", "login"])
-    assert str(err.value).endswith(": '/opt/my tools/codex' login")
+    monkeypatch.setattr(ai_setup, "sys", types.SimpleNamespace(platform="linux"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(ai, "claude_cli_info", lambda: {"available": True, "path": "/home/ali/.local/bin/claude",
+                                                        "version": "2.1.318"})
+    cmd, env = ai._login_command("claude")
+    assert cmd == ["/home/ali/.local/bin/claude", "auth", "login", "--claudeai"]
+    assert env["CLAUDE_CONFIG_DIR"] == str(ai_setup.tools_dir() / "claude-config")

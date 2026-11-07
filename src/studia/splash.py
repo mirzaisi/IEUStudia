@@ -45,6 +45,8 @@ TEXT_TR = {
     "IEUStudia got stuck opening its window": "IEUStudia penceresini açarken takıldı",
     "Restarting it…": "Yeniden başlatılıyor…",
     "Restarting IEUStudia…": "IEUStudia yeniden başlatılıyor…",
+    "IEUStudia closed while it was starting": "IEUStudia açılırken kapandı",
+    "Your antivirus may have stopped it: allow it there.": "Antivirüsün durdurmuş olabilir: orada izin ver.",
 }
 LANG = "en"
 
@@ -191,6 +193,7 @@ class Splash:
         self.closing_in = -1
         self.buttons: list[int] = []
         self.restarting = False
+        self.vanished = False                # the app ended before its window showed, without a word
         self.hwnd = 0
         self.dpi = 96
         self.fonts: dict[str, int] = {}
@@ -294,9 +297,12 @@ class Splash:
             if self.closing_in < 0:
                 user32.DestroyWindow(self.hwnd)
             return
-        if self.ticks % 6 == 0:                                # every ~180 ms: is the app up yet?
+        if self.ticks % 6 == 0 and not self.vanished:         # every ~180 ms: is the app up yet?
             if not self.restarting and not _alive(self.app_pid):
-                user32.DestroyWindow(self.hwnd)               # it closed (an error message shows why)
+                if self.ended_quietly():                      # gone without a word (an antivirus ended it, say)
+                    self.on_vanished()
+                else:
+                    user32.DestroyWindow(self.hwnd)           # it closed (an error message shows why)
                 return
             state = main_window_state(self.app_pid)
             if state == "shown":
@@ -386,6 +392,25 @@ class Splash:
             return False
         return (isinstance(d, dict) and d.get("pid") == self.app_pid and d.get("phase") == "window"
                 and time.time() - float(d.get("phase_at") or 0) > WINDOW_STALL_S)
+
+    def ended_quietly(self) -> bool:
+        """The app ended before its window showed and didn't say why: an error it shows marks the start-up phase
+        "crashed" first (app.py), so its own message box explains instead. Without a marker it can't be told."""
+        if self.marker is None:
+            return False
+        try:
+            d = json.loads(self.marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        return not (isinstance(d, dict) and d.get("pid") == self.app_pid and d.get("phase") in ("crashed", "shown"))
+
+    def on_vanished(self) -> None:
+        """Said, with Restart and Close: before, the start-up window just disappeared and nothing else came."""
+        self.vanished = True
+        self.status = _("IEUStudia closed while it was starting")
+        self.detail = _("Your antivirus may have stopped it: allow it there.")
+        if not self.buttons:
+            self._show_buttons()
 
     def on_stall(self) -> None:
         self.stall_handled = True

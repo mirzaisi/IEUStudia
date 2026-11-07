@@ -27,6 +27,8 @@ REPO = "mirzaisi/IEUStudia"
 RELEASES = f"https://github.com/{REPO}/releases"
 CHECK_EVERY_S = 20 * 3600       # about once a day (a little less, so a daily start doesn't keep just missing it)
 RETRY_S = 3600                  # after a failed look (offline, or GitHub's hourly limit on a shared network)
+EARLY_EXIT_S = 6                # the installer runs for the whole install: one that ends sooner didn't run
+UPDATE_ROOM_MB = 700            # the installer, and the new version beside the old one until it takes its place
 _lock = threading.Lock()
 
 
@@ -84,14 +86,23 @@ def _save(state: dict[str, Any]) -> None:
 
 
 def status() -> dict[str, Any]:
-    """What the last look found, without going online."""
+    """What the last look found, without going online. When the last update's installer didn't bring the new version
+    (Windows or an antivirus stopped it, it was cancelled, it failed), that is said once: ``failed`` with the version,
+    and the error the update dialog shows (``state`` "error"), until :func:`note_version` at the next start."""
     st = _load()
     latest = st.get("latest") if isinstance(st.get("latest"), dict) else {}
     version = str(latest.get("version") or "")
-    return {"current": __version__, "available": newer(version), "version": version,
-            "notes": str(latest.get("notes") or ""), "page": str(latest.get("page") or f"{RELEASES}/latest"),
-            "can_install": installed() and bool(latest.get("installer")),
-            "checked_at": float(st.get("checked_at") or 0), "error": str(st.get("error") or "")}
+    out = {"current": __version__, "available": newer(version), "version": version,
+           "notes": str(latest.get("notes") or ""), "page": str(latest.get("page") or f"{RELEASES}/latest"),
+           "can_install": installed() and bool(latest.get("installer")),
+           "checked_at": float(st.get("checked_at") or 0), "error": str(st.get("error") or "")}
+    tried = st.get("attempt") if isinstance(st.get("attempt"), dict) else {}
+    if newer(str(tried.get("version") or ""), __version__):
+        out.update(failed=str(tried["version"]), state="error", error=t(
+            "The update to {version} didn't finish, so you still have {current}; nothing of yours changed. Windows or "
+            "an antivirus may have stopped its installer. Try again; if it stops again, download the installer from "
+            "the release page and run it yourself.", version=tried["version"], current=__version__))
+    return out
 
 
 def due() -> bool:
@@ -162,15 +173,17 @@ def check(force: bool = False, session: Any = None) -> dict[str, Any]:
 
 
 def note_version() -> str:
-    """The version the app ran as the last time, when that was another one (it was just updated); "" otherwise."""
+    """The version the app ran as the last time, when that was another one (it was just updated); "" otherwise. Once
+    a start has seen it (status() said whether the last update failed), the update's attempt is forgotten."""
     with _lock:
         st = _load()
         before = str(st.get("ran") or "")
-        if before == __version__:
+        if before == __version__ and "attempt" not in st:
             return ""
+        st.pop("attempt", None)
         st["ran"] = __version__
         _save(st)
-        return before
+        return before if before != __version__ else ""
 
 
 def tell_once(version: str) -> bool:
@@ -203,6 +216,25 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _room_for_update() -> None:
+    """The installer is downloaded, then the new version is written beside the old one before it takes its place:
+    without room for that the update would fail halfway, so it says so before it starts."""
+    import shutil
+
+    places = {_dir()}
+    if getattr(sys, "frozen", False):
+        places.add(Path(sys.executable).parent)
+    for place in places:
+        try:
+            free = shutil.disk_usage(place).free
+        except OSError:
+            continue
+        if free < UPDATE_ROOM_MB * 1024 * 1024:
+            raise RuntimeError(t("The update needs about {need} MB of free disk space on {drive}, and {free} MB are free. "
+                                 "Free up some space, then try again.", need=UPDATE_ROOM_MB,
+                                 drive=place.anchor or str(place), free=free // (1024 * 1024)))
+
+
 def download(progress: Optional[Callable[[int, int], None]] = None,
              cancel: Optional[threading.Event] = None) -> Path:
     """The new version's installer in ``<app data>\\updates``, checked against the release's checksums."""
@@ -212,11 +244,15 @@ def download(progress: Optional[Callable[[int, int], None]] = None,
     url, sums = str(latest.get("installer") or ""), str(latest.get("sums") or "")
     if not url or not newer(str(latest.get("version") or "")):
         raise RuntimeError(t("There's no newer version to install."))
+    _room_for_update()
     s = _session()
     name = url.rsplit("/", 1)[-1]
-    expected = _expected_hash(s, sums, name)
     dest = _dir() / name
-    httpdl.download(url, dest, session=s, progress=progress, cancel=cancel, parts=4)
+    try:                                 # a stop says why in plain words (no internet, GitHub blocked here, …)
+        expected = _expected_hash(s, sums, name)
+        httpdl.download(url, dest, session=s, progress=progress, cancel=cancel, parts=4)
+    except Exception as exc:  # noqa: BLE001 - the same error, worded for the student
+        httpdl.raise_explained(exc, "github.com")
     if _sha256(dest) != expected:
         dest.unlink(missing_ok=True)
         raise RuntimeError(t("The downloaded installer isn't the released file (its checksum doesn't match), so it "
@@ -227,16 +263,39 @@ def download(progress: Optional[Callable[[int, int], None]] = None,
 
 def run_installer(path: Path) -> bool:
     """Start the installer once this process is about to end: it installs without questions (showing its progress)
-    and opens IEUStudia again (/RELAUNCH=1, see packaging/IEUStudia.iss)."""
+    and opens IEUStudia again (/RELAUNCH=1, see packaging/IEUStudia.iss), also when it fails (the old copy stays).
+
+    The installer runs as long as the install does, so one that ends within EARLY_EXIT_S didn't run (an antivirus
+    stopped it as it started, say): False then, and the app says so and opens again. The attempt is noted first, so
+    the next start also says it when the new version didn't come up for another reason (see status())."""
     from .launch import DETACHED
 
+    m = re.match(r"IEUStudia-Setup-(.+?)\.exe$", path.name)
+    with _lock:
+        st = _load()
+        st["attempt"] = {"version": m.group(1) if m else "", "at": time.time()}
+        _save(st)
+    cmd = [str(path), "/SILENT", "/NORESTART", "/RELAUNCH=1"]
+    try:                                         # what the installer did, beside IEUStudia's own log (Logs button)
+        from .paths import logs_dir
+
+        cmd.append(f"/LOG={logs_dir() / ('update-install-' + (m.group(1) if m else 'x') + '.log')}")
+    except Exception:  # noqa: BLE001 - only a log
+        pass
     try:
-        subprocess.Popen([str(path), "/SILENT", "/NORESTART", "/RELAUNCH=1"], close_fds=True, creationflags=DETACHED)
-        log.info("Started the update: %s", path.name)
-        return True
+        proc = subprocess.Popen(cmd, close_fds=True, creationflags=DETACHED)
     except OSError:
         log.exception("Could not start the update %s", path)
         return False
+    log.info("Started the update: %s", path.name)
+    try:
+        code = proc.wait(timeout=EARLY_EXIT_S)
+    except subprocess.TimeoutExpired:
+        return True                                  # installing: it opens IEUStudia again when it's done
+    if code == 0:
+        return True
+    log.warning("The update's installer ended at once (exit code %s): it didn't run", code)
+    return False
 
 
 def cleanup() -> None:

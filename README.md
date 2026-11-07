@@ -122,7 +122,9 @@ to learn.ieu.edu.tr, the same as when you sign in on the website.
 Once it's installed, IEUStudia tells you when there's a new version and updates itself when you click
 *Update*. You don't download anything yourself, Windows doesn't warn you again, and your courses and transcripts
 stay. Each release also has a portable zip
-if you'd rather not install anything (that one doesn't update itself).
+if you'd rather not install anything (that one doesn't update itself). Windows marks a downloaded zip as coming from
+the internet, and blocks some of the files you extract from it; IEUStudia unblocks its own files when it starts. If
+it says it can't, right-click the zip, choose *Properties*, tick *Unblock* and extract it again.
 
 ### What your PC needs
 

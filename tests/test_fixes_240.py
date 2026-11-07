@@ -250,6 +250,7 @@ def test_file_downloads_wait_out_a_short_wifi_drop(monkeypatch):
 
     waits = []
     monkeypatch.setattr(api_mod.time, "sleep", waits.append)
+    monkeypatch.setattr(api_mod.net, "online", lambda timeout=5.0: True)    # the internet is there, IEULearn isn't
     a = Api.__new__(Api)
     a._mat_lock, a._mat_queue, a._mat_running = threading.Lock(), ["m1", "m2"], True
     a._courses_dirty = threading.Event()

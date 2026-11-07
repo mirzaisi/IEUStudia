@@ -291,7 +291,12 @@ def test_ieulearns_words_along_with_a_server_error_dont_lock_out_the_saved_passw
     with pytest.raises(AuthError, match="ulaşılamadı"):
         sync.sync()
     assert not secrets_store.rejected() and sync.has_credentials()
+    with pytest.raises(AuthError, match="ulaşılamadı"):  # a moment later (downloads asking): not tried again yet
+        sync.sync()
+    assert site.logins == ["right"]
     site.server_error = False                            # back up: the next background sync signs in by itself
+    when, error = sync._login_failed
+    sync._login_failed = (when - sync.LOGIN_RETRY_AFTER_S, error)       # (half an hour later)
     assert sync.sync().errors == [] and site.logins == ["right", "right"]
 
 

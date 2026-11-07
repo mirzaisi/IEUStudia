@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .cancel import Cancelled
-from .i18n import t
+from .i18n import N_, t
 
 log = logging.getLogger("studia")
 IDLE_UNLOAD_S = 600
@@ -58,7 +58,44 @@ def _make_room() -> bool:
 
 
 def _out_of_memory(exc: BaseException) -> bool:
-    return "out of memory" in str(exc).lower()
+    low = str(exc).lower()
+    # the card's memory (cuBLAS says ALLOC_FAILED or NOT_INITIALIZED when it can't get any); the PC's (std::bad_alloc)
+    return any(w in low for w in ("out of memory", "bad_alloc", "alloc_failed", "not_initialized"))
+
+
+# what the student reads when the model can't run, instead of CTranslate2's own words ("Unable to open file
+# 'model.bin'", "std::bad_alloc"); each names a place that has the way out (Settings → AI shows Set up AI for the
+# offline model, and the setup's AI step has the models)
+NO_MEMORY = N_("There isn't enough free memory for the offline model. Close other programs (a browser with many tabs "
+               "uses a lot), then try again; or switch to the Basic offline model: Settings → AI → Set up AI.")
+DAMAGED = N_("The offline model's files on this PC are damaged, so it can't be loaded. Download it again: Settings → "
+             "AI → Set up AI, then go on to the download (only the model is downloaded).")
+ENGINE = N_("The engine that runs the offline model could not start on this PC ({error}). Reinstalling IEUStudia "
+            "usually fixes it.")
+
+
+def _mark_damaged(key: str) -> None:
+    """The model's files didn't load on the processor: it counts as not downloaded (Settings → AI offers it again)
+    and its next download fetches every file afresh (components.download_hf), not only the ones of the wrong size."""
+    from .components import llm_dir
+
+    d = llm_dir(key)
+    try:
+        if d.is_dir():
+            (d / ".damaged").write_text("1", encoding="utf-8")
+            (d / ".complete").unlink(missing_ok=True)
+    except OSError:
+        log.warning("The offline model %s could not be marked as damaged", key, exc_info=True)
+
+
+def _load_failure(key: str, exc: BaseException) -> RuntimeError:
+    log.warning("The offline AI model %s could not be loaded: %r", key, exc)
+    if _out_of_memory(exc) or isinstance(exc, MemoryError):
+        return RuntimeError(t(NO_MEMORY))
+    if isinstance(exc, ImportError):
+        return RuntimeError(t(ENGINE, error=str(exc)[:200]))
+    _mark_damaged(key)
+    return RuntimeError(t(DAMAGED))
 
 
 def _load(key: str, cpu: bool = False) -> dict[str, Any]:
@@ -74,8 +111,11 @@ def _load(key: str, cpu: bool = False) -> dict[str, Any]:
         if not llm_ready(key):
             raise RuntimeError(t("The offline AI model is not downloaded yet (Settings → AI)."))
         setup_cuda_dlls()
-        import ctranslate2
-        from tokenizers import Tokenizer
+        try:
+            import ctranslate2
+            from tokenizers import Tokenizer
+        except (ImportError, OSError) as exc:                     # its native library did not load on this PC
+            raise _load_failure(key, exc if isinstance(exc, ImportError) else ImportError(str(exc))) from exc
 
         _loaded.clear()                      # one model at a time (also frees the one on the graphics card)
         device = "cpu" if cpu else resolve_device("auto")[0]
@@ -90,14 +130,17 @@ def _load(key: str, cpu: bool = False) -> dict[str, Any]:
         if device == "cuda":
             _make_room()
         try:
-            gen = generator(device)
-        except RuntimeError as exc:
-            if device != "cuda" or not _out_of_memory(exc):
-                raise
-            log.warning("The offline AI model does not fit on the graphics card; it runs on the processor (%s)", exc)
-            device = "cpu"
-            gen = generator(device)
-        tok = Tokenizer.from_file(str(llm_dir(key) / "tokenizer.json"))
+            try:
+                gen = generator(device)
+            except RuntimeError as exc:
+                if device != "cuda" or not (_out_of_memory(exc) or _card_cant(exc)):
+                    raise
+                log.warning("The offline AI model can't run on the graphics card; it runs on the processor (%s)", exc)
+                device = "cpu"
+                gen = generator(device)
+            tok = Tokenizer.from_file(str(llm_dir(key) / "tokenizer.json"))
+        except Exception as exc:  # noqa: BLE001 - a damaged file, no memory: said plainly
+            raise _load_failure(key, exc) from exc
         log.info("Offline AI model %s loaded on %s in %.1fs", key, device, time.monotonic() - started)
         hit = {"gen": gen, "tok": tok, "used": time.monotonic(), "device": device}
         hit["room"], hit["answer"] = _gpu_room(key) if device == "cuda" else (CPU_BUDGET, CPU_ANSWER)
@@ -122,14 +165,40 @@ def _less_memory(key: str) -> bool:
     return True
 
 
+def _card_cant(exc: BaseException) -> bool:
+    """The graphics card failed to run the model, not because it was full: the processor runs it this time.
+    hardware.remember_card_failed decides whether that is remembered for this PC (a card too old for CTranslate2 at
+    once, a one-off fault never), so the speech model doesn't try it either."""
+    text = str(exc).lower()
+    if _out_of_memory(exc) or not any(w in text for w in ("cuda", "cublas", "cudnn")):
+        return False
+    try:
+        from .hardware import remember_card_failed
+
+        remember_card_failed(str(exc), "offline AI")
+    except Exception:  # noqa: BLE001 - only a memory for the next starts
+        log.debug("remembering the card failed", exc_info=True)
+    return True
+
+
 def _with_less_memory(key: str, run: Callable[[], Any]) -> Any:
-    """run(); when the graphics card runs out of memory, again with less (see _less_memory)."""
+    """run(); when the graphics card runs out of memory, again with less (see _less_memory); when it can't run the
+    model at all, again on the processor."""
+    moved = False
     while True:
         try:
             return run()
         except RuntimeError as exc:
-            if not _out_of_memory(exc) or not _less_memory(key):
-                raise
+            if not _out_of_memory(exc):
+                if moved or device_of(key) != "cuda" or not _card_cant(exc):
+                    raise
+                log.warning("The graphics card can't run the offline AI; it runs on the processor (%s)", exc)
+                _load(key, cpu=True)
+                moved = True
+                continue
+            if not _less_memory(key):
+                log.warning("The offline AI ran out of memory with nothing left to try: %s", exc)
+                raise RuntimeError(t(NO_MEMORY)) from exc
             log.warning("The offline AI ran out of graphics memory; trying again with less (%s)", exc)
 
 

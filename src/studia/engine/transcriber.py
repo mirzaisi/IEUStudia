@@ -131,6 +131,7 @@ class Engine:
         self._device = "cpu"
         self._compute = "int8"
         self._warning = ""
+        self.gpu_error = ""                  # why the graphics card couldn't load the model ("": it could, or not tried)
         self._lock = threading.Lock()
         self._last_dominant = "en"
         self._mine = threading.local()       # per transcribing thread (two lectures may share the model on the card)
@@ -204,6 +205,7 @@ class Engine:
                     if device != "cuda":
                         raise
                     self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
+                    self.gpu_error = str(exc) or exc.__class__.__name__     # (jobs.py remembers a card that can't)
                     self._warning = t("The GPU could not be used, so transcription runs on the CPU (slower).")
                     device, compute = "cpu", "int8"
                     drive_card(self.card_threads, False)

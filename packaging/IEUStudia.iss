@@ -55,6 +55,8 @@ Name: "tr"; MessagesFile: "compiler:Languages\Turkish.isl"
 [CustomMessages]
 en.NeedWebView2=IEUStudia needs the Microsoft Edge WebView2 Runtime, which was not found on this PC.%n%nIt is free and comes with Windows 11 and current Windows 10. Open the download page now? (You can continue the installation either way.)
 tr.NeedWebView2=IEUStudia için Microsoft Edge WebView2 Runtime gerekiyor, bu bilgisayarda bulunamadı.%n%nÜcretsiz ve Windows 11 ile güncel Windows 10'da zaten var. İndirme sayfası şimdi açılsın mı? (Kuruluma her iki durumda da devam edebilirsin.)
+en.NotSwapped=The new version of IEUStudia could not take the old one's place, because its files are still in use. The old version stays and still works.%n%nClose IEUStudia (also its icon next to the clock), then run this installer again.
+tr.NotSwapped=IEUStudia'nın yeni sürümü eskisinin yerine geçemedi, çünkü eski sürümün dosyaları hâlâ kullanımda. Eski sürüm duruyor ve çalışıyor.%n%nIEUStudia'yı kapat (saatin yanındaki simgesini de), sonra bu kurulum programını yeniden çalıştır.
 en.DeleteData=Also delete IEUStudia's data on this PC?%n%nThis removes your settings, the stored (encrypted) IEULearn login, the library and the downloaded models in:%1%n%nYour transcripts and notes in your Documents folder are kept.
 tr.DeleteData=IEUStudia'nın bu bilgisayardaki verileri de silinsin mi?%n%nAyarların, saklanan (şifreli) IEULearn girişin, kitaplığın ve indirilen modeller şu klasörlerden silinir:%1%n%nBelgeler klasöründeki ders metinlerin ve notların kalır.
 
@@ -62,11 +64,19 @@ tr.DeleteData=IEUStudia'nın bu bilgisayardaki verileri de silinsin mi?%n%nAyarl
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "..\build\dist\IEUStudia\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; beside the old copy, which they replace only once they are all there (see update-swap.iss): an install that doesn't
+; finish leaves the old copy as it was, and IEUStudia still starts. Nothing of the old version is left over either.
+Source: "..\build\dist\IEUStudia\IEUStudia.exe"; DestDir: "{app}"; DestName: "IEUStudia.exe.new"; Flags: ignoreversion
+Source: "..\build\dist\IEUStudia\_internal\*"; DestDir: "{app}\_internal.new"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[InstallDelete]
-; files of an older version that a newer build no longer has
+[UninstallDelete]
+; installed under the names above, in use under these
 Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\_internal.new"
+Type: filesandordirs; Name: "{app}\_internal.old"
+Type: files; Name: "{app}\IEUStudia.exe"
+Type: files; Name: "{app}\IEUStudia.exe.new"
+Type: files; Name: "{app}\IEUStudia.exe.old"
 
 [Icons]
 Name: "{autoprograms}\IEUStudia"; Filename: "{app}\IEUStudia.exe"; AppUserModelID: "Studia.App"
@@ -74,17 +84,15 @@ Name: "{autodesktop}\IEUStudia"; Filename: "{app}\IEUStudia.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\IEUStudia.exe"; Description: "{cm:LaunchProgram,IEUStudia}"; Flags: nowait postinstall skipifsilent
-; an update started from the app (/SILENT /RELAUNCH=1, see updates.py): open IEUStudia again when it's done
-Filename: "{app}\IEUStudia.exe"; Flags: nowait; Check: Relaunch
+; an update started from the app (/SILENT /RELAUNCH=1, see updates.py): open the new IEUStudia when it's in place (an
+; update that didn't get through opens the old one again, from DeinitializeSetup)
+Filename: "{app}\IEUStudia.exe"; Flags: nowait; Check: RelaunchNew
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/c taskkill /f /im IEUStudia.exe"; Flags: runhidden; RunOnceId: "StopIEUStudia"
 
 [Code]
-function Relaunch(): Boolean;
-begin
-  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
-end;
+#include "update-swap.iss"
 
 function WebView2Installed(): Boolean;
 var

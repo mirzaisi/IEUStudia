@@ -619,38 +619,153 @@ def _elevated() -> bool:
         return False
 
 
-def open_in_browser(url: str) -> bool:
-    """Open a web page in the default browser, allowed to come to the front. When Windows has no working default
-    browser (none set, or one that was removed), Microsoft Edge. False when nothing could be started: the caller
-    says so and offers the link to copy."""
+def elevated() -> bool:
+    """IEUStudia runs as administrator."""
+    return _elevated()
+
+
+def edge_available() -> bool:
+    """Microsoft Edge can be started on this PC (its program, or its microsoft-edge: link): "Open in Microsoft Edge"."""
+    return bool(_edge()) or bool(_default_browser("microsoft-edge")[1])
+
+
+def _edge_open(url: str) -> tuple[bool, str]:
+    """Microsoft Edge on this link, whatever the default browser is: its program, else its microsoft-edge: link (as
+    the signed-in user through Explorer when IEUStudia runs as administrator). Not on a PC without Edge (no program,
+    and Windows says nothing opens its links): handed to Windows, that link only brings up a "Pick an app" window,
+    and Explorer always starts, so Edge would be said to have been asked."""
+    edge = _edge()
+    if not edge:
+        known, handler = _default_browser("microsoft-edge")
+        if known and not handler:
+            return False, "Microsoft Edge is not on this PC"
+    if _elevated() and _start("explorer.exe", "microsoft-edge:" + url):
+        return True, ""
+    if edge and _start(edge, url):
+        return True, ""
+    return _shell_open("microsoft-edge:" + url)
+
+
+_BROWSERS = {"chrome.exe": "Google Chrome", "msedge.exe": "Microsoft Edge", "brave.exe": "Brave", "firefox.exe": "Firefox",
+             "opera.exe": "Opera", "vivaldi.exe": "Vivaldi", "iexplore.exe": "Internet Explorer", "arc.exe": "Arc",
+             "librewolf.exe": "LibreWolf", "waterfox.exe": "Waterfox", "chromium.exe": "Chromium", "zen.exe": "Zen"}
+
+
+def browser_name(program: str) -> str:
+    """A browser's name to show ("Brave"), from its program's path ("" for none)."""
+    if not program:
+        return ""
+    p = Path(program.strip('"'))
+    exe, low = p.name.lower(), program.lower()
+    if exe == "launcher.exe" and "opera" in low:
+        return "Opera"
+    if exe == "browser.exe" and "yandex" in low:
+        return "Yandex Browser"
+    return _BROWSERS.get(exe) or (p.stem[:1].upper() + p.stem[1:])
+
+
+def default_browsers() -> dict[str, str]:
+    """The browsers Windows opens https and http links with, by name (for a report: no paths, which hold the user's
+    name)."""
+    out = {}
+    for scheme in ("https", "http"):
+        known, program = _default_browser(scheme)
+        out[scheme] = ((browser_name(program) + (" (Store app)" if "windowsapps" in program.lower() else ""))
+                       if program else "none set" if known else "unknown")
+    return out
+
+
+def open_default_apps() -> bool:
+    """Windows' Settings at Default apps, where the default browser is chosen."""
+    try:
+        with normal_priority():
+            os.startfile("ms-settings:defaultapps")  # type: ignore[attr-defined]
+        return True
+    except OSError as exc:
+        log.warning("Windows' Default apps settings did not open: %s", exc)
+        return False
+
+
+def _allow_front() -> None:
+    """We are in front (the user just clicked): so may the browser be."""
+    try:
+        ctypes.WinDLL("user32").AllowSetForegroundWindow(wt.DWORD(0xFFFFFFFF))   # ASFW_ANY
+    except (OSError, AttributeError):
+        pass
+
+
+def _one_way(url: str, way: str) -> dict:
+    """open_link with one way only: "default", the default browser's program started with the link (not a Store app,
+    which only the shell starts); "edge", Microsoft Edge; "shell", Windows' own open of the link (it picks the
+    program). ok False: that way can't start anything on this PC."""
+    if way == "edge":
+        ok, error = _edge_open(url)
+        if not ok:
+            log.warning("Microsoft Edge did not open %s: %s", _site(url), error or "not on this PC")
+        return {"ok": ok, "browser": "Microsoft Edge", "via": "edge", "why": ""}
+    scheme = url.partition(":")[0].lower()
+    known, program = _default_browser(scheme)
+    if way == "default":
+        # the browser that opens https links is the one in use (an http link is IEUStudia's own sign-in page)
+        exe = (_default_browser("https")[1] if scheme == "http" else "") or program
+        if not exe or "windowsapps" in exe.lower():
+            return {"ok": False, "browser": browser_name(exe), "via": "default", "why": "" if exe else "no_default"}
+        ok = _start("explorer.exe", url) if _elevated() else _start(exe, url)   # (Explorer: as the signed-in user)
+        return {"ok": ok, "browser": browser_name(exe), "via": "default", "why": ""}
+    if way != "shell":
+        raise ValueError(way)
+    if known and not program:          # no program for these links: the shell would answer with a "Pick an app" window
+        return {"ok": False, "browser": "", "via": "shell", "why": "no_default"}
+    if _elevated():
+        ok, error = _start("explorer.exe", url), ""
+    else:
+        ok, error = _shell_open(url)
+    if not ok:
+        log.warning("Windows did not open %s: %s", _site(url), error or "no reason given")
+    return {"ok": ok, "browser": browser_name(program), "via": "shell", "why": ""}
+
+
+def open_link(url: str, way: str = "") -> dict:
+    """Open a web page in the default browser, allowed to come to the front: {"ok", "browser" (its name, "" when not
+    known), "via" ("default", "https", "explorer", "edge"), "why" ("" or why the default browser wasn't used:
+    "no_default", Windows has no working one, none set or one that was removed; "default_failed", it didn't start)}.
+    Then Microsoft Edge is used. ok False: nothing could be started; the caller says so and offers the link to copy.
+    ``way``: that way only (see _one_way), for Open the page again and Open in Microsoft Edge."""
     with normal_priority():
-        try:                                               # we are in front (the user just clicked): so may it be
-            ctypes.WinDLL("user32").AllowSetForegroundWindow(wt.DWORD(0xFFFFFFFF))   # ASFW_ANY
-        except (OSError, AttributeError):
-            pass
+        _allow_front()
+        if way:
+            return _one_way(url, way)
         scheme = url.partition(":")[0].lower()
         known, program = _default_browser(scheme)
+        https = _default_browser("https")[1] if scheme == "http" else ""
         log.info("Opening %s; default browser: %s", _site(url), program or ("none" if known else "not known"))
         if _elevated() and _start("explorer.exe", url):    # explorer runs as the signed-in user, and passes it on
-            return True
+            return {"ok": True, "browser": browser_name(program or https), "via": "explorer", "why": ""}
+        # an http link (IEUStudia's own sign-in page): the browser that opens https links is the one in use; a PC can
+        # have http set to another one, or to one that was removed
+        if https and https != program and "windowsapps" not in https.lower() and _start(https, url):
+            return {"ok": True, "browser": browser_name(https), "via": "https", "why": ""}
+        why = ""
         if program or not known:
             ok, error = _shell_open(url)
             if ok:
-                return True
+                return {"ok": True, "browser": browser_name(program), "via": "default", "why": ""}
             log.warning("The default browser did not open %s: %s", _site(url), error or "no reason given")
+            why = "default_failed"
         else:
             log.warning("Windows has no working browser set for %s links", scheme)
-            other = _default_browser("https")[1] if scheme == "http" else ""
-            if other and "windowsapps" not in other.lower() and _start(other, url):
-                return True
-        edge = _edge()
-        if edge and _start(edge, url):
-            return True
-        ok, error = _shell_open("microsoft-edge:" + url)
+            why = "no_default"
+        ok, error = _edge_open(url)
         if ok:
-            return True
+            return {"ok": True, "browser": "Microsoft Edge", "via": "edge", "why": why}
         log.warning("No browser could be started for %s: %s", _site(url), error or "no reason given")
-        return False
+        return {"ok": False, "browser": "", "via": "", "why": why}
+
+
+def open_in_browser(url: str) -> bool:
+    """Open a web page in the default browser (or Microsoft Edge, see open_link). False when nothing could be
+    started: the caller says so and offers the link to copy."""
+    return bool(open_link(url)["ok"])
 
 
 def open_path(path: str | Path) -> None:

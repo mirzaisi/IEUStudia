@@ -102,7 +102,7 @@
     },
     "dg-week": (el) => { const d = +el.dataset.d; S.digest.offset = d === 0 ? 0 : S.digest.offset + d; S.digest.data = null; renderView(); load(); },
     "dg-summary": async () => { const r = await call("digest_summary", S.digest.offset, St.effortPick && St.isChatGPT() ? St.effortPick("dg") : ""); if (!r.ok) toast(r.error, "error"); else { S.digest.running = true; S.digest.busyOffset = S.digest.offset; S.digest.text = ""; renderView(); } },
-    "dg-file": (el) => call("open_output_file", el.dataset.path),
+    "dg-file": (el) => St.said(call("open_output_file", el.dataset.path)),
   });
 
   // browser preview

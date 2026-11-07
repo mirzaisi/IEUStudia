@@ -1,12 +1,8 @@
 {
   "This sign-in has ended. Start it again from IEUStudia.": "Bu giriş sona erdi. IEUStudia'dan yeniden başlat.",
-  "IEUStudia could not wait for the browser to come back ({why}). A security program may be blocking it; allow IEUStudia in it and try again.": "IEUStudia tarayıcının geri dönmesini bekleyemedi ({why}). Bir güvenlik programı engelliyor olabilir; o programda IEUStudia'ya izin ver ve yeniden dene.",
-  "The sign-in page never opened in a browser. Try again; if nothing opens, click Copy link and paste it into your browser's address bar.": "Giriş sayfası hiçbir tarayıcıda açılmadı. Yeniden dene; yine bir şey açılmazsa Bağlantıyı kopyala'ya tıkla ve tarayıcının adres çubuğuna yapıştır.",
   "No browser could be opened on this PC. The link was copied: paste it into your browser's address bar.": "Bu bilgisayarda hiçbir tarayıcı açılamadı. Bağlantı kopyalandı: tarayıcının adres çubuğuna yapıştır.",
   "No browser could be opened on this PC. Set a default browser in Windows' settings and try again.": "Bu bilgisayarda hiçbir tarayıcı açılamadı. Windows ayarlarından varsayılan bir tarayıcı seç ve yeniden dene.",
   "Finish on the sign-in page in your browser (look in the taskbar if it isn't in front). This list notices when you're done.": "Tarayıcındaki giriş sayfasında işlemi tamamla (önde değilse görev çubuğuna bak). İşin bitince bu liste kendiliğinden güncellenir.",
-  "No browser could be opened on this PC. Click Copy link and paste it into your browser's address bar.": "Bu bilgisayarda hiçbir tarayıcı açılamadı. Bağlantıyı kopyala'ya tıkla ve tarayıcının adres çubuğuna yapıştır.",
-  "Your browser hasn't shown the sign-in page yet. It may be behind this window; or click Copy link and paste it into your browser's address bar.": "Tarayıcın giriş sayfasını henüz göstermedi. Bu pencerenin arkasında kalmış olabilir; ya da Bağlantıyı kopyala'ya tıkla ve tarayıcının adres çubuğuna yapıştır.",
   "Open the page again": "Sayfayı yeniden aç",
   "Copy link": "Bağlantıyı kopyala"
 }

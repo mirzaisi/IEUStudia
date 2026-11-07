@@ -701,7 +701,7 @@ def test_one_off_claude_requests_write_no_prompt_cache_and_a_chat_keeps_it(monke
         raise OSError("not started in this test")
 
     monkeypatch.setattr(ai.subprocess, "Popen", popen)
-    with pytest.raises(OSError):
+    with pytest.raises(RuntimeError, match="^Claude Code could not be started: "):      # said plainly, not as an OSError
         ai.ClaudeSession("S")
     assert "DISABLE_PROMPT_CACHING" not in envs[0]
 

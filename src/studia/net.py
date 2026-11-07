@@ -30,7 +30,16 @@ RETRY_AFTER_MAX_S = 10          # a "come back in an hour" (503 Retry-After) mus
 
 
 class NetworkError(requests.ConnectionError):
-    """A connection problem, with a message that can be shown to the user."""
+    """A connection problem, with a message that can be shown to the user. ``host``: the site that couldn't be
+    reached, when known (a course file's link to another site is that file's problem, not IEULearn's)."""
+
+    host = ""
+
+
+def _network_error(message: str, host: str) -> NetworkError:
+    err = NetworkError(message)
+    err.host = host
+    return err
 
 
 def use_windows_certificates() -> None:
@@ -57,11 +66,15 @@ def plain_error(exc: BaseException, url: str = "") -> str:
         return str(exc)
     host = _host(exc, url)
     if isinstance(exc, requests.exceptions.SSLError):          # before ConnectionError: it is one
+        if cert_out_of_date(exc):                              # a wrong date on this PC, not an antivirus
+            return clock_tls_text(host)
         return (t("A secure connection to {host} was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi sign-in page, "
                   "can do this: open any website in your browser, then try again.", host=host) if host else
                 t("A secure connection to the server was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi sign-in "
                   "page, can do this: open any website in your browser, then try again."))
-    if isinstance(exc, requests.Timeout):
+    if isinstance(exc, requests.exceptions.ProxyError):        # (one too)
+        return proxy_refused()
+    if isinstance(exc, requests.Timeout) or (isinstance(exc, requests.ConnectionError) and read_timed_out(exc)):
         return (t("{host} took too long to answer. Check your internet connection and try again.", host=host) if host
                 else t("The server took too long to answer. Check your internet connection and try again."))
     if isinstance(exc, requests.ConnectionError):
@@ -87,6 +100,17 @@ def plain_error(exc: BaseException, url: str = "") -> str:
                   "antivirus or Windows' ransomware protection blocked it.", name=name) if name else
                 t("Windows did not let IEUStudia use a file: it may be open in another program (or syncing), or your "
                   "antivirus or Windows' ransomware protection blocked it."))
+    long_path = str(getattr(exc, "filename", "") or "")       # Windows' path limit (long paths off): 206, or "not found"
+    if isinstance(exc, OSError) and (getattr(exc, "winerror", None) == 206 or exc.errno == errno.ENAMETOOLONG or (
+            len(long_path) >= 260 and getattr(exc, "winerror", None) in (2, 3))):
+        if sys.platform != "win32":                # (there: one name longer than 255 bytes, not Windows' path limit)
+            return (t("{path} is too long a name for this computer. Choose a shorter folder in Settings → Files.",
+                      path=long_path) if long_path else
+                    t("A name is too long for this computer. Choose a shorter folder in Settings → Files."))
+        return (t("{path} is too long for Windows (a whole path can have at most 259 characters). Choose a shorter "
+                  "folder in Settings → Files, for example one right in Documents.", path=long_path) if long_path else
+                t("A path is too long for Windows (a whole path can have at most 259 characters). Choose a shorter "
+                  "folder in Settings → Files, for example one right in Documents."))
     if getattr(exc, "winerror", None) in (3, 21, 53, 67):        # path, drive, network path or name not found
         where = str(getattr(exc, "filename", "") or "")
         return (t("{where} can't be reached: is the drive (or the network) connected, and is the folder still there?",
@@ -100,16 +124,112 @@ def plain_error(exc: BaseException, url: str = "") -> str:
     return text if text.endswith((".", "!", "?")) else text + "."
 
 
+# A certificate's dates: a PC whose date is wrong (months or years off: a flat clock battery, a date typed by hand)
+# fails every secure connection on them. Windows says so with a code, and in its own language (Turkish words on a
+# Turkish Windows); OpenSSL, Node.js (Claude Code) and Rust (the Codex CLI) say it in English.
+CERT_DATE_CODES = (0x800B0101, 9, 10)     # CERT_E_EXPIRED (Windows: expired or not valid yet); OpenSSL's 9 and 10
+CERT_DATE_SAID = ("not within its validity period", "certificate has expired", "certificate is not yet valid",
+                  "cert_has_expired", "cert_not_yet_valid", "certificate expired", "certificate not valid yet",
+                  "notvalidyet", "date_invalid")
+
+
+def cert_date_said(text: str) -> bool:
+    """A program's words (Claude Code, the Codex CLI) say a certificate's dates failed."""
+    low = (text or "").lower()
+    return any(w in low for w in CERT_DATE_SAID)
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """The error and those behind it (requests → urllib3 → ssl: as reason, cause, context or argument)."""
+    seen: dict[int, BaseException] = {}
+    todo: list[Any] = [exc]
+    while todo and len(seen) < 30:
+        e = todo.pop()
+        if not isinstance(e, BaseException) or id(e) in seen:
+            continue
+        seen[id(e)] = e
+        todo += [getattr(e, "reason", None), e.__cause__, e.__context__, *getattr(e, "args", ())]
+    return list(seen.values())
+
+
+def cert_out_of_date(exc: BaseException) -> bool:
+    """A secure connection that failed on a certificate's dates: what a wrong date on this PC causes. Windows' code
+    is looked for all along the error's chain, so a Turkish Windows is understood too."""
+    if any(getattr(e, "verify_code", None) in CERT_DATE_CODES for e in _chain(exc)):
+        return True
+    return cert_date_said(str(exc)) or any(w in str(exc).lower() for w in ("validity period", "has expired",
+                                                                             "not yet valid"))
+
+
+def cert_refused(exc: BaseException) -> bool:
+    """The other side's certificate wasn't accepted (an antivirus or a network changing secure connections, a Wi-Fi
+    sign-in page): not a connection that broke off halfway."""
+    return (any(isinstance(e, ssl.SSLCertVerificationError) for e in _chain(exc))
+            or "certificate verify failed" in str(exc).lower() or cert_out_of_date(exc))
+
+
+def clock_tls_text(host: str = "") -> str:
+    """Why a secure connection failed on a certificate's dates, with what this PC's clock says and how to set it."""
+    now = time.strftime("%Y-%m-%d %H:%M")
+    if sys.platform != "win32":
+        return (t("A secure connection to {host} failed because a certificate looks out of date. That happens when this "
+                  "computer's date or time is wrong (it says {now}): set the time automatically in your system "
+                  "settings (Date & Time), then try again. If the date is right, a security program or the network "
+                  "is changing secure connections.", host=host, now=now) if host else
+                t("A secure connection failed because a certificate looks out of date. That happens when this "
+                  "computer's date or time is wrong (it says {now}): set the time automatically in your system "
+                  "settings (Date & Time), then try again. If the date is right, a security program or the network "
+                  "is changing secure connections.", now=now))
+    return (t("A secure connection to {host} failed because a certificate looks out of date. That happens when this PC's "
+              "date or time is wrong (it says {now}): turn on Set time automatically in Settings → Time & language → "
+              "Date & time, then try again. If the date is right, a security program or the network is changing "
+              "secure connections.", host=host, now=now) if host else
+            t("A secure connection failed because a certificate looks out of date. That happens when this PC's date or "
+              "time is wrong (it says {now}): turn on Set time automatically in Settings → Time & language → Date & "
+              "time, then try again. If the date is right, a security program or the network is changing secure "
+              "connections.", now=now))
+
+
+def proxy_refused() -> str:
+    """A proxy server set on this PC (Windows' settings, or HTTPS_PROXY) refused the connection or isn't there."""
+    if sys.platform != "win32":
+        return t("The proxy server set on this computer didn't let IEUStudia through. If you don't use a proxy, remove "
+                 "it from your network settings (or the HTTPS_PROXY variable); otherwise check it with whoever set it up.")
+    return t("The proxy server set on this PC didn't let IEUStudia through. If you don't use a proxy, turn it off in "
+             "Windows Settings → Network & internet → Proxy; otherwise check it with whoever set it up.")
+
+
 class _TimeoutSession(requests.Session):
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         try:
             return super().request(method, url, **kwargs)
-        except requests.exceptions.SSLError as exc:
-            raise NetworkError(plain_error(exc, url)) from exc
         except (requests.ConnectionError, requests.Timeout) as exc:
-            host = urlparse(url).hostname or url
-            raise NetworkError(t("Can't reach {host}. Check your internet connection.", host=host)) from exc
+            # the site that failed: a redirect's target, not always the address asked for
+            failed = getattr(getattr(exc, "request", None), "url", "") or url
+            host = urlparse(failed).hostname or urlparse(url).hostname or url
+            if isinstance(exc, requests.exceptions.SSLError):
+                raise _network_error(plain_error(exc, failed), host) from exc
+            if isinstance(exc, requests.exceptions.ProxyError):
+                raise _network_error(proxy_refused(), host) from exc
+            if read_timed_out(exc):                             # it took the connection, then didn't answer
+                raise _network_error(t("{host} took too long to answer: it may be busy, or the connection is weak. "
+                                       "Try again in a few minutes.", host=host), host) from exc
+            raise _network_error(t("Can't reach {host}. Check your internet connection.", host=host), host) from exc
+
+
+def read_timed_out(exc: BaseException) -> bool:
+    """The server took the connection, then didn't answer in time: requests' ReadTimeout, or (for a GET the adapter
+    tried again) the ConnectionError that urllib3's retries end in, whose reason is the read that timed out. A slow
+    IEULearn was told as "Can't reach … Check your internet connection" that way."""
+    from urllib3.exceptions import MaxRetryError, ReadTimeoutError
+
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return True
+    reason = exc.args[0] if exc.args else None
+    if isinstance(reason, MaxRetryError):
+        reason = reason.reason
+    return isinstance(reason, ReadTimeoutError)
 
 
 # ----------------------------------------------------------------------------- TLS contexts
@@ -233,21 +353,31 @@ def connection_lost(exc: BaseException) -> bool:
                                                       errno.ETIMEDOUT)
 
 
-def online(timeout: float = 5.0) -> bool:
+def online(timeout: float = 5.0, stop: Callable[[], bool] = lambda: False) -> bool:
     """Panopto or IEULearn answers at all (any answer, an error page too). False only when neither can be reached:
     Wi-Fi off, the PC just woken from sleep, a VPN switching. A blocked secure connection (an antivirus, a Wi-Fi
-    sign-in page) counts as online: waiting wouldn't fix it."""
+    sign-in page) counts as online: waiting wouldn't fix it. ``stop()`` is asked between the two looks (Stop waiting
+    then acts within one look, not two)."""
     from .ieulearn import BASE as learn
     from .panopto import BASE as panopto
 
     s = plain_session()
     try:
         for url in (panopto, learn):
+            if stop():
+                return False
             try:
                 s.head(url, timeout=(timeout, timeout), allow_redirects=False)
                 return True
             except requests.exceptions.SSLError:
                 return True
+            except requests.exceptions.ProxyError:
+                # a proxy set on this PC refuses: its own message, at once. Where the PC can't say whether it is
+                # online (Linux, an older Windows), a refusing proxy is said too, instead of 15 minutes of waiting
+                # that end in "No internet connection"
+                if pc_connectivity() in ("internet", ""):
+                    return True
+                continue
             except requests.RequestException:
                 continue
         return False
@@ -255,10 +385,93 @@ def online(timeout: float = 5.0) -> bool:
         s.close()
 
 
-def wait_online(stop: Callable[[], bool] = lambda: False) -> bool:
-    """Wait until :func:`online`. False when ``stop()`` says to give up first (checked four times a second)."""
-    while not online():
-        end = time.monotonic() + ONLINE_EVERY_S
+OFFLINE_LOOKS = 90              # with no connection, it is looked for at most this often (~15 minutes while awake)
+BLOCKED_S = 90.0                # Windows says this PC is online, yet IEULearn and Panopto don't answer: said after this
+UNTIL_ONLINE_WAITS = 5          # a connection that keeps coming and going: the work is tried this often, then said why
+
+
+class Offline(NetworkError):
+    """The connection was waited for as long as it makes sense: the message says why it can't get through."""
+
+
+def pc_connectivity() -> str:
+    """What Windows itself says about this PC's connection, which a block of IEUStudia alone (a firewall, an
+    antivirus) or IEU's sites being down doesn't change: "internet", "portal" (a Wi-Fi that wants you to sign in
+    first), "local" (a network without the internet), "none" (no network) or "" (unknown: not Windows, or no answer)."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import ctypes
+
+        class Hint(ctypes.Structure):          # NL_NETWORK_CONNECTIVITY_HINT
+            _fields_ = [("level", ctypes.c_int), ("cost", ctypes.c_int), ("approaching", ctypes.c_ubyte),
+                        ("over", ctypes.c_ubyte), ("roaming", ctypes.c_ubyte)]
+
+        fn = ctypes.WinDLL("iphlpapi").GetNetworkConnectivityHint       # Windows 10 2004 and later
+        fn.restype = ctypes.c_long
+        hint = Hint()
+        if fn(ctypes.byref(hint)) != 0:
+            return ""
+        return {1: "none", 2: "local", 3: "internet", 4: "portal"}.get(hint.level, "")
+    except Exception:  # noqa: BLE001 - an older Windows: unknown
+        log.debug("No connectivity hint from Windows", exc_info=True)
+        return ""
+
+
+def _reason(why: str) -> str:
+    """Why IEULearn and Panopto can't be reached, from what Windows says: a sentence that ends in what to do."""
+    if why == "none":
+        return t("This PC isn't connected to a network: turn on Wi-Fi or plug in the cable.")
+    if why == "local":
+        return t("This network doesn't reach the internet. If it's a Wi-Fi that wants you to sign in first (campus, "
+                 "dorm, café), open any website in your browser and sign in there.")
+    if why == "portal":
+        return t("This Wi-Fi wants you to sign in first: open any website in your browser and sign in to the Wi-Fi.")
+    return ""
+
+
+def waiting_text(why: str, files: bool = False) -> str:
+    """What a sync (or the course files, ``files``) says while it waits for the connection."""
+    if why == "internet":
+        return t("This PC is online, but IEULearn and Panopto don't answer IEUStudia: trying again for a minute or two.")
+    lead = t("Course files wait for the internet connection.") if files else t("Waiting for the internet connection.")
+    tail = t("They download by themselves once it's back.") if files else t("The sync goes on by itself.")
+    return " ".join(x for x in (lead, _reason(why), tail) if x)
+
+
+def offline_text(why: str) -> str:
+    """Why waiting for the connection stopped, and what to do."""
+    if why == "internet":
+        return t("This PC is online, but IEUStudia can't reach IEULearn or Panopto. A firewall, an antivirus, a VPN or "
+                 "a proxy may be blocking IEUStudia, or IEULearn may be down: open learn.ieu.edu.tr in your browser. If "
+                 "it opens there, allow IEUStudia in your antivirus or firewall (or turn the VPN off), then try again.")
+    if why in ("none", "local", "portal"):
+        return t("No internet connection, so IEUStudia stopped waiting. {reason} Then try again.", reason=_reason(why))
+    return t("No internet connection: IEULearn and Panopto can't be reached. Check your connection (on campus Wi-Fi, "
+             "make sure you're signed in to it), then try again.")
+
+
+def wait_online(stop: Callable[[], bool] = lambda: False, told: Optional[Callable[[str], None]] = None) -> bool:
+    """Wait until :func:`online`: True. False when ``stop()`` says to give up first (checked four times a second).
+    ``told(why)`` hears what Windows says about the connection (see pc_connectivity) whenever that changes. Never
+    endlessly: raises Offline, with the reason, after BLOCKED_S when Windows says this PC is online (something blocks
+    IEUStudia alone, or IEU's sites are down: waiting won't help), else after OFFLINE_LOOKS looks (counted while the
+    PC is awake: a PC asleep for hours goes on when it wakes up)."""
+    looks, blocked_since, said = 0, 0.0, None
+    while not online(stop=stop):
+        if stop():
+            return False
+        why = pc_connectivity()
+        if told is not None and why != said:
+            said = why
+            told(why)
+        looks += 1
+        now = time.monotonic()
+        blocked_since = (blocked_since or now) if why == "internet" else 0.0
+        if looks >= OFFLINE_LOOKS or (blocked_since and now - blocked_since >= BLOCKED_S):
+            log.warning("Stopped waiting for the connection (Windows: %s; %d looks)", why or "unknown", looks)
+            raise Offline(offline_text(why))
+        end = now + ONLINE_EVERY_S
         while time.monotonic() < end:
             if stop():
                 return False
@@ -267,11 +480,13 @@ def wait_online(stop: Callable[[], bool] = lambda: False) -> bool:
 
 
 def until_online(fn: Callable[[], Any], waiting: Callable[[], None] = lambda: None,
-                 partial: Callable[[Any], bool] = lambda result: False) -> Any:
+                 partial: Callable[[Any], bool] = lambda result: False, *,
+                 told: Optional[Callable[[str], None]] = None, stop: Callable[[], bool] = lambda: False) -> Any:
     """``fn()``; when it fails for want of any connection (not one server that is down), or comes back
     ``partial(result)`` (some courses couldn't be reached) while there is none, ``waiting()`` says so, the
-    connection is waited for (a PC asleep for hours: as long as it takes), and ``fn()`` runs again."""
-    while True:
+    connection is waited for (wait_online: ``told`` hears why, ``stop`` ends it, never endlessly) and ``fn()`` runs
+    again, at most UNTIL_ONLINE_WAITS times. Raises Offline with the reason when the wait ends without it."""
+    for _ in range(UNTIL_ONLINE_WAITS):
         try:
             result = fn()
         except (requests.RequestException, OSError) as exc:
@@ -283,7 +498,9 @@ def until_online(fn: Callable[[], Any], waiting: Callable[[], None] = lambda: No
                 return result
             log.info("The connection went away halfway; waiting for it")
         waiting()
-        wait_online()
+        if not wait_online(stop, told):
+            raise Offline(t("Stopped waiting for the internet connection. Sync again once you're online."))
+    return fn()                                          # the last try: its own error, whatever it is
 
 
 def make_session() -> requests.Session:

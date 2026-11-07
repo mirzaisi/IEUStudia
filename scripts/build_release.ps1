@@ -29,6 +29,8 @@ try {
     $p = Start-Process "build\dist\IEUStudia\IEUStudia.exe" -ArgumentList "--selftest", "`"$report`"" -Wait -PassThru
     Get-Content $report
     if ($p.ExitCode -ne 0) { throw "The self-test of the build failed (see above)." }
+    # the portable zip unpacked with Windows' Extract All: every file marked as downloaded from the internet
+    & "$PSScriptRoot\selftest_marked.ps1" -Dist "build\dist\IEUStudia"
 
     New-Item -ItemType Directory -Force "build\installer" | Out-Null
     $zip = "build\installer\IEUStudia-$version-portable.zip"

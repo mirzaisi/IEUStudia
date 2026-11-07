@@ -309,9 +309,19 @@ def resolve_device(preference: str) -> tuple[str, str]:
     """(device, compute_type) for a user preference of "auto" | "cuda" | "cpu". The GPU is used only when its
     libraries (cuBLAS) are on this PC: without them CTranslate2 loads the model and then fails mid-way."""
     pref = (preference or "auto").lower()
-    if pref != "cpu" and cublas_available() and detect_gpu()["available"]:
+    if pref != "cpu" and cublas_available() and detect_gpu()["available"] and (pref == "cuda" or not _card_unusable()):
         return "cuda", cuda_compute_type()
     return "cpu", "int8"
+
+
+def _card_unusable() -> bool:
+    """The card is too old for CTranslate2, or failed to run the model with this driver (hardware.card_unusable)."""
+    try:
+        from ..hardware import card_unusable
+
+        return card_unusable()
+    except Exception:  # noqa: BLE001 - never stops a model from loading
+        return False
 
 
 @functools.lru_cache(maxsize=4)

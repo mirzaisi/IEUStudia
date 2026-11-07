@@ -376,7 +376,7 @@
       </div>
       <div class="cp-foot"><div class="cp-cost" id="pd-cost">${costHTML()}</div>
         <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
-          <button class="btn primary" data-act="pd-go" ${sel.size && ai.available && ai.can_plans !== false ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
+          <button class="btn primary" data-act="pd-go" ${sel.size && ai.available && ai.can_plans !== false && !D.starting ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
     $(".modal").classList.add("pd");
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keepBody;
     const nw = $(".pd-weeks2"); if (nw) nw.scrollTop = keepWeeks;
@@ -391,6 +391,13 @@
       D.est = r.ok ? r.estimate : null;
       const el = $("#pd-cost"); if (el) el.innerHTML = costHTML();      // only the footer: typing elsewhere is not interrupted
     }, 250);
+  }
+  // the dialog's go button while its plan is being started: disabled, saying so; given back as it was if that failed
+  function goBusy(el, on) {
+    if (!el) return;
+    if (on) { el.dataset.label = el.innerHTML; el.innerHTML = `${SPIN()} ${t("Starting…")}`; }
+    else if (el.dataset.label) { el.innerHTML = el.dataset.label; delete el.dataset.label; }
+    el.disabled = on;
   }
   function readInputs() {
     document.querySelectorAll(".modal [data-pd]").forEach((el) => {
@@ -443,12 +450,13 @@
       readInputs(); D.scope.kind = el.dataset.val; drawDialog(); estimate(); },
     "plan-open": (el) => go({ name: "plan", planId: el.dataset.id }),
     "plan-tab": (el) => { S.planTab = el.dataset.tab; renderView(); },
-    "plan-stop": (el) => call("plan_cancel", el.dataset.id),
+    "plan-stop": async (el) => { const r = await call("plan_cancel", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-resume": async (el) => { const r = await call("plan_resume", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-file": async (el) => { const r = await call("plan_open_file", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-delete": async (el) => {
       if (!confirm(t("Delete this study plan? (Its Markdown file in your IEUStudia folder stays.)"))) return;
-      await call("plan_delete", el.dataset.id);
+      const r = await call("plan_delete", el.dataset.id);
+      if (!r.ok) { toast(r.error, "error"); return; }            // still there: not taken off the list
       delete S.planCache[el.dataset.id];
       S.plans = (S.plans || []).filter((p) => p.id !== el.dataset.id);
       go({ name: "plans" });
@@ -480,9 +488,10 @@
       readInputs();
       const sel = new Set(D.scope.weeks);
       const days = D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.todo_days || []);
-      let n = 0;
+      let n = 0, error = "";
       const left = { unknown: 0, needs_section: false };     // only your section's lectures (catchup.js)
-      for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) { n += r.queued || 0; left.unknown += r.unknown || 0; left.needs_section = left.needs_section || !!r.needs_section; } }
+      for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) { n += r.queued || 0; left.unknown += r.unknown || 0; left.needs_section = left.needs_section || !!r.needs_section; } else error = error || r.error || ""; }
+      if (!n && error) { toast(error, "error"); return; }       // not "nothing left": it couldn't be queued
       if (n || !(left.unknown || left.needs_section)) {
         toast(n ? t.n(n, "{n} recording queued for transcription — build the plan once they are done, or now with what is there", "{n} recordings queued for transcription — build the plan once they are done, or now with what is there")
           : t("Nothing left to transcribe there"), n ? "success" : "info");
@@ -495,11 +504,17 @@
       const ids = [...new Set(D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing))];
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file — the plan will read them once they are in", "Downloading {n} files — the plan will read them once they are in"), "success");
+      else toast(r.error || t("Download failed"), "error");
     },
-    "pd-go": async () => {
+    "pd-go": async (el) => {
+      // one click starts one plan: a double click, or a second click while the window is slow to answer (a full sync),
+      // used to start two runs and use the student's AI plan twice
+      if (D.starting) return;
       readInputs();
+      D.starting = true; goBusy(el, true);
       const r = D.parent ? await call("plan_update", D.parent.id, D.scope) : await call("plan_create", D.courseId, D.scope);
-      if (!r.ok) { toast(r.error, "error"); return; }
+      D.starting = false;
+      if (!r.ok) { goBusy($(".modal [data-act='pd-go']"), false); toast(r.error, "error"); return; }
       closeModal();
       S.plans = [r.plan, ...(S.plans || []).filter((p) => p.id !== r.plan.id)];
       S.planCache[r.plan.id] = { ...r.plan, stages_done: [], concepts: [] };

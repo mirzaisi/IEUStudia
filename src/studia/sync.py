@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import dataclasses as dc
 import datetime as dt
 import json
@@ -9,7 +11,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import requests
 
@@ -17,7 +19,7 @@ from . import secrets_store
 from .config import Settings
 from .domain import Course, Profile
 from .i18n import t
-from .ieulearn import AuthError, IEULearn, NeedLogin
+from .ieulearn import AccountAction, AuthError, Busy, IEULearn, NeedLogin, SiteChanged, account_action
 from .library import Library
 from .net import clone_session, export_cookies, import_cookies, make_session, merge_cookies, plain_session
 from .panopto import Panopto
@@ -45,6 +47,43 @@ class SyncService:
         import_cookies(self._session, secrets_store.load_cookies())
         self._stored: Optional[list] = export_cookies(self._session)   # what secrets.bin has: not written again
         self.after_sync: Callable[[], Any] = lambda: None   # the app: lectures whose class day changed get their files
+        self._login_failed: Optional[tuple[float, BaseException]] = None   # see ensure_login
+        self._account_action: Optional[AccountAction] = None
+        self._flight: dict[int, tuple[str, str, float]] = {}                # see slow()
+        self._flight_lock = threading.Lock()
+
+    # ------------------------------------------------------------------ what a slow sync waits for
+    @contextlib.contextmanager
+    def _asking(self, service: str, course: str = "") -> Iterator[None]:
+        """While a request to ``service`` ("IEULearn", "Panopto") for ``course`` (a course code) waits for its answer."""
+        key = object()
+        with self._flight_lock:
+            self._flight[id(key)] = (service, course, time.monotonic())
+        try:
+            yield
+        finally:
+            with self._flight_lock:
+                self._flight.pop(id(key), None)
+
+    def _timed(self, service: str, course: str, fn: Callable[..., Any], *args: Any) -> Any:
+        with self._asking(service, course):
+            return fn(*args)
+
+    def slow(self, after_s: float) -> list[tuple[str, list[str], float]]:
+        """What has waited longer than ``after_s`` for an answer, the longest wait first: [("IEULearn", ["EEE 215"],
+        42.0)] (no courses: the service itself, as for the sign-in). The page says so while a sync seems to stand
+        still."""
+        now = time.monotonic()
+        out: dict[str, tuple[list[str], float]] = {}
+        with self._flight_lock:
+            waiting = list(self._flight.values())
+        for service, course, since in waiting:
+            if now - since >= after_s:
+                codes, longest = out.get(service, ([], 0.0))
+                if course and course not in codes:
+                    codes.append(course)
+                out[service] = (codes, max(longest, now - since))
+        return sorted(((s, sorted(c), w) for s, (c, w) in out.items()), key=lambda x: -x[2])
 
     # ------------------------------------------------------------------ session helpers
     def http(self) -> requests.Session:
@@ -106,6 +145,7 @@ class SyncService:
             secrets_store.set_credentials(username.strip(), password)
             self._session = s
             self._gen += 1
+            self._login_failed = self._account_action = None
             self._save_cookies()
             self.lib.upsert_courses(courses)
             self._set_profile(profile)
@@ -132,8 +172,18 @@ class SyncService:
         profile.username = username.strip()
         return profile, courses, export_cookies(s)
 
+    LOGIN_RETRY_AFTER_S = 300.0     # an automatic sign-in IEULearn answered without signing in isn't tried sooner
+
+    def allow_sign_in(self) -> None:
+        """You asked (Sync): the next automatic sign-in may try at once, although one failed a moment ago."""
+        self._login_failed = None
+
     def ensure_login(self) -> None:
-        """Make sure the IEULearn session is valid, signing in again with stored credentials if needed."""
+        """Make sure the IEULearn session is valid, signing in again with stored credentials if needed. A refused
+        password (or a page IEULearn wants you to finish first) stops it for good, until you sign in again; IEULearn
+        answering without a sign-in (busy, maintenance, its words along with a server error) stops it for
+        LOGIN_RETRY_AFTER_S: downloads, files and the helper each asking at once can't make a burst of sign-ins (a
+        burst could lock the account). A lost connection doesn't: it is tried as soon as it is back."""
         with self._lock:
             learn = IEULearn(self._session)
             if learn.is_logged_in():
@@ -141,15 +191,32 @@ class SyncService:
             creds = secrets_store.get_credentials()
             if not creds:
                 if secrets_store.rejected():
+                    if self._account_action is not None:
+                        raise copy.copy(self._account_action)
+                    why = secrets_store.rejected_for()     # (after a restart: what IEULearn wanted, kept with it)
+                    if why:
+                        raise account_action(why)
                     raise NeedLogin(t("IEULearn didn't accept your saved password (was it changed?). Sign in again."))
                 raise NeedLogin(t("Please sign in to IEULearn."))
+            failed = self._login_failed
+            if failed is not None and time.monotonic() - failed[0] < self.LOGIN_RETRY_AFTER_S:
+                self.log.info("Not signing in again yet (IEULearn: %s)", failed[1])
+                raise copy.copy(failed[1])
             self.log.info("IEULearn session expired; signing in again")
             try:
-                learn.login(*creds)
+                with self._asking("IEULearn"):
+                    learn.login(*creds)
             except AuthError as exc:       # the password was changed: never try it again in the background
                 if not exc.server_error:   # (IEULearn's words along with a server error may be about the server)
-                    secrets_store.mark_rejected(creds[1])
+                    secrets_store.mark_rejected(creds[1], exc.why if isinstance(exc, AccountAction) else "")
+                    self._account_action = exc if isinstance(exc, AccountAction) else None
+                else:
+                    self._login_failed = (time.monotonic(), exc)
                 raise
+            except (Busy, SiteChanged) as exc:
+                self._login_failed = (time.monotonic(), exc)
+                raise
+            self._login_failed = None
             self._save_cookies()
 
     def ensure_panopto(self, course_id: Optional[str] = None) -> None:
@@ -163,10 +230,20 @@ class SyncService:
             cid = course_id or next((c.id for c in self.lib.courses() if c.has_panopto), None)
             if cid is None:
                 raise RuntimeError(t("None of your courses has Panopto."))
-            folder = IEULearn(self._session).launch_panopto(cid)
-            if not Panopto(self._session).is_authenticated():
-                raise RuntimeError(t("Could not open Panopto through IEULearn. Try again in a moment."))
             known = self.lib.get_course(cid)
+            try:
+                with self._asking("Panopto", known.code if known else ""):
+                    folder = IEULearn(self._session).launch_panopto(cid)
+            except RuntimeError as exc:        # (its own words name the course by IEULearn's number: by its code here)
+                self.log.warning("%s", exc)
+                raise RuntimeError(t("Panopto didn't open {course} through IEULearn, so the lecture couldn't be "
+                                     "downloaded. Try again in a few minutes; if it keeps happening, open the course's "
+                                     "Panopto page on learn.ieu.edu.tr in your browser once.",
+                                     course=(known.code or known.name) if known else cid)) from exc
+            if not Panopto(self._session).is_authenticated():
+                raise RuntimeError(t("Panopto didn't open through IEULearn, so the lecture couldn't be downloaded. Try "
+                                     "again in a few minutes; if it keeps happening, open a course's Panopto page on "
+                                     "learn.ieu.edu.tr in your browser once."))
             if folder and known is not None and folder != known.folder_id:     # the course moved to another folder
                 self.lib.set_course_folder(cid, folder, True)
             if folder:
@@ -182,15 +259,18 @@ class SyncService:
             return IEULearn(self._session).dashboard()
 
     def _launch(self, course_id: str, s: requests.Session) -> tuple[str, Optional[str], requests.Session]:
+        known = self.lib.get_course(course_id)
         try:
-            return course_id, IEULearn(s).launch_panopto(course_id), s
+            with self._asking("Panopto", known.code if known else ""):
+                return course_id, IEULearn(s).launch_panopto(course_id), s
         except RuntimeError as exc:  # transient: try again on the next sync, keep has_panopto
             self.log.warning("%s", exc)
             return course_id, "", s
 
     def _panopto_open(self) -> bool:
         try:
-            return Panopto(self._session).is_authenticated()
+            with self._asking("Panopto"):
+                return Panopto(self._session).is_authenticated()
         except (requests.RequestException, OSError):
             return False
 
@@ -348,21 +428,22 @@ class SyncService:
                 probe_session = clone_session(self._session)
                 dash_session = clone_session(self._session)
                 if stored_profile is None:
-                    f_dash = pool.submit(lambda: IEULearn(dash_session).dashboard())
+                    f_dash = pool.submit(self._timed, "IEULearn", "", lambda: IEULearn(dash_session).dashboard())
                 else:
-                    f_dash = pool.submit(self._course_list, dash_session, stored_profile,
+                    f_dash = pool.submit(self._timed, "IEULearn", "", self._course_list, dash_session, stored_profile,
                                          {c.id: c for c in self.lib.courses(include_inactive=True)})
                 panopto_down = False
                 try:
-                    panopto_ok = Panopto(probe_session).is_authenticated()
+                    with self._asking("Panopto"):
+                        panopto_ok = Panopto(probe_session).is_authenticated()
                 except (requests.RequestException, OSError) as exc:   # IEULearn's own content still syncs
                     self.log.warning("Panopto can't be reached: %s", exc)
                     panopto_ok, panopto_down = False, True
                 early = []
                 if panopto_ok:  # fast path: list known folders while the dashboard loads
-                    early = [pool.submit(self._list, c, clone_session(probe_session), heads(c))
-                             for c in self.lib.courses() if c.folder_id]
-                for f in early:
+                    early = [pool.submit(self._timed, "Panopto", c.code, self._list, c, clone_session(probe_session),
+                                         heads(c)) for c in self.lib.courses() if c.folder_id]
+                for n, f in enumerate(early, 1):
                     try:
                         course, recs, s, got = f.result()
                         merge_cookies(self._session, s)
@@ -370,6 +451,7 @@ class SyncService:
                         new_ids += self._merge(course.id, recs, got)
                     except Exception as exc:  # noqa: BLE001 - retried below
                         self.log.info("Early listing failed (%s); retrying", exc)
+                    progress(t("Looking for new recordings: {done} of {total} courses…", done=n, total=len(early)))
                 if listed:
                     partial(list(new_ids))   # the UI can show new recordings before the dashboard arrives
                 try:
@@ -402,8 +484,12 @@ class SyncService:
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
                 launch_ids = [i for i in launch_ids if i]
                 sessions = [clone_session(self._session) for _ in launch_ids]  # cloned here: workers must not take the lock
+                unopened: list[str] = []                   # courses of todo whose launch ran but gave no folder
                 with ThreadPoolExecutor(max_workers=4, thread_name_prefix="lti") as pool:
-                    for cid, folder, s in pool.map(self._launch, launch_ids, sessions):
+                    for n, (cid, folder, s) in enumerate(pool.map(self._launch, launch_ids, sessions), 1):
+                        if len(launch_ids) > 1:
+                            progress(t("Connecting to Panopto: {done} of {total} courses…", done=n,
+                                       total=len(launch_ids)))
                         merge_cookies(self._session, s)
                         if folder:
                             self.lib.set_course_folder(cid, folder, True)
@@ -411,24 +497,40 @@ class SyncService:
                         elif folder is None and cid in todo:   # "" = launch failed, retry next time
                             self.lib.set_course_folder(cid, None, False)
                             self.lib.set_meta(f"nofolder:{cid}", dt.datetime.now().isoformat(timespec="seconds"))
+                        elif cid in todo:
+                            unopened.append(cid)
                 self._save_cookies()
-                if any(c.folder_id for c in self.lib.courses()) and not self._panopto_open():
+                some = any(c.folder_id for c in self.lib.courses())
+                if some and not self._panopto_open():
                     panopto_down = True
                     errors.append(t("Panopto didn't open through IEULearn: new recordings are checked again next time."))
+                elif unopened and not some:                # a new library where not one course opened: never "Up to date"
+                    errors.append(t("Panopto didn't open through IEULearn for any of your courses, so no recordings "
+                                    "could be looked for. Open the Panopto page of one of your courses on "
+                                    "learn.ieu.edu.tr in your browser once (it may ask you to confirm something), "
+                                    "then sync again."))
+                elif unopened:
+                    errors.append(t("Panopto didn't open through IEULearn for {courses}: their recordings are looked "
+                                    "for again at the next sync.", courses=", ".join(sorted(
+                                        known[c].code or known[c].name or c for c in unopened))))
 
             progress(t("Looking for new recordings…"))
             with_folders = [c for c in self.lib.courses() if c.folder_id] if not panopto_down else []
             missing = [c for c in with_folders if c.id not in listed]
             failed: list[str] = []
             with ThreadPoolExecutor(max_workers=6, thread_name_prefix="list") as pool:
-                futures = {pool.submit(self._list, c, clone_session(self._session), heads(c)): c for c in missing}
-                for f, c in futures.items():
+                futures = {pool.submit(self._timed, "Panopto", c.code, self._list, c, clone_session(self._session),
+                                       heads(c)): c for c in missing}
+                for n, (f, c) in enumerate(futures.items(), 1):
                     try:
                         course, recs, s, got = f.result()
                     except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
                         self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
                         failed.append(c.code or c.name or c.id)
                         continue
+                    finally:
+                        progress(t("Looking for new recordings: {done} of {total} courses…", done=n,
+                                   total=len(futures)))
                     merge_cookies(self._session, s)
                     listed[course.id] = recs
                     new_ids += self._merge(course.id, recs, got)
@@ -493,38 +595,58 @@ class SyncService:
             sessions = [clone_session(self._session) for _ in courses]   # cloned here: workers must not take the lock
         new_materials: list[str] = []
         new_announcements: list[str] = []
-        errors: list[str] = []
+        failures: dict[str, list[str]] = {}       # what went wrong (in words) -> the courses it went wrong for
+        relogin: list[Course] = []                # IEULearn's sign-in page came back: the session ran out halfway
+
+        def want(c: Course) -> bool:
+            return units or not infos[c.id].get("content_at")
+
+        def take(res: dict) -> None:
+            nonlocal new_materials, new_announcements
+            c = res["course"]
+            now = dt.datetime.now().isoformat(timespec="seconds")
+            first = not infos[c.id].get("content_at")
+            if "units" in res:
+                new_materials += self.lib.merge_units(c.id, res["units"], first_sync=first)
+            new_announcements += self.lib.merge_announcements(c.id, res["announcements"], first_sync=first)
+            fields = {"content_at": now}
+            if "overview" in res:
+                fields.update(overview=res["overview"].to_json(), overview_at=now)
+            self.lib.set_course_info(c.id, **fields)
+            with self._lock:
+                merge_cookies(self._session, res["session"])
+
         progress(t("Loading course content…"))
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="content") as pool:
-            futures = [pool.submit(self._content, c, s, infos[c.id], units or not infos[c.id].get("content_at"))
-                       for c, s in zip(courses, sessions)]
+            futures = {pool.submit(self._timed, "IEULearn", c.code, self._content, c, s, infos[c.id], want(c)): c
+                       for c, s in zip(courses, sessions)}
             plain = plain_session()
             stale = [c for c in courses if self._stale(infos[c.id].get("syllabus_at", ""), self.SYLLABUS_EVERY)]
             by_code = {code: pool.submit(fetch_syllabus, code, session=plain)       # sections share one syllabus
                        for code in dict.fromkeys(c.code for c in stale)}
             syl = {c.id: by_code[c.code] for c in stale}
-            for f in futures:
+            for n, (f, c) in enumerate(futures.items(), 1):
                 try:
-                    res = f.result()
+                    take(f.result())
                 except NeedLogin:
-                    raise
+                    relogin.append(c)
                 except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
-                    self.log.warning("Course content failed: %s", exc)
-                    errors.append(str(exc))
-                    continue
-                c = res["course"]
-                now = dt.datetime.now().isoformat(timespec="seconds")
-                first = not infos[c.id].get("content_at")
-                if "units" in res:
-                    new_materials += self.lib.merge_units(c.id, res["units"], first_sync=first)
-                new_announcements += self.lib.merge_announcements(c.id, res["announcements"], first_sync=first)
-                fields = {"content_at": now}
-                if "overview" in res:
-                    fields.update(overview=res["overview"].to_json(), overview_at=now)
-                self.lib.set_course_info(c.id, **fields)
+                    self._content_failed(c, exc, failures)
+                progress(t("Course files and announcements: {done} of {total} courses…", done=n, total=len(courses)))
+            if relogin:                           # signed in again once (it raises when it can't), then read again
+                self.log.info("IEULearn's session ran out while reading %d courses; signing in again", len(relogin))
+                self.ensure_login()
                 with self._lock:
-                    merge_cookies(self._session, res["session"])
-            if units and courses and not errors:
+                    again = [clone_session(self._session) for _ in relogin]
+                for c, s in zip(relogin, again):
+                    try:
+                        take(self._timed("IEULearn", c.code, self._content, c, s, infos[c.id], want(c)))
+                    except NeedLogin:
+                        failures.setdefault(t("IEULearn asked to sign in again for its pages although IEUStudia had "
+                                              "just signed in."), []).append(c.code)
+                    except Exception as exc:  # noqa: BLE001
+                        self._content_failed(c, exc, failures)
+            if units and courses and not failures:
                 self.lib.set_meta("units_at", dt.datetime.now().isoformat(timespec="seconds"))
             for cid, f in syl.items():
                 try:
@@ -548,7 +670,33 @@ class SyncService:
                     self.log.info("Cover picture failed: %s", exc)
         self.log.info("Course content in %.1fs: %d new materials, %d new announcements", time.monotonic() - t0,
                       len(new_materials), len(new_announcements))
+        errors = [t("{courses}: {problem}", courses=", ".join(sorted(set(codes))), problem=problem)
+                  for problem, codes in failures.items()]
         return {"new_materials": new_materials, "new_announcements": new_announcements, "errors": errors}
+
+    def _content_failed(self, course: Course, exc: BaseException, failures: dict[str, list[str]]) -> None:
+        self.log.warning("Course content of %s failed: %s", course.code or course.id, exc)
+        failures.setdefault(self._content_problem(exc), []).append(course.code or course.name or course.id)
+
+    @staticmethod
+    def _content_problem(exc: BaseException) -> str:
+        """Why a course's pages couldn't be read, in words for anyone (never "429 Client Error ... for url")."""
+        from .coursesite import CourseClosed
+        from .net import NetworkError, plain_error
+
+        if isinstance(exc, (CourseClosed, NetworkError)):
+            return str(exc)
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            code = exc.response.status_code
+            if code in (404, 410):
+                return t("IEULearn didn't find the course's pages.")
+            if code in (401, 403):
+                return t("IEULearn refused the course's pages: you may no longer have access to the course.")
+            return plain_error(exc)
+        if isinstance(exc, (requests.RequestException, OSError)):
+            return plain_error(exc)
+        return t("IEUStudia couldn't read the course's pages (IEULearn's pages may have changed). If it stays like "
+                 "this, check for an IEUStudia update in Settings → About.")
 
 
 __all__ = ["SyncService", "SyncResult", "AuthError", "NeedLogin"]

@@ -375,6 +375,46 @@ def open_in_browser(url: str) -> bool:
     return False
 
 
+def _edge_program() -> str:
+    return next((p for p in (shutil.which(n) for n in ("microsoft-edge", "microsoft-edge-stable")) if p), "")
+
+
+def edge_available() -> bool:
+    """Microsoft Edge is installed (rare on Linux: then "Open in Microsoft Edge" isn't offered)."""
+    return bool(_edge_program())
+
+
+def elevated() -> bool:
+    return False                                 # (no "Run as administrator" to undo on Linux)
+
+
+def open_link(url: str, way: str = "") -> dict[str, Any]:
+    """open_in_browser, answered as winutil.open_link does (the desktop doesn't say which browser it used). ``way``:
+    "edge", Microsoft Edge if it is installed; "shell" is the desktop's default browser here too, so it isn't one
+    more way (ok False); "default" or "", the default browser."""
+    if way == "edge":
+        exe = _edge_program()
+        return {"ok": bool(exe) and _detached([exe, url]), "browser": "Microsoft Edge", "via": "edge", "why": ""}
+    if way == "shell":
+        return {"ok": False, "browser": "", "via": "shell", "why": ""}
+    ok = open_in_browser(url)
+    return {"ok": ok, "browser": "", "via": "default" if ok else "", "why": ""}
+
+
+def default_browsers() -> dict[str, str]:
+    """The desktop's default browser (for a report)."""
+    try:
+        r = subprocess.run(["xdg-settings", "get", "default-web-browser"], capture_output=True, text=True, timeout=5)
+        return {"default": r.stdout.strip() or "unknown"}
+    except (OSError, subprocess.SubprocessError):
+        return {"default": "unknown"}
+
+
+def open_default_apps() -> bool:
+    """No one place for it on Linux desktops: the page doesn't offer it there."""
+    return False
+
+
 def open_path(path: str | Path) -> None:
     _detached(["xdg-open", str(path)])
 
