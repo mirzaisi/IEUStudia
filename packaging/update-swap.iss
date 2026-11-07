@@ -17,11 +17,6 @@ begin
   Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
 end;
 
-function RelaunchNew(): Boolean;
-begin
-  Result := Relaunch() and Swapped;
-end;
-
 { Restart Manager closes whatever runs from the old copy (the window, the helper next to the clock) before the install:
   the new files are written beside its files, so they have to be named here to be checked. }
 procedure RegisterExtraCloseApplicationsResources;
@@ -108,7 +103,7 @@ begin
   begin
     { what runs from the old copy now was started during the install (a click on the icon while the files were
       written; Restart Manager closed the rest before): renaming doesn't stop it, and it would go on as the old version
-      while the new one's [Run] only brings that window to the front }
+      while the new one only brings that window to the front }
     EndProgramsRunningHere('Before the swap');
     { a program that just closed lets go of its files a moment later }
     for i := 1 to 20 do
@@ -167,18 +162,25 @@ begin
   end;
 end;
 
-{ An update from the app that didn't get through (cancelled, failed, or the old copy kept): IEUStudia opens again all
-  the same, and says the update didn't finish ([Run] opens the new version when it did). }
+{ An update from the app (/RELAUNCH=1) opens IEUStudia again however it went: the new version, or the old copy after
+  an update that didn't get through (cancelled, failed, or the old copy kept), which then says the update didn't
+  finish. Here and not in [Run]: Setup runs [Run] before ssPostInstall, when the new version isn't in place yet. }
 procedure DeinitializeSetup();
 var
   code: Integer;
 begin
-  if Relaunch() and not Swapped then
+  if Relaunch() then
     try
       if FileExists(ExpandConstant('{app}\IEUStudia.exe')) then
       begin
-        Log('The update did not get through: opening the old copy of IEUStudia again');
-        Exec(ExpandConstant('{app}\IEUStudia.exe'), '', '', SW_SHOWNORMAL, ewNoWait, code);
+        if Swapped then
+          Log('Opening the new version of IEUStudia')
+        else
+          Log('The update did not get through: opening the old copy of IEUStudia again');
+        if Exec(ExpandConstant('{app}\IEUStudia.exe'), '', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, code) then
+          Log('IEUStudia was opened again')
+        else
+          Log('IEUStudia could not be opened again: ' + SysErrorMessage(code));
       end;
     except
       Log('IEUStudia could not be opened again');

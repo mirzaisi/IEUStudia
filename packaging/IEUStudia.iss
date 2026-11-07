@@ -84,9 +84,8 @@ Name: "{autodesktop}\IEUStudia"; Filename: "{app}\IEUStudia.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\IEUStudia.exe"; Description: "{cm:LaunchProgram,IEUStudia}"; Flags: nowait postinstall skipifsilent
-; an update started from the app (/SILENT /RELAUNCH=1, see updates.py): open the new IEUStudia when it's in place (an
-; update that didn't get through opens the old one again, from DeinitializeSetup)
-Filename: "{app}\IEUStudia.exe"; Flags: nowait; Check: RelaunchNew
+; an update started from the app (/SILENT /RELAUNCH=1, see updates.py) opens IEUStudia again from DeinitializeSetup
+; (update-swap.iss): [Run] comes before ssPostInstall, when the new version isn't in place yet
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/c taskkill /f /im IEUStudia.exe"; Flags: runhidden; RunOnceId: "StopIEUStudia"

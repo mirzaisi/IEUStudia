@@ -23,7 +23,9 @@ def test_the_installer_never_deletes_the_old_copy_before_the_new_one_is_in_place
     assert "[InstallDelete]" not in iss                               # the old copy is never removed up front
     files = iss.split("[Files]")[1].split("\n[")[0]
     assert 'DestDir: "{app}\\_internal.new"' in files and 'DestName: "IEUStudia.exe.new"' in files
-    assert '#include "update-swap.iss"' in iss and "Check: RelaunchNew" in iss
+    assert '#include "update-swap.iss"' in iss
+    # [Run] comes before ssPostInstall: a relaunch there can't know the swap happened, and never ran (3.2.3, 3.2.4)
+    assert "RelaunchNew" not in iss and "RELAUNCH" not in iss.split("[Run]")[1].split("[UninstallRun]")[0].replace("/RELAUNCH=1", "")
     assert "en.NotSwapped=" in iss and "tr.NotSwapped=" in iss
     for name in ("_internal", "_internal.new", "_internal.old", "IEUStudia.exe", "IEUStudia.exe.new",
                  "IEUStudia.exe.old"):
@@ -135,3 +137,40 @@ def test_an_update_that_fails_is_cut_off_or_finds_the_old_copy_in_use_leaves_a_c
     finally:
         if running.poll() is None:
             running.kill()
+
+
+@pytest.mark.skipif(sys.platform != "win32" or not _iscc(), reason="Inno Setup is not on this PC")
+def test_an_update_from_the_app_opens_ieustudia_again_new_or_old(tmp_path):
+    """/RELAUNCH=1 is how the app updates itself. 3.2.3 and 3.2.4 left it closed after a good update: the relaunch
+    sat in [Run], which comes before the swap. The stand-in program is rundll32: no window, ends at once."""
+    app, out = tmp_path / "app", tmp_path / "out"
+    program = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "rundll32.exe"
+
+    def payload(v):
+        p = tmp_path / f"v{v}"
+        (p / "_internal").mkdir(parents=True)
+        shutil.copy(program, p / "IEUStudia.exe")
+        (p / "_internal" / "version.txt").write_text(f"v{v}")
+        return p
+
+    def install(v, *flags):
+        name = f"setup-v{v}"
+        script = tmp_path / f"{name}.iss"
+        script.write_text(TEST_ISS % {"app": app, "out": out, "name": name, "payload": payload(v),
+                                      "swap": PACKAGING / "update-swap.iss", "fail": ""}, encoding="utf-8")
+        built = subprocess.run([_iscc(), "/Q", str(script)], capture_output=True, text=True, timeout=120)
+        assert built.returncode == 0, built.stdout + built.stderr
+        log = tmp_path / f"{name}.log"
+        ran = subprocess.run([str(out / f"{name}.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/LOG={log}",
+                              *flags], timeout=120)
+        return ran.returncode, log.read_text(encoding="utf-8", errors="replace")
+
+    code, log = install(1)                                             # not from the app: nothing is opened
+    assert code == 0 and "opened again" not in log
+    code, log = install(2, "/RELAUNCH=1")                              # a good update: the new version
+    assert code == 0 and (app / "_internal" / "version.txt").read_text() == "v2"
+    assert "Opening the new version" in log and "IEUStudia was opened again" in log
+    with open(app / "_internal" / "version.txt", "rb"):                # the old copy in use: the old copy again
+        code, log = install(3, "/RELAUNCH=1")
+    assert code == 0 and (app / "_internal" / "version.txt").read_text() == "v2"
+    assert "The update did not get through" in log and "IEUStudia was opened again" in log
