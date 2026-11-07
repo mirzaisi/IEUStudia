@@ -59,7 +59,7 @@ answers.ai_cli_cancel = { ok: true, stopped: true };
   out.calls = calls.map((c) => c.join(":"));
   out.toasts = toasts;
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -97,7 +97,7 @@ answers.ai_cli_code = { ok: true };
   out.calls = calls.map((c) => c.join(":"));
   out.toasts = toasts;
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -119,7 +119,7 @@ answers.ai_login = (key, consent, device) => ({ ok: true, state: "waiting", page
   U.ai.codex.login = { ...U.ai.codex.login, code: "ABCD-12345" };
   out.device = card();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -133,7 +133,7 @@ const base = { version: "", logged_in: false, plan: "", email: "", job: {}, test
   U.ai = { codex: { ...base, models: [], available: false, problem: { path: "C:/x/codex.exe", error: "the file is damaged or not made for this PC" } } };
   out.broken = card();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -147,7 +147,7 @@ LOCAL = HARNESS + """
   U.ai = null;                                       // the AI status is still loading (or could not be read)
   out.html = St.setupHTML();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -184,7 +184,7 @@ answers.ai_cli_cancel = { ok: true, stopped: true };
   out.stoppingDraws = draws;
   out.calls = calls.map((c) => c.join(":"));
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -214,7 +214,7 @@ answers.ai_status = () => ({ ok: true, [St.S.boot.app.ai_provider]: U.ai[St.S.bo
     plan_status: { ok: false, label: "Claude Free", note: "Claude Free doesn't include Claude Code." } } };
   out.wrongPlan = card();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -231,7 +231,7 @@ St.modal = () => {}; St.closeModal = () => {};
   await A["su-connect-now"]({ dataset: { id: "claude" } }); await tick();
   out.notWaiting = calls.map((c) => c[0]);
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -274,7 +274,7 @@ LOCAL_SETTINGS = HARNESS + """
   U.ai.local.models[0].ready = false;              // not downloaded, or marked damaged: offered again
   out.missing = card();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 

@@ -706,6 +706,7 @@ def _answers(table):
     return probe
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="npm's Windows shims and .exe layout")
 def test_npm_shims_lead_to_the_program_itself_wherever_npm_put_it(tmp_path, monkeypatch):
     """npm's codex.cmd starts Node.js, which starts codex.exe: the exe is used (no Node.js needed, Cancel ends it),
     also for npm with another folder (a shim on PATH), Arm PCs and the older layout of the package."""

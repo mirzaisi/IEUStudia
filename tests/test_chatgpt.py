@@ -12,6 +12,7 @@ import http.client
 import json
 import random
 import socket
+import sys
 import ssl
 import threading
 import time
@@ -736,6 +737,7 @@ def test_a_chatgpt_chat_cuts_its_conversation_back_in_steps_and_keeps_one_cache_
 
 
 # ----------------------------------------------------------------------------- before the browser
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' DPAPI error")
 def test_a_sign_in_this_pc_cant_decrypt_is_kept_aside_and_signing_in_again_works(openai, monkeypatch):
     """After a Windows password reset, or with a profile copied from another PC, DPAPI can't open chatgpt.bin: it is
     kept aside (not deleted), the set-up says to sign in again, and signing in registers IEUStudia anew."""
@@ -757,6 +759,7 @@ def test_a_sign_in_this_pc_cant_decrypt_is_kept_aside_and_signing_in_again_works
     assert not chatgpt.status()["signed_in"] and chatgpt.status()["unreadable"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' DPAPI error")
 def test_an_unreadable_sign_in_says_nothing_once_a_new_one_is_kept(openai, monkeypatch):
     """Signed in again after a Windows password reset, then signed out: the setup claimed the reset again."""
     _sign_in(openai)

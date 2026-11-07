@@ -458,7 +458,8 @@ class JobManager:
         speed measured so far (downloads, model load and both languages included; time paused is not)."""
         with self._lock:
             b = getattr(self, "_batch", None)
-            jobs = list(self._jobs.values())
+            # a job counted as ended stays in the queue a moment longer (its status is written first): not twice
+            jobs = [j for j in self._jobs.values() if not j.finished]
         if not b or not jobs:
             return {}
         inflight = sum(j.duration_s * j.progress for j in jobs if j.stage in ("transcribing", "writing"))

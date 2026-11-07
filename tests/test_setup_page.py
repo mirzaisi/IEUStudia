@@ -123,7 +123,7 @@ const out = {};
   out.pcAgainCalls = calls.map((c) => c[0]);
   out.pcAgainStep = U.step;
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })().catch((e) => { console.error(e); process.exit(1); });
 """
 
@@ -201,7 +201,7 @@ const out = {};
   St.onEvents.setup({ type: "setup", id: "", state: "idle", ok: false });
   out.signinToasts = toasts.slice();
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })().catch((e) => { console.error(e); process.exit(1); });
 """
 

@@ -60,7 +60,7 @@ const out = {};
   out.reloaded = card();
   out.toasts = toasts;
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -118,7 +118,7 @@ const out = {};
   out.closed = shown === "";
   out.calls = calls.map((c) => c[0] + (c[1] ? ":" + c[1] : ""));
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
@@ -229,7 +229,7 @@ const out = {};
   out.calls = calls.map((c) => c[0]);
   out.toasts = toasts;
   console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write("", () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 
