@@ -105,8 +105,7 @@ const out = {};
   out.opened = St.settingsAI();                                   // the browser asked for it after all
   S.mode = "setup";
   out.setup = St.settingsAI();
-  console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 EDGE_IN_ROW = 'class="btn primary sm" data-act="ai-login-edge"'
@@ -192,8 +191,7 @@ const take = () => { const r = { modal: seen.modal.splice(0), closed: seen.close
   window.LS_LINUX = true;                                          // Linux (from source): not Windows' words
   await A["ai-copy"]({ dataset: { text: LINK } });
   out.linux = take();
-  console.log(JSON.stringify(out));
-  process.exit(0);
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));      // after the output is out (Linux pipes)
 })();
 """
 

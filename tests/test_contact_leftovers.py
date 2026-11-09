@@ -110,6 +110,8 @@ def test_a_chatgpt_sign_in_that_failed_is_said_again_in_the_new_language(openai,
     assert chatgpt.status()["sign_in"]["error"] == tr(english)
     switch("en")
     monkeypatch.setattr(chatgpt, "SIGN_IN_TIMEOUT_S", 1.0)               # the page never opened, time ran out
+    # this PC's facts out of it: GitHub's Windows runner runs as administrator, which adds that note to the message
+    monkeypatch.setattr(chatgpt, "_system", lambda name: name == "edge_available")
     done = threading.Event()
     chatgpt.start_sign_in(lambda ev: ev["state"] != "waiting" and done.set(), open_browser=lambda link: True)
     assert done.wait(10)
