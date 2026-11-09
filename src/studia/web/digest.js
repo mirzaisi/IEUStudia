@@ -23,14 +23,17 @@
   function courseHTML(c) {
     const cat = CAT();
     const lec = c.lectures.map((l) => `<div class="dg-lec"><span class="dg-ico">${I("video", "sm")}</span><div class="grow">
-        <div><b>${esc(l.kind)} ${esc(l.label)}</b> ${l.any_done ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(l.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}
+        <div><b>${esc(l.kind)} ${esc(l.label)}</b> ${l.any_done ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : l.no_sound && St.silentPill ? St.silentPill()
+          : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(l.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}
           ${l.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(l.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}</div>
         ${l.stressed.length ? `<ul class="dg-stars">${l.stressed.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}</div></div>`).join("");
     return `<div class="card dg-course"><div class="dg-head" data-act="go" data-view="course" data-id="${esc(c.id)}" tabindex="0" role="button">
-        <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.name)}</b>${c.week ? `<div class="dim">${t("Week {n}", { n: c.week.no })} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
+        <span class="dg-code">${esc(c.code)}</span><div class="grow"><b>${esc(c.twin && St.findCourse(c.id) ? St.courseSub(St.findCourse(c.id)) : c.name)}</b>${c.week ? `<div class="dim">${t("Week {n}", { n: c.week.no })} · ${esc(c.week.topic)}</div>` : ""}</div>${I("chevron-right", "sm")}</div>
       ${c.coming.length ? `<div class="dg-coming">${c.coming.map((e) => `<span class="plan-pill ${e.this_week && !e.done ? "now" : ""} ${e.done ? "done" : ""}"><b>${esc(e.name)}</b><span>${e.done ? t("done") : e.this_week ? t("this week") : t("week {n}", { n: e.week })}</span>${e.los.length ? `<span class="lo">LO${e.los.join(", LO")}</span>` : ""}</span>`).join("")}</div>` : ""}
       ${lec ? `<div class="dg-sec">${lec}</div>` : ""}
-      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} ${t("The lecturer said")}</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(cat[s.category] || s.category)}</span><span>${esc(s.text)}${s.other_section ? ` <span class="dim sm" title="${t("Heard in another section's lecture: dates may differ for yours")}">· ${esc(s.other_section)}</span>` : ""}</span></div>`).join("")}</div>` : ""}
+      ${c.said.length ? `<div class="dg-sec"><div class="dg-lbl">${I("alert", "sm")} ${t("Heads-up from the lecturer")}</div>${c.said.map((s) => `<div class="dg-said"><span class="cat-chip cat-${esc(s.category)}">${esc(cat[s.category] || s.category)}</span>
+        <span>${s.source === "announcement" ? `<span class="dg-src" title="${t("Announcement")}">${I("megaphone", "xs")}</span>${s.title ? `<b>${esc(s.title)}</b>: ` : ""}${esc(s.text)}`
+          : `<span class="dg-src" title="${t("Said in class")}">${I("video", "xs")}</span>“${esc(s.text)}”`}${s.other_section ? ` <span class="dim sm" title="${t("Heard in another section's lecture: dates may differ for yours")}">· ${esc(s.other_section)}</span>` : ""}</span></div>`).join("")}</div>` : ""}
       ${c.new_files.length || c.announcements.length ? `<div class="dg-sec dg-misc">
         ${c.new_files.length ? `<div>${I("layers", "sm")} ${t("New files: {list}", { list: c.new_files.map((f) => esc(f.title)).join(", ") })}</div>` : ""}
         ${c.announcements.length ? `<div>${I("megaphone", "sm")} ${t("Announcements: {list}", { list: c.announcements.map((a) => esc(a.title)).join(" · ") })}</div>` : ""}</div>` : ""}
@@ -45,13 +48,16 @@
       const act = item.kind === "transcribe" ? `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(item.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`
         : item.kind === "download" ? (g.getting.has(item.resource_id) ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Downloading")}</button>`
           : `<button class="btn ghost sm" data-act="dg-get" data-id="${esc(item.resource_id)}">${I("download", "sm")} ${t.c("button", "Download")}</button>`)
+          : item.kind === "assignment" ? (item.url ? `<button class="btn ghost sm" data-act="url" data-url="${esc(item.url)}" title="${t("Open it on IEULearn")}">${I("external", "sm")} ${t("Open")}</button>` : "")
           : item.kind === "prepare" ? (item.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(item.course_id)}" data-name="${esc(item.name)}">${I("list-checks", "sm")} ${t("Get ready")}</button>`
             : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(item.course_id)}">${I("youtube", "sm")} ${t("Make a plan")}</button>`) : "";
       return `<div class="dg-todo"><span class="dg-code">${esc(item.course)}</span><span class="grow">${esc(item.text)}</span>${act}</div>`;
     }).join("");
     const writing = g.running && g.busyOffset === d.week.offset;
-    const sum = writing ? `<div class="md">${St.mdToHtml(g.text || "", { streaming: true })}</div><div class="dim">${SPIN()} ${t.html("{ai} is writing…", { ai: St.aiName() })}</div>`
-      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}) — can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
+    // being written: what the AI does now (waits.js), then its words as they come
+    const sum = writing ? (g.text ? `<div class="md">${St.mdToHtml(g.text, { streaming: true })}</div>` : "")
+      + (g.wait && St.waitHTML && !g.text ? St.waitHTML(g.wait) : `<div class="dim">${SPIN()} ${g.wait && St.waitLine ? St.waitLine(g.wait) : t.html("{ai} is writing…", { ai: St.aiName() })}</div>`)
+      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}), can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
           ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">${t("open the Markdown file")}</button>` : ""}</div>` : "";
     const sumTitle = !ai.available ? St.aiHint() : g.running && !writing ? t("Another week's summary is being written") : t("A short written summary by {ai}", { ai: St.aiName() });
     return `<div class="view-inner digest">
@@ -60,7 +66,7 @@
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>${t("This week")}</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="${t("Next week")}">${I("chevron-right", "sm")}</button>
           ${ai.available && St.effortInline && St.isChatGPT() ? St.effortInline("dg", "digest") : ""}
-          <button class="btn primary sm" data-act="dg-summary" ${ai.available && !g.running ? "" : "disabled"} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
+          <button class="btn primary sm" data-act="dg-summary" ${St.aiBtn(ai.available && !g.running)} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} ${t("To do")}</div><div class="card dg-todos">${todo}</div>` : ""}
       <div class="section-title">${I("book")} ${t("Your courses this week")}</div>
@@ -76,7 +82,7 @@
   St.onGo.digest = () => load();
   St.onEvents.digest = (e) => {   // the summary being written may be of a week you have since left
     const g = S.digest;
-    if (e.phase === "start" || e.phase === "progress") { g.running = true; g.busyOffset = e.offset; g.text = e.text || ""; }
+    if (e.phase === "start" || e.phase === "progress") { g.running = true; g.busyOffset = e.offset; g.text = e.text || ""; g.wait = e.wait || null; }
     else if (e.phase === "done") { g.running = false; g.busyOffset = null; if (e.offset === g.offset) g.summary = e; toast(t("Weekly digest written"), "success"); }
     else if (e.phase === "error") { g.running = false; g.busyOffset = null; toast(e.message || t("The AI could not finish"), "error"); }
     if (S.view.name === "digest") renderView();

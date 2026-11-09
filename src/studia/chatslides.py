@@ -74,6 +74,15 @@ def first_week_day(lib: Any, course_id: str, units: list[dict[str, Any]]) -> Opt
 
 
 _UNIT_WEEKS = re.compile(r"\b(?:weeks?|hafta)\b", re.I)     # a unit title that names weeks, not a topic number
+_NOT_A_WEEK = re.compile(r"konu|topic|unit|ünite|bölüm|chapter", re.I)
+
+
+def own_weeks(m: dict[str, Any]) -> set[int]:
+    """The weeks a file's own name or title gives ("MATH_250_Week 8-9.pdf": 8 and 9), by week or hafta only: a
+    "Chapter 5.pdf" is the book's chapter and "Konu 3" a topic, not the term's week. The one rule for a file's name,
+    in the course page's Weeks tab and in the files that go with a chat."""
+    return {n for s in (m.get("title") or "", m.get("file_name") or "") for n in title_weeks(_NOT_A_WEEK.sub(" ", s))
+            if n <= 20}
 
 
 def file_weeks(m: dict[str, Any], unit: Optional[dict[str, Any]], first: Optional[dt.date]) -> list[int]:
@@ -86,7 +95,7 @@ def file_weeks(m: dict[str, Any], unit: Optional[dict[str, Any]], first: Optiona
     if unit and unit.get("start_date"):
         n = unit_week(unit, first)
         return [n] if n else []
-    own = set(title_weeks(m.get("title") or "")) | set(title_weeks(m.get("file_name") or ""))
+    own = own_weeks(m)
     title = unit["title"] if unit else ""
     if _UNIT_WEEKS.search(title or ""):
         return sorted(own | set(title_weeks(title)))

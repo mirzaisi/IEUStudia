@@ -46,6 +46,7 @@ from . import store, ytprefs
 from .cancel import Cancelled
 from .i18n import N_, language, t, tn
 from .notices import ALERTS_JSON, ALERTS_MD
+from .outputs.prompts import STYLE, written_in
 
 log = logging.getLogger("studia")
 
@@ -114,6 +115,8 @@ class Scope:
     files: list[str] = dc.field(default_factory=list)   # a study pack: the files picked (empty: all of the weeks)
     days: list[str] = dc.field(default_factory=list)    # and the lectures (day keys)
     picked: bool = False         # the chooser's ticks: then an empty files/days list means none of them
+    questions: int = 0           # a practice quiz (quizzes.py): how many questions (0: its default)
+    qtypes: str = ""             # and which kinds: "mixed", "mc", "short", "problems"
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> "Scope":
@@ -122,7 +125,9 @@ class Scope:
         s.weeks = sorted({int(w) for w in s.weeks or [] if str(w).isdigit()})
         s.los = sorted({int(n) for n in s.los or [] if str(n).isdigit()})
         s.minutes = max(15, min(1200, int(s.minutes or 180)))
-        s.kind = s.kind if s.kind in ("videos", "prep", "pack", "sheet") else "videos"   # pack/sheet: studypack/cheatsheet.py
+        # pack/sheet: studypack/cheatsheet.py; quiz/cards: the Practice tab's quizzes and cards from files
+        s.kind = s.kind if s.kind in ("videos", "prep", "pack", "sheet", "quiz", "cards") else "videos"
+        s.questions = int(s.questions) if str(s.questions).isdigit() else 0
         if s.video_lang not in ("en", "tr", "both"):
             s.video_lang = "both" if s.allow_tr else "en"
         s.allow_tr = s.video_lang != "en"
@@ -375,7 +380,10 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         _, head, full = days[i]
         out.append(head + _excerpt(full, rooms[i]))
     pack = "\n".join(out)
+    from .quizzes import course_language
+
     return {"pack": pack, "chars": len(pack), "materials_used": used, "materials_missing": missing,
+            "language": course_language(d, {"pack": pack}),          # the language the review sheet is written in
             "materials_left_out": [about for i, (about, _, _) in enumerate(files) if i not in frooms],
             "days_used": [days[i][0] for i in keep], "days_missing": days_missing,
             "days_left_out": [d for i, (d, _, _) in enumerate(days) if i not in rooms],
@@ -799,7 +807,7 @@ Rules:
 - checklist: for every in-scope concept, a plain-language explanation (at most 2 sentences) and how to recognise a question that needs it.
 - notes: per concept, what the student should know about how it is covered (at most 12 words), only when useful.
 - schedule: split the items over the days until the deadline (or over about a week), each day at most ~60 minutes, required items first.
-- Write in English, concisely. Use only video ids from the list.{prev}
+- Write in {facts.get('language') or 'English'} (the course's language), briefly and plainly, as a tutor would: no filler, no hype, no em dashes. Use only video ids from the list.{prev}
 Return JSON: {{"title": "", "summary": "", "items": [{{"n": 1, "video": "VIDEO_ID", "segments": [[0, 0]], "role": "required", "alternative_to": null, "concepts": ["c1"], "why": "", "limits": ""}}], "schedule": [{{"day": "Mon 26 Oct", "items": [1, 2]}}], "notes": [{{"concept": "c1", "note": ""}}], "checklist": [{{"concept": "c1", "explain": "", "recognize": [""]}}], "supplements": [{{"concept": "c3", "text": ""}}], "changes": {{"added": [], "replaced": [], "removed": []}}}}
 
 {_scope_text(scope, facts)}. {deadline} Course: {facts['course']['code']} — {facts['course']['name']}.
@@ -1184,7 +1192,7 @@ def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes
         level, say = "full", N_("Complete for {goal}: all {n} skills found in your material are taught in checked video "
                                 "parts.")
     elif count["supplement"] + count["optional"] <= n / 4:
-        level, say = "mostly", N_("Complete for {goal}: all {n} skills found in your material are covered — {how}.")
+        level, say = "mostly", N_("Complete for {goal}: all {n} skills found in your material are covered ({how}).")
     elif count["supplement"] >= count["optional"]:   # covered, but much of it only in writing
         level, say = "written", N_("Covered for {goal}, but partly only in writing: of the {n} skills found in your "
                                    "material, {how}.")
@@ -1217,8 +1225,8 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
     from .videos import fmt_ts
 
     names = {c["id"]: c["name"] for c in result.get("concepts", [])}
-    out = [f"# {result['title']}", "", f"*{course.get('code', '')} — {course.get('name', '')} · {_week_span(scope.weeks)}"
-           + (f" · for {scope.focus}" if scope.focus else "") + f" · made with IEUStudia on {dt.date.today():%d %b %Y}*", ""]
+    out = [f"# {result['title']}", "", f"*{course.get('code', '')}, {course.get('name', '')} · {_week_span(scope.weeks)}"
+           + (f" · for {scope.focus}" if scope.focus else "") + f" · made with IEUStudia on {dt.date.today().day} {dt.date.today():%b %Y}*", ""]
     if result.get("summary"):
         out += [result["summary"], ""]
     cp = result.get("completeness") or {}
@@ -1246,14 +1254,14 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         out.append("")
     out += [f"**Viewing time:** {result['total_minutes']} min required" +
             (f" + {result['optional_minutes']} min optional" if result.get("optional_minutes") else "")
-            + (f" — {cp['over_budget']} min over your {cp['budget']} min" if cp.get("over_budget") else ""), ""]
+            + (f"; {cp['over_budget']} min over your {cp['budget']} min" if cp.get("over_budget") else ""), ""]
     ch = result.get("changes") or {}
     if any(ch.get(k) for k in ("added", "replaced", "removed")):
         out += ["## What changed", ""]
         for r in ch.get("replaced") or []:
-            out.append(f"- Replaced {r.get('old', '') if isinstance(r, dict) else r}" + (f" — {r.get('why')}" if isinstance(r, dict) and r.get("why") else ""))
+            out.append(f"- Replaced {r.get('old', '') if isinstance(r, dict) else r}" + (f": {r.get('why')}" if isinstance(r, dict) and r.get("why") else ""))
         for r in ch.get("removed") or []:
-            out.append(f"- No longer needed: {r.get('old', '') if isinstance(r, dict) else r}" + (f" — {r.get('why')}" if isinstance(r, dict) and r.get("why") else ""))
+            out.append(f"- No longer needed: {r.get('old', '') if isinstance(r, dict) else r}" + (f" ({r.get('why')})" if isinstance(r, dict) and r.get("why") else ""))
         if ch.get("added"):
             out.append(f"- Added: items {', '.join(map(str, ch['added']))}")
         out.append("")
@@ -1264,14 +1272,14 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         part = ("whole video" if it["whole"] else
                 " and ".join(f"[{fmt_ts(s['start'])}–{fmt_ts(s['end'])}]({s['url']})" for s in segs))
         seen = "".join(f" · {_count(it[k])} {w}" for k, w in (("view_count", "views"), ("like_count", "likes")) if it.get(k))
-        out.append(f"{it['n']}. **[{it['title']}]({it['url']})** — {it['channel']}{seen} · {part} · {it['minutes']} min · "
+        out.append(f"{it['n']}. **[{it['title']}]({it['url']})**, {it['channel']}{seen} · {part} · {it['minutes']} min · "
                    f"*{it['role']}*" + (f" (instead of {it['alternative_to']})" if it.get("alternative_to") else "")
                    + (f" · extra, not on {goal}" if it.get("extra") else ""))
         if it.get("teaches"):
             for tch in it["teaches"]:
                 what = ("teaches " + ", ".join(tch["skills"]) if tch["skills"] else
                         {"full": "teaches it", "partial": "only partly", "unchecked": "not checked for this"}.get(tch["state"], ""))
-                left = f" — not here: {', '.join(tch['missing'])}" if tch["missing"] and tch["state"] != "unchecked" else ""
+                left = f"; not here: {', '.join(tch['missing'])}" if tch["missing"] and tch["state"] != "unchecked" else ""
                 out.append(f"   - {names.get(tch['concept'], tch['concept'])}: {what}{left}")
         else:
             out.append(f"   - Teaches: {', '.join(names.get(c, c) for c in it['concepts'])}")
@@ -1282,7 +1290,7 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         for e in it.get("errors") or []:
             out.append(f"   - ⚠ Possible mistake at [{fmt_ts(e['t'])}]({e['url']}): {e['text']}")
         inspected = it["inspected"] if it.get("captions") else unheard_text(it, english=True)
-        out.append(f"   - Checked: {inspected}" + (f" — “{it['evidence']}”" if it.get("evidence") and not it.get("quotes") else ""))
+        out.append(f"   - Checked: {inspected}" + (f": “{it['evidence']}”" if it.get("evidence") and not it.get("quotes") else ""))
         for q in it.get("quotes") or []:
             out.append(f"     - [{fmt_ts(q['t'])}]({q['url']}) “{q['text']}”" + (f" *({q['skill']})*" if q.get("skill") else ""))
     if result.get("schedule"):
@@ -1290,7 +1298,7 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         out += [f"- **{s['day']}**: items {', '.join(map(str, s['items']))} ({s['minutes']} min)" for s in result["schedule"]]
     out += ["", "## Concept checklist", ""]
     for x in result["checklist"]:
-        out.append(f"- [ ] **{x['name'] or names.get(x['concept'], x['concept'])}** — {x['explain']}")
+        out.append(f"- [ ] **{x['name'] or names.get(x['concept'], x['concept'])}**: {x['explain']}")
         for r in x["recognize"]:
             out.append(f"  - Recognise it: {r}")
     mark = {"video": "✓", "optional": "✓ (optional video)", "supplement": "✎ supplement", "missing": "✗"}
@@ -1332,10 +1340,10 @@ def extras_line(cp: dict[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------ exam review sheet (one request)
-SYSTEM_PREP = ("You are an expert university tutor writing exam preparation material for an engineering student. "
-               "You use only the course material you are given (say so when it is thin instead of inventing), you "
-               "write clear Markdown with LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own), and you "
-               "deliver the complete sheet without asking questions.\n\n" + ALERTS_MD)
+SYSTEM_PREP = ("You are an experienced university tutor writing exam preparation material for a student. You use only "
+               "the course material you are given (say so when it is thin instead of inventing), you write Markdown "
+               "with LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own), and you deliver the complete "
+               "sheet without asking questions.\n" + STYLE + "\n\n" + ALERTS_MD)
 
 
 def prep_title(scope: Scope, facts: dict[str, Any], shown: bool = False) -> str:
@@ -1348,24 +1356,55 @@ def prep_prompt(scope: Scope, facts: dict[str, Any], questions: int = 10) -> str
     return f"""TASK: Write an exam review sheet for the scope below, from the course material only.
 Use exactly these sections:
 ## What it covers
-The assessment (if any), the weeks and the learning outcomes involved (quote their text), and what the lecturer said about it (short quotes with dates).
+A few lines: the assessment (if any), the weeks, the learning outcomes involved and what the lecturer said about it (short quotes with dates).
 ## Key ideas
-Per learning outcome or topic: the essential definitions, results and methods as short bullets, each with where it is in the material (file and page, or lecture date).
+Per learning outcome or topic: the essential definitions, results and methods, each followed by where it is in the material in brackets (file and page, or lecture date).
 ## Formula sheet
-Every formula the scope needs, one line each on when to use it.
+Every formula the scope needs, each with one line on when to use it.
 ## Question types
-The kinds of questions to expect (from the material's examples and the lecturer's hints), how to recognise each, and the method to use.
+The kinds of questions to expect (from the material's examples and the lecturer's hints): how to recognise each and the method to use.
 ## Practice
-{questions} questions from easy to exam level in the style of the course material. After each question, its worked solution as a block quote starting with "**Solution.**".
+{questions} questions from easy to exam level in the course's style. After each, its worked solution as a block quote starting with "**Solution.**".
 ## Common mistakes
-The traps students fall into on these topics.
+The traps students fall into on these topics, and how to avoid each.
 ## Last-day checklist
 6–10 checkbox items ("- [ ] …").
+{written_in(facts.get('language', ''))}
 
 {_scope_text(scope, facts)}
 
 === COURSE MATERIAL ===
 {facts['pack']}"""
+
+
+def prep_pdf(s: Any, plan: dict[str, Any]) -> Optional[Path]:
+    """A finished review sheet as a PDF in the app's document look (the Export menu's, outputs/doc.py), next to its
+    Markdown file under the same name; printed again each time (it is one request's writing, so it is quick)."""
+    import tempfile
+
+    from .outputs import doc as D
+    from .studypack import _print_to, made_on
+
+    r = plan.get("result") or {}
+    md_path = Path(str(r.get("file") or ""))
+    if plan.get("status") != "done" or not r.get("markdown") or not md_path.name:
+        return None
+    course = s.lib.get_course(plan["course_id"])
+    title = md_path.stem.split(" - ", 1)[-1] if " - " in md_path.stem else (r.get("title") or "Review sheet")
+    day = made_on(plan)
+    doc = D.Doc(title, kicker=" · ".join(x for x in (course.code if course else "", "Review sheet") if x),
+                subtitle=f"Made with IEUStudia on {day.day} {day:%b %Y}",
+                blocks=[D.Markdown(r["markdown"], top=1)], lang="tr" if D.turkish(r["markdown"]) else "en")
+    pdf = md_path.with_suffix(".pdf")
+    with tempfile.TemporaryDirectory(prefix="ieus-sheet-") as tmp:
+        page = Path(tmp) / "sheet.html"
+        page.write_bytes(D.to_html(doc).encode("utf-8"))
+        try:
+            pdf.parent.mkdir(parents=True, exist_ok=True)
+            return pdf if _print_to(page, pdf) else None
+        except OSError:
+            log.warning("The review sheet's PDF could not be made", exc_info=True)
+            return None
 
 
 # ------------------------------------------------------------------ the stages' pieces
@@ -1585,6 +1624,7 @@ class PlanRunner:
         self._lock = threading.Lock()
         self._queue: list[str] = []
         self._cancel: dict[str, threading.Event] = {}
+        self._waits: dict[str, Any] = {}  # the run's wait, said with its events (aiwait: what the AI does now)
         self._worker: Optional[threading.Thread] = None
         if not getattr(services, "beside_app", False):      # (a command line next to the open app: its plans run)
             services.lib.pause_running_plans()
@@ -1635,7 +1675,7 @@ class PlanRunner:
             if plan_id in self._queue:
                 self._queue.remove(plan_id)
                 self._cancel.pop(plan_id, None)
-                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped — resume to continue"))
+                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped: resume to continue"))
                 self._emit(plan_id)
         if ev is not None:
             ev.set()
@@ -1661,9 +1701,9 @@ class PlanRunner:
                 plan_id = self._queue.pop(0)
                 cancel = self._cancel.get(plan_id) or threading.Event()
             try:
-                self._run(plan_id, cancel)
+                self._tracked(plan_id, cancel)
             except Cancelled:
-                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped — resume to continue"))
+                self._s.lib.update_plan(plan_id, status="paused", message=t("Stopped: resume to continue"))
             except Exception as exc:  # noqa: BLE001 - reported on the plan
                 log.exception("Plan %s failed", plan_id)
                 # the page's notice (notices.js) adds that Resume goes on from this step, keeping the steps done
@@ -1672,12 +1712,30 @@ class PlanRunner:
             finally:
                 with self._lock:
                     self._cancel.pop(plan_id, None)
+                self._waits.pop(plan_id, None)
                 self._emit(plan_id)
+
+    def _tracked(self, plan_id: str, cancel: threading.Event) -> None:
+        """The run, with a wait every AI request it makes reports to (aiwait): sending, thinking, writing, retries,
+        the time left; each plan event carries it."""
+        from . import aiwait
+        from .ai import ai_name, provider
+
+        kind = ((self._s.lib.plan_brief(plan_id) or {}).get("scope") or {}).get("kind") or "videos"
+        wait = aiwait.Wait(lambda snap: self._emit(plan_id, wait=snap), ai=ai_name(), provider=provider(),
+                           kind=kind, where=kind)
+        self._waits[plan_id] = wait
+        with aiwait.tracking(cancel, wait):
+            self._run(plan_id, cancel)
 
     def _emit(self, plan_id: str, **extra: Any) -> None:
         p = self._s.lib.plan_brief(plan_id)
         if p is None:
             return
+        wait = self._waits.get(plan_id)
+        if wait is not None and "wait" not in extra and p.get("status") == "running":
+            wait.set_kind(f"{(p.get('scope') or {}).get('kind') or 'videos'}.{p.get('stage') or ''}")   # (its speeds)
+            extra["wait"] = wait.snapshot()
         self._s.emit({"type": "plan", "id": plan_id, "course_id": p["course_id"], "status": p["status"],
                       "stage": p["stage"], "progress": p["progress"], "message": p["message"], "error": p["error"],
                       "title": p["title"], "kind": (p.get("scope") or {}).get("kind", ""), **extra})
@@ -1720,10 +1778,11 @@ class PlanRunner:
             if cancel.is_set():
                 raise Cancelled()
 
-        if scope.kind in ("pack", "sheet"):            # a study pack or a cheatsheet: stages of its own
-            from . import cheatsheet, studypack
+        if scope.kind in ("pack", "sheet", "quiz", "cards"):     # stages of their own (a quiz: quizzes.py, cards: cards.py)
+            from . import cards, cheatsheet, quizzes, studypack
 
-            (cheatsheet if scope.kind == "sheet" else studypack).run(self, plan, scope, data, usage, model, cancel)
+            {"pack": studypack, "sheet": cheatsheet, "quiz": quizzes, "cards": cards}[scope.kind].run(
+                self, plan, scope, data, usage, model, cancel)
             return
         # gather
         if "gather" not in data:
@@ -1761,7 +1820,8 @@ class PlanRunner:
                 self._stage(plan_id, "search", 0.25 + 0.15 * n / max(1, total),
                             t("Searching YouTube: “{query}” ({n}/{total})", query=label, n=n, total=total))
 
-            self._stage(plan_id, "search", 0.25, t("Searching YouTube for {n} concepts…", n=len(todo_c)))
+            self._stage(plan_id, "search", 0.25, tn(len(todo_c), "Searching YouTube for {n} concept…",
+                                                    "Searching YouTube for {n} concepts…"))
             found = videos.search_many(queries, limit=8, cancel=cancel, progress=on_search)
             # the preferred channels are also searched themselves (their first few, with each topic's first query)
             mine = [(ch["id"], qs_of[c["id"]][0]) for c in todo_c if c.get("in_scope", True) and qs_of[c["id"]]
@@ -1811,7 +1871,8 @@ class PlanRunner:
                 self._stage(plan_id, "inspect", 0.40 + 0.13 * n / max(1, total),
                             t("Reading captions: {title} ({n}/{total})", title=label[:60], n=n, total=total))
 
-            self._stage(plan_id, "inspect", 0.40, t("Reading the captions of {n} videos…", n=len(ids)))
+            self._stage(plan_id, "inspect", 0.40, tn(len(ids), "Reading the captions of {n} video…",
+                                                     "Reading the captions of {n} videos…"))
             infos = videos.inspect_many(ids, langs=langs, cancel=cancel, progress=on_inspect)
             check()
 
@@ -1831,7 +1892,8 @@ class PlanRunner:
                         next_ids += [v] if v not in next_ids else []
                         need -= 1
             if next_ids:
-                self._stage(plan_id, "inspect", 0.53, t("Reading the captions of {n} videos…", n=len(next_ids)))
+                self._stage(plan_id, "inspect", 0.53, tn(len(next_ids), "Reading the captions of {n} video…",
+                                                         "Reading the captions of {n} videos…"))
                 infos.update(videos.inspect_many(next_ids, langs=langs, cancel=cancel))
                 check()
             chosen = {c["id"]: [h["id"] for h in cands.get(c["id"], []) if h["id"] in infos and usable(h["id"])][:per[c["id"]]]
@@ -1978,7 +2040,8 @@ class PlanRunner:
         except OSError:
             log.warning("Could not write the plan file", exc_info=True)
         save(result=result, title=result["title"], status="done", stage="done", progress=1.0,
-             message=t("{n} videos · {minutes} min", n=len(result["items"]), minutes=result["total_minutes"]))
+             message=tn(len(result["items"]), "{n} video · {minutes} min", "{n} videos · {minutes} min",
+                        minutes=result["total_minutes"]))
 
     def _judge(self, plan_id: str, stage: str, work: list[tuple[str, list[dict], dict[str, dict[str, list]]]],
                vids: dict[str, dict], finished: dict[str, dict], who: tuple[str, str, str], cancel: threading.Event,
@@ -2005,7 +2068,10 @@ class PlanRunner:
                        "Checking the captions against the course ({n} requests, {model})…", model=shown)
         else:
             first = say(len(work) - len(left), len(work))
+        from . import aiwait
+
         self._stage(plan_id, stage, lo + (hi - lo) * (len(work) - len(left)) / max(1, len(work)), first)
+        aiwait.of(cancel).units(len(work) - len(left), len(work), VERIFY_PARALLEL)   # (the time left of the checks)
         with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
             futures = {pool.submit(judge, w): w for w in left}
             try:
@@ -2016,6 +2082,7 @@ class PlanRunner:
                     save()
                     n = sum(w[0] in finished for w in work)
                     self._stage(plan_id, stage, lo + (hi - lo) * n / len(work), say(n, len(work)))
+                    aiwait.of(cancel).units(n, len(work), VERIFY_PARALLEL)
             except BaseException:
                 for f in futures:              # one failed: don't start the ones still waiting
                     f.cancel()
@@ -2385,7 +2452,8 @@ class PlanRunner:
                   "materials_left_out": len(facts.get("materials_left_out", []))}
         try:
             result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
-                                                  f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Review sheets",
+                                                  f"IEUStudia on {dt.date.today().day} {dt.date.today():%b %Y}*\n\n{md}\n",
+                                                  "Review sheets",
                                                   data, save))
         except OSError:
             log.warning("Could not write the review sheet file", exc_info=True)

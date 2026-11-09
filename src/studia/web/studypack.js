@@ -20,7 +20,15 @@
   const cutNote = (cut) => t.html("Too long for one request, so the AI plans from the first pages of these files only: {files}. Pick fewer weeks so it sees every page.",
     { files: cut.map((f) => (f.seen ? t("{name} (pages 1–{seen} of {pages})", { name: f.name, seen: f.seen, pages: f.pages }) : f.name)).join(", ") });
   S.packDoc = {};            // the document's HTML by plan id (it is big: asked for once)
+  S.pkPdf = {};              // a PDF being made or opened, by plan id: which button was pressed
   let P = null;              // the dialog's state
+  // Save PDF…, Open PDF and Show in folder (a study pack's page, a cheatsheet's, a review sheet's Open PDF). An old
+  // one's PDF is laid out again the first time (a few seconds): the button pressed says so while it works, the others
+  // wait
+  const PDF_BTN = () => ({ save: ["download", t("Save PDF…")], open: ["file-text", t("Open PDF")], folder: ["folder-open", t("Show in folder")] });
+  const pdfLabel = (id, how) => (S.pkPdf[id] === how ? `${SPIN()} ${t("Making the PDF…")}` : `${I(PDF_BTN()[how][0], "sm")} ${PDF_BTN()[how][1]}`);
+  const pdfBtn = (p, how, cls) => `<button class="btn ${cls} sm" data-act="pk-pdf" data-how="${how}" data-id="${esc(p.id)}" ${S.pkPdf[p.id] ? "disabled" : ""}>${pdfLabel(p.id, how)}</button>`;
+  const pdfActs = (p) => pdfBtn(p, "save", "primary") + pdfBtn(p, "open", "") + pdfBtn(p, "folder", "ghost");
 
   // ------------------------------------------------------------------ the dialog: pick the material
   // the same dialog makes a cheatsheet (kind "sheet", cheatsheet.js): only its texts and the scope's kind differ
@@ -30,17 +38,30 @@
     const courses = S.courses.filter((c) => c.code);
     courseId = courseId || (S.view.courseId) || (courses[0] || {}).id;
     if (!courseId) { toast(t("Sync your courses first."), "error"); return; }
-    P = { kind: kind === "sheet" ? "sheet" : "pack", courseId, opts: null, weeks: new Set(), files: new Set(), days: new Set(), model: "", effort: (P && P.effort) || "", difficulties: (P && P.difficulties) || "", est: null };
+    P = { kind: kind === "sheet" ? "sheet" : "pack", courseId, opts: null, weeks: new Set(), files: new Set(), days: new Set(), model: "", effort: (P && P.effort) || "", difficulties: (P && P.difficulties) || "", est: null,
+      fetching: new Set() };      // files Download is fetching: ticked once they are in (pack_options is asked again)
     modal(`<div class="cp-scroll"><h2>${heading()}</h2>${skeleton()}</div>`);
     $(".modal").classList.add("pd", "pk");
     const r = await call("pack_options", courseId);
     if (!r.ok) { toast(r.error, "error"); closeModal(); return; }
     P.opts = r;
     P.model = r.model || "sonnet";
-    const cur = r.weeks.find((w) => w.current) || [...r.weeks].reverse().find((w) => w.past) || r.weeks[0];
-    if (cur) pickWeek(cur.no, true);
+    // this week, or (an exam week with nothing of its own, as week 8's "Midterm") the latest week before it that has
+    // files or your section's lectures: the dialog used to open on an empty week, with its button off
+    const cur = r.weeks.find((w) => w.current);
+    const has = (w) => w.files.length > 0 || w.days.some((d) => d.mine && !silent(d));
+    const pick = [cur, ...[...r.weeks].reverse().filter((w) => w.past)].find((w) => w && has(w))
+      || cur || [...r.weeks].reverse().find((w) => w.past) || r.weeks[0];
+    if (pick) pickWeek(pick.no, true);
     draw();
     estimate();
+  }
+  // a class day whose recordings have no speech on Panopto (the microphone was off, or only noise): nothing to
+  // transcribe, so it is neither offered nor counted as missing (the course's view, views.py, knows it)
+  function silent(d) {
+    const c = St.findCourse(P.courseId);
+    const day = c && (c.days || []).find((x) => x.day_key === d.day_key);
+    return !!(day && day.no_sound && !day.transcribed);
   }
   function pickWeek(no, on) {
     const w = P.opts.weeks.find((x) => x.no === no); if (!w) return;
@@ -60,23 +81,23 @@
         ${t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: fmtK(e.main_input + e.main_output), minutes: e.minutes })}
         <div class="dim sm">${t("If your plan's limit is reached it stops; resume it later and what is written is kept.")}</div></div></div>${more}`;
     return `<div class="pk-heavy">${I("alert", "sm")}<div><b>${t.html("This uses a lot of your {ai} plan.", { ai: St.aiName() })}</b>
-        ${t.html("About {k} tokens in {n} requests ({chapters} chapters), {minutes}.", { k: fmtK(e.main_input + e.main_output), n: e.requests, chapters: e.chapters, minutes: e.minutes })}
+        ${t.n(e.requests, "About {k} tokens in {n} request ({chapters}), {minutes}.", "About {k} tokens in {n} requests ({chapters}), {minutes}.", { k: fmtK(e.main_input + e.main_output), chapters: t.n(e.chapters, "{n} chapter", "{n} chapters"), minutes: esc(e.minutes) })}
         <div class="dim sm">${t("If your plan's limit is reached it stops; resume it later and the finished chapters are kept.")}</div></div></div>${more}`;
   }
   function draw() {
     const r = P.opts, courses = S.courses.filter((c) => c.code);
     const old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
     const picked = r.weeks.filter((w) => P.weeks.has(w.no));
-    const missing = [...new Set(picked.flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id)))];   // (a file of two weeks once)
-    const todo = picked.flatMap((w) => w.days.filter((d) => !d.ready && d.mine).map((d) => d.day_key));
+    const missing = [...new Set(picked.flatMap((w) => w.files.filter((f) => !f.downloaded && !P.fetching.has(f.id)).map((f) => f.id)))];   // (a file of two weeks once)
+    const todo = picked.flatMap((w) => w.days.filter((d) => !d.ready && d.mine && !silent(d)).map((d) => d.day_key));
     const ai = r.ai || {};
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="pk-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
     const material = picked.map((w) => `<div class="pk-week"><div class="pk-week-h">${t("Week {n}", { n: w.no })} <span class="dim">${esc(w.topic || "")}</span></div>
-        ${w.files.map((f) => item("file", f.id, P.files.has(f.id), f.ready, f.name, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : f.downloaded ? t("not read yet") : t("not on this PC"))).join("")}
-        ${w.days.filter((d) => d.mine || P.days.has(d.day_key)).map((d) => item("day", d.day_key, P.days.has(d.day_key), d.ready, `${d.label} · ${d.kind}`, d.ready ? t("transcribed") : t("not transcribed"))).join("")}
+        ${w.files.map((f) => item("file", f.id, P.files.has(f.id), f.ready, f.name, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : P.fetching.has(f.id) ? t("downloading…") : f.downloaded ? t("not read yet") : t("not on this PC"))).join("")}
+        ${w.days.filter((d) => d.mine || P.days.has(d.day_key)).map((d) => item("day", d.day_key, P.days.has(d.day_key), d.ready, `${d.label} · ${d.kind}`, d.ready ? t("transcribed") : silent(d) ? t("no speech on Panopto") : t("not transcribed"))).join("")}
         ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("");
     modal(`<div class="cp-scroll">
       <h2>${heading()}</h2>
@@ -141,7 +162,7 @@
     const notice = St.planStateNotice ? St.planStateNotice(p) : "";      // failed or stopped: what to do, with Resume (notices.js)
     return `${notice}<div class="card pl-progress"><div class="pl-steps">${steps}</div>
       <div class="pl-msg">${p.status === "error" ? (notice ? "" : `<span class="err-txt">${I("alert-circle", "sm")} ${esc(p.error)}</span>`) : esc(p.message || "")}</div>
-      ${busy ? `<div class="bar wide"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></div>` : ""}
+      ${St.planWait ? St.planWait(p) : ""}${busy ? `<div class="bar wide"><i style="width:${Math.round(100 * (p.progress || 0))}%"></i></div>` : ""}
       ${chapters ? `<ol class="pk-chapters">${chapters}</ol>` : ""}
       <div class="note-sm">${I("info", "sm")}<span>${note || t("Runs in the background, so you can keep using the app. If it stops (for example at your plan's limit), resume it later: the finished chapters are kept.")}</span></div></div>`;
   }
@@ -168,9 +189,7 @@
         <h1>${esc(p.title || (busy ? t("Writing your study pack…") : t("Study pack")))}</h1>
         <div class="pl-chips">${chips.map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div></div>
         <div class="pl-acts">
-          ${ready ? `<button class="btn primary sm" data-act="pk-pdf" data-how="save" data-id="${esc(p.id)}">${I("download", "sm")} ${t("Save PDF…")}</button>
-            <button class="btn sm" data-act="pk-pdf" data-how="open" data-id="${esc(p.id)}">${I("file-text", "sm")} ${t("Open PDF")}</button>
-            <button class="btn ghost sm" data-act="pk-pdf" data-how="folder" data-id="${esc(p.id)}">${I("folder-open", "sm")} ${t("Show in folder")}</button>` : ""}
+          ${ready ? pdfActs(p) : ""}
           ${busy ? `<button class="btn sm" data-act="plan-stop" data-id="${esc(p.id)}">${I("stop", "sm")} ${t("Stop")}</button>` : ""}
           ${["error", "paused"].includes(p.status) ? `<button class="btn primary sm" data-act="plan-resume" data-id="${esc(p.id)}">${I("retry", "sm")} ${t("Resume")}</button>` : ""}
           <button class="btn ghost icon sm" data-act="plan-delete" data-id="${esc(p.id)}" title="${t("Delete this study pack")}">${I("x", "sm")}</button></div></div>`;
@@ -218,7 +237,39 @@
     }, 400);
   };
 
-  St.pack = { stateHTML, weekSpan, loadDoc, cutNote };       // for cheatsheet.js
+  // a file of the dialog that came in (its Download, or any other): the weeks are asked for again (a file can come in
+  // without text to read), and the newly ready files of the picked weeks are ticked; the student's own ticks stay.
+  // Only while the dialog is open (closing it keeps P, and draw() would open it again)
+  function dialogOpen() { return !!document.querySelector("#overlay .modal.pk"); }
+  const onMaterial = St.onEvents.material;
+  let matTimer = null;
+  St.onEvents.material = (e) => {
+    if (onMaterial) onMaterial(e);
+    if (!P || !P.opts || !dialogOpen() || !P.opts.weeks.some((w) => w.files.some((f) => f.id === e.id))) return;
+    if (e.state === "error") { if (P.fetching.delete(e.id)) { readInputs(); draw(); } return; }      // its Download is back
+    if (e.state !== "done") return;
+    clearTimeout(matTimer);
+    const asked = P;
+    matTimer = setTimeout(async () => {            // (a batch of downloads: one refresh)
+      const r = await call("pack_options", asked.courseId);
+      if (asked !== P || !r.ok || !dialogOpen()) return;
+      const was = new Set(asked.opts.weeks.flatMap((w) => w.files.filter((f) => f.ready).map((f) => f.id)));
+      readInputs();
+      asked.opts = { ...asked.opts, weeks: r.weeks };
+      r.weeks.forEach((w) => w.files.forEach((f) => { if (f.downloaded) asked.fetching.delete(f.id); }));
+      r.weeks.filter((w) => asked.weeks.has(w.no)).forEach((w) => w.files.forEach((f) => { if (f.ready && !was.has(f.id)) asked.files.add(f.id); }));
+      draw(); estimate();
+    }, 300);
+  };
+
+  // the PDF buttons on the page (only them: the document itself isn't drawn again)
+  function redrawActs(id) {
+    document.querySelectorAll(`[data-act="pk-pdf"][data-id="${CSS.escape(id)}"]`).forEach((b) => {
+      b.disabled = !!S.pkPdf[id];
+      if (PDF_BTN()[b.dataset.how]) b.innerHTML = pdfLabel(id, b.dataset.how);
+    });
+  }
+  St.pack = { stateHTML, weekSpan, loadDoc, cutNote, pdfActs, pdfBtn };       // for cheatsheet.js and plans.js
 
   Object.assign(A, {
     "pack-new": (el) => packDialog(el && el.dataset.id, el && el.dataset.kind),
@@ -232,14 +283,18 @@
     },
     "pk-download": async () => {
       readInputs();
-      const ids = [...new Set(P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.files.filter((f) => !f.downloaded).map((f) => f.id)))];
+      const asked = P;
+      const ids = [...new Set(P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.files.filter((f) => !f.downloaded && !P.fetching.has(f.id)).map((f) => f.id)))];
       const r = await call("materials_download", ids);
-      if (r.ok) toast(t.n(ids.length, "Downloading {n} file — pick it once it is in", "Downloading {n} files — pick them once they are in"), "success");
-      else toast(r.error || t("Download failed"), "error");
+      if (!r.ok) { toast(r.error || t("Download failed"), "error"); return; }
+      toast(t.n(ids.length, "Downloading {n} file. It's ticked here once it's on your PC.", "Downloading {n} files. They're ticked here once they're on your PC."), "success");
+      if (asked !== P || !dialogOpen()) return;
+      ids.forEach((id) => P.fetching.add(id));
+      readInputs(); draw();
     },
     "pk-transcribe": async () => {
       readInputs();
-      const days = P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.days.filter((d) => !d.ready && d.mine).map((d) => d.day_key));
+      const days = P.opts.weeks.filter((w) => P.weeks.has(w.no)).flatMap((w) => w.days.filter((d) => !d.ready && d.mine && !silent(d)).map((d) => d.day_key));
       let n = 0, error = "";
       for (const k of days) { const r = await call("transcribe_day", k, true); if (r.ok) n += r.queued || 0; else error = error || r.error || ""; }
       if (!n && error) { toast(error, "error"); return; }       // not "nothing left": it couldn't be queued
@@ -262,9 +317,11 @@
     },
     "pk-goto": (el) => { const to = document.getElementById(el.dataset.to); if (to) to.scrollIntoView({ behavior: "smooth", block: "start" }); },
     "pk-pdf": async (el) => {
-      el.disabled = true;
-      const r = await call("pack_pdf", el.dataset.id, el.dataset.how);
-      el.disabled = false;
+      const id = el.dataset.id;
+      if (S.pkPdf[id]) return;
+      S.pkPdf[id] = el.dataset.how; redrawActs(id);
+      let r;
+      try { r = await call("pack_pdf", id, el.dataset.how); } finally { delete S.pkPdf[id]; redrawActs(id); }
       if (!r.ok) toast(r.error, "error");
       else if (r.saved) toast(t("Saved: {file}", { file: r.saved }), "success");
     },

@@ -272,7 +272,7 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
             return {"new_announcements": found["ann"], "new_materials": found["mat"]}
 
     monkeypatch.setattr(sync, "SyncService", FakeSync)
-    monkeypatch.setattr(calendar_export, "assessment_events", lambda lib, settings: [])
+    monkeypatch.setattr(calendar_export, "all_events", lambda lib, settings: [])
     saved = []
     monkeypatch.setattr(agent, "_save_seen", saved.append)
     h = types.SimpleNamespace(cfg=appconfig.load(), paused=False, told_rejected=False, last="", untold=[],
@@ -292,6 +292,75 @@ def test_a_check_writes_what_was_told_only_when_something_was_added(monkeypatch,
     found.update(rec=[], content_fails=False)
     agent.Helper._check(h)
     assert told == [["r1", "r2"]] and h.untold == []
+
+
+def test_what_the_open_window_finds_in_the_background_is_notified_once(monkeypatch, isolated_home):
+    """'Transcribe all', then the window minimized for the afternoon: the app's half-hourly syncs merged a new lecture
+    and 'Quiz 2 moved to tomorrow', the page's toasts faded unseen, and the helper (which doesn't check while the
+    window is open) found nothing new once it was closed: the heads-up never came."""
+    from studia import api as api_mod
+    from studia.api import Api
+
+    appconfig.update({"tray": True})
+    lib = Library(isolated_home / "library.db")
+    lib.upsert_courses([Course(id="c", title="t", code="EEE 215", name="Circuits")])
+    lib.merge_recordings("c", [_rec("a1", "c", 6, 9)], first_sync=True)
+    lib.merge_announcements("c", [], first_sync=True)
+    front, told = {"on": False}, []
+    monkeypatch.setattr(api_mod, "is_foreground", lambda hwnd: front["on"])
+    step = {"fail": False}
+
+    def sync(progress, on_courses):
+        return types.SimpleNamespace(new_ids=lib.merge_recordings("c", [_rec("a1", "c", 6, 9), _rec("a2", "c", 8, 9)],
+                                                                  first_sync=False), profile=None, errors=[])
+
+    def sync_content(progress=None):
+        if step["fail"]:
+            raise RuntimeError("IEULearn isn't responding right now.")
+        ann = Announcement("q2", "Quiz 2 moved to tomorrow", "Dr", dt.datetime(2026, 10, 20, 9), "See you then.")
+        return {"new_announcements": lib.merge_announcements("c", [ann], first_sync=False), "new_materials": [],
+                "errors": []}
+
+    ns = types.SimpleNamespace(_push=lambda e: None, _sync_lock=threading.Lock(), _sync_ask=threading.Lock(),
+                               _sync_asked=False, _remind=lambda: None, _courses_dirty=threading.Event(),
+                               _course_views=lambda: [], _own_new=lambda views, ids: len(ids), _hwnd=1,
+                               _remind_lock=threading.Lock(), _notify=lambda *a: told.append(a),
+                               _s=types.SimpleNamespace(sync=types.SimpleNamespace(sync=sync, sync_content=sync_content),
+                                                        lib=lib, settings=Settings()))
+    ns._tell_found = lambda found: Api._tell_found(ns, found)
+    assert ns._sync_lock.acquire(blocking=False)
+    assert Api._run_sync(ns, quiet=True) is True                 # minimized: a Windows notification
+    assert told == [("IEUStudia: heads-up", "EEE 215: Quiz · Quiz 2 moved to tomorrow\nEEE 215: 1 new lecture recording",
+                     "course:c:announcements")]
+    # closed later: the helper's next check finds them merged already, and the told list keeps them told once
+    seen = agent._load_seen()
+    assert "a2" in seen["rec"] and "q2" in seen["ann"]
+    assert agent.summarize(lib, Settings(), appconfig.load(), ["a2"], ["q2"], [], seen) is None
+    # in front: the page says it; and a sync whose second step fails still tells the lecture it found
+    told.clear()
+    front["on"] = True
+    ns._s.sync.sync = lambda progress, on_courses: types.SimpleNamespace(
+        new_ids=lib.merge_recordings("c", [_rec("a1", "c", 6, 9), _rec("a2", "c", 8, 9), _rec("a4", "c", 15, 9)],
+                                     first_sync=False), profile=None, errors=[])
+    assert ns._sync_lock.acquire(blocking=False)
+    Api._run_sync(ns, quiet=True)
+    assert told == [] and "a4" not in agent._load_seen()["rec"]
+    front["on"], step["fail"] = False, True
+    ns._s.sync.sync = lambda progress, on_courses: types.SimpleNamespace(
+        new_ids=lib.merge_recordings("c", [_rec("a1", "c", 6, 9), _rec("a2", "c", 8, 9), _rec("a3", "c", 13, 9)],
+                                     first_sync=False), profile=None, errors=[])
+    assert ns._sync_lock.acquire(blocking=False)
+    assert Api._run_sync(ns, quiet=True) is False
+    assert told == [("IEUStudia: new on IEULearn", "EEE 215: 1 new lecture recording", "course:c:lectures")]
+    appconfig.update({"tray": False})                             # background checks off: no notifications at all
+    told.clear()
+    ns._s.sync.sync = lambda progress, on_courses: types.SimpleNamespace(
+        new_ids=lib.merge_recordings("c", [_rec(f"a{i}", "c", 6 + i, 9) for i in range(1, 6)], first_sync=False),
+        profile=None, errors=[])
+    assert ns._sync_lock.acquire(blocking=False)
+    Api._run_sync(ns, quiet=True)
+    assert told == []
+    lib.close()
 
 
 # ----------------------------------------------------------------------------- the reminders' plan

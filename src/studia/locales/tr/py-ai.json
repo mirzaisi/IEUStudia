@@ -1,8 +1,8 @@
 {
   "_unit": "Python AI connections: ai, ai_setup, chatgpt (with its sign-in page in the browser), chat, local_llm and the labels in outputs/prompts; the prompts stay English",
   "Claude Code is not installed on this PC. Settings → AI installs it for you.": "Claude Code bu bilgisayarda kurulu değil. Ayarlar → Yapay zeka bölümünden kurabilirsin.",
-  "You have reached your Claude usage limit — it resets {when}.": "Claude kullanım sınırına ulaştın. Sıfırlanma zamanı: {when}.",
-  "You have reached your Claude usage limit — it resets at {time}.": "Claude kullanım sınırına ulaştın. Sıfırlanma zamanı: {time}.",
+  "You have reached your Claude usage limit. It resets {when}.": "Claude kullanım sınırına ulaştın. Sıfırlanma zamanı: {when}.",
+  "You have reached your Claude usage limit. It resets at {time}.": "Claude kullanım sınırına ulaştın. Sıfırlanma zamanı: {time}.",
   "You have reached your Claude usage limit.": "Claude kullanım sınırına ulaştın.",
   "Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.": "Claude planın Claude Code'u kapsamıyor. Claude Pro ya da Max gerekiyor.",
   "Claude Code is not signed in. Settings → AI → Sign in with Claude.": "Claude Code'a giriş yapmamışsın. Ayarlar → Yapay zeka → Claude ile giriş yap.",

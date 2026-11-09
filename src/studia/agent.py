@@ -154,6 +154,24 @@ def summarize(lib: Any, settings: Any, cfg: Any, new_recordings: list[str], new_
     return title, text, payload
 
 
+def found_by_window(lib: Any, settings: Any, new_recordings: list[str], new_announcements: list[str],
+                    new_materials: list[str]) -> Optional[tuple[str, str, Any]]:
+    """What a sync of the open window found, told as the helper tells what its checks find: the window's syncs merge
+    the new lectures and announcements first, so the helper, once the window is closed, no longer finds them new. For
+    a Windows notification while the window isn't the one in use (minimized during a long batch, say); marked told,
+    so it is said once. None: nothing to tell, or background checks are off (their notify switches are off then).
+    The caller keeps the app's reminders from writing the told list at the same time."""
+    from . import appconfig
+
+    cfg = appconfig.load()
+    if not cfg.tray or not (new_recordings or new_announcements or new_materials):
+        return None
+    seen = _load_seen()
+    note = summarize(lib, settings, cfg, new_recordings, new_announcements, new_materials, seen)
+    _save_seen(seen)
+    return note
+
+
 def _day(d: dt.date) -> str:
     return date_short(d)          # Tue 13 Oct / 13 Eki Sal
 
@@ -169,61 +187,169 @@ def _los(los: list[int]) -> str:
     return ", ".join(f"LO{a}" if a == b else f"LO{a}–LO{b}" for a, b in runs)
 
 
-def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, list[str]]
-              ) -> Optional[tuple[str, str, str]]:
-    """The announced quizzes and exams to remind you of now, each once (``seen["rem"]``): a quiz the evening before
-    the first of its week's class days still to come (or that day, until that class is over), a midterm or final the
-    evening before its week, since the exam schedule gives its day (until 14:00 on the first day). One notification
-    (title, text, what clicking it opens) or None. ``events``: calendar_export.assessment_events."""
-    told = set(seen.get("rem", []))
+REMIND_MORNING = dt.time(8)  # a deadline whose time isn't known: its "hours before" reminder comes that morning
+
+
+def _when(day: dt.date, today: dt.date) -> str:
+    return (t("today") if day == today else t("tomorrow ({day})", day=_day(day)) if day == today + dt.timedelta(days=1)
+            else t("on {day}", day=_day(day)))
+
+
+def _told_that_week(told: set[str], uid: str, day: dt.date) -> bool:
+    """Was this assessment told about for a day of the same week (its week first, then the day announced for it)?"""
+    monday = day - dt.timedelta(days=day.weekday())
+    for key in told:
+        if key.startswith(uid + "@"):
+            try:
+                other = dt.date.fromisoformat(key[len(uid) + 1:len(uid) + 11])
+            except ValueError:
+                continue
+            if other - dt.timedelta(days=other.weekday()) == monday:
+                return True
+    return False
+
+
+def _assessment_due(e: dict[str, Any], now: dt.datetime, days: int, told: set[str]) -> Optional[dict[str, Any]]:
+    """A quiz's or an exam's reminder, if it is due now: ``days`` before it (from 17:00), until it is over (a quiz
+    announced for a week: until the last of its class days still to come; an exam week: 14:00 on its first day)."""
+    if not days:
+        return None
     today, hm = now.date(), f"{now:%H:%M}"
-    due = []
-    for e in events:
-        quiz = e.get("kind") == "quiz"
-        classes = list(zip(e.get("classes") or [], e.get("ends") or ["23:59"] * len(e.get("classes") or [])))
+    quiz = e.get("kind") == "quiz"
+    classes = list(zip(e.get("classes") or [], e.get("ends") or ["23:59"] * len(e.get("classes") or [])))
+    rest: list[dt.date] = []
+    if e.get("date"):                                     # an announced day (or your own entry for one)
+        first = dt.date.fromisoformat(e["date"])
+        until = dt.datetime.combine(first, dt.time.fromisoformat(e["time"]) if e.get("time") else REMIND_UNTIL)
+        if e.get("kind") == "own":
+            key = f"{e['uid']}@{e['date']}" + (f"T{e['time']}" if e.get("time") else "")
+        elif quiz or not e.get("week"):
+            key = f"{e['uid']}@{e['date']}"
+        else:
+            key = f"{e.get('course_id') or e['course']}-exam-week{e['week']}"
+        if key in told or (quiz and _told_that_week(told, e["uid"], first)):
+            return None
+    else:
         if quiz and classes:
             left = [(d, end) for d, end in classes if d > today.isoformat() or (d == today.isoformat() and end > hm)]
             if not left:                                  # all its class hours are over: it's done
-                continue
+                return None
             first = dt.date.fromisoformat(left[0][0])
             until = dt.datetime.combine(first, dt.time.fromisoformat(left[0][1]))
             rest = [dt.date.fromisoformat(d) for d, _ in left[1:]]
         else:
-            first, rest = dt.date.fromisoformat(e["start"]), []
+            first = dt.date.fromisoformat(e["start"])
             until = dt.datetime.combine(first, REMIND_UNTIL)
         # a quiz moved to another week is said again; an exam week once, even when an announcement replaces the
         # syllabus's word for it
         key = f"{e['uid']}@{e['start']}" if quiz else f"{e.get('course_id') or e['course']}-exam-week{e['week']}"
-        if key not in told and dt.datetime.combine(first - dt.timedelta(days=1), REMIND_FROM) <= now <= until:
-            due.append((key, e, first, rest, len(classes)))
+        if key in told:
+            return None
+    if not dt.datetime.combine(first - dt.timedelta(days=days), REMIND_FROM) <= now <= until:
+        return None
+    return {"keys": [key], "e": e, "first": first, "rest": rest, "n": 0 if e.get("date") else len(classes)}
+
+
+def _deadline_due(e: dict[str, Any], now: dt.datetime, prefs: dict[str, int], told: set[str]) -> Optional[dict[str, Any]]:
+    """An assignment's or your own entry's reminder, if one is due now: ``due_days`` before it and ``due_hours``
+    before it (without a time: from 17:00 that many days before, and on the morning of the day), each once; when
+    both are due at once, one notification says it."""
+    day = dt.date.fromisoformat(e["date"])
+    at = dt.datetime.combine(day, dt.time.fromisoformat(e["time"])) if e.get("time") else None
+    end = at or dt.datetime.combine(day, dt.time(23, 59))
+    if now > end:
+        return None
+    base = f"{e['uid']}@{e['date']}" + (f"T{e['time']}" if e.get("time") else "")
+    slots = []                                            # (key, opens)
+    if prefs.get("due_days"):
+        n = prefs["due_days"]
+        slots.append((base + "#1", at - dt.timedelta(days=n) if at else
+                      dt.datetime.combine(day - dt.timedelta(days=n), REMIND_FROM)))
+    if prefs.get("due_hours"):
+        slots.append((base + "#2", at - dt.timedelta(hours=prefs["due_hours"]) if at else
+                      dt.datetime.combine(day, REMIND_MORNING)))
+    open_now = [(key, opens) for key, opens in slots if opens <= now]
+    if not open_now or open_now[-1][0] in told:           # (the later one told: the earlier one is past too)
+        return None
+    return {"keys": [key for key, _ in open_now], "e": e, "first": day, "rest": [], "n": 0}
+
+
+def _line(r: dict[str, Any], today: dt.date) -> str:
+    e, first, rest, n = r["e"], r["first"], r["rest"], r["n"]
+    kind = e.get("kind")
+    what = {"course": e["course"], "name": e["name"], "when": _when(first, today)}
+    if kind in ("assignment", "own") and not e.get("exam_like"):
+        if kind == "assignment":
+            return (t("{course}: {name} is due {when} at {time}.", time=e["time"], **what) if e.get("time")
+                    else t("{course}: {name} is due {when}. IEULearn has the time.", **what))
+        if not e["course"]:
+            return (t("{name}: {when} at {time}.", time=e["time"], **what) if e.get("time")
+                    else t("{name}: {when}.", **what))
+        return (t("{course}: {name}, {when} at {time}.", time=e["time"], **what) if e.get("time")
+                else t("{course}: {name}, {when}.", **what))
+    los = " " + t("Covers {los}.", los=_los(e["los"])) if e.get("los") else ""
+    if kind == "own":                                     # your entry for a quiz or an exam
+        return (t("{name}: {when} at {time}.", time=e["time"], **what) if not e["course"] and e.get("time")
+                else t("{name}: {when}.", **what) if not e["course"]
+                else t("{course}: {name}, {when} at {time}.", time=e["time"], **what) if e.get("time")
+                else t("{course}: {name}, {when}.", **what))
+    if e.get("date"):                                     # the day it was announced for
+        line = (t("{course}: {name} is {when} at {time}, as announced.", time=e["time"], **what) if e.get("time")
+                else t("{course}: {name} is {when}, as announced.", **what))
+    elif kind == "quiz" and n:                            # one of its week's class days (rest: another one)
+        line = (t("{course}: {name} {when}, as announced.", **what) if n == 1 else
+                t("{course}: {name} may be {when} or {day}, as announced.", day=_day(rest[0]), **what) if rest
+                else t("{course}: {name} may be {when}, as announced.", **what))
+    elif kind == "quiz":
+        line = t("{course}: {name} is in week {week}, which starts {when}.", week=e["week"], **what)
+    else:
+        line = t("{course}: {name} is in week {week}, which starts {when}. The exam schedule on IEULearn has the "
+                 "day.", week=e["week"], **what)
+    return line + los
+
+
+def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, list[str]],
+              prefs: Optional[dict[str, int]] = None) -> Optional[tuple[str, str, str]]:
+    """What to remind you of now, each once (``seen["rem"]``), as the Calendar page set it (``prefs``:
+    agenda.reminder_prefs; its defaults without): a quiz or an exam ``exams`` days before (from 17:00; a quiz
+    announced for a week: before the first of its week's class days still to come, until that class is over; a
+    midterm or final announced for a week: before its week, since the exam schedule gives its day), an assignment
+    and your own entry ``due_days`` days and ``due_hours`` hours before. One notification (title, text, what
+    clicking it opens) or None. ``events``: calendar_export.all_events (or only its assessment_events)."""
+    from .agenda import REMIND_DEFAULTS
+
+    prefs = {**REMIND_DEFAULTS, **(prefs or {})}
+    told = set(seen.get("rem", []))
+    today = now.date()
+    due = []
+    for e in events:
+        if e.get("kind") in ("assignment", "own") and not e.get("exam_like"):
+            r = _deadline_due(e, now, prefs, told)
+        else:
+            r = _assessment_due(e, now, prefs.get("exams", 0), told)
+        if r:
+            due.append(r)
     if not due:
         return None
-    seen.setdefault("rem", []).extend(key for key, *_ in due)
-    lines = []
-    for _, e, first, rest, n in due:
-        what = {"course": e["course"], "name": e["name"],
-                "when": t("today") if first == today else t("tomorrow ({day})", day=_day(first))}
-        los = " " + t("Covers {los}.", los=_los(e["los"])) if e.get("los") else ""
-        if e.get("kind") == "quiz" and n:             # one of its week's class days (rest: another one)
-            line = (t("{course}: {name} {when}, as announced.", **what) if n == 1 else
-                    t("{course}: {name} may be {when} or {day}, as announced.", day=_day(rest[0]), **what) if rest
-                    else t("{course}: {name} may be {when}, as announced.", **what))
-        elif e.get("kind") == "quiz":
-            line = t("{course}: {name} is in week {week}, which starts {when}.", week=e["week"], **what)
-        else:
-            line = t("{course}: {name} is in week {week}, which starts {when}. The exam schedule on IEULearn has the "
-                     "day.", week=e["week"], **what)
-        lines.append(line + los)
-    _, e, first, rest, n = due[0]
+    seen.setdefault("rem", []).extend(key for r in due for key in r["keys"])
+    lines = [_line(r, today) for r in due]
+    first, e = due[0]["first"], due[0]["e"]
+    kinds = {r["e"].get("kind") for r in due}
     title = t("IEUStudia: coming up")
-    if len(due) == 1 and e.get("kind") == "quiz" and n == 1:
+    if len(due) == 1 and e.get("kind") == "quiz" and due[0]["n"] == 1:
         title = (t("IEUStudia: {name} today", name=e["name"]) if first == today else
                  t("IEUStudia: {name} tomorrow", name=e["name"]))
+    elif kinds == {"assignment"}:
+        title = t("IEUStudia: a deadline is coming up") if len(due) == 1 else t("IEUStudia: deadlines coming up")
+    elif kinds == {"own"}:
+        title = t("IEUStudia: from your calendar")
     payload = "home"
-    if len(due) == 1 and e.get("course_id"):           # Get ready knows what was announced; a syllabus week: the week
+    if kinds & {"assignment", "own"}:                     # the Calendar page has it (and how sure it is)
+        payload = f"calendar:{e['uid']}" if len(due) == 1 else "calendar"
+    elif len(due) == 1 and e.get("course_id"):           # Get ready knows what was announced; a syllabus week: the week
         payload = (f"week:{e['course_id']}:{e['week']}" if "-syllabus-week" in e["uid"]
                    else f"ready:{e['course_id']}:{e['name']}")
-    return title, "\n".join(lines[:4]), payload
+    return title, "\n".join(lines[:4]) + ("\n" + t("+{n} more", n=len(lines) - 4) if len(lines) > 4 else ""), payload
 
 
 def changed_note() -> Optional[tuple[str, str, str]]:
@@ -449,11 +575,12 @@ class Helper:
                 except Exception:  # noqa: BLE001 - IEULearn can't be reached: the reminders still come
                     log.warning("Helper: check failed", exc_info=True)
             if note is None and self.cfg.notify_reminders and not self.paused:     # one notification at a time
-                from .calendar_export import assessment_events
+                from .agenda import reminder_prefs
+                from .calendar_export import all_events
 
                 told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
                 seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
-                note = reminders(assessment_events(lib, settings), dt.datetime.now(), seen)
+                note = reminders(all_events(lib, settings), dt.datetime.now(), seen, reminder_prefs(lib))
             if note is None and not self.paused:     # a service that changed on its side: said once, while the window
                 note = changed_note()                # is closed (notifications may not come until an update)
             if any(set(v) - known.get(k, set()) for k, v in seen.items()):     # (nothing new: nothing to write)

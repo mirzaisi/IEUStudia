@@ -156,7 +156,27 @@ def transcripts_dir() -> Path:
 
 
 def audio_cache_dir() -> Path:
-    return _ensure_dir(app_dir() / "cache" / "audio")
+    """The active account's downloaded lecture audio. Each account has its own: two students on one PC who follow the
+    same course download the same recordings, and one's start-up sweep (or a lecture done or cancelled) deleted the
+    other's kept or queued audio. The first account's is the app folder's, as before."""
+    return _ensure_dir(profile_dir() / "cache" / "audio")
+
+
+def shared_audio_dir() -> Path:
+    """Where every account's downloaded audio went before 4.0: the first account's own folder now (not made here)."""
+    return app_dir() / "cache" / "audio"
+
+
+def write_durably(path: Path, data: bytes) -> None:
+    """A small file the app can't do without (the profiles' list, the app's own settings): written to a temporary
+    file, on the disk, then put in the old one's place. Without the flush, a power cut or a crash soon after could bring
+    it back with its size but only zeros in it (NTFS keeps a file's name and size safe, not its contents)."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def logs_dir() -> Path:

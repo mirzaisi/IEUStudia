@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import requests
 
@@ -170,6 +170,19 @@ class Resource:
 
 
 @dc.dataclass
+class Assignment:
+    """An assignment of IEULearn's assignment tool: in the weekly plan (the day it is due, ticked once it is done) and
+    in the course's assignments panel (the day and time it is due, and its state)."""
+    id: str
+    title: str
+    due: str = ""            # "2026-11-04T15:40" (the time IEULearn gives), "2026-11-04" (the day only) or ""
+    state: str = ""          # IEULearn's group: pending, submitted, graded, … ("" from the weekly plan)
+    done: bool = False       # sent: IEULearn says so (or ticks it in the weekly plan)
+    url: str = ""            # where it opens on IEULearn
+    unit_id: str = ""        # the weekly plan's unit it is in ("" when only the assignments panel lists it)
+
+
+@dc.dataclass
 class Unit:
     id: str
     position: int
@@ -178,6 +191,7 @@ class Unit:
     end: Optional[dt.date] = None
     readings: str = ""
     resources: list[Resource] = dc.field(default_factory=list)
+    assignments: list[Assignment] = dc.field(default_factory=list)    # (not files: never counted as such)
 
 
 @dc.dataclass
@@ -187,6 +201,7 @@ class Announcement:
     author: str
     posted_at: Optional[dt.datetime]
     body: str
+    files: list[Resource] = dc.field(default_factory=list)     # its attached files (Library keeps them as course files)
 
 
 def _text(fragment: str) -> str:
@@ -260,6 +275,7 @@ def parse_unit_plan(page: str, course_title: str = "") -> list[Unit]:
                 log.warning("A unit of %s has no date IEUStudia can read: %r", course_title[:40], words[:60])
         desc = re.search(r'class="ovup-syl-desc-body"[^>]*>(.*?)</div>', block, re.S)
         unit = Unit(head.group(1), len(units), title, start, end, _text(desc.group(1)) if desc else "")
+        unit.assignments = _plan_assignments(block, unit.id, year, sem)
         for raw in re.findall(r'data-rv-payload="([^"]+)"', block):
             try:
                 p = json.loads(html.unescape(raw))
@@ -275,6 +291,124 @@ def parse_unit_plan(page: str, course_title: str = "") -> list[Unit]:
     return units
 
 
+def date_matches(text: str) -> Iterator[re.Match]:
+    """_DATE's matches in ``text``, each place tried: in "Son teslim 04 Kas" the word before the day ("teslim 04", read
+    as month and day) would otherwise take the day away from "04 Kas"."""
+    pos = 0
+    while True:
+        m = _DATE.search(text or "", pos)
+        if m is None:
+            return
+        yield m
+        pos = m.start() + 1
+
+
+def _due(text: str, year: int, semester: int) -> str:
+    """When an assignment is due, from IEULearn's words for it: "Son teslim: 21 Eki" (the weekly plan: the day only),
+    "Son teslim 04 Kas 2026, 15:40", "04.11.2026 15:40", "11/04/2026 3:40 PM" (the assignments panel). "" if none."""
+    text = text or ""
+    us = bool(re.search(r"\d\s*[AaPp]\.?[Mm]\b", text))
+    for m in date_matches(text):
+        day = _date_of(m, year, semester, us)
+        if day is None:
+            continue
+        c = _CLOCK.match(text, m.end())
+        if c:
+            hour, minute = int(c.group(1)), int(c.group(2))
+            if c.group(3):
+                hour = hour % 12 + (12 if c.group(3).lower() == "p" else 0)
+            if hour < 24 and minute < 60:
+                return f"{day.isoformat()}T{hour:02d}:{minute:02d}"
+        return day.isoformat()
+    return ""
+
+
+def _attr(tag: str, name: str) -> str:
+    m = re.search(rf'\b{re.escape(name)}\s*=\s*"([^"]*)"', tag or "")
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+_PLAN_ASG = re.compile(r'(?is)<li\b([^>]*\bdata-syl-kind="assignment"[^>]*)>(.*?)</li>')
+
+
+def _plan_assignments(block: str, unit_id: str, year: int, semester: int) -> list[Assignment]:
+    """A unit's assignments in the weekly plan: <li data-syl-kind="assignment" data-syl-id="2838"> with its name, "Son
+    teslim: 04 Kas" and, once it is sent, IEULearn's tick (is-sim-done)."""
+    out = []
+    for attrs, body in _PLAN_ASG.findall(block or ""):
+        aid = _attr(attrs, "data-syl-id")
+        if not aid:
+            continue
+        name = re.search(r'class="ovup-syl-item-name"[^>]*>(.*?)</span>', body, re.S)
+        title = _attr(name.group(0), "title") if name else ""
+        desc = re.search(r'class="ovup-syl-item-desc"[^>]*>(.*?)</span>', body, re.S)
+        link = re.search(r'<a\b[^>]*\bclass="ovup-syl-item"[^>]*>', body)
+        out.append(Assignment(aid, title or (_text(name.group(1)) if name else ""),
+                              _due(_text(desc.group(1)) if desc else "", year, semester), "",
+                              "is-sim-done" in _attr(attrs, "class").split(),
+                              _attr(link.group(0), "href") if link else "", unit_id))
+    return out
+
+
+_ASG_CARD = re.compile(r'(?is)<article\b([^>]*\bclass="[^"]*\bsa-card\b[^"]*"[^>]*)>(.*?)</article>')
+_ASG_ROW = re.compile(r'(?is)<tr\b[^>]*>(.*?)</tr>')
+# its state, as the panel groups it: these are sent (one sent back for a revision is not)
+DONE_STATES = {"submitted", "graded", "late", "approved", "returned", "done", "completed"}
+
+
+def parse_assignments(page: str, course_title: str = "") -> list[Assignment]:
+    """The course's assignments panel (/student/courses/<id>/overview/assignments): a card for each assignment
+    (article.sa-card, data-sa-id, data-sa-group: pending, submitted, graded…) with "Son teslim 04 Kas 2026, 15:40",
+    and the table of all of them (its due column "04.11.2026 15:40", "Gönderdi"/"Gönderilmedi")."""
+    year, sem = term_year(course_title)
+    rows: dict[str, tuple[str, Optional[bool]]] = {}           # id → (due, sent: the table's pill)
+    for row in _ASG_ROW.findall(page or ""):
+        link = re.search(r'href="[^"]*/student/assignments?/(\d+)[/"?#]', row)
+        cells = [_text(c) for c in re.findall(r"(?is)<td\b[^>]*>(.*?)</td>", row)]
+        if not link or len(cells) < 3:
+            continue
+        pill = re.search(r'sa-submit-pill[^"]*\bis-(yes|no)\b', row)
+        rows[link.group(1)] = (_due(cells[2], year, sem), (pill.group(1) == "yes") if pill else None)
+    out = []
+    for attrs, body in _ASG_CARD.findall(page or ""):
+        aid = _attr(attrs, "data-sa-id")
+        if not aid:
+            continue
+        group = _attr(attrs, "data-sa-group").lower()
+        title = _attr(body, "data-sa-title")
+        if not title:
+            name = re.search(r'class="st-assign-title"[^>]*>(.*?)</span>\s*<span class="st-assign-meta', body, re.S)
+            inner = re.sub(r'<span class="st-assign-group".*?</span>', "", name.group(1), flags=re.S) if name else ""
+            title = _text(inner)
+        due, sent = rows.get(aid, ("", None))
+        if not due:          # the card's line: "<course> · Son teslim 04 Kas 2026, 15:40" (not the date it opens)
+            meta = re.search(r'st-assign-meta-sep[^>]*>.*?</span>(.*?)</span>', body, re.S)
+            line = _text(meta.group(1)) if meta else ""
+            if line and not re.search(r"ba[sş]lama|start|open", line, re.I):
+                due = _due(line, year, sem)
+        chip = re.search(r'class="st-assign-chip\b([^"]*)"', body)
+        done = (bool(sent) or group in DONE_STATES or bool(chip and "--done" in chip.group(1))) and group != "revision"
+        out.append(Assignment(aid, title, due, group, done, f"{BASE}/student#assignments/{aid}"))
+    return out
+
+
+def assignments_problem(page: str, items: list[Assignment]) -> str:
+    """What doesn't add up on a course's assignments panel ("" when it reads as IEUStudia knows it): no panel, cards
+    or a count IEUStudia can't read, or assignments without the day they are due."""
+    if 'class="sa-page' not in (page or ""):
+        return "no assignments panel"
+    cards = _count(page, r"\bdata-sa-id=")
+    total = re.search(r'class="sa-stat-text"[^>]*>\s*<b>\s*(\d+)', page)
+    said = max(cards, int(total.group(1)) if total else 0)
+    if said > len(items):
+        return f"{said} assignments on the page, {len(items)} read"
+    if items and not any(a.due for a in items):
+        return f"{len(items)} assignments without the day they are due"
+    if not items and not total and "sa-empty" not in page:
+        return "an assignments panel without assignments, a count or its empty note"
+    return ""
+
+
 _LINK = re.compile(r'(?is)<a\b[^>]*?\bhref\s*=\s*"(https?://[^"]+)"[^>]*>(.*?)</a>')
 
 
@@ -288,6 +422,28 @@ def _keep_links(fragment: str) -> str:
     return _LINK.sub(one, fragment or "")
 
 
+_ANN_FILE = re.compile(r'(?is)<a\b([^>]*\bclass="[^"]*\bov-ann-file\b[^"]*"[^>]*)>(.*?)</a>')
+
+
+def _attachments(fragment: str) -> list[Resource]:
+    """An announcement's attached files (a.ov-ann-file: "Quiz1 - Solutions.pdf", 142 KB), each with its link (it
+    needs the IEULearn session, as a weekly plan's files do)."""
+    out: list[Resource] = []
+    for attrs, inner in _ANN_FILE.findall(fragment or ""):
+        href = re.search(r'\bhref\s*=\s*"([^"]+)"', attrs)
+        if not href:
+            continue
+        url = html.unescape(href.group(1)).strip()
+        name = re.search(r'class="ov-ann-file-name"[^>]*>(.*?)</span>', inner, re.S)
+        title = re.search(r'\btitle\s*=\s*"([^"]*)"', attrs)
+        file_name = (_text(name.group(1)) if name else "") or (html.unescape(title.group(1)).strip() if title else "")
+        file_name = file_name or url.rstrip("/").rsplit("/", 1)[-1]
+        stem, dot, ext = file_name.rpartition(".")
+        ext = ext.lower() if dot and stem and len(ext) <= 8 and ext.isalnum() else ""
+        out.append(Resource("", stem if ext else file_name, file_name, "announcement", ext, url, url))
+    return out
+
+
 def parse_announcements(page: str) -> list[Announcement]:
     out: list[Announcement] = []
     for card in re.findall(r'<article class="ov-ann-card[^"]*"[^>]*>(.*?)</article>', page, re.S):
@@ -299,10 +455,12 @@ def parse_announcements(page: str) -> list[Announcement]:
         found = [w for w in (posted_when(s) for s in spans) if w]
         when = found[-1] if found else None            # (the date comes after the author's name)
         body = re.search(r'class="st-ov-ann-full"[^>]*>(.*)', card, re.S)
-        body_text = _text(_keep_links(body.group(1))) if body else ""
+        # each attached file on a line of its own: side by side, the first one's address ran into the next file's name
+        html_body = _ANN_FILE.sub(lambda m: f"{m.group(0)}<br>", body.group(1)) if body else ""
+        body_text = _text(_keep_links(html_body)) if body else ""
         key = hashlib.sha1(f"{title_text}|{author}|{when}".encode("utf-8")).hexdigest()[:16]
         if title_text or body_text:
-            out.append(Announcement(key, title_text, author, when, body_text))
+            out.append(Announcement(key, title_text, author, when, body_text, _attachments(body.group(1) if body else "")))
     return out
 
 
@@ -325,8 +483,12 @@ def overview_problem(page: str, ov: Overview) -> str:
 
 def unit_plan_problem(page: str, units: list[Unit]) -> str:
     """What doesn't add up on a weekly unit plan ("" when it reads as IEUStudia knows it): no plan at all, units or
-    files IEUStudia can't read. An empty plan IEULearn says is empty is fine."""
-    items, files = _count(page, r'<article class="curriculum-item'), _count(page, r'class="ovup-syl-item"')
+    files IEUStudia can't read. An empty plan IEULearn says is empty is fine, and so is one that holds only
+    assignments or folders so far (a lab or project course before its first slides): its items are counted as files
+    by IEULearn's own mark for them, data-syl-kind="resource" (every item on a page without that mark)."""
+    items = _count(page, r'<article class="curriculum-item')
+    files = (_count(page, r'data-syl-kind="resource"') if "data-syl-kind=" in (page or "")
+             else _count(page, r'class="ovup-syl-item"'))
     payloads, read = _count(page, r"data-rv-payload="), sum(len(u.resources) for u in units)
     if "ovup-syl" not in page and not items:
         return "no unit plan on the page"
@@ -402,6 +564,12 @@ class CourseSite:
         items = parse_announcements(page)
         return self._checked("announcements", page, announcements_problem(page, items), items, course_id)
 
+    def assignments(self, course_id: str, course_title: str = "") -> list[Assignment]:
+        """The course's assignments with the day and time each is due (a small panel, about 10 KB)."""
+        page = self._get(f"/student/courses/{course_id}/overview/assignments")
+        items = parse_assignments(page, course_title)
+        return self._checked("assignments", page, assignments_problem(page, items), items, course_id)
+
     @staticmethod
     def _checked(part: str, page: str, problem: str, value: Any, course_id: str = "") -> Any:
         """``value`` when its page adds up; else what the page is: IEULearn's sign-in form (the session ran out), a
@@ -413,8 +581,9 @@ class CourseSite:
         if problem:
             if ("password" in page or "loginForm" in page) and _sign_in_form(page) is not None:
                 raise NeedLogin(t("Your IEULearn session has expired."))
-            roots = ("ovup-syl", "curriculum-item", "ov-ann", "ov-intro", "ov-ects")   # (a course's own words may say
-            if under_maintenance(page) and not any(r in page for r in roots):      # "bakım": only a page without them)
+            # (a course's own words may say "bakım": only a page without these)
+            roots = ("ovup-syl", "curriculum-item", "ov-ann", "ov-intro", "ov-ects", "sa-page")
+            if under_maintenance(page) and not any(r in page for r in roots):
                 raise Busy(t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
             raise changed(part, f"{problem} ({page_shape(page)})", where=course_id)
         health.ok("ieulearn", part, where=course_id)

@@ -72,7 +72,7 @@
   // ---- Settings → AI: the model (Claude) and the reasoning level of each use
   const USES = () => [["chat", t("Chat and study notes"), t("Ask, study notes, exam focus and flashcards."), "ai_model"],
     ["plan", t("Study plans, review sheets and study packs"), t("Works out what to learn from your material and builds the plan, the review sheet or the study pack."), "plan_model"],
-    ["verify", t("Checking videos"), t("Reads candidate videos' captions against the course — many small requests, so a light setting is plenty."), "verify_model"],
+    ["verify", t("Checking videos"), t("Reads candidate videos' captions against the course: many small requests, so a light setting is plenty."), "verify_model"],
     ["digest", t("Weekly digest"), t("The short written summary of your week."), "ai_model_light"]];
   const MODELS = () => [["haiku", t("Haiku (lightest)")], ["sonnet", t("Sonnet (recommended)")], ["opus", t("Opus (best, heavy)")]];
   const levelSel = (use, value, attrs) => `<select class="input eff-sel" ${attrs} title="${esc(t("Reasoning: how long the AI thinks before it answers"))}">${offered().map((v) =>
@@ -96,11 +96,14 @@
   const picks = {}, info = {};
   function noteHTML(ctx) {
     const x = info[ctx] || {}, v = picks[ctx] || setting(x.use), out = [];
-    if (heavy(v)) out.push(`<b>${esc(name(v))}:</b> ${esc(about(v))}${x.use === "plan" || x.use === "verify" ? ` ${esc(WHY()[x.use])}` : ""}`);
+    // why it adds up: the dialog's own words (a quiz is one request: none), else the use's
+    const why = x.why != null ? x.why : x.use === "plan" || x.use === "verify" ? WHY()[x.use] : "";
+    if (heavy(v)) out.push(`<b>${esc(name(v))}:</b> ${esc(about(v))}${why ? ` ${esc(why)}` : ""}`);
     if (x.big) out.push(x.big);
     return out.length ? `<div class="callout warning eff-note">${I("alert")}<div>${out.join("<br>")}</div></div>` : "";
   }
-  // ``initial``: the level to start at ("" = the setting); ``more``: {big: a note about a large request, attrs}
+  // ``initial``: the level to start at ("" = the setting); ``more``: {big: a note about a large request, attrs, why:
+  // the sentence that says why a heavy level adds up here ("" for none; else the use's)}
   St.effortField = (ctx, use, initial, more) => {
     if (!usable()) return "";
     const fresh = !document.querySelector(`[data-eff-ctx="${ctx}"]`);        // a dialog just opened (not drawn again)
@@ -137,7 +140,7 @@
       whole ? t("Whole course: each question also sends the matching pages of your slides and PDFs, so every one uses more of your plan than a usual follow-up.") : ""].filter(Boolean).join("<br>"),
     notes: (tokens) => (tokens >= BIG_NOTES ? t("A long lecture: about {k} tokens to read. Without the slide images it uses less.", { k: St.fmtK(tokens) }) : ""),
     // "Read everything" (chatfiles.js): what reading the pages that don't fit whole takes, before the first answer
-    read: (rd) => (rd && rd.batches && (rd.tokens || 0) >= BIG_READ ? t("Reading everything is a lot: about {k} tokens in {n} requests before the answer. It happens once: later questions reuse the notes. Fewer files or Highlights only use less.", { k: St.fmtK(rd.tokens), n: t.num(rd.batches) }) : ""),
+    read: (rd) => (rd && rd.batches && (rd.tokens || 0) >= BIG_READ ? t.n(rd.batches, "Reading everything is a lot: about {k} tokens in {n} request before the answer. It happens once: later questions reuse the notes. Fewer files or Highlights only use less.", "Reading everything is a lot: about {k} tokens in {n} requests before the answer. It happens once: later questions reuse the notes. Fewer files or Highlights only use less.", { k: St.fmtK(rd.tokens), n: t.num(rd.batches) }) : ""),
   };
   // asked once (for this AI) before a large "Read everything": when the student turns it on, and before the first
   // question of a chat where it is on by itself (the whole course, 4 files and more, files added later: ``send``).
@@ -150,7 +153,7 @@
       let said = null;
       St.modal(`<h2>${I("alert")} ${t("Read everything?")}</h2>
         ${send && rd.auto ? `<p>${t("Read everything is on by itself for the whole course and for 4 files and more.")}</p>` : ""}
-        <p class="lead">${t.n(rd.pages || 0, "{ai} goes through {n} page first: about {k} tokens in {b} requests, from your plan.", "{ai} goes through {n} pages first: about {k} tokens in {b} requests, from your plan.", { ai: esc(St.aiName()), k: St.fmtK(rd.tokens), b: t.num(rd.batches) })}</p>
+        <p class="lead">${t.n(rd.pages || 0, "{ai} goes through {n} page first: about {k} tokens {requests}, from your plan.", "{ai} goes through {n} pages first: about {k} tokens {requests}, from your plan.", { ai: esc(St.aiName()), k: St.fmtK(rd.tokens), requests: St.inRequests(rd.batches) })}</p>
         <div class="callout info">${I("info")}<div>${esc(t("The notes it writes are kept: later questions, and new chats about the same files, reuse them."))}</div></div>
         <p class="dim sm">${t("You see this once. You can turn it off any time in What this chat sees.")}</p>
         <div class="actions"><button class="btn" data-act="eff-no">${send ? t("Send without reading") : t("Not now")}</button>
@@ -165,7 +168,9 @@
     if (!est || !usable()) return "";
     const read = (est.main_input || 0) + (est.verify_input || 0), out = [], kind = (scope || {}).kind;
     const level = nearest((scope || {}).effort || setting("plan"));
-    if (kind === "pack" || kind === "sheet") {
+    if (kind === "quiz") {                     // one request
+      if (heavy(level)) out.push(t("At {level} reasoning it also thinks longer, so it uses more than this estimate.", { level: name(level) }));
+    } else if (kind === "pack" || kind === "sheet") {
       if (kind === "sheet" && read >= BIG_PLAN) out.push(t("This cheatsheet reads a lot: about {k} tokens in all. Fewer weeks or files use less.", { k: St.fmtK(read) }));
       if (heavy(level)) out.push(t("At {level} reasoning every one of its requests also thinks longer, so it uses more than this estimate.", { level: name(level) }));
     } else if (kind === "prep") out.push(t("A review sheet is a long piece of writing: about {k} tokens written, after about {r} read.", { k: St.fmtK(est.main_output || 0), r: St.fmtK(read) }));

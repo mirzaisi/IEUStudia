@@ -44,6 +44,35 @@ def test_a_reupload_with_sound_is_kept_and_the_silent_copy_is_its_duplicate(tmp_
     assert lib2.get_recording("b").duplicate_of is None and lib2.get_recording("a").duplicate_of == "b"
 
 
+def test_a_transcribed_recording_panopto_replaced_is_not_kept_as_another_part(tmp_path):
+    """EEE 242 Lecture5.2: the live upload broke off after 21 minutes and Panopto listed it as finished; days later
+    the whole lecture came as a new session with the same start, and the first one left the folder. Transcribed in
+    between, the old copy stayed as a part of its own: the day file, study pack and chats had its 21 minutes twice."""
+    from studia.outputs.common import select_parts
+
+    def t(did):
+        return Transcript(delivery_id=did, segments=[Segment(0, 5, "x", "en", 0.9)], duration_s=5, speech_s=5,
+                          language_seconds={"en": 5}, model="m", device="cpu", engine_version="x",
+                          created_at="2026-10-20T10:00:00")
+
+    for order in ("same sync", "later sync"):
+        lib = Library(tmp_path / f"{order}.db")
+        lib.upsert_courses([Course(id="c1", title="t", code="EEE 242", name="n")])
+        lib.merge_recordings("c1", [rec("5.1", 0, 2700), rec("old", 116, 1288)], first_sync=True)
+        lib.save_transcript(t("old"), tmp_path / "old.json")
+        other = Recording(delivery_id="sec2", course_id="c1", folder_id="f", folder_path="", name="sec 2",
+                          start=rec("old", 116).start, duration_s=3000, viewer_url="u", section_tag="2")
+        if order == "later sync":                          # the old copy leaves first, the new one comes later
+            lib.merge_recordings("c1", [rec("5.1", 0, 2700), other], first_sync=False)
+            assert lib.get_recording("old").duplicate_of is None      # (not another section's lecture)
+        lib.merge_recordings("c1", [rec("5.1", 0, 2700), rec("new", 116, 2138), other], first_sync=False)
+        assert lib.get_recording("old").duplicate_of == "new", order
+        day = [r for r in lib.recordings("c1") if r.section_tag == ""]
+        assert [r.delivery_id for r in select_parts(day, {"old": t("old")})] == ["5.1", "old"]    # until it's done
+        assert [r.delivery_id for r in select_parts(day, {"old": t("old"), "new": t("new")})] == ["5.1", "new"]
+        lib.close()
+
+
 def test_status_and_fts_search(tmp_path):
     lib = Library(tmp_path / "lib.db")
     lib.upsert_courses([Course(id="c1", title="t", code="EEE 215", name="n")])

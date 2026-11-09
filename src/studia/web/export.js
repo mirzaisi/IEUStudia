@@ -141,6 +141,7 @@
     if (e.renamed) notes.push(t("A zip of this name is open in another program, so this one got a new name."));
     if (e.untranscribed) notes.push(t.n(e.untranscribed, "{n} lecture isn't transcribed yet: README.md in the zip lists it.", "{n} lectures aren't transcribed yet: README.md in the zip lists them."));
     if (e.missing) notes.push(t.n(e.missing, "{n} course file isn't in the zip (not on this PC): README.md lists it.", "{n} course files aren't in the zip (not on this PC): README.md lists them."));
+    if (e.students) notes.push(t.n(e.students, "{n} course file was left out: it lists students' numbers (grades or groups), so your classmates' details stay private. README.md names it.", "{n} course files were left out: they list students' numbers (grades or groups), so your classmates' details stay private. README.md names them."));
     return `<div class="cp-scroll"><div class="cx-done">${I("check-circle")}<div class="grow"><h2>${t("The zip is ready")}</h2>
         <div class="cx-file"><b>${esc(e.name || "")}</b> · ${size(e.bytes || 0)}</div><div class="cx-path" title="${esc(e.path || "")}">${esc(e.path || "")}</div></div></div>
       ${e.too_big ? `<div class="callout warning">${I("alert")}<div>${t("ChatGPT takes files up to 512 MB, and this zip is bigger. Export again without the screens, or with fewer weeks.")}</div></div>` : ""}

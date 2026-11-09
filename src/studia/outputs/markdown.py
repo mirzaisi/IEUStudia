@@ -56,6 +56,35 @@ def part_views(recordings: Iterable[Recording], transcripts: Any, slides: Option
     return out
 
 
+def para_spans(p: PartView) -> list[Optional[Any]]:
+    """For each paragraph of a part, the span of its slide index it falls in (its picture's appearance: .index, .t,
+    .end), or None: as part_views gives a paragraph its slide."""
+    sl = sorted(p.slides, key=lambda s: s.t)
+    out: list[Optional[Any]] = []
+    k = 0
+    for para in p.paragraphs:
+        at = para.start + 0.5
+        while k + 1 < len(sl) and sl[k + 1].t <= at:
+            k += 1
+        out.append(sl[k] if sl and sl[k].t <= at else None)
+    return out
+
+
+def _screens(p: PartView) -> dict[str, Any]:
+    """A part's screen timeline's screens (screens.py), {} when it has none."""
+    from .. import store
+
+    doc = store.load_screens(p.rec.delivery_id)
+    return (doc.get("screens") or {}) if doc else {}
+
+
+def screen_caption(s: Any, screen: Optional[dict[str, Any]]) -> str:
+    """A picture's caption, as the transcript page shows it: "Slide 12 · 34:10–36:40 · Δ - Y transformation" (its
+    title from the screen timeline, screens.py, when it has one)."""
+    title = " ".join(str((screen or {}).get("title") or "").split())
+    return " · ".join(x for x in (f"Slide {s.index}", f"{format_ts(s.t)}–{format_ts(s.end)}", title) if x)
+
+
 def paragraph_text_md(p: Paragraph) -> str:
     text = md_escape(p.text).replace(r"\[unclear\]", UNCLEAR_MD)
     tag = lang_tag(p.lang)
@@ -125,10 +154,12 @@ def render_day(course: Course, recordings: Iterable[Recording], transcripts: Any
             continue
         shown_slide = None
         by_index = {s.index: s for s in p.slides}
-        for para in p.paragraphs:
+        screens = _screens(p) if p.slides else {}
+        for para, span in zip(p.paragraphs, para_spans(p)):
             if para.slide is not None and para.slide != shown_slide and para.slide in by_index:
                 s = by_index[para.slide]
-                lines += [f"![Slide {s.index}]({s.image.replace(' ', '%20')})", ""]
+                cap = screen_caption(span or s, screens.get(str(s.index)))
+                lines += [f"![Slide {s.index}]({s.image.replace(' ', '%20')})", "", f"*{md_escape(cap)}*", ""]
                 shown_slide = para.slide
             lines.append(f"**[{format_ts(para.start)}]** {paragraph_text_md(para)}")
             lines.append("")

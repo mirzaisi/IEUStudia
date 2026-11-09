@@ -1,0 +1,6 @@
+{
+  "_unit": "4.0.0 review fixes (fixpy): capturing the screens again said once when Panopto can't be reached; the quiet line in Settings → Storage while earlier lectures' screens are read",
+  "Panopto couldn't be reached, so {n} lecture wasn't done. Check your connection and try again.": "Panopto'ya ulaşılamadığı için {n} dersin ekranları alınamadı. Bağlantını kontrol edip tekrar dene.",
+  "Reading the screens of earlier lectures": "Önceki derslerin ekranları okunuyor",
+  "So search, chats and quizzes can use the words on their slides and board. It runs in the background, a little at a time, and waits while a lecture is transcribed.": "Böylece arama, sohbetler ve deneme sınavları slaytlardaki ve tahtadaki yazıları da kullanabilir. Arka planda azar azar çalışır, bir ders yazıya dökülürken bekler."
+}

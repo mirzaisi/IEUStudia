@@ -1,7 +1,7 @@
 {
   "_unit": "fx-chatread: a chat's reading in parts (live progress of each part, asking again after a dropped connection, what is kept) and the whole course with every lecture's full transcript: chatfiles.js, notices.js, app.js (new chat), chat.py",
   "Every lecture's full transcript, plus your slides and files. What doesn't fit in one request is read in parts first.": "Her dersin ders metninin tamamı, ayrıca slaytların ve dosyaların. Tek isteğe sığmayanlar önce bölüm bölüm okunur.",
-  "Whole course · {n} lectures + course files": "Dersin tamamı · {n} ders + ders dosyaları",
+  "Whole course · {n} lecture + course files": "Dersin tamamı · {n} ders + ders dosyaları",
   "read in parts first: its notes go with each question": "önce bölüm bölüm okunur: notları her soruyla gider",
   "full transcript": "ders metninin tamamı",
   "Among them: {n} lecture that doesn't fit whole, in {k} pieces of its transcript.": "Bunların arasında bütün olarak sığmayan {n} ders var, ders metinleri {k} parçada okunur.",
@@ -20,11 +20,7 @@
   "{ai} is looking at the pages": "{ai} sayfalara bakıyor",
   "about {n} word written": "yaklaşık {n} kelime yazıldı",
   "try {n}": "{n}. deneme",
-  "Reading your lectures, slides and files: {read} of {pages} pieces": "Derslerin, slaytların ve dosyaların okunuyor: {pages} parçadan {read} tanesi",
-  "Reading your slides and files: {read} of {pages} pages": "Slaytların ve dosyaların okunuyor: {pages} sayfadan {read} tanesi",
   "Stop keeps every page read so far: asking again reads only the rest.": "Durdursan da şimdiye kadar okunan her sayfa kalır: tekrar sorduğunda yalnızca kalanlar okunur.",
-  "{read} of {pages} pages were read and kept: asking again reads only the {n} still missing.": "{pages} sayfadan {read} tanesi okundu ve saklandı: tekrar sorduğunda yalnızca eksik kalan {n} sayfa okunur.",
-  "All {pages} pages were read and kept: asking again doesn't read them again.": "{pages} sayfanın hepsi okundu ve saklandı: tekrar sorduğunda yeniden okunmaz.",
   "IEUStudia had tried that part {n} time.": "IEUStudia o bölümü {n} kez denemişti.",
   "Turn on Read everything and {ai} reads their full transcripts in parts before it answers.": "Her şeyi oku'yu açarsan {ai} cevap vermeden önce bu derslerin ders metinlerinin tamamını bölüm bölüm okur.",
   "{n} lecture didn't fit whole and Read everything is off, so {ai} got only what the lecturer stressed in it.": "{n} ders bütün olarak sığmadı ve Her şeyi oku kapalı, bu yüzden {ai} yalnızca hocanın üzerinde durduğu yerleri aldı."

@@ -99,8 +99,39 @@
 
   St.onEvents.services = (e) => {
     S.svc = e;
-    if (["home", "settings", "course"].includes(S.view.name) && !document.querySelector(".modal")) St.renderView();
+    if (S.view.name === "settings") { drawCard(); return; }          // (only its card: Settings has boxes to type in)
+    if (["home", "course"].includes(S.view.name) && !document.querySelector(".modal")) St.renderView();
   };
+  // Settings → Services says when each service last answered: asked for when Settings opens and every 20 s while it
+  // is shown (an answer that changes nothing sends no event, and "3 min ago" moves on), so it is never behind
+  const EVERY_MS = 20000;
+  let ticker = 0;
+  function drawCard() {
+    const el = document.getElementById("set-services");
+    if (!el || el.querySelector(":active")) return;                  // a button being pressed: the next time
+    const a = document.activeElement, again = el.contains(a) && a.dataset && a.dataset.act ? a.dataset.act : "";
+    el.outerHTML = card();
+    const b = again && document.querySelector(`#set-services [data-act="${again}"]`);
+    if (b) b.focus({ preventScroll: true });
+  }
+  async function refresh() {
+    if (S.view.name !== "settings" || document.hidden) return;
+    const r = await call("services_state");
+    if (!r || !r.ok || S.view.name !== "settings") return;
+    S.svc = r;
+    drawCard();
+  }
+  const onGo = St.onGo = St.onGo || {}, goBefore = onGo.settings;
+  onGo.settings = (v) => {
+    if (goBefore) goBefore(v);
+    refresh();
+    clearInterval(ticker);
+    ticker = setInterval(() => {
+      if (S.view.name !== "settings") { clearInterval(ticker); ticker = 0; return; }
+      refresh();
+    }, EVERY_MS);
+  };
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });     // (back to the window)
   const contentBefore = St.onEvents.content;
   St.onEvents.content = (e) => {       // the files and announcements after the recordings: a page that changed there
     if (contentBefore) contentBefore(e);

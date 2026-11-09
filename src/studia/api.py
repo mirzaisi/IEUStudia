@@ -20,12 +20,14 @@ from .cancel import Cancelled
 from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
+from .practice import PRACTICE_KINDS, PracticeApi      # 4.0 Practice: quizzes, flashcards, what was stressed
 from .services import NOTE_KINDS, Services
 from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
                      reveal, set_clipboard)
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
+REMIND_EVERY_S = 10 * 60     # ... and for the reminders that came due (the Calendar page's)
 # the page gets its events at most this often (each time all that came, coalesced); a running job reports every 0.25 s,
 # so more often only meant more calls into the window (each one waits for its thread and Python's lock)
 EVENT_GAP_S = 0.25
@@ -91,7 +93,7 @@ def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-class Api:
+class Api(PracticeApi):
     def __init__(self, services: Optional[Services] = None) -> None:
         self._services: Optional[Services] = None
         self._ready = threading.Event()
@@ -151,6 +153,7 @@ class Api:
         health.on_change = self._services_changed
         self._ready.set()
         threading.Thread(target=self._auto_sync_loop, name="auto-sync", daemon=True).start()
+        threading.Thread(target=self._remind_loop, name="reminders", daemon=True).start()
         threading.Thread(target=self._watch_open_requests, name="open-requests", daemon=True).start()
         threading.Thread(target=self._update_loop, name="update-check", daemon=True).start()
         threading.Thread(target=self._index_search, name="search-index", daemon=True).start()
@@ -294,17 +297,20 @@ class Api:
             self._push({"type": "open", "target": target})
 
     def _remind(self) -> None:
-        """The evening before an announced quiz (and before an exam week): a reminder, once. In the window if you're
-        using it, else as a Windows notification. The tray helper does the same while the window is closed."""
+        """Before a quiz, an exam, an assignment's deadline or your own calendar entry, as the Calendar page sets it:
+        a reminder, once. In the window if you're using it, else as a Windows notification. The tray helper does the
+        same while the window is closed."""
         from . import appconfig
+        from .agenda import reminder_prefs
         from .agent import _load_seen, _save_seen, reminders
-        from .calendar_export import assessment_events
+        from .calendar_export import all_events
 
         if not appconfig.load().notify_reminders:
             return
         with self._remind_lock:                           # two syncs ending together remind once
             seen = _load_seen()
-            note = reminders(assessment_events(self._s.lib, self._s.settings), dt.datetime.now(), seen)
+            note = reminders(all_events(self._s.lib, self._s.settings), dt.datetime.now(), seen,
+                             reminder_prefs(self._s.lib))
             if note is None:
                 return
             _save_seen(seen)
@@ -313,6 +319,54 @@ class Api:
             self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · ")})
         else:
             self._notify(title, text, target)
+
+    def _remind_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
+        """While the app is open, every REMIND_EVERY_S: the reminders that came due meanwhile (a deadline's "3 hours
+        before" doesn't wait for the next sync, half an hour away). From what is on this PC only."""
+        while True:
+            sleep(REMIND_EVERY_S)
+            try:
+                if self._services is not None:
+                    self._remind()
+            except Exception:  # noqa: BLE001 - a reminder never stops the app
+                log.debug("Reminders failed", exc_info=True)
+
+    # ------------------------------------------------------------------ the Calendar page (agenda.py)
+    @safe
+    def calendar(self) -> dict[str, Any]:
+        """The term's quizzes, exams, deadlines, class days and your own entries, and when reminders come."""
+        from .agenda import build
+
+        return {"ok": True, **build(self._s.lib, self._s.settings)}
+
+    @safe
+    def calendar_save(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Add one of your own entries (no "id") or change one: {title, date, time, course_id, note}."""
+        from .agenda import build, save_entry
+
+        try:
+            saved = save_entry(self._s.lib, entry or {})
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "entry": saved, **build(self._s.lib, self._s.settings)}
+
+    @safe
+    def calendar_delete(self, entry_id: str) -> dict[str, Any]:
+        from .agenda import build
+
+        self._s.lib.delete_calendar_entry(str(entry_id or ""))
+        return {"ok": True, **build(self._s.lib, self._s.settings)}
+
+    @safe
+    def calendar_reminders(self, patch: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """When reminders come (read, or changed with ``patch``: {"exams", "due_days", "due_hours"})."""
+        from .agenda import reminder_prefs, set_reminder_prefs
+
+        try:
+            prefs = set_reminder_prefs(self._s.lib, patch) if patch else reminder_prefs(self._s.lib)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "reminders": prefs}
 
     def _dispatch(self) -> None:
         """Deliver events to the page from one thread; coalesce bursts (only the latest job/queue state) and hand each
@@ -333,6 +387,9 @@ class Api:
             for e in batch:
                 if e.get("type") == "job" and not e.get("final"):
                     latest[f"job:{e['id']}"] = e
+                elif e.get("type") == "job":         # a lecture's end: the progress it had before is not sent after it
+                    latest.pop(f"job:{e['id']}", None)       # (it read "Transcribing 99%" again after "ready to read")
+                    ordered.append(e)
                 elif e.get("type") == "chat":        # full snapshots of one answer: the newest one wins
                     latest[f"chat:{e['chat_id']}:{e['seq']}"] = e
                 elif e.get("type") == "material":    # likewise per file (progress, then done/error)
@@ -352,10 +409,14 @@ class Api:
             out = ordered + list(latest.values())
             if self._courses_dirty.is_set():
                 self._courses_dirty.clear()
-                fresh = {"type": "courses", "courses": self._course_views()}
-                if at >= 0:
+                try:
+                    fresh: Optional[dict[str, Any]] = {"type": "courses", "courses": self._course_views()}
+                except Exception:  # noqa: BLE001 - the page keeps the list it has; its other events still go
+                    log.exception("the course list for the page could not be built")
+                    fresh = None
+                if fresh is not None and at >= 0:
                     out[next(i for i, e in enumerate(out) if e.get("type") == "courses")] = fresh
-                else:
+                elif fresh is not None:
                     out.append(fresh)
             if self._window is None:
                 continue
@@ -1014,15 +1075,15 @@ class Api:
             log.debug("closing for restart failed", exc_info=True)
 
     # ------------------------------------------------------------------ closing while lectures are transcribed
-    def _ask_close(self) -> bool:
-        """app.py: the window is closed while lectures are transcribed. True: the page asks (web/failsafe.js) and
-        close_now closes the window. False: the page didn't show the last question (it is stuck or still starting):
-        app.py asks in a window of its own."""
+    def _ask_close(self, transcribing: bool = True, ai: Optional[list[str]] = None) -> bool:
+        """app.py: the window is closed while lectures are transcribed or the AI writes something (``ai``: what it
+        makes, aiwait.running). True: the page asks (web/failsafe.js) and close_now closes the window. False: the page
+        didn't show the last question (it is stuck or still starting): app.py asks in a window of its own."""
         now = time.monotonic()
         if self._close_asked and self._close_seen < self._close_asked and now - self._close_asked > 3:
             return False
         self._close_asked = now
-        self._push({"type": "close-ask"})
+        self._push({"type": "close-ask", "transcribing": bool(transcribing), "ai": list(ai or [])})
         return True
 
     def close_seen(self) -> dict[str, Any]:
@@ -1081,6 +1142,7 @@ class Api:
             self._push({**evt, **q})
 
         done = threading.Event()
+        found: dict[str, list[str]] = {}                  # what it found, for _tell_found (also when a step fails)
 
         stop = getattr(self, "_sync_stop", None) or threading.Event()
         stop.clear()
@@ -1108,6 +1170,7 @@ class Api:
                 lambda m: push({"type": "sync", "phase": "progress", "message": m}),
                 lambda ids: self._push({"type": "courses", "courses": self._course_views()})),
                 lambda r: bool(r.errors))
+            found["rec"] = list(res.new_ids)
             course_views = self._course_views()
             self._push({"type": "courses", "courses": course_views})
             new = self._own_new(course_views, res.new_ids)
@@ -1124,6 +1187,7 @@ class Api:
             content = again(lambda: self._s.sync.sync_content(lambda m: push({"type": "content", "phase": "progress",
                                                                               "message": m})),
                             lambda c: bool(c["errors"]), "content")
+            found.update(ann=list(content["new_announcements"]), mat=list(content["new_materials"]))
             self._courses_dirty.set()                     # (built once with whatever else changed meanwhile)
             push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
                   "new_announcements": len(content["new_announcements"]), "errors": content["errors"],
@@ -1144,11 +1208,29 @@ class Api:
                     self._sync_lock.release()
             if more:                                      # (it keeps the lock: nothing starts in between)
                 threading.Thread(target=self._run_sync, name="sync", daemon=True).start()
+            try:
+                self._tell_found(found)
+            except Exception:  # noqa: BLE001 - a notification never fails a sync
+                log.warning("Telling what the sync found failed", exc_info=True)
             try:                                          # from what is on this PC: also when IEULearn can't be reached
                 self._remind()
             except Exception:  # noqa: BLE001 - a reminder never fails a sync
                 log.warning("Reminders failed", exc_info=True)
         return ok
+
+    def _tell_found(self, found: dict[str, list[str]]) -> None:
+        """New lectures, announcements and files a sync found while the window isn't the one you're using (minimized
+        during a long batch, say): a Windows notification, as the tray helper gives while the window is closed (it no
+        longer finds them new afterwards). In the window, the page says so itself."""
+        from .agent import found_by_window
+
+        if not any(found.values()) or is_foreground(self._hwnd):
+            return
+        with self._remind_lock:                           # (the reminders write the same told list)
+            note = found_by_window(self._s.lib, self._s.settings, found.get("rec", []), found.get("ann", []),
+                                   found.get("mat", []))
+        if note:
+            self._notify(*note)
 
     @staticmethod
     def _watch(slow: Callable[[float], list], moved: dict[str, Any], push: Callable[[dict[str, Any]], None],
@@ -1236,6 +1318,7 @@ class Api:
                 self._courses_dirty.set()
                 self._push(self._s.jobs.queue_event())
                 self._push({"type": "catchup", "phase": "done", "scope": scope, "lectures": queued,
+                            "days": sum(n.days for n in needs) if queued else 0,      # (the lectures it says: class days)
                             "materials": len(mats), "audio_s": round(sum(n.audio_s for n in needs)),
                             "waiting": [n.code for n in needs if n.needs_section and n.waiting],
                             "unknown": sum(len(n.unknown) for n in needs)})
@@ -1351,7 +1434,32 @@ class Api:
         for n in detail["notes"]:
             if n["kind"] == "flashcards":                                  # to practise them one by one
                 n["cards"] = parse_cards(n["md"])
+        worker = getattr(self._s, "screens", None)                         # (screens.py) captured again: which now
+        detail["screens_again"] = worker.state() if worker is not None else {}
         return {"ok": True, "day": detail}
+
+    # ------------------------------------------------------------------ the lecture player (player.py)
+    @safe
+    def player_open(self, day_key: str, part: int = 1, avoid: str = "") -> dict[str, Any]:
+        """A part of a class day, streamed from Panopto through the app's own sign-in: the address the page plays,
+        Panopto's resume point and the lecture's screens (player.open_recording). ``avoid`` "video": sound only."""
+        from . import player
+
+        return player.open_part(self._s.lib, self._s.sync, str(day_key or ""), int(part or 1), str(avoid or ""))
+
+    @safe
+    def player_close(self, token: str) -> dict[str, Any]:
+        from . import player
+
+        return {"ok": True, "closed": player.close(str(token or ""))}
+
+    @safe
+    def screens_again(self, day_key: str, whole_course: bool = False) -> dict[str, Any]:
+        """Capture the screens of a class day's lectures (or its whole course's) again, in the background
+        (screens.ScreenWorker): the page is told as each one is done."""
+        s = self._s
+        n = s.capture_screens_again(*(("", day_key.split("|", 1)[0]) if whole_course else (day_key, "")))
+        return {"ok": True, "added": n, **s.screens.state()}
 
     @safe
     def mark_set(self, delivery_id: str, at: float, text: str = "", note: Optional[str] = None) -> dict[str, Any]:
@@ -1612,14 +1720,18 @@ class Api:
 
     @safe
     def export_calendar(self) -> dict[str, Any]:
-        """The announced quizzes and exams of every course as an .ics file in the output folder, shown in Explorer."""
-        from .calendar_export import assessment_events, ics
+        """The announced quizzes and exams, the assignments still to send and your own entries of every course as an
+        .ics file in the output folder (with the reminders the Calendar page sets), shown in Explorer."""
+        from .agenda import reminder_prefs
+        from .calendar_export import all_events, ics
 
-        events = assessment_events(self._s.lib, self._s.settings)
+        events = all_events(self._s.lib, self._s.settings)
         if not events:
-            return {"ok": False, "error": t("No quiz or exam with a known week has been announced yet.")}
-        path = self._s.output_root / "IEUStudia - quizzes and exams.ics"
-        path.write_bytes(ics(events).encode("utf-8"))
+            return {"ok": False, "error": t("Nothing coming up has a date yet: no announced quiz or exam, no assignment "
+                                            "deadline and no entry of your own.")}
+        path = self._s.output_root / "IEUStudia - calendar.ics"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(ics(events, prefs=reminder_prefs(self._s.lib)).encode("utf-8"))
         reveal(path)
         return {"ok": True, "count": len(events), "path": str(path)}
 
@@ -1906,6 +2018,125 @@ class Api:
             return {"ok": False, "error": t("This zip is no longer there (moved or deleted). Export it again.")}
         return self._open_here(p, show=True)
 
+    # ------------------------------------------------------------------ the Export menu (exports.py): a lecture, a week
+    # or the whole course, a chat, as PDF, Word, Markdown, text or subtitles, saved where the student picks
+    @safe
+    def export_weeks(self, course_id: str) -> dict[str, Any]:
+        """What a course's Export menu offers: its weeks with transcribed lectures, and whether it has AI notes."""
+        from .exports import ExportError, course_weeks
+
+        try:
+            return {"ok": True, **course_weeks(self._s, course_id)}
+        except ExportError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @safe
+    def export_pick(self, scope: str, what: str, fmt: str, opts: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Where to save it: Windows' save dialog, opened in the course's folder with a good name. Nothing is made yet
+        (export_write makes it, while the page says so); cancelled, there is no token."""
+        import uuid
+
+        from . import exports
+
+        try:
+            job = exports.plan(self._s, scope, what, fmt, opts)
+        except exports.ExportError as exc:
+            return {"ok": False, "error": str(exc)}
+        path = self._save_dialog(job.folder, job.name, job.ext)
+        if not path:
+            return {"ok": True, "token": ""}
+        token = uuid.uuid4().hex
+        with self._starts_lock:
+            self.__dict__.setdefault("_xp_jobs", {})[token] = (job, path)
+        name = Path(path).name if Path(path).suffix.lower() == job.ext else Path(path).name + job.ext
+        return {"ok": True, "token": token, "name": name, "wait": round(job.wait), "lectures": job.lectures,
+                "zip": job.ext == ".zip"}
+
+    def _save_dialog(self, folder: Path, name: str, ext: str) -> str:
+        """Windows' save dialog for a file ending in ``ext``, in ``folder`` (Documents when it can't be made),
+        suggesting ``name``; "" when it was cancelled."""
+        import re
+
+        import webview
+
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            from .paths import documents_dir
+
+            folder = documents_dir()
+        kinds = {".pdf": t("PDF document"), ".docx": t("Word document"), ".md": t("Markdown file"),
+                 ".txt": t("Text file"), ".srt": t("Subtitles"), ".vtt": t("Subtitles"), ".zip": t("Zip file"),
+                 ".apkg": t("Anki deck")}
+        kind = re.sub(r"[^\w ]+", "", kinds.get(ext, "")).strip() or "File"   # (pywebview takes letters and spaces)
+        save = webview.FileDialog.SAVE if hasattr(webview, "FileDialog") else webview.SAVE_DIALOG
+        res = self._window.create_file_dialog(save, directory=str(folder), save_filename=name,
+                                              file_types=(f"{kind} (*{ext})",))
+        path = res[0] if isinstance(res, (list, tuple)) else res
+        return str(path or "")
+
+    def _save_course_file(self, course_id: str, stem: str, ext: str) -> str:
+        """Practice's save dialogs (a quiz's PDF, the Anki deck), as the Export menu's: in the course's folder,
+        suggesting ``stem`` + ``ext`` with its file type; the path chosen, ending in ``ext`` even when typed without
+        it; "" when it was cancelled."""
+        from .exports import file_name
+        from .outputs.writer import course_dir
+        from .paths import documents_dir
+
+        course = self._s.lib.get_course(course_id)
+        folder = course_dir(self._s.output_root, course, self._s.lib.courses(True)) if course else documents_dir()
+        path = self._save_dialog(folder, file_name(folder, stem, ext), ext)
+        return path if not path or path.lower().endswith(ext) else path + ext
+
+    @safe
+    def export_write(self, token: str) -> dict[str, Any]:
+        """Make what export_pick asked for and save it there; its format is remembered for next time. A course's zip
+        says how far it is ("xsave" events)."""
+        from . import exports
+
+        with self._starts_lock:
+            got = self.__dict__.setdefault("_xp_jobs", {}).pop(token, None)
+        if got is None:
+            return {"ok": False, "error": t("This export isn't waiting any more. Export it again.")}
+        job, path = got
+
+        def progress(i: int, n: int) -> None:
+            self._push({"type": "xsave", "token": token, "i": i, "n": n})
+
+        try:
+            out = exports.write(self._s, job, Path(path), progress)
+        except exports.ExportError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.__dict__.setdefault("_xp_saved", set()).add(str(out))
+        prefs = exports.remembered(self._s.settings, job)
+        try:
+            self._s.update_settings({"export_prefs": prefs})
+        except OSError:
+            log.warning("The export's format could not be remembered", exc_info=True)
+        return {"ok": True, "path": str(out), "name": out.name, "folder": str(out.parent), "bytes": out.stat().st_size,
+                "prefs": prefs}
+
+    @safe
+    def export_copy(self, scope: str, what: str = "transcript") -> dict[str, Any]:
+        """Copy as text: the lecture's transcript, notes or AI pack, or the chat, as plain text on the clipboard."""
+        from . import exports
+
+        try:
+            text = exports.copy_text(self._s, scope, what)
+        except exports.ExportError as exc:
+            return {"ok": False, "error": str(exc)}
+        ok = set_clipboard(text)
+        return {"ok": ok, "chars": len(text), "error": None if ok else t("Could not access the clipboard."),
+                **({} if ok else {"text": text})}
+
+    @safe
+    def export_open(self, path: str, show: bool = False) -> dict[str, Any]:
+        """A file saved from the Export menu (only one of those): opened, or (``show``) selected in its folder."""
+        p = Path(path or "")
+        if str(p) not in self.__dict__.get("_xp_saved", set()) or not p.is_file():
+            return {"ok": False, "error": t("This file is no longer there (moved or deleted). Export it again.")}
+        return self._open_here(p, show=bool(show))
+
     @safe
     def ai_estimate(self, day_key: str, include_slides: bool = False) -> dict[str, Any]:
         from .ai import claude_info, estimate_tokens
@@ -1929,12 +2160,29 @@ class Api:
         level = resolve("chat", level, settings=self._s.settings)      # this request's reasoning level, else Settings'
 
         def run() -> None:
+            from . import aiwait
+            from .ai import provider
+
+            seen = {"text": "", "at": 0.0}
+
+            def progress(snap: dict[str, Any]) -> None:
+                self._push({"type": "ai", "phase": "progress", "day_key": day_key, "text": seen["text"], "wait": snap,
+                            **kind})
+
+            def on_text(so_far: str) -> None:        # (at most every 0.1 s: the page draws the whole notes each time)
+                seen["text"] = so_far
+                if time.monotonic() - seen["at"] >= 0.1:
+                    seen["at"] = time.monotonic()
+                    progress(wait.snapshot())
+            # what the student waits for: getting the lecture ready, sending, thinking, writing, a retry (aiwait)
+            wait = aiwait.Wait(progress, ai=ai_name(), provider=provider(), model=self._s.settings.ai_model,
+                               level=level, kind=f"notes.{template}", where="notes")
             try:
-                self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": "", **kind})
-                path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
-                                        lambda so_far: self._push({"type": "ai", "phase": "progress",
-                                                                   "day_key": day_key, "text": so_far, **kind}),
-                                        effort=level)
+                self._push({"type": "ai", "phase": "start", "day_key": day_key, "text": "", "wait": wait.snapshot(),
+                            **kind})
+                with aiwait.tracking(cancel, wait):
+                    path = self._s.ai_notes(day_key, template, include_slides, self._s.settings.ai_model, cancel,
+                                            on_text, effort=level)
                 text = path.read_text(encoding="utf-8")
                 cards = {}
                 if template == "flashcards":                  # to practise them one by one
@@ -1981,7 +2229,8 @@ class Api:
         weeks = []
         for w in d["weeks"]:
             mats = [m for u in w["units"] for m in u["materials"]]
-            own = [x for x in w["days"] if x.get("mine") is not False]       # your section's class days
+            # your section's class days, without one that has no speech on Panopto (nothing to transcribe or read)
+            own = [x for x in w["days"] if x.get("mine") is not False and not (x.get("no_sound") and not x["transcribed"])]
             weeks.append({"no": w["no"], "start": w["start"], "end": w["end"], "current": w["current"], "past": w["past"],
                           "topic": w["topic_en"] or w["topic_tr"] or " · ".join(u["title"] for u in w["units"]),
                           "exam": w["exam"], "files": len(mats),
@@ -2016,7 +2265,7 @@ class Api:
         if not info["available"]:
             return {"ok": False, "error": t("Set up ChatGPT or Claude in Settings → AI first (needed to build the plan).")}
         if info.get("can_plans") is False:
-            return {"ok": False, "error": t("Study plans need ChatGPT or Claude — the offline model is too small for "
+            return {"ok": False, "error": t("Study plans need ChatGPT or Claude: the offline model is too small for "
                                             "them.")}
         return self._start_plan(["new", course_id, scope or {}], lambda: self._s.plans.create(course_id, scope or {}))
 
@@ -2039,7 +2288,8 @@ class Api:
 
     @safe
     def plan_list(self, course_id: Optional[str] = None) -> dict[str, Any]:
-        return {"ok": True, "plans": self._s.lib.plans(course_id or None)}
+        return {"ok": True, "plans": [p for p in self._s.lib.plans(course_id or None)        # (quizzes and cards:
+                                      if (p.get("scope") or {}).get("kind") not in PRACTICE_KINDS]}   # the Practice tab)
 
     @safe
     def plan_get(self, plan_id: str) -> dict[str, Any]:
@@ -2248,14 +2498,28 @@ class Api:
         level = resolve("digest", str(level or ""), settings=self._s.settings)
 
         def run() -> None:
+            from . import aiwait
+            from .ai import provider
+
+            seen = {"text": "", "at": 0.0}
+
+            def progress(snap: dict[str, Any]) -> None:
+                self._push({"type": "digest", "phase": "progress", "offset": offset, "text": seen["text"], "wait": snap})
+
+            def on_text(so_far: str) -> None:        # (at most every 0.2 s: digest events are each delivered)
+                seen["text"] = so_far
+                if time.monotonic() - seen["at"] >= 0.2:
+                    seen["at"] = time.monotonic()
+                    progress(wait.snapshot())
+            wait = aiwait.Wait(progress, ai=ai_name(), provider=provider(), model=model, level=level, kind="digest",
+                               where="digest")
             try:
                 d = weekly_digest(self._s.lib, self._s.settings, offset)
-                self._push({"type": "digest", "phase": "start", "offset": offset, "text": ""})
-                res = one_shot("You write brief, accurate study digests for a university student, in Markdown.",
-                               [{"type": "text", "text": digest_prompt(d)}], model, level, cancel,
-                               lambda so_far: self._push({"type": "digest", "phase": "progress", "offset": offset,
-                                                          "text": so_far}),
-                               think=False)          # a short summary of the facts given: no extended thinking
+                self._push({"type": "digest", "phase": "start", "offset": offset, "text": "", "wait": wait.snapshot()})
+                with aiwait.tracking(cancel, wait):
+                    res = one_shot("You write brief, accurate study digests for a university student, in Markdown.",
+                                   [{"type": "text", "text": digest_prompt(d)}], model, level, cancel, on_text,
+                                   think=False)      # a short summary of the facts given: no extended thinking
                 text = (res.get("text") or "").strip()
                 saved = {"text": text, "model": model_label(model, level), "at": dt.datetime.now().isoformat(timespec="seconds"),
                          "usage": res.get("usage") or {}}
@@ -2430,13 +2694,42 @@ class Api:
 
     @safe
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
-        old_out = self._s.settings.output_dir
+        old_out, old_min = self._s.settings.output_dir, self._s.settings.min_duration_s
         s = self._s.update_settings(patch or {})
         if s.output_dir != old_out:
             threading.Thread(target=self._rewrite_all, args=(old_out,), daemon=True).start()
         if {"model", "device"} & set(patch or {}):         # the GPU chip and Settings follow the choice
             threading.Thread(target=self._system_info, daemon=True).start()
+        if s.min_duration_s != old_min:                    # "Hide very short recordings": the course pages follow now
+            self._push({"type": "courses", "courses": self._course_views()})     # (not at the next sync)
         return {"ok": True, "settings": s.to_json()}
+
+    @safe
+    def settings_defaults(self) -> dict[str, Any]:
+        """Settings' groups and their defaults (config.GROUPS), with the reminders' timing as it is now."""
+        from .agenda import reminder_prefs
+        from .config import all_defaults
+
+        return {"ok": True, "defaults": all_defaults(), "reminders": reminder_prefs(self._s.lib)}
+
+    @safe
+    def settings_reset(self, group: str) -> dict[str, Any]:
+        """Settings → a group's "Back to the defaults": its settings as a fresh profile has them (config.GROUPS)."""
+        from . import appconfig
+        from .agenda import set_reminder_prefs
+        from .config import GROUPS, defaults
+
+        if group not in GROUPS:
+            return {"ok": False, "error": t("That group of settings doesn't exist.")}
+        d = defaults(group)
+        out: dict[str, Any] = {"ok": True}
+        if d.get("settings"):
+            out["settings"] = self.update_settings(d["settings"])["settings"]
+        if d.get("app"):
+            out["app"] = appconfig.update(d["app"]).to_json()
+        if d.get("reminders"):
+            out["reminders"] = set_reminder_prefs(self._s.lib, d["reminders"])
+        return out
 
     def _rewrite_all(self, old_out: str) -> None:
         try:

@@ -217,6 +217,55 @@ def test_a_stream_without_sound_hides_no_download_error_and_isnt_fetched_again(e
     assert tried == ["audio_podcast", "video_podcast", "audio_podcast", "audio_podcast"]  # the mute one only once
 
 
+def test_a_damaged_download_is_deleted_and_downloaded_again(env):
+    """3.3.1 kept a downloaded file of the full size whose end was damaged (a power cut while it downloaded): each Try
+    again found it in the cache, decoded it, and failed with FFmpeg's raw words, until the week-old sweep."""
+    from pathlib import Path
+
+    fake, bad, found = jobs_mod.decode_audio, {"r1": 1}, []
+
+    def decode(path, cancel=None):
+        did = Path(path).stem
+        if bad.get(did, 0) > 0:
+            bad[did] -= 1
+            raise ValueError(f"[Errno 1094995529] Invalid data found when processing input: 'C:\\\\x\\\\{did}.m4a'")
+        return fake(path, cancel)
+
+    def download(self, src, dest, progress, cancel=None, prefer="audio"):
+        found.append(dest.exists())                        # (httpdl reuses a file of the full size)
+        (dest.parent / (dest.name + ".parts.json")).write_text("{}")
+        return real(self, src, dest, progress, cancel, prefer)
+
+    real = FakePanopto.download
+    env["mp"].setattr(jobs_mod, "decode_audio", decode)
+    env["mp"].setattr(FakePanopto, "download", download)
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert finals(env["events"], "r1")[0]["stage"] == "done"
+    assert FakePanopto.downloads == ["audio_podcast"] * 2 and found == [False, False]     # downloaded afresh
+    # damaged again when downloaded again: the camera stream has the same sound
+    FakePanopto.sources = [MediaSource("audio_podcast", "https://x/loud"), MediaSource("hls", "https://x/dv.m3u8")]
+    FakePanopto.downloads, bad["r2"] = [], 2
+    jm.enqueue(["r2"])
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    assert finals(env["events"], "r2")[0]["stage"] == "done"
+    assert FakePanopto.downloads == ["audio_podcast", "audio_podcast", "hls"]
+    # no stream can be read: said in plain words, the file is gone (Try again downloads it afresh), and the lecture
+    # isn't taken for one without sound
+    FakePanopto.sources = [MediaSource("audio_podcast", "https://x/loud")]
+    bad["r2"] = 99
+    env["events"].clear()
+    jm.enqueue(["r2"])
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    final = finals(env["events"], "r2")[0]
+    assert final["stage"] == "failed" and not final["no_sound"]
+    assert final["error"].startswith("The lecture's audio couldn't be read: the downloaded file was damaged")
+    assert "Errno" not in final["error"]
+    assert not list(audio_cache_dir().glob("r2.m4a*"))      # nor what was left of its download
+    assert env["lib"].get_recording("r2").status == "done"     # (transcribed before: that transcript stays)
+
+
 def test_no_speech_is_reported_with_a_warning(env):
     env["state"]["engine"] = FakeEngine(fail=NoSpeech("This recording has no sound on Panopto."))
     jm = env["make"]()
@@ -626,7 +675,7 @@ def test_the_two_waits_are_two_steps(env):
     jm.enqueue(["r1", "r2"])
     assert wait_for(lambda: engine_running(jm) and any(jm.job(i).step == "place" for i in ("r1", "r2")))
     waiting = next(i for i in ("r1", "r2") if jm.job(i).step == "place")
-    assert jm.job(waiting).detail == "Downloaded — waiting to prepare the audio"
+    assert jm.job(waiting).detail == "Downloaded, waiting to prepare the audio"
     engine.go.set()
     assert wait_for(lambda: not jm.busy())
     steps = [s for s, _ in finals(env["events"], waiting)[0]["steps"]]
@@ -639,7 +688,7 @@ def test_the_two_waits_are_two_steps(env):
     jm.enqueue(["r3", "r4"])
     assert wait_for(lambda: engine_running(jm) and any(jm.job(i).step == "turn" for i in ("r3", "r4")))
     ready = next(i for i in ("r3", "r4") if jm.job(i).step == "turn")
-    assert jm.job(ready).detail == "Downloaded — waiting to be transcribed" and jm.job(ready).holds_audio
+    assert jm.job(ready).detail == "Downloaded, waiting to be transcribed" and jm.job(ready).holds_audio
     engine.go.set()
     assert wait_for(lambda: not jm.busy())
     steps = [s for s, _ in finals(env["events"], ready)[0]["steps"]]

@@ -46,7 +46,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import aierrors, health
+from . import aierrors, aiwait, health
 from .cancel import Cancelled
 from .i18n import Retold, retell, t, tn
 
@@ -1418,6 +1418,10 @@ def _api_error(status: int, body: dict[str, Any]) -> str:
         return t("ChatGPT can't check your plan right now. Try again in a few minutes.")
     if code == "subscription_sharing_invalid_user" or status == 401:
         return t("ChatGPT did not accept the sign-in. Settings → AI → Continue with ChatGPT.")
+    from .ai import TOO_LONG, too_long
+
+    if code == "context_length_exceeded" or too_long(str(err.get("message") or "")):
+        return t(TOO_LONG, ai="ChatGPT")              # the chat's material, not the question (deep QA round 1)
     detail = err.get("message") or body.get("detail") or f"HTTP {status}"
     return f"ChatGPT: {detail}"[:400]
 
@@ -1440,6 +1444,7 @@ def _parts(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 OPTIONAL = ("prompt_cache_key",)      # left out (for this run of the app) once the account's API turns one down
+SUMMARY = "reasoning.summary"         # its reasoning summaries: left out the same way when turned down
 _turned_down: set[str] = set()
 
 
@@ -1487,67 +1492,84 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
     for q, a in (history or [])[-8:]:
         turns += [{"role": "user", "content": [{"type": "input_text", "text": q}]},
                   {"role": "assistant", "content": [{"type": "output_text", "text": a}]}]
+    level = effort or EFFORT.get(model, "medium")
+    # its reasoning summaries too: short lines that say what it thinks about while the student waits (aiwait)
+    reasoning = {"effort": level, **({} if SUMMARY in _turned_down else {"summary": "auto"})}
     body: dict[str, Any] = {"model": slug, "instructions": system_prompt,
                             "input": turns + [{"role": "user", "content": _parts(content)}], "store": False,
-                            "stream": True, "reasoning": {"effort": effort or EFFORT.get(model, "medium")},
+                            "stream": True, "reasoning": reasoning,
                             "prompt_cache_key": cache_key or prompt_cache_key(system_prompt, content)}
     for name in _turned_down:
         body.pop(name, None)
+    wait_ = aiwait.of(cancel)                               # what the student waits for hears every step (aiwait)
+    tries = len(aierrors.DROP_DELAYS) + len(aierrors.DELAYS) + 1
     adjusted = failed = dropped = 0                         # requests changed after a refusal; failures on OpenAI's side;
     renew, renewed = False, False                           # connections that dropped. A 401: the access token renewed
-    while True:                                             # once, then asked again
-        try:
-            if renew:
-                renew = False
-                _token(force=True)                          # its own failure ("ended", the network) is said as it is
+    ok = False
+    try:
+        while True:                                         # once, then asked again
             try:
-                text, usage = _stream(body, cancel, on_text, timeout_s)
-            except requests.RequestException as exc:        # the request never got through: like a dropped stream
+                if renew:
+                    renew = False
+                    _token(force=True)                      # its own failure ("ended", the network) is said as it is
+                try:
+                    text, usage = _stream(body, cancel, on_text, timeout_s)
+                except requests.RequestException as exc:    # the request never got through: like a dropped stream
+                    if cancel is not None and cancel.is_set():
+                        raise Cancelled() from exc
+                    raise _unreachable(exc, body_size(body)) from exc
+                ok = True
+                return {"text": text, "usage": usage, "cost_usd": None,
+                        "seconds": round(time.monotonic() - started, 1), "model": slug}
+            except aierrors.Dropped as exc:                 # none of the answer came yet: asked again in a moment
+                if (exc.text or not exc.same or dropped >= min(drops, len(aierrors.DROP_DELAYS))
+                        or (cancel is not None and cancel.is_set())):
+                    raise
+                wait = aierrors.DROP_DELAYS[dropped]
+                dropped += 1
+                log.info("ChatGPT: the connection dropped before the answer (%s); asking again in %.0f s", exc, wait)
+                if on_wait:
+                    on_wait({"why": "dropped", "status": 0, "wait": wait, "try": dropped + failed + 1})
+                wait_.retry("dropped", wait, dropped + failed + 1, min(tries, drops + len(aierrors.DELAYS) + 1))
+                aierrors.wait(wait, cancel)
+            except _Unauthorized as exc:
+                if renewed:
+                    raise RuntimeError(str(exc)) from exc
+                log.info("ChatGPT refused the access token (HTTP 401): renewing it and asking again")
+                renew = renewed = True
+            except _Unsupported as exc:
+                adjusted += 1
+                if adjusted < 3 and exc.param in (SUMMARY, "reasoning") and "summary" in (body.get("reasoning") or {}):
+                    _turned_down.add(SUMMARY)               # no summaries for this account or model: without them
+                    body["reasoning"] = {k: v for k, v in body["reasoning"].items() if k != "summary"}
+                    continue
+                if adjusted < 3 and "reasoning" in exc.param and "reasoning" in body:
+                    body.pop("reasoning")                   # this model takes no effort setting: ask without it
+                    continue
+                if adjusted < 3 and exc.param in OPTIONAL and exc.param in body:
+                    _turned_down.add(exc.param)             # only a hint for OpenAI's cache: ask without it
+                    body.pop(exc.param)
+                    continue
+                raise RuntimeError(f"ChatGPT: {exc}") from exc
+            except _Transient as exc:                       # a failure on OpenAI's side: ask again a little later
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled() from exc
+                wait = aierrors.delay(failed, exc.retry_after)
+                failed += 1
+                if wait is None:
+                    raise exc.final(failed) from exc
+                log.info("ChatGPT: HTTP %s; asking again in %.0f s (try %d)", exc.status, wait, failed + 1)
+                if on_wait:
+                    on_wait({"why": "service", "status": exc.status, "wait": wait, "try": dropped + failed + 1})
+                wait_.retry("rate_limit" if exc.status == 429 else "service", wait, dropped + failed + 1,
+                            dropped + len(aierrors.DELAYS) + 1, exc.status)
+                aierrors.wait(wait, cancel)
+            except requests.RequestException as exc:        # the sign-in renewal or the request itself
                 if cancel is not None and cancel.is_set():
                     raise Cancelled() from exc
                 raise _unreachable(exc, body_size(body)) from exc
-            return {"text": text, "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
-                    "model": slug}
-        except aierrors.Dropped as exc:                     # none of the answer came yet: asked again in a moment
-            if (exc.text or not exc.same or dropped >= min(drops, len(aierrors.DROP_DELAYS))
-                    or (cancel is not None and cancel.is_set())):
-                raise
-            wait = aierrors.DROP_DELAYS[dropped]
-            dropped += 1
-            log.info("ChatGPT: the connection dropped before the answer (%s); asking again in %.0f s", exc, wait)
-            if on_wait:
-                on_wait({"why": "dropped", "status": 0, "wait": wait, "try": dropped + failed + 1})
-            aierrors.wait(wait, cancel)
-        except _Unauthorized as exc:
-            if renewed:
-                raise RuntimeError(str(exc)) from exc
-            log.info("ChatGPT refused the access token (HTTP 401): renewing it and asking again")
-            renew = renewed = True
-        except _Unsupported as exc:
-            adjusted += 1
-            if adjusted < 3 and "reasoning" in exc.param and "reasoning" in body:
-                body.pop("reasoning")                       # this model takes no effort setting: ask without it
-                continue
-            if adjusted < 3 and exc.param in OPTIONAL and exc.param in body:
-                _turned_down.add(exc.param)                 # only a hint for OpenAI's cache: ask without it
-                body.pop(exc.param)
-                continue
-            raise RuntimeError(f"ChatGPT: {exc}") from exc
-        except _Transient as exc:                           # a failure on OpenAI's side: ask again a little later
-            if cancel is not None and cancel.is_set():
-                raise Cancelled() from exc
-            wait = aierrors.delay(failed, exc.retry_after)
-            failed += 1
-            if wait is None:
-                raise exc.final(failed) from exc
-            log.info("ChatGPT: HTTP %s; asking again in %.0f s (try %d)", exc.status, wait, failed + 1)
-            if on_wait:
-                on_wait({"why": "service", "status": exc.status, "wait": wait, "try": dropped + failed + 1})
-            aierrors.wait(wait, cancel)
-        except requests.RequestException as exc:            # the sign-in renewal or the request itself
-            if cancel is not None and cancel.is_set():
-                raise Cancelled() from exc
-            raise _unreachable(exc, body_size(body)) from exc
+    finally:
+        wait_.end(ok)
 
 
 def _unreachable(exc: Exception, size: int = 0) -> RuntimeError:
@@ -1626,12 +1648,32 @@ UPLOAD_BPS = 150_000          # bytes a second a request's body is given to go u
 BIG_BODY = 4 * 1024 * 1024    # a request this heavy that fails on the way is said to be too heavy, not "no internet"
 
 
-def _output_text(resp: dict[str, Any]) -> str:
+def _output_text(resp: dict[str, Any], kind: str = "output_text") -> str:
     """The answer's text in a completed response ({"output": [{"type": "message", "content": [{"type": "output_text",
-    "text": …}]}]}): for a stream that sent it only there."""
-    texts = [str(c.get("text") or "") for item in resp.get("output") or [] if isinstance(item, dict)
-             for c in item.get("content") or [] if isinstance(c, dict) and c.get("type") == "output_text"]
+    "text": …}]}]}): for a stream that sent it only there. ``kind="refusal"``: the words of a refusal instead
+    ({"type": "refusal", "refusal": …})."""
+    field = "refusal" if kind == "refusal" else "text"
+    texts = [str(c.get(field) or "") for item in resp.get("output") or [] if isinstance(item, dict)
+             for c in item.get("content") or [] if isinstance(c, dict) and c.get("type") == kind]
     return "".join(texts)
+
+
+def _usage(resp: dict[str, Any]) -> dict[str, int]:
+    u = resp.get("usage") or {}
+    return {"input_tokens": int(u.get("input_tokens") or 0), "output_tokens": int(u.get("output_tokens") or 0),
+            "cache_read_input_tokens": int((u.get("input_tokens_details") or {}).get("cached_tokens") or 0)}
+
+
+def _cut_off(why: str) -> str:
+    """What the student reads when ChatGPT stopped its answer before the end (response.incomplete after some text):
+    the answer is not taken for a whole one (notes, a reading's last page, a pack's chapter would be kept cut off)."""
+    if why == "max_output_tokens":
+        return t("ChatGPT reached the most it may write in one answer and stopped before the end. Try again, with a "
+                 "lower reasoning level if it happens again.")
+    if why == "content_filter":
+        return t("ChatGPT's safety filter stopped its answer before the end. Try again, or ask in other words.")
+    return (t("ChatGPT stopped its answer before the end ({why}). Try again.", why=why) if why else
+            t("ChatGPT stopped its answer before the end. Try again."))
 
 
 def _kinds(kinds: list[str]) -> str:
@@ -1649,12 +1691,47 @@ def upload_timeout(body: dict[str, Any]) -> float:
     return max(30.0, body_size(body) / UPLOAD_BPS)
 
 
+PROGRESS_BYTES = 1024 * 1024  # a request at least this heavy goes up in pieces, so the page can say how far it is
+
+
+class _Upload:
+    """A request's body, read in pieces by the connection as it goes up: each piece tells how far it is (``seen``).
+    Its length is known, so it goes with a Content-Length like a whole body."""
+
+    def __init__(self, data: bytes, seen: Callable[[int, int], None]) -> None:
+        self._data, self._at, self._seen = data, 0, seen
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def read(self, n: int = -1) -> bytes:
+        n = len(self._data) - self._at if n is None or n < 0 else n
+        piece = self._data[self._at:self._at + n]
+        self._at += len(piece)
+        self._seen(self._at, len(self._data))
+        return piece
+
+
+def _pictures(body: dict[str, Any]) -> int:
+    return sum(1 for m in body.get("input") or [] for c in m.get("content") or []
+               if c.get("type") in ("input_image", "input_file"))
+
+
 def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
             timeout_s: float) -> tuple[str, dict[str, int]]:
+    wait = aiwait.of(cancel)                        # the run the student waits for hears every step (aiwait)
     headers = {"Authorization": f"Bearer {access_token()}", "Content-Type": "application/json",
                "Accept": "text/event-stream"}
-    r = _session().post(f"{API}/responses", headers=headers, json=body, stream=True,
-                        timeout=(upload_timeout(body), timeout_s))
+    whole = json.dumps(body).encode("utf-8")        # (as requests writes json=)
+    wait.begin(len(whole), _pictures(body), provider="chatgpt", model=str(body.get("model") or ""),
+               level=str((body.get("reasoning") or {}).get("effort") or ""))
+    timeout = (max(30.0, len(whole) / UPLOAD_BPS), timeout_s)
+    if len(whole) >= PROGRESS_BYTES:               # heavy (pictures): the student sees it go up, MB by MB
+        r = _session().post(f"{API}/responses", headers=headers, data=_Upload(whole, wait.upload), stream=True,
+                            timeout=timeout)
+    else:
+        r = _session().post(f"{API}/responses", headers=headers, json=body, stream=True, timeout=timeout)
+    wait.sent()
     _measure_clock(r)                              # every answer keeps the clock check up to date
     finished = threading.Event()
 
@@ -1667,6 +1744,7 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
     if cancel is not None:
         threading.Thread(target=stopper, daemon=True).start()
     parts: list[str] = []
+    refused: list[str] = []                        # a refusal's words (response.refusal.delta): never an empty answer
     try:
         if r.status_code != 200:
             logged = _logged_body(r)
@@ -1677,8 +1755,11 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
             log.warning("ChatGPT answered HTTP %s (model %s, %s reasoning, %d characters sent, request %s): %s",
                         r.status_code, body.get("model"), (body.get("reasoning") or {}).get("effort", "no"),
                         len(json.dumps(body.get("input") or [])), headers.get("x-request-id", "-"), logged)
-            if err.get("code") == "subscription_sharing_unsupported_capability" or (r.status_code == 400 and param in OPTIONAL):
-                raise _Unsupported(err.get("message") or "unsupported", param)
+            summary = r.status_code == 400 and "summary" in (body.get("reasoning") or {}) and (
+                param == SUMMARY or "summar" in str(err.get("message") or "").lower())   # (summaries turned down)
+            if err.get("code") == "subscription_sharing_unsupported_capability" or (r.status_code == 400 and param in OPTIONAL) \
+                    or summary:
+                raise _Unsupported(err.get("message") or "unsupported", SUMMARY if summary else param)
             if r.status_code == 401 and _unauthorized(data):
                 raise _Unauthorized(_api_error(401, data))
             if r.status_code in (404, 410) and not err.get("code"):     # (a model it doesn't have says so: its code)
@@ -1713,25 +1794,43 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
                 kinds.append(str(kind))
             if kind == "response.output_text.delta":
                 parts.append(ev.get("delta") or "")
+                so_far = "".join(parts)
+                wait.text(so_far)
                 if on_text:
-                    on_text("".join(parts))
+                    on_text(so_far)
+            elif kind == "response.reasoning_summary_text.delta":      # what it thinks about, as it goes (aiwait)
+                wait.thinking(str(ev.get("delta") or ""))
+            elif kind == "response.reasoning_summary_part.added":
+                wait.thinking(new=True)
+            elif kind == "response.output_item.added" and (ev.get("item") if isinstance(ev.get("item"), dict)
+                                                           else {}).get("type") == "reasoning":
+                wait.thinking()                     # it thinks (a summary, if any, follows)
+            elif kind == "response.refusal.delta":
+                refused.append(str(ev.get("delta") or ""))
             elif kind == "response.completed":
                 resp = ev.get("response") if isinstance(ev.get("response"), dict) else {}
-                u = resp.get("usage") or {}
-                usage = {"input_tokens": int(u.get("input_tokens") or 0), "output_tokens": int(u.get("output_tokens") or 0),
-                         "cache_read_input_tokens": int((u.get("input_tokens_details") or {}).get("cached_tokens") or 0)}
-                if not parts:                       # no text deltas: the whole answer is in the completed response
+                usage = _usage(resp)
+                if not "".join(parts).strip():      # no text deltas: the whole answer is in the completed response
                     text = _output_text(resp)
-                    if text:
+                    if text.strip():
                         log.warning("ChatGPT sent its answer without text deltas (events: %s)", _kinds(kinds))
-                        parts.append(text)
+                        parts[:] = [text]
+                        wait.text(text)
                         if on_text:
                             on_text(text)
+                    elif refused or _output_text(resp, "refusal").strip():
+                        why = " ".join(("".join(refused) or _output_text(resp, "refusal")).split())[:300]
+                        log.warning("ChatGPT declined to answer: %s", why)
+                        raise RuntimeError(t("ChatGPT declined to answer: {why}", why=why))
                     elif not any(k.startswith("response.output_text") or k == "response.output_item.added"
                                  for k in kinds):
                         raise health.changed("openai", "answers", f"an answer without text IEUStudia can read "
                                                                   f"(events: {_kinds(kinds)}; output: "
                                                                   f"{_fields(resp)})")
+                    else:                           # it ended "completed" with nothing written (its reasoning only):
+                        log.warning("ChatGPT completed an answer without any text (events: %s; usage %s)",   # never
+                                    _kinds(kinds), usage)                                  # an empty answer kept
+                        raise aierrors.Dropped(t("ChatGPT finished without writing an answer. Try again."))
                 done = True
                 break
             elif kind == "response.failed":
@@ -1741,10 +1840,12 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
                        RuntimeError(f"ChatGPT: {err['message']}" if err.get("message") else
                                     t("ChatGPT: the answer failed")))
             elif kind == "response.incomplete":
-                why = ((ev.get("response") or {}).get("incomplete_details") or {}).get("reason")
-                if parts:
-                    done = True
-                    break
+                resp = ev.get("response") if isinstance(ev.get("response"), dict) else {}
+                why = str((resp.get("incomplete_details") or {}).get("reason") or "")
+                if "".join(parts).strip():          # cut off: not a whole answer (asked again, or said, by the caller;
+                    log.warning("ChatGPT stopped its answer before the end (%s) after %d characters (usage %s)",  # a
+                                why or "no reason given", sum(len(x) for x in parts), _usage(resp))   # reading keeps
+                    raise aierrors.Dropped(_cut_off(why), text=True)                     # its whole pages)
                 raise RuntimeError(t("ChatGPT stopped before answering ({why}).", why=why) if why else
                                    t("ChatGPT stopped before answering (stopped early)."))
             elif kind == "error":

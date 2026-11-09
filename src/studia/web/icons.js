@@ -100,6 +100,8 @@
     shield: '<path d="M12 21.5s7.5-3.6 7.5-9.5V5.6L12 2.8 4.5 5.6V12c0 5.9 7.5 9.5 7.5 9.5z"/><path d="m9 12 2.2 2.2L15.5 10"/>',
     lock: '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
     calendar: '<rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3.5 10h17"/>',
+    // the Calendar page's own (its days marked), apart from the weekly digest's plain calendar
+    "calendar-days": '<rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3.5 10h17M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01"/>',
     "list-checks": '<path d="m3.5 6.5 1.8 1.8L8.5 5M3.5 16.5l1.8 1.8L8.5 15M12 6.5h8.5M12 12h8.5M12 17.5h8.5"/>',
     ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
     subtitles: '<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M6.5 15h4M13 15h4.5M6.5 11.5h2.5M12 11.5h5.5"/>',

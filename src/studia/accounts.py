@@ -3,7 +3,8 @@ output folder, so two students never see each other's courses. Switching restart
 account stays in memory.
 
 The first account keeps the app folder itself (nothing is moved); added accounts live in ``profiles\\<id>``.
-``profiles.json`` in the app folder lists them and remembers the active one.
+``profiles.json`` in the app folder lists them and remembers the active one. When it is gone or damaged (a power cut
+just after it was written), the list is made again from those folders, so no student's library is left out of it.
 """
 
 from __future__ import annotations
@@ -16,12 +17,14 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 from .i18n import t
-from .paths import _home_override, app_dir, documents_dir, profile_output_name, set_profile_dir
+from .paths import _home_override, app_dir, documents_dir, profile_output_name, set_profile_dir, write_durably
 
 log = logging.getLogger("studia")
 MAIN = "main"
@@ -57,15 +60,89 @@ def _now() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
 
+def _identity(db: Path) -> dict[str, str]:
+    """Who a library belongs to, as it keeps it itself (its "profile"), read without changing anything in it."""
+    if not db.is_file():
+        return {}
+    try:
+        con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=2.0)
+        try:
+            row = con.execute("SELECT value FROM meta WHERE key='profile'").fetchone()
+        finally:
+            con.close()
+        who = json.loads(row[0]) if row and row[0] else {}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+    return {k: str(who.get(k) or "") for k in ("username", "name", "student_number")} if isinstance(who, dict) else {}
+
+
+def _used_at(acc: Account) -> float:
+    """When the account's library was last written (its write-ahead file, if any, is newer)."""
+    out = 0.0
+    for name in ("library.db", "library.db-wal"):
+        try:
+            out = max(out, (acc.path / name).stat().st_mtime)
+        except OSError:
+            pass
+    return out
+
+
+def _rebuilt() -> dict[str, Any]:
+    """The list made again from the profiles' folders (profiles\\p-xxxxxxxx: the folder is the id, each library says
+    whose it is); the active one is the one used last."""
+    accounts = [Account(MAIN)]
+    try:
+        folders = sorted(f for f in (app_dir() / "profiles").iterdir() if f.is_dir() and _ID.fullmatch(f.name))
+    except OSError:
+        folders = []
+    accounts += [Account(f.name, f"profiles/{f.name}") for f in folders]
+    for acc in accounts:
+        who = _identity(acc.path / "library.db")
+        acc.username, acc.name, acc.student_number = (who.get("username", ""), who.get("name", ""),
+                                                      who.get("student_number", ""))
+    active = max(accounts, key=_used_at).id if len(accounts) > 1 else MAIN
+    return {"active": active, "accounts": [dc.asdict(a) for a in accounts]}
+
+
+def _read_registry() -> dict[str, Any]:
+    """profiles.json; made again from the profiles' folders when it is gone while added profiles are there, or can't
+    be read as a list (zeros after a power cut, say). A damaged one is kept aside, and the list made again written in
+    its place, so no student's library is left out (signing in again would have made a new, empty profile)."""
+    path = _registry()
+    try:
+        raw = json.loads(path.read_bytes().decode("utf-8"))
+        damaged = not isinstance(raw, dict) or not isinstance(raw.get("accounts", []), list)
+    except FileNotFoundError:
+        if not (app_dir() / "profiles").is_dir():
+            return {}                                  # the first start: only the app folder itself
+        raw, damaged = None, False
+    except (ValueError, UnicodeDecodeError):
+        raw, damaged = None, True
+    except OSError:                                    # held for a moment (an antivirus): as it was, nothing written
+        log.warning("profiles.json can't be read now; the profiles are found from their folders", exc_info=True)
+        return _rebuilt()
+    if raw is not None and not damaged:
+        return raw
+    made = _rebuilt()
+    if damaged:
+        log.warning("profiles.json is damaged; the list of profiles is made again from their folders (the damaged "
+                    "file is kept aside)")
+        try:
+            os.replace(path, path.with_name(f"{path.name}.unreadable-{time.strftime('%Y%m%d-%H%M%S')}"))
+        except OSError:
+            pass
+    if len(made["accounts"]) > 1 or damaged:
+        try:
+            _write(made)
+        except OSError:
+            log.warning("Writing the list of profiles again failed", exc_info=True)
+    return made
+
+
 def load() -> tuple[str, list[Account]]:
     """(active id, accounts). Before profiles.json exists there is one account: the app folder itself."""
     with _lock:
-        try:
-            raw = json.loads(_registry().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        if not isinstance(raw, dict):
-            raw = {}
+        raw = _read_registry()
         fields = {f.name for f in dc.fields(Account)}
         accounts: list[Account] = []
         for a in raw.get("accounts") or []:
@@ -82,12 +159,12 @@ def load() -> tuple[str, list[Account]]:
         return active, accounts
 
 
+def _write(data: dict[str, Any]) -> None:
+    write_durably(_registry(), json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+
+
 def _save(active: str, accounts: list[Account]) -> None:
-    path = _registry()
-    tmp = path.with_name(path.name + ".tmp")
-    data = {"active": active, "accounts": [dc.asdict(a) for a in accounts]}
-    tmp.write_bytes(json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
-    os.replace(tmp, path)
+    _write({"active": active, "accounts": [dc.asdict(a) for a in accounts]})
 
 
 def get(account_id: str) -> Optional[Account]:

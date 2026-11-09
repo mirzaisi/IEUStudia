@@ -1,0 +1,10 @@
+{
+  "_unit": "v4-core: 4.0.0's fixes in the engine, Panopto and the core (a damaged download, a graphics card that stops working mid-batch, profiles kept apart, the Storage card, announcement files as course files, week rule, twin courses' folders): jobs, audio, accounts, appconfig, components, library, services, sync, materials, agent",
+  "The lecture's audio couldn't be read: the downloaded file was damaged, so it was deleted. Transcribe the lecture again to download it afresh.": "Dersin sesi okunamadı: indirilen dosya bozuktu, bu yüzden silindi. Baştan indirmek için dersi yeniden yazıya dök.",
+  "The graphics card stopped working during the batch (a driver update or reset can do this), so the processor transcribed this lecture. Close IEUStudia and open it again to use the card again.": "Ekran kartı toplu iş sırasında çalışmayı bıraktı (sürücü güncellemesi ya da sıfırlaması buna yol açabilir), o yüzden bu dersi işlemci yazıya döktü. Kartı yeniden kullanmak için IEUStudia'yı kapatıp yeniden aç.",
+  "The graphics card ran out of memory while this lecture was transcribed: another program may be using it. Close other programs (games, video editors), then transcribe the lecture again.": "Bu ders yazıya dökülürken ekran kartının belleği yetmedi: başka bir program onu kullanıyor olabilir. Diğer programları (oyunlar, video düzenleyiciler) kapat, sonra dersi yeniden yazıya dök.",
+  "The graphics card stopped working while this lecture was transcribed (a driver update or reset can do this). Close IEUStudia, open it again and transcribe the lecture again.": "Bu ders yazıya dökülürken ekran kartı çalışmayı bıraktı (sürücü güncellemesi ya da sıfırlaması buna yol açabilir). IEUStudia'yı kapatıp yeniden aç ve dersi yeniden yazıya dök.",
+  "Codex CLI (for ChatGPT)": "Codex CLI (ChatGPT için)",
+  "From announcements": "Duyurulardan",
+  "Files your lecturer attached to an announcement": "Hocanın bir duyuruya eklediği dosyalar"
+}

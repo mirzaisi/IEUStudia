@@ -138,6 +138,9 @@ def test_a_whole_transcript_leaves_no_checkpoint_and_a_cancel_or_old_one_is_dele
     e = _engine(monkeypatch)
     speech = tr.Speech([(u.start, u.end) for u in UNITS], UNITS, [], {"speech_s": 1.0}, 1.0, 0.1)
     e.transcribe(AUDIO, lambda *a: None, None, {"delivery_id": "r1"}, speech=speech)
+    # the engine keeps it until the transcript is saved: jobs.py deletes it then (test_the_checkpoint_goes_...)
+    assert [p.name for p in checkpoint.folder().glob("*")] == ["r1.jsonl"]
+    checkpoint.discard("r1")
     assert not list(checkpoint.folder().glob("*"))
     checkpoint.path_for("old").parent.mkdir(parents=True, exist_ok=True)
     checkpoint.path_for("old").write_text("{}")
@@ -164,6 +167,60 @@ def test_a_whole_transcript_leaves_no_checkpoint_and_a_cancel_or_old_one_is_dele
     jm.cancel("r2")                                         # you cancelled it: nothing to go on from
     assert wait_for(lambda: finals(env["events"], "r2"))
     assert wait_for(lambda: not checkpoint.path_for("r2").exists())
+
+
+class _Checkpointing(FakeEngine):
+    """Keeps the lecture's checkpoint as the engine does (it stays after the last passage); ``went_on``: the lectures
+    that found one from an earlier try."""
+
+    def __init__(self):
+        super().__init__()
+        self.went_on = []
+
+    def transcribe(self, audio, progress, cancel, meta):
+        path = checkpoint.path_for(meta["delivery_id"])
+        if path.exists():
+            self.went_on.append(meta["delivery_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+        return super().transcribe(audio, progress, cancel, meta)
+
+
+def test_the_checkpoint_goes_only_once_the_transcript_is_saved(env, monkeypatch):
+    """3.3.1 deleted it as the last passage ended, before the transcript was saved: one swap refused by an antivirus
+    (or a full disk) then cost the whole transcription again. A swap refused for a moment is now tried again."""
+    import os
+
+    from studia import store
+    from studia.paths import transcripts_dir
+
+    real, held = os.replace, {"r1": 1, "r2": 99}          # how many times each lecture's transcript is held
+
+    def replace(src, dst):
+        did = Path(dst).name.removesuffix(".json")
+        if Path(dst).suffix == ".json" and held.get(did, 0) > 0:
+            held[did] -= 1
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(store, "SWAP_WAIT", 0.01)
+    env["state"]["engine"] = engine = _Checkpointing()
+    jm = env["make"]()
+    jm.enqueue(["r1"])
+    assert wait_for(lambda: finals(env["events"], "r1"))
+    assert finals(env["events"], "r1")[0]["stage"] == "done" and held["r1"] == 0     # held a moment: tried again
+    assert not checkpoint.path_for("r1").exists()
+    jm.enqueue(["r2"])                                      # held for good: it fails, what was done stays
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    assert env["lib"].get_recording("r2").status == "failed"
+    assert checkpoint.path_for("r2").exists() and not list(transcripts_dir().glob("r2.json*"))
+    held["r2"] = 0
+    env["events"].clear()
+    jm.enqueue(["r2"])                                      # Try again: it goes on from there
+    assert wait_for(lambda: finals(env["events"], "r2"))
+    assert finals(env["events"], "r2")[0]["stage"] == "done" and engine.went_on == ["r2"]
+    assert not checkpoint.path_for("r2").exists() and (transcripts_dir() / "r2.json").is_file()
 
 
 # ---------------------------------------------------------------------------------------------- the connection
@@ -317,7 +374,7 @@ def test_closing_while_lectures_transcribe_asks_in_the_page_once(monkeypatch):
     a._services = types.SimpleNamespace(update_settings=saved.append)
     a._ready = threading.Event()
     a._ready.set()
-    assert a._ask_close() is True and pushed == [{"type": "close-ask"}]     # the page asks
+    assert a._ask_close() is True and pushed == [{"type": "close-ask", "transcribing": True, "ai": []}]     # the page asks
     a.close_seen()
     assert a._ask_close() is True                            # shown: closing again asks there again
     a._close_asked -= 10

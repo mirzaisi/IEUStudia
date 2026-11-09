@@ -147,8 +147,7 @@
       <div class="su-hero"><img class="su-logo" src="../assets/logo.svg" alt=""><div><h1>${t("Welcome to IEUStudia")}</h1>
         <p class="lead">${t("Your IEULearn courses, Panopto lectures, materials and announcements in one place. IEUStudia turns the lectures into text on this PC (English with Turkish passages) and picks out what the lecturer says about quizzes, exams and homework. AI help is optional and uses your own ChatGPT or Claude plan.")}</p></div></div>
       <div class="card su-notice"><h3>${I("shield", "sm")} ${t("Before you start")}</h3>${NOTICE()}
-        <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> ${t("I have read this and want to continue")}</label></div>
-      ${St.contact ? St.contact.line() : ""}`;
+        <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> ${t("I have read this and want to continue")}</label></div>`;
   }
   function stepPc() {
     if (!U.st) return U.error ? `<div class="callout error">${I("x-circle")}<div>${esc(U.error)}</div>
@@ -481,11 +480,11 @@
         <div class="n">${esc(m.label)} ${m.id === rec ? `<span class="pill now">${t("Fits this PC")}</span>` : ""}<span class="sz">${gb(m.size_mb)}${m.ready ? ` · ${t("on this PC")}` : ""}</span></div><div class="d">${esc(m.description)}</div></button>`).join("")}</div>
         <div class="dim su-note">${t("Runs entirely on this PC. Fine for short notes and simple questions; study plans, review sheets and study packs need ChatGPT or Claude.")}${U.st.verdict.gpu ? "" : " " + t("Without an NVIDIA graphics card it writes slowly (notes for a lecture take several minutes).")}</div>`
       : `<div class="callout warning">${I("alert")}<div>${t("This PC has too little memory for an offline model (8 GB needed).")}</div></div>`;
-    return `<h2>${t("AI help (optional)")}</h2><p class="lead">${t("Study notes, chat about your lectures, video study plans, exam review sheets and study packs. Pick what you have — everything else in IEUStudia works without AI.")}</p>
+    return `<h2>${t("AI help (optional)")}</h2><p class="lead">${t("Study notes, chat about your lectures, video study plans, exam review sheets and study packs. Pick what you have: everything else in IEUStudia works without AI.")}</p>
       ${aiCard("chatgpt", "ChatGPT", t("Uses your ChatGPT plan. Plus and Pro work; Free and Go may, with smaller limits."), connectHTML("chatgpt"))}
       ${aiCard("claude", "Claude", t("Needs a Claude Pro or Max subscription."), connectHTML("claude"))}
       ${aiCard("codex", t("ChatGPT through the Codex CLI"), t("Pick this only if you already use OpenAI's Codex CLI (a tool for programmers) with your ChatGPT plan. Otherwise choose ChatGPT above."), connectHTML("codex"))}
-      ${aiCard("local", t("Offline model"), t("No subscription: a small model on this PC — basic notes and questions."), llmBody,
+      ${aiCard("local", t("Offline model"), t("No subscription: a small model on this PC for basic notes and questions."), llmBody,
         rec || llmHere(U.st, U.ch.llm) ? "" : t("Not on this PC: it needs 8 GB of memory."))}
       ${aiCard("none", t("No AI"), t("Transcripts, heads-ups, search, calendar and everything else still work."), "")}
       <div class="callout info su-ai-note">${I("info")}<div>${t("<b>AI can make mistakes.</b> Answers are generated from your lectures, but check anything important against the lecture and your materials. Nothing is sent anywhere unless you use an AI feature.")}</div></div>`;
@@ -503,7 +502,7 @@
         ${sw("notify_recordings", t("New lecture recordings"), t("Of your own section."), !U.ch.tray)}
         ${sw("notify_announcements", t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), !U.ch.tray)}
         ${sw("notify_materials", t("New files"), t("Slides and PDFs added to a course."), !U.ch.tray)}
-        ${sw("notify_reminders", t("Quizzes and exams coming up"), t("The evening before an announced quiz, and before an exam week. Also while IEUStudia is open."))}</div>
+        ${sw("notify_reminders", t("Quizzes, exams and deadlines coming up"), t("Before quizzes, exams and assignment deadlines: you can choose when on the Calendar page. Also while IEUStudia is open."))}</div>
       <div class="dim su-note">${I("info", "xs")} ${window.LS_LINUX ? t("You can change all of this later in Settings.") : t("You can change all of this later in Settings, or by right-clicking the IEUStudia icon next to the clock.")}</div>`;
   }
   // ------------------------------------------------------------------ how a download goes: speed, time left, a stall
@@ -580,7 +579,7 @@
     const dlLeft = !!U.plan && !U.done && (U.plan.items.length > 0 || (U.plan.blockers || []).length > 0);
     return `<h2>${t("Almost done")}</h2><p class="lead">${S.boot && S.boot.signed_in ? t.html("You are signed in as {name}. Finish to open IEUStudia.", { name: (S.profile || {}).name || "" }) : t("Last step: sign in with your IEULearn (EkoID) account.")}</p>
       <div class="card su-summary">${[[t("Transcription"), (U.st.catalog.speech.find((m) => m.id === U.ch.speech) || {}).label || U.ch.speech],
-        [t("AI"), notYet ? t("{name} — not connected yet (Settings → AI)", { name: ai }) : ai],
+        [t("AI"), notYet ? t("{name}: not connected yet (Settings → AI)", { name: ai }) : ai],
         [t("Background checks"), !U.ch.tray ? t("Off") : U.ch.startup ? (window.LS_LINUX ? t("On, starts at login") : t("On, starts with Windows")) : t("On")],
         ...(dlLeft ? [[t("Downloads"), U.running ? t("Still downloading in the background") : { speech: t("Not finished yet. Click Downloads at the top to try again; lectures are transcribed once it's done."),
           ai: t("Not finished yet. Click Downloads at the top to try again; the offline AI works once it's done."),
@@ -615,7 +614,8 @@
         <ol>${STEPS.map((key, i) => `<li class="${i === U.step ? "on" : i < U.step ? "done" : ""}"><span>${i < U.step ? I("check", "xs") : i + 1}</span>${stepName(key)}</li>`).join("")}</ol>
         <div class="su-rail-foot">${I("lock", "xs")} ${t("No account with us, no tracking.")}</div></aside>
       <main class="su-main"><div class="su-body">${body}</div>
-        <div class="su-foot">${U.step > 0 && !(U.running && k === "download") ? `<button class="btn ghost" data-act="su-back">${I("arrow-left", "sm")} ${t("Back")}</button>` : `<span></span>`}
+        <div class="su-foot">${U.step > 0 && !(U.running && k === "download") ? `<button class="btn ghost" data-act="su-back">${I("arrow-left", "sm")} ${t("Back")}</button>`
+          : k === "welcome" && St.contact ? St.contact.line() : `<span></span>`}
           <span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end">${U.running && k === "download" ? cancelBtn("btn ghost") : ""}${skip}${next}</span></div></main></div>`;
   };
 
@@ -1093,23 +1093,26 @@
     if (!window.LS_LINUX && Date.now() - (U.startupAt || 0) > 30000) loadOnce("startup", loadStartup);
     // asked to start with Windows, but Windows doesn't (its own Startup apps switch is off, or an antivirus said no)
     const startupOff = !window.LS_LINUX && app.tray && app.start_with_windows && U.startupReal === false;
-    const use = st ? Object.entries({ speech_models: t("Speech models"), gpu_libraries: t("NVIDIA graphics card files"), offline_ai: t("Offline AI model"), library: t("Library and transcripts"), cache: t("Temporary files"), your_files: t("Your files (IEUStudia folder)") })
+    const use = st ? Object.entries({ speech_models: t("Speech models"), gpu_libraries: t("NVIDIA graphics card files"), offline_ai: t("Offline AI model"), ai_tools: t("Codex CLI (for ChatGPT)"), library: t("Library and transcripts"), cache: t("Temporary files"), your_files: t("Your files (IEUStudia folder)") })
       .filter(([k]) => st.usage[k]).map(([k, l]) => `<div class="su-row"><span class="grow">${l}</span><b>${bytes(st.usage[k])}</b></div>`).join("") : St.skeleton();
     // (plain text: the row shows it escaped, and the question before removing it names it)
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t("Speech model “{name}”", { name: m.label }), m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
-    return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}</h3>
+    return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}${St.resetBtn ? St.resetBtn("notifications") : ""}</h3>
         ${app.tray ? "" : `<div class="callout info bg-hint">${I("info")}<div>${t("Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.")}</div>
           <button class="btn sm" data-act="bg-on">${t("Turn them on")}</button></div>`}
-        ${row(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
+        ${row(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
+        ${St.checkEveryRow ? St.checkEveryRow() : ""}
         ${row(window.LS_LINUX ? t("Start at login") : t("Start with Windows"), window.LS_LINUX ? t("Start the background checks when you log in.") : t("Start the background checks when you sign in to Windows."), sw("start_with_windows", !app.tray))}
         ${startupOff ? `<div class="callout warning su-startup-off">${I("alert")}<div>${t("Windows doesn't start IEUStudia when you sign in, although this is on: Windows' own Startup apps list has it turned off, or your antivirus blocked it. Click Turn it on again; if that doesn't help, allow IEUStudia in Task Manager → Startup apps or in your antivirus.")}</div>
           <button class="btn sm" data-act="startup-fix">${t("Turn it on again")}</button></div>` : ""}
         ${row(t("New lecture recordings"), t("Of your own section."), sw("notify_recordings", !app.tray))}
         ${row(t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), sw("notify_announcements", !app.tray))}
         ${row(t("New files"), t("Slides and PDFs added to a course."), sw("notify_materials", !app.tray))}
-        ${row(t("Quizzes and exams coming up"), t("A reminder the evening before an announced quiz, and before an exam week: from the background checks, or from IEUStudia itself while it's open."), sw("notify_reminders"))}</div>
+        ${row(t("Quizzes, exams and deadlines coming up"), t("Reminders before quizzes, exams, assignment deadlines and your own calendar entries, from the background checks or from IEUStudia itself while it's open."), sw("notify_reminders"))}
+        ${St.reminderRows ? St.reminderRows() : ""}</div>
       <div class="card set-card" id="set-storage"><h3>${t("Storage")}</h3>${use}
+        ${St.screensReadingRow ? St.screensReadingRow() : ""}
         ${removable.map(([id, l, mb]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}">${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
       <div class="card set-card" id="set-about"><h3>${t("About")}</h3>
         ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, t("Free and open source (MIT License). Lectures are transcribed on this PC. AI runs only through the service you chose, and only when you ask."),

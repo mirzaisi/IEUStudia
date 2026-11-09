@@ -178,6 +178,37 @@ def test_show_in_folder_on_a_file_that_is_gone_says_so_and_offers_download_again
 
 
 @node
+def test_files_attached_to_announcements_have_a_group_of_their_own(tmp_path):
+    out = run(tmp_path, """
+  const f = (id, title) => ({ id, title, file_name: title + ".pdf", ext: "pdf", downloaded: false, pages: 0 });
+  const d = { id: "e", general: [{ id: "g", title: "Formula Sheet", materials: [f("g1", "Formula")] },
+                                 { id: "announcements", title: "From announcements", materials: [f("ann-e-5961-0", "Quiz1 - Solutions")] }],
+              weeks: [{ no: 6, units: [{ id: "u", title: "Hafta 6", materials: [f("r1", "Slides 1")] }], days: [] }] };
+  out.groups = St.matGroups(d).map((g) => [g.label, g.mats.map((m) => m.id)]);
+  const weeks = St.weeksHTML({ id: "e" }, { ...d, weeks: [] });
+  out.cards = [...weeks.matchAll(/<div class="t">([^<]*)<\\/div>/g)].map((m) => m[1]);
+  out.courseWide = weeks.split("From announcements")[0].includes("Quiz1 - Solutions");
+  // its link in the announcement: downloaded with IEUStudia's IEULearn session and opened (the browser has none)
+  const body = "Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/student/announcements/5961/file/0)";
+  out.link = St.linkText(body, "e").match(/data-act="[^"]*"( data-id="[^"]*")?/)[0];
+  S.cd = { e: d };
+  const asked = [], opened = [];
+  St.mocks.materials_download = (ids, open) => (asked.push([ids, !!open]), { ok: true });
+  A.url = (el) => opened.push(el.dataset.url);          // (the browser)
+  A["ann-file"]({ dataset: { id: "ann-e-5961-0", url: "https://learn.ieu.edu.tr/student/announcements/5961/file/0" } });
+  A["ann-file"]({ dataset: { id: "ann-e-9-0", url: "https://learn.ieu.edu.tr/student/announcements/9/file/0" } });
+  await tick();
+  out.asked = asked.length; out.opened = opened;
+""")
+    assert out["groups"] == [["Course-wide", ["g1"]], ["Week 6 · Hafta 6", ["r1"]],
+                             ["From announcements", ["ann-e-5961-0"]]]
+    assert out["cards"] == ["Course-wide", "From announcements"] and out["courseWide"] is False
+    assert out["link"] == 'data-act="ann-file" data-id="ann-e-5961-0"'
+    assert out["asked"] == 1                                    # the known one: downloaded and opened as a course file
+    assert out["opened"] == ["https://learn.ieu.edu.tr/student/announcements/9/file/0"]     # not known yet: as before
+
+
+@node
 def test_an_ai_card_opens_the_lecture_at_its_moment_also_past_the_first_hour(tmp_path):
     out = run(tmp_path, """
   globalThis.setTimeout = later;
@@ -198,12 +229,12 @@ def test_no_speech_found_is_not_shown_as_the_microphone_being_off(tmp_path):
     duration_s: 2700, warnings: [{ level: "error", message: error }], viewer_url: "v" });
   const d = { date: "2026-10-14", day_key: "e|14", label: "Wed 14 Oct", recordings: [
     rec("a", "No speech was found in this recording (only noise or music). Check it on Panopto."),
-    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent — check it on Panopto or ask the lecturer.")] };
+    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent: check it on Panopto or ask the lecturer.")] };
   const html = plain(St.dayCardHTML(d, { show_mode: "all", available_sections: [] }));
   out.a = html.slice(html.indexOf('data-rid="a"'), html.indexOf('data-rid="b"'));
   out.b = html.slice(html.indexOf('data-rid="b"'));
 """)
-    assert "No speech found" in out["a"] and "only noise or music — check it on Panopto" in out["a"]
+    assert "No speech found" in out["a"] and "only noise or music: check it on Panopto" in out["a"]
     assert "microphone was off" not in out["a"]
     assert "No sound on Panopto" in out["b"] and "microphone was off" in out["b"]
 

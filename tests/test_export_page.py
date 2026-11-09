@@ -75,7 +75,7 @@ const out = {};
   await A["cx-cancel"]();                                       // (clicked again: asked once)
   out.cancelCalls = calls.filter((c) => c[0] === "course_export_cancel").length;
   ev({ phase: "done", name: "MATH 240 - everything up to 7 Nov 2026.zip", bytes: 84.9 * MB, path: "C:/x/Exports/MATH 240.zip",
-       untranscribed: 1, missing: 2, renamed: true, first_message: "This zip holds my MATH 240 course…", too_big: false });
+       untranscribed: 1, missing: 2, students: 1, renamed: true, first_message: "This zip holds my MATH 240 course…", too_big: false });
   out.done = shown;
   await A["cx-show"](); await A["cx-copy-path"](); await A["cx-copy-msg"]();
   out.after = calls.slice(-3);
@@ -159,6 +159,8 @@ def test_the_export_dialog(tmp_path):
     assert "Drag the zip into the chat" in done and "Open ChatGPT and start a new chat." in done
     assert "this one got a new name" in done and "1 lecture isn't transcribed yet" in done
     assert "2 course files aren't in the zip" in done
+    assert "1 course file was left out: it lists students' numbers (grades or groups), so your classmates' details " \
+           "stay private. README.md names it." in done
     assert out["after"] == [["course_export_show", "C:/x/Exports/MATH 240.zip"], ["copy_text", "C:/x/Exports/MATH 240.zip"],
                             ["copy_text", "This zip holds my MATH 240 course…"]]
     # a failure says why, with Try again back to the weeks

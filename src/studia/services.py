@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -26,6 +27,8 @@ from .sync import SyncService
 
 log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
+TWINS_KEY = "twin_folders"             # library meta: "1" once the folders of courses sharing a code were put right
+ADOPTED_KEY = "shared_audio_adopted"   # library meta: "1" once an added profile's audio from before 4.0 was moved
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
 NOTE_SLIDES = 60          # slide pictures that go with a lecture's AI notes at most
@@ -46,24 +49,36 @@ def _course_transcripts(lib: Library, course_recs: list[Recording]) -> dict[str,
 
 
 def _slides_key(screens: list[tuple[Any, float]]) -> str:
-    """What the slides of a recording were made from: its screen streams (the file in each URL, without the
-    per-request query) and their start offsets. Panopto processing the recording again gives new files. A stream
-    whose stretches moved (a part cut out, a pause) adds them, so slides made before the edit are made again; one
-    Panopto only split where nothing moved keeps the key it had."""
+    """What the slides of a recording were made from: the capture's version ("v2", slides.VERSION), then its screen
+    streams (the file in each URL, without the per-request query) and their start offsets. Panopto processing the
+    recording again gives new files. A stream whose stretches moved (a part cut out, a pause) adds them, so slides
+    made before the edit are made again; one Panopto only split where nothing moved keeps the key it had. A camera
+    stream read as the screen (a tablet) is marked "DV"."""
+    from .slides import VERSION
+
     def moved(src: Any, offset: float) -> str:
         if all(abs(at - a - offset) <= 0.5 for a, _, at in src.spans):
             return ""
         return " " + ",".join(f"{a:.1f}-{b:.1f}@{at:.1f}" for a, b, at in src.spans)
-    return "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}{moved(src, offset)}" for src, offset in screens)
+    return f"v{VERSION}\n" + "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}{moved(src, offset)}"
+                                        f"{' DV' if getattr(src, 'tag', '') == 'DV' else ''}" for src, offset in screens)
+
+
+def _unversioned(key: str) -> str:
+    """The key as versions before 4.0 wrote it (no "v2" line): their capture of the same streams."""
+    head, _, rest = key.partition("\n")
+    return rest if head.startswith("v") and head[1:].isdigit() else key
 
 
 SLIDES_TRIES = 3          # captures of the same streams that came out incomplete before what they got is kept as it is
+CAMERA = "camera"         # a key file's first line: the recording's camera stream was looked at, and is no screen
+PPT_PICTURE = re.compile(r"-p\d+\.jpg$")    # Panopto's own picture of a PowerPoint slide (screens.py), not captured
 
 
 def _failed_tries(text: str, key: str) -> int:
     """How many captures from these screen streams came out incomplete (a key file "failed N" + the key)."""
     head, _, rest = text.partition("\n")
-    if rest != key or not head.startswith("failed "):
+    if rest not in (key, _unversioned(key)) or not head.startswith("failed "):
         return 0
     try:
         return int(head[7:])
@@ -71,10 +86,26 @@ def _failed_tries(text: str, key: str) -> int:
         return 0
 
 
+def capture_version(delivery_id: str) -> int:
+    """Which capture made a recording's pictures: 2 (4.0's), 1 (an earlier version, the 6 % comparison; an index
+    without a key file too), 0 when it has none."""
+    index = store.slides_path(delivery_id)
+    if not index.is_file():
+        return 0
+    try:
+        text = index.with_suffix(".key").read_text(encoding="utf-8")
+    except OSError:
+        return 1
+    head = text.split("\n", 2)[1 if text.startswith("failed ") else 0] if text else ""
+    return int(head[1:]) if head.startswith("v") and head[1:].isdigit() else 1
+
+
 def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
-    """The recording's slides exist (index and every image) and were made from these screen streams. An index from
-    before the key was kept counts if the recording has one screen stream (older versions read only the first); it
-    gets the key, so a change is noticed from then on. An incomplete capture is made again, up to SLIDES_TRIES times."""
+    """The recording's slides exist (index and every image) and were made from these screen streams (by this version
+    or an earlier one: capturing them again is the student's choice, or the background job's for the old captures
+    it knows to be short). An index from before the key was kept counts if the recording has one screen stream
+    (older versions read only the first); it gets the key, so a change is noticed from then on. An incomplete capture
+    is made again, up to SLIDES_TRIES times."""
     from .slides import load_index
 
     index = store.slides_path(delivery_id)
@@ -83,12 +114,12 @@ def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
     key_file = index.with_suffix(".key")
     try:
         text = key_file.read_text(encoding="utf-8")
-        return text == key or _failed_tries(text, key) >= SLIDES_TRIES
+        return text in (key, _unversioned(key)) or _failed_tries(text, key) >= SLIDES_TRIES
     except FileNotFoundError:
         if streams != 1:
             return False
         try:
-            key_file.write_text(key, encoding="utf-8")
+            key_file.write_text(_unversioned(key), encoding="utf-8")     # (made by an earlier version)
         except OSError:
             pass
         return True
@@ -96,11 +127,20 @@ def _slides_done(delivery_id: str, key: str, streams: int) -> bool:
         return False
 
 
+def _no_screen(delivery_id: str, key: str) -> bool:
+    """The recording's camera stream was looked at before and shows no screen (a classroom camera)."""
+    try:
+        return store.slides_path(delivery_id).with_suffix(".key").read_text(encoding="utf-8") == f"{CAMERA}\n{key}"
+    except OSError:
+        return False
+
+
 def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
     """Delete downloaded audio (and parts of unfinished downloads) older than ``days`` whose lecture is not waiting
     in the queue saved across restarts. With "Keep downloaded audio" on, transcribed lectures keep theirs. Only this
-    profile's lectures: the folder is shared, and another profile's queue and setting aren't known here. Returns
-    how many files were deleted."""
+    profile's lectures: the first profile's folder held every profile's audio before 4.0, and another profile's (kept
+    by its own setting) waits there until that profile's next start moves it (adopt_shared_audio). Returns how many
+    files were deleted."""
     import json
     import time
 
@@ -127,6 +167,89 @@ def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
     return n
 
 
+def _written_at(db: Path) -> float:
+    """When a library was last written (its write-ahead file is the newer one while it is open); 0 when it has none."""
+    times = []
+    for p in (db, db.with_name(db.name + "-wal")):
+        try:
+            times.append(p.stat().st_mtime)
+        except OSError:
+            pass
+    return max(times, default=0.0)
+
+
+def adopt_shared_audio(lib: Library, before: float) -> int:
+    """An added profile's downloaded audio from before 4.0, when every profile's went to the first one's folder: moved
+    once into its own folder, so its player and a lecture transcribed again find it there, and its own start-up sweep
+    keeps or deletes it as its own setting says. Only files of its own lectures written before ``before`` (when its
+    library was last written before this start): a newer one there is the first profile's own, downloaded since (a
+    lecture both follow). Returns how many files were moved."""
+    from .paths import audio_cache_dir, shared_audio_dir
+
+    own, shared = audio_cache_dir(), shared_audio_dir()
+    if own == shared or lib.get_meta(ADOPTED_KEY) == "1":
+        return 0
+    n = 0
+    for f in list(shared.iterdir()) if shared.is_dir() else []:
+        try:
+            if (not f.is_file() or f.stat().st_mtime > before or (own / f.name).exists()
+                    or lib.get_recording(f.name.split(".")[0]) is None):
+                continue
+            os.replace(f, own / f.name)
+            n += 1
+        except OSError as exc:          # (held by another program: it stays where it was)
+            log.info("%s couldn't be moved to this profile's audio folder: %s", f.name, exc)
+    lib.set_meta(ADOPTED_KEY, "1")
+    return n
+
+
+def _move_aside(src: Path, dest: Path) -> Path:
+    """Move a file to ``dest``, never over another file: the same file there already lets this copy go, another one
+    keeps both (the moved one as "name (2).ext")."""
+    import filecmp
+
+    if dest.exists():
+        if dest.is_file() and src.is_file() and filecmp.cmp(src, dest, shallow=False):
+            src.unlink()
+            return dest
+        n = 2
+        while (dest.with_name(f"{dest.stem} ({n}){dest.suffix}")).exists():
+            n += 1
+        dest = dest.with_name(f"{dest.stem} ({n}){dest.suffix}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(src, dest)
+    return dest
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _shown_elsewhere(pictures: set[str], delivery_id: str) -> set[str]:
+    """Which of these pictures another recording's slide index still shows: versions before 4.0 named them by the
+    start minute only, so two lectures of a day that start in the same minute (files uploaded together) share them."""
+    from .paths import transcripts_dir
+    from .slides import load_index
+
+    if not pictures:
+        return set()
+    wanted = {os.path.normcase(os.path.normpath(p)): p for p in pictures}
+    out: set[str] = set()
+    for f in transcripts_dir().glob("*.slides.json"):
+        if f.name.split(".")[0] != delivery_id:
+            out.update(wanted[k] for k in (os.path.normcase(os.path.normpath(s.path)) for s in load_index(f) if s.path)
+                       if k in wanted)
+    return out
+
+
+def _glob_safe(text: str) -> str:
+    """A file name as a glob pattern that matches only itself ("[" and "]" in a course name)."""
+    return "".join(f"[{ch}]" if ch in "[]*?" else ch for ch in text)
+
+
 def _app_open() -> bool:
     """The app's window is open (in another process: it holds the single-instance lock)."""
     try:
@@ -145,6 +268,76 @@ def _file_warnings(lib: Library, course_recs: list[Recording]) -> dict[str, list
             for r in course_recs}
 
 
+def _capture(svc: Any, job: Any, screens: list[tuple[Any, float]], session: requests.Session,
+             again: bool = False) -> tuple[list[Any], bool]:
+    """slides_task's capture: (the slides, whether they were made now)."""
+    from .cancel import Cancelled
+    from .slides import STILL_SHARE, Incomplete, extract_slides, final_pass, still_share
+
+    rec = svc.lib.get_recording(job.id)
+    course = svc.lib.get_course(rec.course_id) if rec else None
+    if rec is None or course is None or not screens:
+        return (store.load_slides(job.id) if rec is not None else []), False
+    key = _slides_key(screens)
+    if not again and _slides_done(job.id, key, len(screens)):
+        svc.log.info("Slides for %s are there already", job.id)
+        return store.load_slides(job.id), False
+    key_file = store.slides_path(job.id).with_suffix(".key")
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    if all(getattr(src, "tag", "") == "DV" for src, _ in screens):
+        # no screen stream: the camera's is read like one only when it shows a screen (a tablet recorded as the
+        # camera), told from its first keyframes (~3 MB); a classroom camera is looked at once
+        if _no_screen(job.id, key):
+            return [], False
+        share = still_share(session, screens[0][0].url, cancel=job.cancel)
+        svc.log.info("%s has no screen stream; its camera stream stands still in %s of its first frames",
+                     job.id, "?" if share is None else f"{share:.0%}")
+        if share is None:
+            raise RuntimeError("The camera stream's first frames couldn't be fetched.")
+        if share < STILL_SHARE:
+            key_file.write_text(f"{CAMERA}\n{key}", encoding="utf-8")
+            return [], False
+    stem = day_stem(course, rec.start.date(), rec.kind)
+    folder = course_dir(svc.output_root, course, svc.lib.courses(True)) / "slides" / stem
+    try:
+        tries = _failed_tries(key_file.read_text(encoding="utf-8"), key)
+    except OSError:
+        tries = 0
+    before = {s.path for s in store.load_slides(job.id) if s.path}
+    key_file.write_text("", encoding="utf-8")   # being made (images are written over): not done until the end
+    slides: list[Any] = []
+    seen: list[Any] = []                      # the pictures kept so far, shared by the streams
+    failed: Optional[Exception] = None
+    for n, (src, offset) in enumerate(screens):
+        def read(i: int, total: int, n: int = n) -> None:    # how far it is (the jobs pane, once it waits for it)
+            job.slides_read = (n + (i / total if total else 1.0)) / len(screens)
+        try:
+            # named by the start minute and the recording: several files uploaded together start in the same
+            # minute, and one recording's slides wrote over the other's
+            slides += extract_slides(session, src.url, folder, f"slides/{stem}", f"{rec.start:%H%M}-{job.id[:8]}",
+                                     offset, progress=read, cancel=job.cancel, seen=seen, spans=src.spans)
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the other streams' slides are still worth having
+            svc.log.info("A screen stream of %s failed: %s", job.id, exc)
+            if isinstance(exc, Incomplete):    # the connection dropped: what came is kept meanwhile
+                slides += exc.slides
+            failed = exc
+    if failed is not None and not slides:
+        raise failed
+    slides = final_pass(slides, seen)
+    store.save_slides(job.id, slides)
+    # an earlier capture's pictures this one has no use for (Panopto's own slide pictures are the timeline's), unless
+    # another lecture still shows them
+    unused = {p for p in before - {s.path for s in slides} if not PPT_PICTURE.search(p)}
+    for old in unused - _shown_elsewhere(unused, job.id):
+        _unlink_quietly(Path(old))
+    # complete; or a stream failed: made again next time, its slides so far kept after SLIDES_TRIES tries
+    key_file.write_text(key if failed is None else f"failed {tries + 1}\n{key}", encoding="utf-8")
+    svc.log.info("%d slides for %s", len({s.index for s in slides}), job.id)
+    return slides, True
+
+
 class Services:
     def __init__(self, debug: bool = False, migrate_output: bool = True) -> None:
         """``migrate_output``: rename an output folder of the app's earlier name (only the app does that, never a
@@ -160,6 +353,7 @@ class Services:
             self.notes.append(t("IEUStudia couldn't read your settings, so it started with the default ones. Check "
                                 "your sections and your IEUStudia folder in Settings. The old file is kept in {folder}.",
                                 folder=str(settings_path().parent)))
+        written = _written_at(db_path())                           # (before this start writes it: adopt_shared_audio)
         self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
         self.lib.index.notes, self.lib.index.note_days = self.notes_for_search, self.days_for_search
         # a command-line run while the app is open (it holds its single-instance lock): the lectures, chats and plans
@@ -181,15 +375,30 @@ class Services:
         from .plans import PlanRunner
 
         self.plans = PlanRunner(self)
+        from .screens import ScreenWorker, _under_test
+
+        self.screens = ScreenWorker(self)          # screen timelines of lectures transcribed before; captures asked for
         if self.beside_app:
             self.log.info("The app is open: its queue, plans and files are left to it")
             return
+        if migrate_output and not _under_test():  # the app's own (never a command-line run, never a test)
+            self.screens.start()
         self._write_unwritten()
         self.sync.after_sync = self.move_days
         try:
             self.move_days()                       # (also those a tray helper's check found)
         except Exception:  # noqa: BLE001 - never stop the start for it
             log.exception("Moving the files of lectures to their class day failed")
+        try:
+            self.repair_twin_folders()
+        except Exception:  # noqa: BLE001 - never stop the start for it (tried again next time)
+            log.exception("Putting the files of courses that share a code in their own folders failed")
+        try:
+            n = adopt_shared_audio(self.lib, written)
+            if n:
+                self.log.info("Moved %d downloaded audio files from before 4.0 to this profile's own folder", n)
+        except OSError:
+            self.log.debug("Moving this profile's audio from before 4.0 failed", exc_info=True)
         try:
             n = sweep_audio_cache(self.lib, self.settings.keep_audio)
             if n:
@@ -218,6 +427,20 @@ class Services:
     def shutdown(self) -> None:
         self.plans.shutdown()
         self.chat.shutdown()
+        self.screens.shutdown()
+
+    def capture_screens_again(self, day_key: str = "", course_id: str = "") -> int:
+        """Capture the screens of a class day's (or a whole course's) transcribed lectures again, in the background
+        (ScreenWorker). Returns how many lectures were added: class days, as the page counts them (not their
+        recordings' parts)."""
+        done = self.lib.transcribed_ids()
+        if day_key:
+            recs = self.lib.day_recordings(day_key)
+        else:
+            recs = sorted(self.lib.recordings(course_id), key=lambda r: r.start, reverse=True)
+        recs = [r for r in recs if r.delivery_id in done and not r.delivery_id.startswith("local-")]
+        added = set(self.screens.capture_again([r.delivery_id for r in recs]))
+        return len({r.day_key for r in recs if r.delivery_id in added})
 
     def _migrate_output_root(self) -> None:
         """An output folder that still has the app's earlier name (Documents\\Studia or Documents\\LectureScribe, a
@@ -430,8 +653,10 @@ class Services:
         date in its name replaced it): their files are written under the new day. The old day is written again
         without them or, when no transcribed lecture is left there, its files are removed; its AI notes take the new
         day's name (when that is free) and its AI packs are made again on demand. Slide images stay where they are
-        (the day files link them). The chats holding the old day get the new one. Returns how many lectures moved.
-        A move stays noted until it is done (doing one again is harmless)."""
+        (the day files link them). The chats holding the old day get the new one. A lecture that moved to another of
+        your courses' folders takes its AI notes and slide images to that course's folder (a chat stays with its
+        course), and both courses' study packs are written again. Returns how many lectures moved. A move stays noted
+        until it is done (doing one again is harmless)."""
         moves = self.lib.day_moves()
         if not moves:
             return 0
@@ -447,17 +672,21 @@ class Services:
                 if rec is None or course is None or did not in done or rec.day_key == old_key:
                     settled.append([did, old_key])
                     continue
+                other = course.id != rec.course_id         # it moved to another of your courses
                 try:
                     keep = any(r.delivery_id in done for r in self.lib.day_recordings(old_key)) \
                         or any(k == old_key for _, k in moves[n + 1:])     # (another moves from there next)
-                    self.lib.move_chat_day(old_key, rec.day_key, keep)
+                    if not other:                  # (a chat sends only its own course's days)
+                        self.lib.move_chat_day(old_key, rec.day_key, keep)
+                    if other:
+                        self._move_slides(course, all_courses, rec)
                     self._leave_day(course, all_courses, old_key, rec, done)
                     self.write_outputs(did, pack=False)
                 except Exception as exc:           # e.g. a file open in another program: tried again next time
                     log.info("The files of %s can't be moved to its class day yet: %s", did, exc)
                     continue
                 settled.append([did, old_key])
-                courses.add(rec.course_id)
+                courses.update({rec.course_id, course.id})
                 moved += 1
                 log.info("%s moved from %s to %s", did, old_key, rec.day_key)
                 for day in (old_key, rec.day_key):          # its AI notes went with it: searched under the new day
@@ -487,13 +716,268 @@ class Services:
             self.write_outputs(left[0].delivery_id, pack=False)
             return
         (folder / day_file_name(course, old_date, kind)).unlink(missing_ok=True)
-        new_stem = day_stem(course, rec.start.date(), rec.kind)
+        # (to the folder of the course it is in now: another of your courses when it moved there)
+        new_course = self.lib.get_course(rec.course_id) or course
+        new_folder = course_dir(self.output_root, new_course, all_courses) if new_course.id != course.id else folder
+        new_stem = day_stem(new_course, rec.start.date(), rec.kind)
         for note in NOTE_KINDS:
-            old, new = self._notes_path(folder, stem, note), self._notes_path(folder, new_stem, note)
+            old, new = self._notes_path(folder, stem, note), self._notes_path(new_folder, new_stem, note)
             if old.is_file() and not new.exists():
+                new.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(old, new)
         for ext in ("pdf", "zip"):
             (folder / "AI packs" / safe_name(f"{stem} - AI pack.{ext}")).unlink(missing_ok=True)
+
+    def _move_slides(self, course: Course, all_courses: list[Course], rec: Recording) -> None:
+        """A lecture that moved to another of your courses: its slide images go to that course's folder, under its
+        class day there (the day file there links them relative to that folder)."""
+        slides = store.load_slides(rec.delivery_id)
+        target = self.lib.get_course(rec.course_id)
+        if not slides or target is None:
+            return
+        old_root = course_dir(self.output_root, course, all_courses).resolve()
+        new_root = course_dir(self.output_root, target, all_courses)
+        if new_root.resolve() == old_root:
+            return
+        stem = day_stem(target, rec.start.date(), rec.kind)
+        moved: dict[str, tuple[str, str]] = {}           # old path -> (image, path): a slide shown twice is one file
+        try:
+            for s in slides:
+                if s.path in moved:
+                    s.image, s.path = moved[s.path]
+                    continue
+                src = Path(s.path)
+                try:
+                    if not src.is_file() or old_root not in src.resolve().parents:
+                        continue
+                except OSError:
+                    continue
+                name = src.name
+                dest = new_root / "slides" / stem / name
+                if dest.exists():                        # (another lecture's of that day: never written over)
+                    name = f"{rec.delivery_id[:8]}-{name}"
+                    dest = dest.with_name(name)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(src, dest)                    # (one held by another program: the move is tried again)
+                key = s.path
+                moved[key] = (f"slides/{stem}/{name}", str(dest))
+                s.image, s.path = moved[key]
+        finally:
+            if moved:                                    # what moved is noted, also when one couldn't move yet
+                store.save_slides(rec.delivery_id, slides)
+                for folder in {Path(p).parent for p in moved}:
+                    try:
+                        folder.rmdir()                   # only when nothing else is left in it
+                    except OSError:
+                        pass
+
+    def repair_twin_folders(self) -> int:
+        """Courses that share a code (a retake, another section) whose second one came before 3.3.1: until then a
+        course's folder was named from the course list of the moment, so the first course's files stayed in the
+        folder it had alone ("MATH 250") while the rest went to "MATH 250 (sec 1)", and two courses of the same
+        section shared one folder. Once, for each such group: the course that came first keeps the folder that holds
+        most of its files (it gets it back when 3.3.1 gave it to the other), each course's files that the library
+        knows (downloaded files, slide pictures, AI notes and packs, study packs, cheatsheets and review sheets) go
+        to its own folder, its day files are written there again, and nothing is deleted but the old copies of day
+        files written again. A file that can't move yet (open in another program) is tried at the next start.
+        Returns how many files moved."""
+        if self.lib.get_meta(TWINS_KEY) == "1":
+            return 0
+        groups: dict[str, list[Course]] = {}
+        for c in self.lib.courses(True):
+            groups.setdefault(safe_name((c.code or c.name or f"Course {c.id}").strip()).lower(), []).append(c)
+        moved, complete = 0, True
+        for group in (g for g in groups.values() if len(g) > 1):
+            try:
+                moved += self._repair_twins(group)
+            except OSError as exc:
+                complete = False
+                log.info("The folders of %s can't be put right yet: %s", group[0].code, exc)
+        if complete:
+            self.lib.set_meta(TWINS_KEY, "1")
+        return moved
+
+    def _repair_twins(self, group: list[Course]) -> int:
+        """One group of courses that share a code (see repair_twin_folders)."""
+        import re as _re
+
+        root = Path(self.output_root)
+        base = safe_name((group[0].code or group[0].name or f"Course {group[0].id}").strip())
+        # the names IEUStudia gave these courses' folders, then and now (a folder of another name is yours: left alone)
+        names = {base} | {c.folder for c in group if c.folder}
+        for c in group:
+            sec = f"sec {c.section}" if c.section else ""
+            m = _re.match(r"\s*(\d{4}-\d)\b", c.title or "")
+            names |= {f"{base} ({sec or c.id})", f"{base} ({c.id})", f"{base} {c.id}"}
+            if m:
+                names.add(f"{base} ({' '.join(x for x in (m.group(1), sec) if x)})")
+        names = {safe_name(n).lower() for n in names}
+        # (a folder that can't be read, on a drive not connected: OSError, and the repair is tried at the next start)
+        cands = {d.name for d in root.iterdir() if d.is_dir() and d.name.lower() in names}
+        cands |= {c.folder for c in group if c.folder}
+        owned = self._twin_files(group, root, cands)
+        counts: dict[str, dict[str, int]] = {}
+        for cid, path, _ in owned:
+            top = path.relative_to(root).parts[0]
+            counts.setdefault(cid, {})[top] = counts.setdefault(cid, {}).get(top, 0) + 1
+        stems: dict[str, set[str]] = {}
+        for c in group:
+            for r in self.lib.recordings(c.id):
+                stems.setdefault(day_stem(c, r.start.date(), r.kind), set()).add(c.id)
+        for stem, owners in stems.items():       # its day files too: where its lectures are
+            for folder in cands if len(owners) == 1 else ():
+                if (root / folder / f"{stem}.md").is_file():
+                    (cid,) = owners
+                    counts.setdefault(cid, {})[folder] = counts.setdefault(cid, {}).get(folder, 0) + 1
+        arrived = self.lib.arrived()
+        order = sorted(group, key=lambda c: (arrived.get(c.id) or "9999", c.id))
+        taken: set[str] = set()
+        folders: dict[str, str] = {}
+        for c in order:                  # the first course first: it keeps the folder most of its files are in
+            here = sorted(counts.get(c.id, {}).items(), key=lambda kv: (-kv[1], kv[0] != c.folder))
+            name = next((f for f, _ in here if f.lower() not in taken), "")
+            if not name and c.folder and c.folder.lower() not in taken:
+                name = c.folder
+            if not name:
+                name = self._fresh_folder(c, base, root, taken | {x.lower() for x in cands})
+            folders[c.id] = name
+            taken.add(name.lower())
+        changed = {cid: f for cid, f in folders.items() if f != next(c.folder for c in group if c.id == cid)}
+        if changed:
+            self.lib.set_folders(changed)
+            log.info("Course folders of %s: %s", base, folders)
+        moves: dict[str, str] = {}
+        try:
+            for cid, path, rel in owned:
+                dest = root / folders[cid] / rel
+                if path == dest or not path.exists():
+                    continue
+                new = _move_aside(path, dest)
+                moves[str(path)] = str(new)
+        finally:
+            self._note_moves(moves)
+        # a course whose files were elsewhere (moved now, or a day file in another of the group's folders): its day
+        # files (and study pack) written again where they are now, the old copies gone. The others are left alone.
+        stray = {cid for cid, per in counts.items() if any(f != folders[cid] for f in per)}
+        redo = [c for c in group if c.id in stray or c.id in changed]
+        for c in redo:
+            self.rewrite_course(c.id)
+        if redo:
+            self._drop_old_day_files(group, root, cands, folders)
+        if moves:
+            log.info("%d files of %s moved to their own course's folder", len(moves), base)
+        return len(moves)
+
+    @staticmethod
+    def _fresh_folder(course: Course, base: str, root: Path, taken: set[str]) -> str:
+        """A folder name no course has and no folder on disk holds (as Library._name_folders names one)."""
+        import re as _re
+
+        sec = f"sec {course.section}" if course.section else ""
+        m = _re.match(r"\s*(\d{4}-\d)\b", course.title or "")
+        names = [f"{base} ({sec or course.id})"] + ([f"{base} ({' '.join(x for x in (m.group(1), sec) if x)})"]
+                                                     if m else []) + [f"{base} ({course.id})", f"{base} {course.id}"]
+        return next((n for n in map(safe_name, names) if n.lower() not in taken and not (root / n).exists()),
+                    safe_name(f"{base} {course.id} {len(taken)}"))
+
+    def _twin_files(self, group: list[Course], root: Path, cands: set[str]) -> list[tuple[str, Path, Path]]:
+        """(course id, file, its place in a course folder) of every file of these courses that the library knows of and
+        that is in one of their folders: downloaded files, slide pictures, study packs, cheatsheets and review sheets
+        (each in the plan's result), and a class day's AI notes and AI packs (only when no other course of the group has
+        a class day of the same name)."""
+        ids = {c.id for c in group}
+        out: dict[Path, tuple[str, Path, Path]] = {}
+
+        def add(cid: str, value: str) -> None:
+            if not value:
+                return
+            path = Path(value)
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                return
+            if len(rel.parts) > 1 and rel.parts[0] in cands and path.exists():
+                out.setdefault(path, (cid, path, Path(*rel.parts[1:])))
+
+        for _, cid, local in self.lib.material_paths(ids):
+            add(cid, local)
+        with_slides = store.slide_ids()
+        stems: dict[str, set[str]] = {}
+        for c in group:
+            for r in self.lib.recordings(c.id):
+                stems.setdefault(day_stem(c, r.start.date(), r.kind), set()).add(c.id)
+                if r.delivery_id in with_slides:
+                    for sl in store.load_slides(r.delivery_id):
+                        add(c.id, sl.path)
+        for cid in ids:
+            for brief in self.lib.plans(cid):
+                plan = self.lib.plan(brief["id"]) or {}
+                result = plan.get("result") if isinstance(plan.get("result"), dict) else {}
+                for key in ("file", "pdf"):
+                    add(cid, str(result.get(key) or ""))
+                if result.get("file"):
+                    f = Path(str(result["file"]))
+                    images = f.with_name(f"{f.stem} (images)")
+                    if images.is_dir():
+                        for pic in images.iterdir():
+                            add(cid, str(pic))
+        for stem, owners in stems.items():
+            if len(owners) != 1:
+                continue
+            (cid,) = owners
+            for folder in cands:
+                for note in NOTE_KINDS:
+                    add(cid, str(self._notes_path(root / folder, stem, note)))
+                for ext in ("pdf", "zip"):
+                    add(cid, str(root / folder / "AI packs" / safe_name(f"{stem} - AI pack.{ext}")))
+        return list(out.values())
+
+    def _note_moves(self, moves: dict[str, str]) -> None:
+        """The paths kept for files that moved: downloaded files, plan files, slide pictures."""
+        if not moves:
+            return
+        from .paths import transcripts_dir
+        from .slides import load_index, save_index
+
+        self.lib.move_paths(moves)
+        for f in transcripts_dir().glob("*.slides.json"):
+            slides, changed = load_index(f), False
+            for sl in slides:
+                if sl.path in moves:
+                    sl.path, changed = moves[sl.path], True
+            if changed:
+                save_index(f, slides)
+
+    def _drop_old_day_files(self, group: list[Course], root: Path, cands: set[str], folders: dict[str, str]) -> None:
+        """A course's day files and subtitles written again in its own folder: the old copies in the group's other
+        folders go (they are made from the transcripts, nothing else), as do the empty folders left over."""
+        mine = {f.lower() for f in folders.values()}
+        for c in group:
+            own = root / folders[c.id]
+            days = {day_stem(c, r.start.date(), r.kind) for r in self.lib.recordings(c.id)}
+            others = {day_stem(x, r.start.date(), r.kind) for x in group if x.id != c.id for r in self.lib.recordings(x.id)}
+            for stem in days - others:
+                if not (own / f"{stem}.md").is_file():
+                    continue
+                for folder in cands - {folders[c.id]}:
+                    _unlink_quietly(root / folder / f"{stem}.md")
+                    subs = root / folder / "subtitles"
+                    for srt in (subs.glob(f"{_glob_safe(stem)} - Part *.srt") if subs.is_dir() else []):
+                        _unlink_quietly(srt)
+        for folder in cands:
+            if folder.lower() in mine:
+                continue
+            pack = root / folder / safe_name(f"{group[0].code or group[0].name} - Study pack.md")
+            _unlink_quietly(pack)
+            for d in sorted((p for p in (root / folder).rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)):
+                try:
+                    d.rmdir()            # only when empty
+                except OSError:
+                    pass
+            try:
+                (root / folder).rmdir()
+            except OSError:
+                pass
 
     def rewrite_course(self, course_id: str) -> None:
         course = self.lib.get_course(course_id)
@@ -508,51 +992,27 @@ class Services:
         if seen:                        # the pack holds every day: once, not once per day
             self.write_course_pack(course_id)
 
-    def slides_task(self, job: Any, screens: list[tuple[Any, float]], session: requests.Session) -> list[Any]:
+    def slides_task(self, job: Any, screens: list[tuple[Any, float]], session: requests.Session,
+                    again: bool = False) -> list[Any]:
         """The slides of a recording from all its screen streams (one per stretch of screen sharing), numbered
-        through, a slide shown again in a later stream kept once. Slides made before from the same streams are
-        kept as they are."""
+        through, a slide shown again in a later stream kept once, and then its screen timeline (screens.py:
+        PowerPoint's exact slide times, titles and text from ``job.info``, the words read on the other screens).
+        Slides made before from the same streams are kept as they are, unless ``again`` (the student asked to capture
+        them again). A camera stream (a recording with no screen stream) is first looked at: captured only when it
+        shows a screen (a tablet)."""
         from .cancel import Cancelled
-        from .slides import Incomplete, extract_slides
+        from .screens import build_timeline, lecture_lock
 
-        rec = self.lib.get_recording(job.id)
-        course = self.lib.get_course(rec.course_id) if rec else None
-        if rec is None or course is None:
-            return []
-        key = _slides_key(screens)
-        if _slides_done(job.id, key, len(screens)):
-            self.log.info("Slides for %s are there already", job.id)
-            return store.load_slides(job.id)
-        stem = day_stem(course, rec.start.date(), rec.kind)
-        folder = course_dir(self.output_root, course, self.lib.courses(True)) / "slides" / stem
-        key_file = store.slides_path(job.id).with_suffix(".key")
-        key_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            tries = _failed_tries(key_file.read_text(encoding="utf-8"), key)
-        except OSError:
-            tries = 0
-        key_file.write_text("", encoding="utf-8")   # being made (images are written over): not done until the end
-        slides: list[Any] = []
-        seen: list[Any] = []                      # the slides kept so far, shared by the streams
-        failed: Optional[Exception] = None
-        for src, offset in screens:
+        with lecture_lock(job.id):
+            slides, fresh = _capture(self, job, screens, session, again)
             try:
-                slides += extract_slides(session, src.url, folder, f"slides/{stem}", rec.start.strftime("%H%M"), offset,
-                                         cancel=job.cancel, seen=seen, spans=src.spans)
+                return build_timeline(self, job.id, getattr(job, "info", None), session, fresh=fresh,
+                                      cancel=job.cancel) or slides
             except Cancelled:
                 raise
-            except Exception as exc:  # noqa: BLE001 - the other streams' slides are still worth having
-                self.log.info("A screen stream of %s failed: %s", job.id, exc)
-                if isinstance(exc, Incomplete):    # the connection dropped: what came is kept meanwhile
-                    slides += exc.slides
-                failed = exc
-        if failed is not None and not slides:
-            raise failed
-        store.save_slides(job.id, slides)
-        # complete; or a stream failed: made again next time, its slides so far kept after SLIDES_TRIES tries
-        key_file.write_text(key if failed is None else f"failed {tries + 1}\n{key}", encoding="utf-8")
-        self.log.info("%d slides for %s", len({s.index for s in slides}), job.id)
-        return slides
+            except Exception as exc:  # noqa: BLE001 - the pictures are there; the timeline is made again later
+                self.log.warning("The screen timeline of %s couldn't be made: %s", job.id, exc, exc_info=True)
+                return slides
 
     def export_pack(self, day_key: str) -> dict[str, Path]:
         from .export import build_ai_pack
@@ -565,9 +1025,11 @@ class Services:
         slides = {i: store.load_slides(i) for i in ids}
         return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides)
 
-    def ai_inputs(self, day_key: str, include_slides: bool) -> tuple[str, list[tuple[str, Path]], Course, list[Recording]]:
+    def ai_inputs(self, day_key: str, include_slides: bool,
+                  screens: str = "full") -> tuple[str, list[tuple[str, Path]], Course, list[Recording]]:
         """A class day for study notes: its compact text and (``include_slides``) its slide pictures, each with the
-        label the AI cites it by, "[Part 2, slide 5]" (every part numbers its slides from 1, as the text marks them)."""
+        label the AI cites it by, "[Part 2, slide 5]" (every part numbers its slides from 1, as the text marks them).
+        ``screens``: the screen lines' words, or their titles only (compact_day)."""
         from .outputs.ai_copy import compact_day
         from .outputs.markdown import part_views
 
@@ -575,7 +1037,7 @@ class Services:
         ids = [r.delivery_id for r in recs]
         trans = store.load_transcripts(ids)
         slides = {i: store.load_slides(i) for i in ids}
-        text = compact_day(course, recs, trans, slides if include_slides else None)
+        text = compact_day(course, recs, trans, slides if include_slides else None, screens=screens)
         images: list[tuple[str, Path]] = []
         if include_slides:
             for p in part_views(recs, trans, slides):         # the parts the text has, numbered as there
@@ -590,24 +1052,30 @@ class Services:
                  cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
                  effort: str = "") -> Path:
         from .ai import PLAN_AIS, PROVIDER_LABELS, provider, run_claude
-        from .outputs.prompts import ai_prompt
+        from .outputs.figures import note_slides_for, place_slides
+        from .outputs.prompts import ai_prompt, slides_note
+        from .quizzes import course_language
 
         reads_images = provider() in PLAN_AIS
-        text, images, course, recs = self.ai_inputs(day_key, include_slides and reads_images)
+        # the offline model's request is tight: the screens' titles only
+        text, images, course, recs = self.ai_inputs(day_key, include_slides and reads_images,
+                                                    "titles" if provider() == "local" else "full")
         if not text:
             raise RuntimeError(t("Transcribe this class day first."))
-        prompt = ai_prompt(template)
+        info = self.lib.course_info(course.id) if course is not None and getattr(self, "lib", None) else {}
+        prompt = ai_prompt(template, course_language({"syllabus": info.get("syllabus")}) if info else "")
         sent = note_slides(images)
-        if include_slides and sent:
-            prompt += ("\n\nThe slide images are attached in order, each labelled [Part n, slide m]. In the transcript, "
-                       "(slide m) on a paragraph of Part n is that part's slide m, the one on screen (every part "
-                       "numbers its slides from 1). Refer to a slide as (Part n, slide m).")
-            if len(sent) < len(images):
-                prompt += f" {len(sent)} of the {len(images)} slides are attached, spread over the lecture; not the others."
+        if include_slides and sent:          # the slides, and (notes, exam focus) the ones to show beside the text
+            prompt += slides_note(len(sent), len(images), figures=template != "flashcards")
+        if "\n[Screen " in text:
+            from .outputs.ai_copy import SCREEN_LINES
+
+            prompt += f"\n\n{SCREEN_LINES}"
         res = run_claude(prompt, text, sent, model=model, effort=effort, cancel=cancel, on_text=on_text)
         stem = day_stem(course, recs[0].start.date(), recs[0].kind)
         path = self._notes_path(course_dir(self.output_root, course, self.lib.courses(True)), stem, template)
         path.parent.mkdir(parents=True, exist_ok=True)
+        res["text"] = place_slides(res["text"], note_slides_for(sent), path.parent)
         usage = res.get("usage") or {}
         tokens_in = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens",
                                                          "cache_read_input_tokens"))

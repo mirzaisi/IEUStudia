@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import aiwait
 from .cancel import Cancelled
 from .i18n import N_, t
 
@@ -252,7 +253,20 @@ def generate(messages: list[dict[str, str]], key: str, max_tokens: int = 900,
              on_text: Optional[Callable[[str], None]] = None, cancel: Optional[threading.Event] = None,
              think: int = 0) -> dict[str, Any]:
     """The model's answer to ``messages``, at most ``max_tokens`` long. ``think``: it first thinks, at most that many
-    tokens (not shown, not part of the answer), then answers."""
+    tokens (not part of the answer; said as short lines while the student waits), then answers."""
+    wait = aiwait.of(cancel)                 # the run the student waits for hears every step (aiwait)
+    ok = False
+    try:
+        r = _generate(messages, key, max_tokens, on_text, cancel, think, wait)
+        ok = True
+        return r
+    finally:
+        wait.end(ok)
+
+
+def _generate(messages: list[dict[str, str]], key: str, max_tokens: int,
+              on_text: Optional[Callable[[str], None]], cancel: Optional[threading.Event], think: int,
+              wait: Any) -> dict[str, Any]:
     m = _load(key)
     tok, gen = m["tok"], m["gen"]
     prompt = _prompt(messages, _preset(key).get("template", "qwen3"), think=think > 0)
@@ -262,14 +276,26 @@ def generate(messages: list[dict[str, str]], key: str, max_tokens: int = 900,
     started = time.monotonic()
     from .engine.core import processor_for_ai
 
+    wait.begin(0, 0, provider="local", model=key, level="on" if think > 0 else "off", cap=max_tokens)
+    wait.sent()                              # nothing goes up: it reads the question on this PC
+    seen = {"thought": ""}
+
     def run(prefix: list[str], limit: int, ends: list[str], out: list[int], show: bool) -> None:
         for step in gen.generate_tokens(prefix, max_length=limit, sampling_temperature=0.3, sampling_topk=20,
                                         end_token=ends):
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             out.append(step.token_id)
-            if show and on_text and len(out) % 6 == 0:
-                on_text(tok.decode(out))
+            if show and len(out) % 6 == 0:
+                text = tok.decode(out)
+                wait.tokens(len(out))
+                wait.text(text)
+                if on_text:
+                    on_text(text)
+            elif not show and len(out) % 8 == 0:           # its thinking, a line at a time (aiwait)
+                now = tok.decode(out).replace("</think>", "")
+                wait.thinking(now[len(seen["thought"]):])
+                seen["thought"] = now
 
     # on the processor a transcription waits meanwhile: running both made the AI write four times slower
     with processor_for_ai() if m["device"] != "cuda" else contextlib.nullcontext():
@@ -420,6 +446,8 @@ def _condense(text: str, key: str, limit: int, cancel: Optional[threading.Event]
         for i, part in enumerate(parts, 1):
             if on_text:
                 on_text(t("*Reading part {i} of {n}…*", i=i, n=len(parts)))
+            aiwait.of(cancel).units(i - 1, len(parts) + 1)      # each part, then the answer (aiwait)
+            aiwait.of(cancel).expect(kind="local.condense")        # (its own speeds: not the notes')
             r = generate([{"role": "system", "content": CONDENSE.format(words=_words(per))},
                           {"role": "user", "content": part}], key, cap, None, cancel)
             note = r["text"]

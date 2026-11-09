@@ -302,8 +302,8 @@ class Engine:
         meta["quality"] = {"warnings": warnings + post_warnings, "stats": {**stats, **post_stats}}
         timings["finalize"] = time.monotonic() - t0
         progress("finalize", 1.0, t("Done"))
-        if resume is not None:            # the transcript is whole: nothing to go on from
-            resume.discard()
+        # the checkpoint stays until the transcript is saved (jobs.py deletes it then): a save that fails (a full disk,
+        # a file held by an antivirus) doesn't cost the whole transcription again
         info = self.device_info
         return Transcript(
             delivery_id=str(meta.get("delivery_id", "")),

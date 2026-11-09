@@ -1,0 +1,151 @@
+/* IEUStudia — Practice (practice.js): the Practice page, the course tab, the quiz and flashcard dialogs, and what
+ * the lecturer stressed. The app's colours: blue for picking, green right, red wrong, amber for what was stressed. */
+
+/* ---- the Practice page */
+.pr-row > .grow, .pr-quiz > .grow, .pr-home > .grow, .pr-c-head > .grow, .qz-opt > .grow { flex: 1; min-width: 0; }
+.pr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin-top: 14px; }
+.pr-course { padding: 0; overflow: hidden; border-top: 3px solid hsl(var(--h, 220) 70% 50%); display: flex; flex-direction: column; }
+.pr-c-head { display: flex; align-items: center; gap: 10px; border: 0; background: none; text-align: left; padding: 12px 14px 10px;
+  color: var(--text); cursor: pointer; }
+.pr-c-head:hover { background: var(--surface-2); }
+.pr-code { font: 700 13px var(--font-display); color: hsl(var(--h, 220) 70% 42%); white-space: nowrap; }
+:root[data-theme="dark"] .pr-code { color: hsl(var(--h, 220) 80% 70%); }
+.pr-cname { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.pr-row > .i { color: var(--text-3); flex: none; }
+.pr-due { margin-top: 4px; }
+
+/* ---- Home: cards due today */
+.pr-home { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin: 14px 0 4px; }
+.pr-home-ico { width: 34px; height: 34px; border-radius: 10px; background: var(--blue-soft); color: var(--blue); display: grid;
+  place-items: center; flex: none; }
+
+/* ---- the course tab */
+.pr-tab { display: flex; flex-direction: column; gap: 14px; }
+.pr-card { padding: 14px 16px; }
+.pr-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; }
+.pr-h > .i { color: var(--text-2); }
+.pr-h b { font: 600 15px var(--font-display); }
+.pr-sub { color: var(--text-2); font-size: 13px; margin: 6px 0 10px; }
+.pr-empty { color: var(--text-2); font-size: 13px; margin: 8px 0 4px; }
+.pr-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pr-list { display: flex; flex-direction: column; margin-top: 8px; }
+.pr-quiz { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.pr-quiz:first-child { border-top: 0; }
+.pr-quiz b { font-weight: 600; }
+.pr-qacts { display: flex; gap: 6px; flex: none; }
+.pr-tries { display: flex; gap: 8px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+.pr-best { color: var(--text); font-weight: 600; }
+.pr-best.good { color: var(--green); }
+.pr-prog { display: flex; align-items: center; gap: 10px; margin: 6px 0 2px; flex-wrap: wrap; }
+.pr-prog .bar { width: 140px; flex: none; }
+
+/* ---- what the lecturer stressed */
+.st-week { margin-top: 12px; }
+.st-week-h { font-size: 13px; margin: 0 2px 6px; }
+.st-item { width: 100%; }
+.cat-chip.st-exam { background: var(--red-soft); color: var(--red); }
+.cat-chip.st-stressed { background: var(--amber-soft); color: var(--amber); }
+.cat-chip.st-not_needed { background: var(--surface-2); color: var(--text-2); }
+.st-not .st-week-h b { color: var(--text-2); }
+.st-sum { margin: 10px 0 6px; padding: 12px 14px; border-radius: var(--radius); background: var(--violet-soft);
+  box-shadow: inset 3px 0 0 var(--violet); font-size: 13.5px; }
+.st-sum.busy { color: var(--text-2); }
+.st-sum-h { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--violet); }
+.st-sum-h b { color: var(--text); }
+.st-sum ol { margin: 0 0 8px; padding-left: 22px; }
+.st-sum li { margin: 6px 0; }
+.st-sum li .md p { margin: 0; }
+.st-cites { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.cite-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface); border-radius: 11px;
+  padding: 1px 8px; font-size: 11.5px; color: var(--accent-text); cursor: pointer; font-variant-numeric: tabular-nums; }
+.cite-chip:hover { border-color: var(--blue); }
+
+/* ---- the new-quiz dialog */
+.modal.qz-dlg .cp-modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.modal.qz-dlg .qz-wide { grid-column: 1 / -1; }
+.modal.qz-dlg .qz-wide .input { width: 100%; }
+
+/* ---- a quiz, one question at a time */
+.modal.qz-modal { width: min(720px, calc(100vw - 40px)); }
+.qz-kind { font-size: 12px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 6px; }
+.qz-text { font-size: calc(15.5px * var(--read)); font-weight: 600; margin-bottom: 12px; }
+.qz-text p { margin: 0 0 6px; }
+.qz-opts { display: flex; flex-direction: column; gap: 8px; }
+.qz-opt { display: flex; align-items: center; gap: 10px; text-align: left; border: 1.5px solid var(--border); border-radius: 10px;
+  background: var(--surface); padding: 9px 12px; color: var(--text); cursor: pointer; font-size: calc(14px * var(--read)); }
+.qz-opt:hover:not(:disabled) { border-color: var(--border-strong); }
+.qz-opt .md p { margin: 0; }
+.qz-opt .i { flex: none; }
+.qz-l { flex: none; width: 24px; height: 24px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 12px;
+  background: var(--surface-2); color: var(--text-2); }
+.qz-opt.picked { border-color: var(--blue); background: var(--accent-soft); }
+.qz-opt.picked .qz-l { background: var(--blue); color: var(--on-color); }
+.qz-opt.right { border-color: var(--green); background: var(--green-soft); }
+.qz-opt.right .qz-l, .qz-opt.right .i { background: var(--green); color: var(--on-color); border-radius: 12px; }
+.qz-opt.wrong { border-color: var(--red); background: var(--red-soft); }
+.qz-opt.wrong .qz-l { background: var(--red); color: var(--on-color); }
+.qz-opt.wrong .i { color: var(--red); }
+.qz-opt.dim { opacity: .65; }
+.qz-opt:disabled { cursor: default; }
+.qz-fb { margin-top: 12px; padding: 11px 14px; border-radius: var(--radius); font-size: 13.5px; }
+.qz-fb.ok { background: var(--green-soft); box-shadow: inset 3px 0 0 var(--green); }
+.qz-fb.no { background: var(--red-soft); box-shadow: inset 3px 0 0 var(--red); }
+.qz-fb.model { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+.qz-fb-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.qz-fb.ok .qz-fb-h .i { color: var(--green); } .qz-fb.no .qz-fb-h .i { color: var(--red); } .qz-fb.model .qz-fb-h .i { color: var(--blue); }
+.qz-fb .md p { margin: 4px 0; }
+.qz-why-wrong { margin-top: 6px; }
+.qz-others { margin-top: 8px; }
+.qz-others summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; }
+.qz-others ul, .qz-points, .qz-steps { margin: 6px 0; padding-left: 22px; }
+.qz-steps li, .qz-points li { margin: 4px 0; }
+.qz-final { margin-top: 6px; }
+.qz-input { width: 100%; resize: vertical; font: inherit; }
+.qz-your { margin: 2px 0 8px; }
+.qz-your-t { white-space: pre-wrap; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.qz-src { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; border: 0; background: none; padding: 4px 0;
+  color: var(--accent-text); cursor: pointer; font-size: 12.5px; text-align: left; }
+.qz-src:hover span { text-decoration: underline; }
+.qz-self-q { margin-right: auto; align-self: center; }
+.qz-intro .lead { margin-bottom: 10px; }
+.qz-cover { padding: 10px 14px; border-radius: var(--radius); background: var(--green-soft); margin: 8px 0; font-size: 13px; }
+.qz-cover.left { background: var(--amber-soft); }
+.qz-cover-h { display: flex; align-items: center; gap: 6px; }
+.qz-cover ul { margin: 4px 0 0; padding-left: 20px; }
+.qz-cover li { margin: 3px 0; }
+.qz-tries ul { margin: 4px 0 8px; padding-left: 20px; font-size: 13px; }
+.qz-results { list-style: none; margin: 6px 0; padding: 0; max-height: 280px; overflow-y: auto; }
+.qz-results li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.qz-results .qz-res-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qz .fc-top > .dim { flex: none; white-space: nowrap; }
+.qz-results li.ok .i { color: var(--green); } .qz-results li.half .i { color: var(--amber); } .qz-results li.no .i { color: var(--red); }
+.qz-end h2 .dim { font-weight: 500; margin-left: 4px; }
+
+/* ---- flashcards, with spaced repetition */
+.modal.fc-modal { width: min(640px, calc(100vw - 40px)); }
+.fc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; min-height: 22px; }
+.fc-meta .qz-src { margin-top: 0; }
+.fc-g { flex-direction: column; gap: 0; height: auto; padding: 6px 14px; min-width: 78px; line-height: 1.25; }
+.fc-g span { font-size: 11.5px; opacity: .8; font-weight: 500; }
+.fc-g.again { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); color: var(--red); }
+.fc-g.hard { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); color: var(--amber); }
+.fc-g.good { background: var(--green); border-color: transparent; color: var(--on-color); }
+.fc-g.easy { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); color: var(--blue); }
+.fc-keys { margin-top: 8px; text-align: right; }
+
+/* ---- a source page */
+.modal.pr-src-modal { width: min(860px, calc(100vw - 40px)); }
+.pr-src-body { max-height: calc(100vh - 220px); overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.pr-src-img { display: block; width: 100%; height: auto; background: #fff; }
+.pr-src-text { white-space: pre-wrap; padding: 12px 14px; font-size: 13px; }
+
+/* the course page has a seventh tab (Practice): narrower tabs keep all seven in view in a small window */
+@media (max-width: 1240px) { .tabs .tab { padding-left: 9px; padding-right: 9px; gap: 5px; } }
+@media (max-width: 1060px) { .tabs .tab { font-size: 13px; padding-left: 7px; padding-right: 7px; } }
+
+@media (max-width: 760px) {
+  .modal.qz-dlg .cp-modes { grid-template-columns: 1fr; }
+  .pr-quiz { flex-wrap: wrap; }
+  .fc-g { min-width: 64px; padding: 6px 10px; }
+}

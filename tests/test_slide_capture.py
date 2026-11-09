@@ -59,9 +59,12 @@ def _run(monkeypatch, tmp_path, shown, held=None, real=False, min_slide_s=12.0, 
     monkeypatch.setattr(slides, "_frame_after", after)
     if real:
         monkeypatch.setattr(slides, "thumb", lambda f: _f(f))
+        monkeypatch.setattr(slides, "big", lambda f: _f(f))
     else:
         monkeypatch.setattr(slides, "thumb", lambda f: np.full((4, 4), f, dtype=np.float32))
+        monkeypatch.setattr(slides, "big", lambda f: np.full((4, 4), f, dtype=np.int16))
         monkeypatch.setattr(slides, "changed_fraction", lambda a, b: float(abs(a - b).mean() > 0))
+        monkeypatch.setattr(slides, "same_picture", lambda a, b, ai=None, bi=None: bool((a == b).all()))
         monkeypatch.setattr(slides, "is_blank", lambda t: False)
         monkeypatch.setattr(slides, "added_only", lambda a, b: False)
     monkeypatch.setattr(slides, "save_jpeg", lambda frame, path, max_width=1600: path.write_bytes(str(frame).encode()))
@@ -105,8 +108,10 @@ def test_a_darker_screen_after_a_light_slide_keeps_the_slide(tmp_path, monkeypat
         assert not slides.added_only(_f("build_a"), _f(name))     # nothing got brighter, but the slide is gone
     shown = ["build_a"] * 3 + ["dark_player"] * 3 + ["dark_header"] * 3
     out, _ = _run(monkeypatch, tmp_path, shown, real=True)
-    assert [(s.index, s.t) for s in out] == [(1, 0.0), (2, 27.0), (3, 54.0)]
+    # (the dark title only adds light writing to the dark player: one picture, the later one)
+    assert [(s.index, s.t) for s in out] == [(1, 0.0), (2, 27.0), (2, 54.0)]
     assert (tmp_path / "s-01.jpg").read_bytes() == b"build_a"                    # the light slide's own picture
+    assert (tmp_path / "s-02.jpg").read_bytes() == b"dark_header"
 
 
 @pytest.mark.parametrize("name", ["build_a", "other_a", "ink_a"])

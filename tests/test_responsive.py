@@ -127,6 +127,7 @@ def test_a_session_gone_leaves_its_tls_context_to_the_next(monkeypatch):
 
     from studia import net
 
+    gc.collect()        # sessions earlier tests left behind go first: their contexts would mix with these
     monkeypatch.setattr(net, "_spare", [])
     made = []
     real = net.tls_context

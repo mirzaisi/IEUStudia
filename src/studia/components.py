@@ -371,14 +371,27 @@ def download(component: str, progress: Progress, cancel: Optional[threading.Even
 
 
 def disk_usage(output_dir: Optional[Path] = None) -> dict[str, int]:
-    """Bytes used by IEUStudia: speech models, GPU libraries, offline AI, library and transcripts, caches, outputs."""
+    """Bytes used by IEUStudia: speech models, GPU libraries, offline AI, library and transcripts (with the copies kept
+    before an upgrade), the Codex CLI the app installed, temporary files (caches, an update waiting to install, logs;
+    the added profiles' downloaded audio too), outputs."""
     root = app_root()
+    profiles = root / "profiles"
+    try:
+        added_cache = sum(_dir_size(p / "cache") for p in profiles.iterdir() if p.is_dir())
+    except OSError:
+        added_cache = 0
     out = {"speech_models": _dir_size(root / "models"), "gpu_libraries": _dir_size(root / "cuda"),
-           "offline_ai": _dir_size(root / "llm"), "cache": _dir_size(root / "cache") + _dir_size(root / "webview"),
+           "offline_ai": _dir_size(root / "llm"), "ai_tools": _dir_size(root / "tools"),
+           "cache": (_dir_size(root / "cache") + _dir_size(root / "webview") + _dir_size(root / "updates")
+                     + _dir_size(root / "logs") + added_cache),
            "library": 0}
     for f in root.glob("library.db*"):
-        out["library"] += f.stat().st_size
-    out["library"] += _dir_size(root / "transcripts") + _dir_size(root / "profiles")
+        try:
+            out["library"] += f.stat().st_size
+        except OSError:
+            pass
+    out["library"] += (_dir_size(root / "transcripts") + _dir_size(root / "backups") + _dir_size(profiles)
+                       - added_cache)
     if output_dir is not None:
         out["your_files"] = _dir_size(Path(output_dir))
     return out

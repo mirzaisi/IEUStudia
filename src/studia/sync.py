@@ -619,8 +619,9 @@ class SyncService:
             return True
 
     def _content(self, course: Course, s: requests.Session, info: dict, units: bool = True) -> dict:
-        """What the course's pages hold now: "units", "announcements", "overview" (as far as asked), each left out when
-        its page changed ("changed": the ServiceChanged of those; what the course had of them stays)."""
+        """What the course's pages hold now: "units", "assignments", "announcements", "overview" (as far as asked),
+        each left out when its page changed ("changed": the ServiceChanged of those; what the course had of them
+        stays). The assignments panel that can't be read for another reason is only left out: never the course's."""
         from .coursesite import CourseSite
 
         from .ieulearn import changed
@@ -628,7 +629,9 @@ class SyncService:
         site = CourseSite(s)
         out: dict = {"course": course, "session": s, "changed": []}
         parts: list[tuple[str, str, Callable[[], Any]]] = [
-            ("units", "unit_plan", lambda: site.unit_plan(course.id, course.title))] if units else []
+            ("units", "unit_plan", lambda: site.unit_plan(course.id, course.title)),
+            # the calendar's deadlines: each assignment's day and time (a small panel, read with the weekly plan)
+            ("assignments", "assignments", lambda: site.assignments(course.id, course.title))] if units else []
         parts.append(("announcements", "announcements", lambda: site.announcements(course.id)))
         if self._stale(info.get("overview_at", ""), self.OVERVIEW_EVERY):
             parts.append(("overview", "course_page", lambda: site.overview(course.id)))
@@ -637,9 +640,15 @@ class SyncService:
                 out[key] = read()
             except ServiceChanged as exc:
                 out["changed"].append(exc)
-            except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
-                if isinstance(exc, requests.RequestException):     # (some of requests' errors are ValueErrors too)
-                    raise
+            except NeedLogin:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                if key == "assignments":       # the deadlines only: the course's files and news are read all the same
+                    self.log.info("The assignments of %s weren't read: %s", who(course), exc)
+                    continue
+                if isinstance(exc, requests.RequestException) or not isinstance(
+                        exc, (ValueError, KeyError, TypeError, AttributeError, IndexError)):
+                    raise                      # (some of requests' errors are ValueErrors too)
                 # IEULearn's page made the parser fail: a page that changed in a way nothing checked for
                 self.log.warning("Reading the %s of %s failed", part, who(course), exc_info=True)
                 out["changed"].append(changed(part, f"reading it failed ({exc.__class__.__name__})", where=course.id))
@@ -684,6 +693,9 @@ class SyncService:
                         self.lib.set_meta(unread, "")
                 elif first and any(e.part == ("unit_plan" if key == "units" else key) for e in res["changed"]):
                     self.lib.set_meta(unread, now)
+            if "units" in res or "assignments" in res:           # (each one that was read)
+                self.lib.merge_assignments(c.id, [a for u in res["units"] for a in getattr(u, "assignments", [])]
+                                           if "units" in res else None, res.get("assignments"))
             changed.update(e.service for e in res["changed"])
             fields = {"content_at": now}
             if "overview" in res:

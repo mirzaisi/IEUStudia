@@ -43,6 +43,9 @@ class Settings:
     verify_model: str = "haiku"        # checking video captions against the course (many small requests)
     ai_model_light: str = "haiku"      # weekly digest
     ai_effort: dict[str, str] = dc.field(default_factory=dict)   # reasoning level per "provider.use" (effort.py)
+    quiz_questions: int = 10           # a new practice quiz starts with this many questions (QUIZ_SIZES)
+    cards_per_day: int = 20            # new flashcards a day per course at most (CARDS_PER_DAY; cards.py)
+    export_prefs: dict[str, Any] = dc.field(default_factory=dict)   # the Export menu's last format per place (exports.py)
     course_prefs: dict[str, CoursePrefs] = dc.field(default_factory=dict)
 
     def prefs(self, course_id: str) -> CoursePrefs:
@@ -53,6 +56,8 @@ class Settings:
 
 
 _lock = threading.Lock()
+QUIZ_SIZES = (5, 10, 15, 20)               # the quiz dialog's choices
+CARDS_PER_DAY = (10, 20, 30, 50)           # Settings → Practice's choices
 
 
 def _from_dict(raw: dict[str, Any]) -> Settings:
@@ -96,6 +101,9 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
     s.ai_effort = {**migrate(raw), **clean(s.ai_effort)}
     s.parallel_downloads = max(1, min(4, s.parallel_downloads))
     s.text_size = max(90, min(130, s.text_size))
+    if s.quiz_questions not in QUIZ_SIZES:
+        s.quiz_questions = min(QUIZ_SIZES, key=lambda n: abs(n - s.quiz_questions))
+    s.cards_per_day = max(1, min(200, s.cards_per_day))
     return s
 
 
@@ -148,3 +156,36 @@ def apply_patch(settings: Settings, patch: dict[str, Any]) -> Settings:
         else:
             merged[k] = v
     return _from_dict(merged)
+
+
+# ------------------------------------------------------------------ Settings' groups and "Back to the defaults"
+# What each group of Settings puts back: the student's own settings (this file), the PC's (appconfig.py) and the
+# reminders' timing (agenda.py). Never what was set up or chosen on purpose elsewhere: the speech model the setup
+# picked for this PC, the folder the files are in (moving it moves them), the AI service, the language, running in
+# the background and starting with Windows.
+GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
+    "transcription": {"settings": ("device", "capture_slides", "ask_before_closing", "min_duration_s")},
+    "files": {"settings": ("write_srt", "keep_audio")},
+    "ai": {"settings": ("ai_model", "plan_model", "verify_model", "ai_model_light", "ai_effort")},
+    "practice": {"settings": ("quiz_questions", "cards_per_day")},
+    "notifications": {"app": ("notify_recordings", "notify_announcements", "notify_materials", "notify_reminders",
+                              "sync_minutes"),
+                      "reminders": ("exams", "due_days", "due_hours")},
+    "appearance": {"settings": ("theme", "text_size")},
+}
+
+
+def defaults(group: str) -> dict[str, dict[str, Any]]:
+    """A group's defaults, by where they are kept: {"settings": {...}, "app": {...}, "reminders": {...}}."""
+    from .agenda import REMIND_DEFAULTS
+    from .appconfig import AppConfig
+
+    keys = GROUPS[group]
+    # (a fresh profile's settings as loaded: each AI's reasoning levels filled in, as effort.py's defaults)
+    base = {"settings": _from_dict({}).to_json(), "app": AppConfig().to_json(), "reminders": dict(REMIND_DEFAULTS)}
+    return {where: {k: base[where][k] for k in names} for where, names in keys.items()}
+
+
+def all_defaults() -> dict[str, dict[str, dict[str, Any]]]:
+    """Every group's defaults (the page shows "Back to the defaults" only for a group that differs from them)."""
+    return {g: defaults(g) for g in GROUPS}

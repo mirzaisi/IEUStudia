@@ -82,7 +82,7 @@
           <div class="d">${t("Searched for every topic of a plan, and chosen first when they teach it as well as the others.")}</div>${list("allow", t("None yet."))}</div></div>
       <div class="set-row yt-lists"><div class="txt"><div class="t">${I("ban", "sm")} ${t("Blocked channels")}</div>
           <div class="d">${t("Never shown in your plans, also in the ones you already have.")}</div>${list("block", t("None."))}</div></div>
-      <div class="yt-search"><form class="yt-search-f" data-yt-search><input class="input" name="q" value="${esc(S.yt.q)}" placeholder="${t("Find a channel: its name, @handle or link")}" autocomplete="off">
+      <div class="yt-search"><form class="yt-search-f" data-yt-search><input class="input" name="q" data-act="yt-q" value="${esc(S.yt.q)}" placeholder="${t("Find a channel: its name, @handle or link")}" autocomplete="off">
         <button class="btn sm" type="submit">${I("search", "sm")} ${t("Search")}</button></form>${foundHTML()}</div></div>`;
   }
   const before = St.settingsMore;
@@ -155,6 +155,8 @@
     Object.assign(S.yt, { searching: false, found: r.ok ? r.channels : null, error: r.ok ? "" : r.error || t("YouTube search failed.") });
     if (S.view.name === "settings") renderView();
   }
+  // what is typed is kept as it is typed: Settings drawn again meanwhile (a service's state) erased it
+  (St.inputs = St.inputs || {})["yt-q"] = (el) => { S.yt.q = el.value; };
   const planNew = A["plan-new"];          // plans.js: the new-plan dialog starts with the language chosen here
   Object.assign(A, {
     "plan-new": async (el) => { if (!S.yt.prefs) await load(); return planNew(el); },

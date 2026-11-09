@@ -18,6 +18,7 @@ import requests
 
 from .cancel import check
 from .i18n import t
+from .library import ANN_UNIT
 from .outputs.writer import MAX_PATH_CHARS, course_dir, fit_name, safe_name
 from .paths import app_dir
 
@@ -234,7 +235,8 @@ class MaterialStore:
         unit = next((u for u in units if u["unit_id"] == material["unit_id"]), None)
         first = week_starts(units)
         week = unit_week(unit, first) if unit else None
-        label = (f"Week {week:02d} - {unit['title']}" if week else unit["title"]) if unit else "Other"
+        label = ((f"Week {week:02d} - {unit['title']}" if week else unit["title"]) if unit else
+                 "From announcements" if material.get("unit_id") == ANN_UNIT else "Other")
         base = course_dir(self._s.output_root, course, self.lib.courses(True)) / "Materials"
         # the whole path must stay within Windows' limit (see fit_name): under a deep output folder the unit's name
         # gives way first, so its files keep NAME_ROOM characters of their own names (".part" while downloading)

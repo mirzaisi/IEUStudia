@@ -51,6 +51,32 @@ def test_a_download_in_parts_resumes_and_leaves_nothing_behind(server, tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["model.bin"]
 
 
+def test_each_part_and_the_joined_file_are_on_the_disk_before_they_count(server, tmp_path, monkeypatch):
+    """A power cut can leave a file of its full size with zeros at its end (only its size was safe): a part like that
+    was trusted when the download went on, and the joined file was moved into place from Windows' cache."""
+    flushed, real = [], os.fsync
+
+    def fsync(fd):
+        flushed.append(os.path.basename(open_names.get(fd, "?")))
+        return real(fd)
+
+    open_names, real_open = {}, open
+
+    def opening(file, mode="r", *a, **k):
+        fh = real_open(file, mode, *a, **k)
+        if "b" in mode and ("a" in mode or "w" in mode):
+            open_names[fh.fileno()] = str(file)
+        return fh
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr("builtins.open", opening)
+    dest = tmp_path / "model.bin"
+    httpdl.download(server, dest, session=requests.Session(), parts=4)
+    assert dest.read_bytes() == _Ranged.data
+    assert sorted(set(flushed) - {"model.bin.part"}) == [f"model.bin.part{i}" for i in range(4)]
+    assert flushed.count("model.bin.part") == 3              # the joined file, after each part appended to it
+
+
 def test_joining_frees_each_part_and_without_room_touches_nothing(tmp_path, monkeypatch):
     import errno
     import shutil

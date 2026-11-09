@@ -18,6 +18,7 @@ A pack is a plan of kind "pack" (plans.PlanRunner runs it), so the plan list, ev
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import html
 import logging
 import os
@@ -32,10 +33,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import quote
 
-from . import store
+from . import aiwait, store
 from .cancel import Cancelled
 from .i18n import N_, t, tn
 from .notices import ALERTS_MD, KINDS
+from .outputs.prompts import STYLE, written_in
+from .stressed import chapter_block, for_pack, pack_block      # what the lecturer stressed: the priorities
 
 log = logging.getLogger("studia")
 
@@ -52,12 +55,13 @@ MAX_CHAPTERS = 12
 MAX_FIGURES = 3               # per chapter
 SECTION_PARALLEL = 2          # chapters written at once
 FIGURE_WIDTH = 1400           # slide pages rendered from the PDFs (px)
+CHAPTER_PICTURES = 6          # pages with a figure a chapter's writer sees (about 800 tokens each)
+PICTURE_WIDTH = 1024          # (px)
 
-SYSTEM = ("You are an expert university lecturer writing a study pack: a complete, clear teaching document for an "
-          "engineering student, built only on the course material you are given (where the slides are terse you "
-          "explain with standard textbook knowledge, in the course's notation and scope, never contradicting it). "
-          "You write LaTeX maths ($...$ in a sentence, $$...$$ on lines of their own) and deliver what is asked "
-          "without asking questions.\n\n" + ALERTS_MD)
+SYSTEM = ("You are an experienced university lecturer writing a study pack: a complete teaching document built only on "
+          "the course material you are given (where the slides are terse, explain with standard textbook knowledge in "
+          "the course's notation and scope, never against it). Maths in LaTeX: $...$ in a sentence, $$...$$ on lines "
+          "of their own. You deliver what is asked without asking questions.\n" + STYLE + "\n\n" + ALERTS_MD)
 
 
 def _level(scope: Any, settings: Any) -> str:
@@ -119,15 +123,31 @@ def _outline_room(scope: Any, settings: Any) -> int:
     return min(FILES_CHARS + LECTURES_MIN, int(window * 0.55 * CHARS_PER_TOKEN_BY.get(p, CHARS_PER_TOKEN)))
 
 
-def _file_head(f: dict[str, Any]) -> str:
-    return (f"\n=== FILE {f['ref']} (week {f['week']}): {f['name']} — {f['pages']} pages"
-            f"{', PDF' if f['pdf'] else ''} ===\n")
+def _file_head(f: dict[str, Any], pictures: bool = True) -> str:
+    """A file's line in the material; ``pictures``: with the pages that have a figure (for the outline, which picks
+    them; a chapter's writer read it as pages it was not given)."""
+    from .outputs.figures import pages_text
+
+    pics = f"; pages with a figure: {pages_text(f['pictures'])}" if pictures and f.get("pictures") else ""
+    return (f"\n=== FILE {f['ref']} (week {f['week']}): {f['name']}, {f['pages']} pages"
+            f"{', PDF' if f['pdf'] else ''}{pics} ===\n")
+
+
+def picture_pages(f: dict[str, Any]) -> Optional[list[int]]:
+    """The pages of a gathered PDF that have a picture worth showing (a circuit, a graph, a diagram: outputs/figures.py),
+    [] for another kind of file; None when its pages can't be looked at (not there, not readable)."""
+    from .outputs.figures import page_pictures
+
+    if not f.get("pdf"):
+        return []
+    found = page_pictures(Path(f["path"])) if f.get("path") else None
+    return sorted(found) if found is not None else None
 
 
 def _lecture_head(x: dict[str, Any]) -> str:
     shots = ", ".join(f"part {p['part']}: slides 1–{p['slides']}" for p in x["parts"] if p["slides"])
     return (f"\n=== LECTURE {x['ref']} (week {x['week']}, {x['date']})"
-            f"{' — captured slides ' + shots if shots else ''} ===\n")
+            f"{'; captured slides ' + shots if shots else ''} ===\n")
 
 
 def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:
@@ -146,7 +166,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
         weeks = [w for w in weeks if w["past"] or w["current"]] or d["weeks"]
     pick_f, pick_d = set(scope.files or []), set(scope.days or [])
     only_f, only_d = bool(pick_f or getattr(scope, "picked", False)), bool(pick_d or getattr(scope, "picked", False))
-    head = [f"COURSE: {d['code']} — {d['syllabus'].get('name') or d['display_name']}"]
+    head = [f"COURSE: {d['code']}, {d['syllabus'].get('name') or d['display_name']}"]
     if d["outcomes_en"]:
         head.append("LEARNING OUTCOMES:")
         head += [f"  LO{i}: {lo}" for i, lo in enumerate(d["outcomes_en"], 1)]
@@ -172,6 +192,9 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                     files.append({"ref": f"F{len(files) + 1}", "id": m["id"], "name": m["file_name"] or m["title"],
                                   "week": w["no"], "pages": n, "path": path,
                                   "pdf": (m.get("ext") or Path(path).suffix.lstrip(".")).lower() == "pdf"})
+                    pics = picture_pages(files[-1])
+                    if pics is not None:                 # (else unknown: any of its pages may be a figure)
+                        files[-1]["pictures"] = pics
         for day in reversed(w["days"]):          # in the order they were taught (the course page: newest first)
             if (only_d and day["day_key"] not in pick_d) or (not only_d and day.get("mine") is False):
                 continue
@@ -213,23 +236,27 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
         if rooms[i] < len(full):
             cut.append(x["ref"])
     pack = "\n".join(out)
+    from .quizzes import course_language
+
     return {"pack": pack, "chars": len(pack), "full_chars": full_chars, "files": files, "lectures": lectures, "cut": cut,
+            "language": course_language(d, {"pack": pack}),         # the language the documents are written in
             "files_cut": files_cut,
             "left_out": [texts[i][0]["ref"] for i in range(len(texts)) if i not in rooms],
             "materials_missing": missing, "days_missing": days_missing,
             "course": {"id": course_id, "code": d["code"], "name": d["display_name"]},
             "weeks": [{"no": w["no"], "topic": w["topic_en"] or w["topic_tr"]} for w in weeks],
-            "span": _week_span([w["no"] for w in weeks])}
+            "span": _week_span([w["no"] for w in weeks]),
+            "stressed": for_pack(lib, course_id, d["weeks"], [w["no"] for w in weeks], lectures)}   # (priorities)
 
 
 # ------------------------------------------------------------------ outline (AI)
 def outline_prompt(scope: Any, facts: dict[str, Any]) -> str:
     hard = f"\nThe student finds these hard (explain them with extra care): {scope.difficulties.strip()}" \
         if (scope.difficulties or "").strip() else ""
-    return f"""TASK: Plan a study pack: one complete teaching document that teaches a student everything in the course material below ({facts['span']}), clearly and fully — the textbook chapter these weeks never had.{hard}
+    return f"""TASK: Plan a study pack: one complete teaching document that teaches a student everything in the course material below ({facts['span']}): the textbook chapter these weeks never had.{hard}
 Answer with one JSON object:
 {{"title": "a short title naming the topics (not the course code)",
- "intro": "2–3 sentences for the student: what the pack covers and how to use it",
+ "intro": "2–3 plain sentences for the student: what the pack covers and how to use it",
  "concepts": [{{"name": "a concept", "chapter": "c1"}}],
  "chapters": [{{"id": "c1", "title": "…", "summary": "1–2 sentences", "teaches": ["concept", "…"],
    "sources": {{"files": [{{"ref": "F1", "pages": [3, 9]}}], "lectures": [{{"ref": "L1", "part": 1, "from": "12:00", "to": "41:30"}}]}},
@@ -238,13 +265,27 @@ Answer with one JSON object:
                {{"id": "c1f3", "kind": "frame", "ref": "L1", "part": 1, "slide": 7, "caption": "…"}}]}}]}}
 Rules:
 - "concepts": EVERY definition, result, method, model and type of problem in the material, each with the chapter that teaches it. Nothing in the material may be left out.
-- 3–{MAX_CHAPTERS} chapters in teaching order (what a chapter needs comes before it), following the material's order unless it jumps. Each concept in exactly one chapter's "teaches".
+- {chapters_range(facts)} chapters in teaching order (what a chapter needs comes before it), following the material's order unless it jumps; a short topic shares a chapter rather than getting its own. Each concept in exactly one chapter's "teaches".
 - "sources": the file pages ([first, last]) and lecture passages (part, from–to as m:ss or h:mm:ss) each chapter is taught from.
-- "figures": up to {MAX_FIGURES} per chapter, where a picture teaches better than words. "diagram": drawn for the pack (block diagrams, graphs of functions, geometry, trees, circuits, flows, timelines), described precisely. "slide": a page of a file marked PDF that is itself a useful figure (a diagram, circuit, table or plot). "frame": a slide captured from a lecture, shown as "(slide N)" in that lecture part, only when it shows what the files do not.
-- Use only the references (F…, L…) listed below.
-
+- "figures": up to {MAX_FIGURES} per chapter, only where a picture teaches better than words, never for decoration. "slide": a page listed as having a figure, when that figure (a circuit, graph, diagram or table) is what the chapter explains; it is shown cropped to the picture. "frame": a slide captured from a lecture, "(slide N)" in that lecture part, when it shows board work or a figure the files lack. "diagram": drawn for the pack where the material describes a picture it doesn't show, or one makes an idea clear (a circuit, graph of a function, tree, timeline, block diagram, geometry), described precisely.
+- Use only the references (F…, L…) listed below. Titles in {facts.get('language') or 'English'}.
+{pack_block(facts)}
 === COURSE MATERIAL ===
 {facts['pack']}"""
+
+
+def chapter_count(full_chars: int) -> int:
+    """About how many chapters the material makes (the estimate counts with it too): a 45-slide deck about 3–5."""
+    return max(3, min(MAX_CHAPTERS, round(full_chars / 14_000) + 2))
+
+
+def chapters_range(facts: dict[str, Any]) -> str:
+    """The chapters the outline may make: about chapter_count, a little more when the material asks for it (a pack
+    of nine chapters from one 45-slide deck read long and cost twice its estimate)."""
+    if not facts.get("full_chars"):
+        return f"3–{MAX_CHAPTERS}"
+    n = chapter_count(facts["full_chars"])
+    return f"{n}–{min(MAX_CHAPTERS, n + 2)}"
 
 
 def _str(v: Any, limit: int = 400) -> str:
@@ -294,8 +335,9 @@ def clean_sources(src: Any, facts: dict[str, Any]) -> dict[str, list]:
 
 
 def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
-    """The AI's outline, checked: known references only, pages within the file, a slide page only of a PDF, a frame
-    only of a slide that was captured, unique ids, at most MAX_CHAPTERS chapters and MAX_FIGURES figures each."""
+    """The AI's outline, checked: known references only, pages within the file, a slide page only of a PDF and with
+    a picture on it, a frame only of a slide that was captured, unique ids, at most MAX_CHAPTERS chapters and
+    MAX_FIGURES figures each."""
     if not isinstance(raw, dict):
         raw = {}
     files = {f["ref"]: f for f in facts["files"]}
@@ -316,7 +358,9 @@ def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
             elif kind == "slide":
                 f = files.get(str(g.get("ref", "")).strip())
                 page = g.get("page")
-                if f and f["pdf"] and str(page).isdigit() and 1 <= int(page) <= f["pages"]:
+                # a page with a picture on it (one gathered before 4.0 knows none: any page of the PDF)
+                if f and f["pdf"] and str(page).isdigit() and 1 <= int(page) <= f["pages"] \
+                        and ("pictures" not in f or int(page) in f["pictures"]):
                     figs.append({"id": fid, "kind": "slide", "ref": f["ref"], "page": int(page), "caption": cap})
             elif kind == "frame":
                 x = lectures.get(str(g.get("ref", "")).strip())
@@ -335,7 +379,7 @@ def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
     concepts = [{"name": _str(k.get("name"), 160), "chapter": idmap.get(str(k.get("chapter", "")), "")}
                 for k in raw.get("concepts") or [] if isinstance(k, dict) and _str(k.get("name"))][:200]
     return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "intro": _str(raw.get("intro"), 800),
-            "chapters": chapters, "concepts": concepts,
+            "chapters": chapters, "concepts": concepts, "language": facts.get("language") or "",
             "uncovered": [k["name"] for k in concepts if k["chapter"] not in ids]}
 
 
@@ -353,7 +397,7 @@ def _slice(day: str, part: int, a: float, b: Optional[float]) -> str:
             continue
         if not keep:
             continue
-        ts = re.match(r"\[(\d+(?::\d{2}){1,2})\]", line)
+        ts = re.match(r"\[(?:Screen \d+, )?(\d+(?::\d{2}){1,2})[\]-]", line)      # (a screen line: at its start)
         if ts:
             s = _secs(ts.group(1)) or 0
             if s < a - 30 or (b is not None and s > b + 30):
@@ -375,7 +419,7 @@ def chapter_material(lib: Any, course_id: str, facts: dict[str, Any], ch: dict[s
         f = files[s["ref"]]
         body = _file_text(lib, f, (s["pages"][0], s["pages"][1]), limit=max(0, room))
         if body:
-            text = _file_head(f) + body
+            text = _file_head(f, pictures=False) + body
             out.append(text)
             room -= len(text)
     days: dict[str, str] = {}
@@ -393,12 +437,59 @@ def chapter_material(lib: Any, course_id: str, facts: dict[str, Any], ch: dict[s
     return "\n".join(out) if out else facts["pack"][:SECTION_CHARS]
 
 
-def section_prompt(outline: dict[str, Any], ch: dict[str, Any], material: str, scope: Any) -> str:
+def chapter_pictures(facts: dict[str, Any], ch: dict[str, Any], most: int = CHAPTER_PICTURES) -> list[tuple[str, Path]]:
+    """The pages with a figure a chapter is taught from (the ones it shows first), as pictures for its writer: a
+    slide's circuit, values and equations are often pictures its text doesn't carry. [("[F1 p.4]", picture)]"""
+    from .materials import page_image
+
+    files = {f["ref"]: f for f in facts["files"]}
+    lectures = {x["ref"]: x for x in facts["lectures"]}
+    out: list[tuple[str, Path]] = []
+    for g in ch["figures"]:                               # a lecture slide it shows: the one captured
+        x = lectures.get(g.get("ref", "")) if g["kind"] == "frame" else None
+        part = next((p for p in (x or {}).get("parts", []) if p["part"] == g.get("part")), None)
+        if part and len(out) < most:
+            shot = next((sl for sl in store.load_slides(part["delivery_id"]) if sl.index == g["slide"]), None)
+            if shot and shot.path and Path(shot.path).is_file():
+                out.append((f"[{g['ref']} part {g['part']}, slide {g['slide']}]", Path(shot.path)))
+    pages = [(g["ref"], g["page"]) for g in ch["figures"] if g["kind"] == "slide"]
+    for s in ch["sources"]["files"]:
+        f = files.get(s["ref"]) or {}
+        pages += [(s["ref"], p) for p in f.get("pictures") or [] if s["pages"][0] <= p <= s["pages"][1]]
+    for ref, page in dict.fromkeys(pages):
+        f = files.get(ref) or {}
+        if len(out) >= most or not f.get("pdf") or not f.get("path") or not Path(f["path"]).is_file():
+            continue
+        try:
+            img = page_image(Path(f["path"]), page, width=PICTURE_WIDTH)
+        except Exception:  # noqa: BLE001 - a page that can't be drawn: written from its text
+            log.info("Page %s of %s could not be drawn for its chapter", page, f.get("name"), exc_info=True)
+            img = None
+        if img:
+            out.append((f"[{ref} p.{page}]", Path(img)))
+    return out
+
+
+def picture_blocks(pictures: list[tuple[str, Path]]) -> list[dict[str, Any]]:
+    """Pictures as a request's content: each one's label, then the picture."""
+    from .ai import image_block
+
+    out: list[dict[str, Any]] = []
+    for label, path in pictures:
+        try:
+            out += [{"type": "text", "text": label}, image_block(path)]
+        except Exception:  # noqa: BLE001 - one that can't be read is left out
+            log.info("A page picture could not be read", exc_info=True)
+    return out
+
+
+def section_prompt(outline: dict[str, Any], ch: dict[str, Any], material: str, scope: Any,
+                   pictures: Optional[list[str]] = None) -> str:
     chapters = outline["chapters"]
     n = chapters.index(ch) + 1
-    toc = "\n".join(f"{i}. {c['title']} — teaches: {', '.join(c['teaches']) or c['summary']}"
+    toc = "\n".join(f"{i}. {c['title']}: {', '.join(c['teaches']) or c['summary']}"
                     for i, c in enumerate(chapters, 1))
-    figs = "\n".join(f"[[FIGURE {g['id']}]] — {g['caption'] or g.get('brief', '')}" for g in ch["figures"])
+    figs = "\n".join(f"[[FIGURE {g['id']}]] ({g['caption'] or g.get('brief', '')})" for g in ch["figures"])
     hard = f"\nThe student finds these hard; explain them with extra care: {scope.difficulties.strip()}" \
         if (scope.difficulties or "").strip() else ""
     return f"""TASK: Write chapter {n} of {len(chapters)} of the study pack "{outline['title']}": "{ch['title']}".
@@ -406,18 +497,18 @@ The whole pack (teach only this chapter's concepts; refer to the others by their
 {toc}
 
 This chapter teaches: {', '.join(ch['teaches']) or ch['summary']}.{hard}
-Write it as a clear, complete textbook chapter for a student meeting these ideas for the first time:
-- Open with why it matters and the intuition, then the definitions, then the results and methods, each explained step by step (say why each step is done).
-- Every method gets at least one fully worked example (every step shown, the numbers checked); use the course material's own examples and notation where it has them.
-- Point out the common mistakes and how to avoid them.
-- End with a "check" box: 3–5 questions in the style of the course, each followed by its answer.
-- Where the material is terse, explain with standard textbook knowledge, in the course's notation and scope, never contradicting the material.
+Teach it as a good textbook chapter for a student meeting these ideas for the first time:
+- Start with what the idea is for and the intuition, then the definitions, then the results and methods, each step explained.
+- Every method gets at least one fully worked example (every step, the numbers checked), the material's own examples and notation where it has them.
+- Point out the mistakes students make and how to avoid them.
+- End with a "check" box: 3–5 questions in the course's style, each followed by its answer.
+- An alert only when the student must act on it (material missing, the slides possibly wrong); not to say an example is your own.
 Format (Markdown):
 - Subheadings with ### (and ####), never # or ##; don't repeat the chapter title.
-- Maths in LaTeX: $...$ in a sentence, $$...$$ on lines of their own.
-- Boxes: a line ":::kind Title", the box's text, then a line ":::". Kinds: definition, key (an important result or rule), example (a worked example: the question, then the solution), mistake (a common mistake), check (the closing questions and answers).
-{('- Figures: put each of these lines on a line of its own where the figure helps, exactly as written, and refer to it in words ("the figure below"):' + chr(10) + figs) if figs else '- No figures in this chapter.'}
-Answer with the chapter's Markdown only.
+- Boxes: a line ":::kind Title", the box's text, then a line ":::". Kinds: definition, key (an important result or rule), example (a worked example: the question, then the solution), mistake (a common mistake), check (the closing questions and answers). Only for those, not around every paragraph.
+- A table where the material compares cases or lists values.
+{('- Figures: put each marker [[FIGURE id]] below on a line of its own, right after the paragraph that explains its figure, and refer to the figure in words ("the figure below"):' + chr(10) + figs) if figs else '- No figures in this chapter.'}
+{('The pages of the material with figures are attached as pictures, labelled ' + ', '.join(pictures) + ': read the circuits, values and equations on them.' + chr(10)) if pictures else ''}{written_in(outline.get("language", ""))} Answer with the chapter's Markdown only.
 
 === THIS CHAPTER'S COURSE MATERIAL ===
 {material}"""
@@ -435,6 +526,15 @@ def clean_section(md: str, ch: dict[str, Any]) -> str:
     if lines and re.match(r"#{1,2}\s", lines[0]) and _str(lines[0].lstrip("# ")).lower() in ch["title"].lower():
         lines = lines[1:]                                                             # the title again
     md = "\n".join(re.sub(r"^#{1,2}(\s)", r"###\1", x) for x in lines).strip()
+    # a marker in a line of text goes on a line of its own (it is only drawn there); what describes it beside it,
+    # "(a Venn diagram)" or "— the circuit", is the caption the figure already has
+    def alone(m: re.Match) -> str:
+        before, after = m.group(1).rstrip(), m.group(3).strip()
+        if re.match(r"[-—–:(]", after):
+            after = ""
+        return (before + "\n\n" if before.strip() else "") + m.group(2) + ("\n\n" + after if after else "")
+
+    md = re.sub(r"^(.*?)[ \t]*(\[\[\s*FIGURE\s+[\w-]+\s*\]\])(.*)$", alone, md, flags=re.M)
     known, placed = {g["id"] for g in ch["figures"]}, set()
 
     def mark(m: re.Match) -> str:
@@ -463,9 +563,9 @@ Figures to draw:
 For each one, answer exactly:
 === FIGURE <id> ===
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 <height>">…</svg>
-Caption: <one sentence>
+Caption: <one short sentence>
 
-Rules: a clean, correct textbook figure that matches the chapter's text, notation and numbers. Only these elements: g, path, line, polyline, polygon, rect, circle, ellipse, text, tspan, defs, marker (for arrowheads). No script, style, image, foreignObject, links or CSS classes. Width 640; height as needed (200–480). font-family="Segoe UI, Arial, sans-serif", font-size 13–16, labels never overlapping lines or each other, every axis and arrow labelled. Colours: #1f2937 for lines and text, accents #2563eb, #dc2626, #059669, #d97706; light fills (#dbeafe, #fee2e2, #d1fae5, #fef3c7); no background rectangle. Maths in labels as plain Unicode text (θ, ω, x², √, ≤, →, subscripts with <tspan baseline-shift="sub" font-size="11">), not LaTeX.
+Rules: a clean, correct textbook figure that matches the chapter's text, notation and numbers, simple enough to read at a glance; nothing decorative. Only these elements: g, path, line, polyline, polygon, rect, circle, ellipse, text, tspan, defs, marker (for arrowheads). No script, style, image, foreignObject, links or CSS classes. Width 640; height as needed (200–420); 16px clear at the edges. font-family="Segoe UI, Arial, sans-serif", font-size 13–15; no label touches a line or another label; every axis, arrow and part labelled. Lines and text #1f2937 (stroke-width 1.5–2), one accent #1d4ed8 for what the figure is about, #dc2626 only for a contrast or an error; light fills (#eff5ff, #f3f4f6); no background rectangle. Circuits: straight wires at right angles, resistors as zigzags, capacitors as two plates, inductors as loops, sources as circles with + and −, every element's name and value beside it. Graphs: axes with arrowheads, names and a few tick values. Maths in labels as plain Unicode text (θ, ω, x², √, ≤, →, subscripts with <tspan baseline-shift="sub" font-size="11">), not LaTeX.
 
 === THE CHAPTER ===
 {md[:16_000]}"""
@@ -639,17 +739,31 @@ def _inline(text: str, keep: list[str]) -> str:
     s = re.sub(r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])", r"<em>\1</em>", s)
     s = re.sub(r"\[([^\]]+)\]\((?:[^)\s]+)\)", r"\1", s)
     s = re.sub(r"\[ \]", "☐", s)
+    # a formula keeps the punctuation around it on its line ("i(τ)" then "." alone on the next one read badly): a word
+    # joiner (U+2060) between them, which KaTeX leaves where it is
+    s = re.sub(r"(\x00\d+\x00)(?=[.,;:!?)\]])", "\\1\u2060", re.sub(r"(?<=[(\[])(\x00\d+\x00)", "\u2060\\1", s))
     return re.sub(r"\x00(\d+)\x00", lambda m: html.escape(keep[int(m.group(1))], quote=False), s)
 
 
-def md_html(md: str, figure: Callable[[str], str] = lambda fid: "") -> str:
+def md_html(md: str, figure: Callable[[str], str] = lambda fid: "",
+            image: Optional[Callable[[str, str], str]] = None) -> str:
     """A chapter's Markdown as HTML: ### headings, paragraphs, lists (nested), tables, block quotes, code, rules,
-    ":::kind Title" boxes and [[FIGURE id]] lines (``figure(id)``: its HTML). All text is escaped; formulas stay as
-    written ($…$, $$…$$) for KaTeX."""
+    ":::kind Title" boxes, [[FIGURE id]] lines (``figure(id)``: its HTML) and pictures on a line of their own
+    ("![caption](src)": ``image(caption, src)``, else left out). All text is escaped; formulas stay as written ($…$,
+    $$…$$) for KaTeX."""
     keep: list[str] = []
+    shown = figure
+
+    def figure(ref: str, src: Optional[str] = None) -> str:   # noqa: F811 - [[FIGURE id]] and pictures, one way down
+        return shown(ref) if src is None else image(ref, src) if image else ""
 
     def hold(m: re.Match) -> str:
-        keep.append(m.group(0))
+        text = m.group(0)
+        if "\n" in text:            # a formula over lines in a quote or an alert: without the "> " of its next lines
+            q = re.match(r"[ \t]*((?:>[ \t]?)+)", m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()])
+            if q:                   # (as many as the line it opens on has: "> 0" in it stays a relation)
+                text = re.sub(r"\n[ \t]*(?:>[ \t]?){1,%d}" % q.group(1).count(">"), "\n", text)
+        keep.append(text)
         return f"\x00{len(keep) - 1}\x00"
 
     blocks: list[str] = []                  # fenced code first: no formulas or Markdown inside
@@ -659,7 +773,26 @@ def md_html(md: str, figure: Callable[[str], str] = lambda fid: "") -> str:
     return _blocks(md.split("\n"), keep, blocks, figure)
 
 
-def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable[[str], str]) -> str:
+_PICTURE = re.compile(r"!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*\)")      # (outputs/figures.py IMAGE_LINE)
+
+
+def box_head(kind: str, title: str) -> tuple[str, str]:
+    """A box's label and title without saying the same twice: ":::check Check" is "Check yourself", ":::example
+    Example 4" is "Example 4", ":::example Worked example: RC discharge" is "Example · RC discharge"."""
+    label, title = BOXES.get(kind, BOXES["note"]), " ".join((title or "").split())
+    words = {label.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
+             "definition", "key idea", "key result", "note"}
+    for w in sorted(words, key=len, reverse=True):
+        if title.lower().startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()):
+            rest = title[len(w):].strip(" :.-–—")
+            num = re.match(r"(\d+(?:\.\d+)*[a-z]?|[A-Z])(?:$|[\s:.,)–—-]+)", rest)   # "Example 4", "Example 2.3: …"
+            if num:
+                label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.-–—")
+            return label, rest[:1].upper() + rest[1:]
+    return label, title
+
+
+def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable[..., str]) -> str:
     out: list[str] = []
     para: list[str] = []
     i = 0
@@ -684,8 +817,9 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
                 j += 1
             kind = m.group(1).lower()
             cls = {"theorem": "key", "tip": "note", "warning": "mistake"}.get(kind, kind)
-            label, title = BOXES[kind], _inline(m.group(2).strip(), keep)
-            out.append(f'<div class="sp-box sp-{cls}"><div class="sp-box-h"><b>{label}</b>'
+            label, title = box_head(kind, m.group(2))
+            title = _inline(title, keep)
+            out.append(f'<div class="sp-box sp-{cls}"><div class="sp-box-h"><b>{html.escape(label)}</b>'
                        f'{" · " + title if title else ""}</div>{_blocks(lines[i + 1:j], keep, code, figure)}</div>')
             i = j + 1
             continue
@@ -696,6 +830,12 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
         if m:
             flush()
             out.append(figure(m.group(1)))
+            i += 1
+            continue
+        m = _PICTURE.fullmatch(s)
+        if m:
+            flush()
+            out.append(figure(m.group(1), m.group(2)))
             i += 1
             continue
         m = re.fullmatch(r"\x01(\d+)\x01", s)
@@ -756,12 +896,23 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
             out.append(f'<div class="sp-table"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
             i = j
             continue
-        if re.match(r"\s*(?:[-*+]|\d+[.)])\s+", line):
+        if _ITEM.match(line):
             flush()
             j = i
-            while j < len(lines) and lines[j].strip() and (re.match(r"\s*(?:[-*+]|\d+[.)])\s+", lines[j])
-                                                          or lines[j].startswith((" ", "\t"))):
-                j += 1
+            while j < len(lines):
+                if lines[j].strip():
+                    if not (_ITEM.match(lines[j]) or lines[j].startswith((" ", "\t"))):
+                        break
+                    j += 1
+                    continue
+                # a blank line: the list goes on when the next line with text is an item or indented (an answer under
+                # its question, a formula between two steps), as in the app's chats
+                k = j
+                while k < len(lines) and not lines[k].strip():
+                    k += 1
+                if k == len(lines) or not (_ITEM.match(lines[k]) or re.match(r"(?: {2,}|\t)\S", lines[k])):
+                    break
+                j = k
             out.append(_list(lines[i:j], keep, code, figure))
             i = j
             continue
@@ -771,26 +922,35 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
     return "".join(out)
 
 
+_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s+")
+
+
 def _list(lines: list[str], keep: list[str], code: list[str], figure: Callable[[str], str]) -> str:
-    """Consecutive list lines as nested <ul>/<ol> (by indentation); an indented line without a marker continues
-    the item above it."""
-    items: list[tuple[int, bool, list[str]]] = []
+    """Consecutive list lines as nested <ul>/<ol> (by indentation); an indented line without a marker, or a blank
+    one, continues the item above it. A numbered list keeps its first number ("<ol start=3>": an answer or a
+    formula between the items of a "Check yourself" box doesn't make them 1, 1, 1)."""
+    items: list[tuple[int, bool, list[str], int]] = []
     for line in lines:
         m = re.match(r"(\s*)([-*+]|\d+[.)])\s+(.*)", line)
         if m:
-            items.append((len(m.group(1).replace("\t", "    ")), m.group(2)[0].isdigit(), [m.group(3)]))
+            items.append((len(m.group(1).replace("\t", "    ")), m.group(2)[0].isdigit(), [m.group(3)],
+                          int(m.group(2)[:-1]) if m.group(2)[0].isdigit() else 1))
         elif items:
             items[-1][2].append(line.strip())
     html_out, stack = [], []                          # stack: (indent, tag)
-    for indent, ordered, text in items:
+    for indent, ordered, text, number in items:
         tag = "ol" if ordered else "ul"
         while stack and indent < stack[-1][0]:
             html_out.append(f"</li></{stack.pop()[1]}>")
+        if stack and indent == stack[-1][0] and stack[-1][1] != tag:      # "- a" then "1. b": a list of its own
+            html_out.append(f"</li></{stack.pop()[1]}>")
         if not stack or indent > stack[-1][0]:
-            html_out.append(f"<{tag}>")
+            html_out.append(f'<{tag} start="{number}">' if ordered and number != 1 else f"<{tag}>")
             stack.append((indent, tag))
         else:
             html_out.append("</li>")
+        while len(text) > 1 and not text[-1]:         # the blank lines before the next item
+            text = text[:-1]
         body = text[0] if len(text) == 1 else "\n".join(text)
         inner = _blocks(body.split("\n"), keep, code, figure) if len(text) > 1 else _inline(body, keep)
         if inner.startswith("<p>") and inner.count("<p>") == 1 and inner.endswith("</p>"):
@@ -803,6 +963,15 @@ def _list(lines: list[str], keep: list[str], code: list[str], figure: Callable[[
 
 # ------------------------------------------------------------------ the document
 CSS_FILE = Path(__file__).resolve().parent / "web" / "studypack.css"
+# How a pack's document is drawn: raised when the code draws it differently (md_html, document_body), as the
+# stylesheet's own changes are seen by itself. A finished pack laid out with another is laid out again from its
+# saved data, no AI, before its PDF is opened or saved (make_pdf).
+LAYOUT = 3           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
+                     # 3 (4.0): lectures named by their day, pictures on a line of their own
+
+
+def layout() -> str:
+    return f"{LAYOUT}-{hashlib.sha1(CSS_FILE.read_bytes()).hexdigest()[:12]}"
 
 
 def figure_html(fig: dict[str, Any], number: str, src: Callable[[str], str]) -> str:
@@ -829,7 +998,9 @@ def document_body(outline: dict[str, Any], sections: dict[str, str], figures: di
     if meta.get("files"):
         sources.append("Files: " + ", ".join(esc(f["name"]) for f in meta["files"]))
     if meta.get("lectures"):
-        sources.append("Lectures: " + ", ".join(esc(x["date"]) for x in meta["lectures"]))
+        from .cheatsheet import _day
+
+        sources.append("Lectures: " + ", ".join(esc(_day(x["date"])) for x in meta["lectures"]))
     out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(meta["course"])} · Study pack</div>'
            f'<h1>{esc(outline["title"])}</h1><div class="sp-sub">{esc(meta["span"])} · made with IEUStudia on '
            f'{esc(meta["date"])}</div>' + (f'<p class="sp-intro">{_inline(outline["intro"], [])}</p>' if outline.get("intro") else "")
@@ -968,8 +1139,9 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         if cancel.is_set():
             raise Cancelled()
 
-    def ask_text(prompt: str) -> dict[str, Any]:
-        return (runner._ask_text or one_shot)(SYSTEM, [{"type": "text", "text": prompt}], model, level, cancel, None)
+    def ask_text(prompt: str, more: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+        return (runner._ask_text or one_shot)(SYSTEM, [{"type": "text", "text": prompt}, *(more or [])], model, level,
+                                              cancel, None)
 
     # gather
     if "gather" not in data:
@@ -1000,10 +1172,13 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
             stage("sections", 0.12 + 0.6 * n / len(chapters),
                   t("Writing chapter {n} of {total} ({model})…", n=min(n + 1, len(chapters)), total=len(chapters),
                     model=shown))
+            aiwait.of(cancel).units(n, len(chapters), SECTION_PARALLEL)      # the chapters still to come (time left)
 
         def write(ch: dict[str, Any]) -> tuple[str, str, dict]:
-            material = chapter_material(s.lib, plan["course_id"], facts, ch)
-            res = ask_text(section_prompt(outline, ch, material, scope))
+            material = chapter_material(s.lib, plan["course_id"], facts, ch) + chapter_block(facts, ch)
+            pictures = picture_blocks(chapter_pictures(facts, ch))   # the pages it explains: figures text can't carry
+            res = ask_text(section_prompt(outline, ch, material, scope, [b["text"] for b in pictures if "text" in b]),
+                           pictures)
             md = clean_section(res.get("text") or "", ch)
             if len(md) < 300:
                 raise RuntimeError(t("The AI returned an empty chapter. Try again."))
@@ -1067,33 +1242,46 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
 
 
 def _pictures(lib: Any, plan: dict[str, Any], facts: dict[str, Any], outline: dict[str, Any],
-              folder: Path) -> dict[str, dict[str, Any]]:
-    """The slide pages and lecture frames the outline asks for, as JPEGs in ``folder``: {figure id: figure}."""
+              folder: Path, keep: bool = False) -> dict[str, dict[str, Any]]:
+    """The slide pages (cropped to their picture: outputs/figures.py) and lecture frames the outline asks for, as JPEGs
+    in ``folder``: {figure id: figure}. ``keep``: one already there is used as it is (a pack laid out again: its
+    source file may have moved since)."""
     from .materials import page_image
+    from .outputs.figures import figure_image
 
     files = {f["ref"]: f for f in facts["files"]}
     lectures = {x["ref"]: x for x in facts["lectures"]}
     out: dict[str, dict[str, Any]] = {}
     for c in outline["chapters"]:
         for g in c["figures"]:
+            had = folder / f"{g['id']}.jpg"
+            if keep and g["kind"] in ("slide", "frame") and had.is_file():
+                out[g["id"]] = {"kind": g["kind"], "image": str(had), "caption": g["caption"],
+                                "source": _source(facts, g)}
+                continue
             try:
                 if g["kind"] == "slide":
                     f = files[g["ref"]]
-                    img = page_image(Path(f["path"]), g["page"], width=FIGURE_WIDTH) if f["path"] else None
-                    source = f"{f['name']}, page {g['page']}"
+                    img = None
+                    if f["path"] and Path(f["path"]).is_file():
+                        cropped = folder / f"{g['id']}.jpg"
+                        img = cropped if figure_image(Path(f["path"]), g["page"], cropped, FIGURE_WIDTH,
+                                                      g.get("caption", "")) else \
+                            page_image(Path(f["path"]), g["page"], width=FIGURE_WIDTH)
                 elif g["kind"] == "frame":
                     x = lectures[g["ref"]]
                     part = next(p for p in x["parts"] if p["part"] == g["part"])
                     sl = [s for s in store.load_slides(part["delivery_id"]) if s.index == g["slide"]]
                     img = Path(sl[0].path) if sl and sl[0].path else None
-                    source = f"lecture of {x['date']}, part {g['part']}, slide {g['slide']}"
                 else:
                     continue
                 if img and img.is_file():
                     folder.mkdir(parents=True, exist_ok=True)
                     dest = folder / f"{g['id']}.jpg"
-                    shutil.copyfile(img, dest)
-                    out[g["id"]] = {"kind": g["kind"], "image": str(dest), "caption": g["caption"], "source": source}
+                    if img != dest:                                     # (a cropped picture is made there)
+                        shutil.copyfile(img, dest)
+                    out[g["id"]] = {"kind": g["kind"], "image": str(dest), "caption": g["caption"],
+                                    "source": _source(facts, g)}
             except Exception:  # noqa: BLE001 - a figure that can't be made is left out
                 log.warning("Study pack figure %s could not be made", g["id"], exc_info=True)
     return out
@@ -1133,29 +1321,33 @@ def files_for(s: Any, plan: dict[str, Any], title: str,
 
 
 def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[str, Any], sections: dict[str, str],
-             drawn: dict[str, dict[str, Any]], data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Write the document and its PDF; the result the app shows."""
+             drawn: dict[str, dict[str, Any]], data: Optional[dict[str, Any]] = None, made: Optional[dt.date] = None,
+             keep_images: bool = False) -> dict[str, Any]:
+    """Write the document and its PDF; the result the app shows. ``made``: the day it says it was made (today);
+    ``keep_images``: the slide pictures already beside it are used (relayout)."""
+    made = made or dt.date.today()
     html_path, pdf_path, img_dir = files_for(s, plan, outline["title"], data)
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    figures = {**_pictures(s.lib, plan, facts, outline, img_dir), **drawn}
-    meta = meta_of(facts)
+    figures = {**_pictures(s.lib, plan, facts, outline, img_dir, keep_images), **drawn}
+    meta = meta_of(facts, made)
     rel = lambda p: quote(f"{img_dir.name}/{Path(p).name}")   # noqa: E731 - next to the HTML file ("#" in a title)
     titles = [c["title"] for c in outline["chapters"]]
     body = document_body(outline, sections, figures, meta, rel)
     _write(html_path, document_html(body, outline["title"], html_path.parent))
     pdf_ok = False
     try:
-        if print_pdf(html_path, pdf_path):
+        if _print_to(html_path, pdf_path):
+            pdf_ok = True
             pages = chapter_pages(pdf_path, titles)                  # the contents get their page numbers
             if pages:
                 _write(html_path, document_html(document_body(
                     outline, sections, figures, meta, rel,
                     {c["id"]: pages[i] for i, c in enumerate(outline["chapters"]) if i in pages}), outline["title"], html_path.parent))
-                print_pdf(html_path, pdf_path)
-            pdf_ok = pdf_path.is_file()
+                _print_to(html_path, pdf_path)
     except Exception:  # noqa: BLE001 - the pack is still shown in the app
         log.warning("The study pack's PDF could not be made", exc_info=True)
     return {"kind": "pack", "title": outline["title"], "file": str(html_path), "pdf": str(pdf_path) if pdf_ok else "",
+            "layout": layout(), "made": made.isoformat(),
             "figures": sum(1 for c in outline["chapters"] for g in c["figures"] if g["id"] in figures),
             "chapters": [{"id": c["id"], "title": c["title"]} for c in outline["chapters"]],
             "concepts": len(outline.get("concepts") or []), "uncovered": outline.get("uncovered") or [],
@@ -1164,15 +1356,46 @@ def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[
             "materials_missing": facts["materials_missing"], "days_missing": facts["days_missing"]}
 
 
-def meta_of(facts: dict[str, Any]) -> dict[str, Any]:
+def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, Any]:
+    made = made or dt.date.today()
     return {"course": facts["course"]["code"], "span": facts["span"].capitalize(), "files": facts["files"],
-            "lectures": facts["lectures"], "date": f"{dt.date.today():%d %b %Y}"}
+            "lectures": facts["lectures"], "date": f"{made.day} {made:%b %Y}"}
+
+
+def made_on(plan: dict[str, Any]) -> dt.date:
+    """The day a finished pack or sheet was made (its documents say so): kept in its result, else (made before 4.0)
+    the day it was started."""
+    for v in ((plan.get("result") or {}).get("made"), plan.get("created_at")):
+        try:
+            return dt.date.fromisoformat(str(v or "")[:10])
+        except ValueError:
+            continue
+    return dt.date.today()
 
 
 def _write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(text.encode("utf-8"))
     tmp.replace(path)
+
+
+def _print_to(html_path: Path, pdf_path: Path) -> bool:
+    """``html_path`` printed to ``pdf_path`` through a file beside it: the PDF there is replaced only by a whole new
+    one (a print that fails, or an earlier PDF open in a viewer, leaves it as it was)."""
+    part = pdf_path.with_name(pdf_path.name + ".part")
+    try:
+        if not print_pdf(html_path, part):
+            return False
+        os.replace(part, pdf_path)
+        return True
+    except OSError:
+        log.warning("The PDF %s could not be replaced (open in another program?)", pdf_path.name, exc_info=True)
+        return False
+    finally:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def shown_body(s: Any, plan: dict[str, Any]) -> str:
@@ -1194,21 +1417,82 @@ def shown_body(s: Any, plan: dict[str, Any]) -> str:
             if g["kind"] != "diagram" and p.is_file():
                 figures[g["id"]] = {"kind": g["kind"], "image": str(p), "caption": g["caption"],
                                     "source": _source(facts, g)}
-    return document_body(outline, data.get("sections") or {}, figures, meta_of(facts), lambda p: Path(p).as_uri())
+    return document_body(outline, data.get("sections") or {}, figures, meta_of(facts, made_on(plan)),
+                         lambda p: Path(p).as_uri())
 
 
 def _source(facts: dict[str, Any], g: dict[str, Any]) -> str:
+    """Where a figure comes from, under its caption: "Week 6.pdf, page 4", "lecture of 28 Oct 2026, part 1, slide 7"."""
     if g["kind"] == "slide":
         f = next((f for f in facts["files"] if f["ref"] == g["ref"]), None)
         return f"{f['name']}, page {g['page']}" if f else ""
     x = next((x for x in facts["lectures"] if x["ref"] == g["ref"]), None)
-    return f"lecture of {x['date']}, part {g['part']}, slide {g['slide']}" if x else ""
+    if not x:
+        return ""
+    try:
+        day = f"{dt.date.fromisoformat(str(x['date'])[:10]):%d %b %Y}".lstrip("0")
+    except ValueError:
+        day = x["date"]
+    return f"lecture of {day}, part {g['part']}, slide {g['slide']}"
+
+
+def relayout(s: Any, plan: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """A finished pack or cheatsheet laid out again from its saved data, no AI: its HTML and PDF written again under
+    their names, with the day it was made (a sheet made before 3.2.2 printed its symbols' meanings over the next
+    column, a pack before 4.0 cut a formula wider than the page). Its new result (saved), or None when its data can't
+    make it: its files stay as they were. A PDF that couldn't be printed again (Edge busy, the old one open in a
+    viewer) stays too, and it is tried again the next time."""
+    r = plan.get("result") or {}
+    data = dict(plan.get("data") or {})
+    if not data.get("stem") and r.get("file"):                    # (kept since 3.0: the same file names)
+        data["stem"] = Path(r["file"]).stem
+    made = made_on(plan)
+    try:
+        if r.get("kind") == "sheet":
+            from . import cheatsheet
+
+            if not data.get("topics") or not data.get("gather"):
+                return None
+            new = cheatsheet.assemble(s, plan, data["topics"], data["gather"], cheatsheet._all_entries(data),
+                                      data.get("checks") or {}, data, made=made)
+        else:
+            if not data.get("outline") or not data.get("gather") or not data.get("sections"):
+                return None
+            new = assemble(s, plan, data["outline"], data["gather"], data["sections"], data.get("figures") or {}, data,
+                           made=made, keep_images=True)
+    except Exception:  # noqa: BLE001 - its files stay as they were
+        log.warning("The %s %s could not be laid out again", r.get("kind") or "pack", plan.get("id"), exc_info=True)
+        return None
+    if not new["pdf"]:
+        old = r.get("pdf") or ""
+        new = {**new, "pdf": old if old and Path(old).is_file() else "", "layout": r.get("layout", "")}
+        if "pages" in r:
+            new["pages"] = r["pages"]
+    result = {**r, **new}
+    s.lib.update_plan(plan["id"], result=result)
+    return result
+
+
+def _laid_out(r: dict[str, Any]) -> bool:
+    """Are this finished pack's (or sheet's) files there, laid out the way the app lays them out now?"""
+    if r.get("kind") == "sheet":
+        from .cheatsheet import layout as now
+    else:
+        now = layout
+    have = (r.get("pdf") and Path(r["pdf"]).is_file()) or (r.get("file") and Path(r["file"]).is_file())
+    return bool(have) and r.get("layout") == now()
 
 
 def make_pdf(s: Any, plan: dict[str, Any]) -> Optional[Path]:
     """The pack's (or cheatsheet's) PDF, printed again when it is missing (deleted, or Edge was busy when it was
-    made)."""
+    made); one made with an older layout, or with its files gone, is laid out again first (relayout)."""
     r = plan.get("result") or {}
+    if r.get("kind") == "prep":                     # an exam review sheet (plans.py): printed from its Markdown
+        from .plans import prep_pdf
+
+        return prep_pdf(s, plan)
+    if r.get("kind") in ("pack", "sheet") and not _laid_out(r):
+        r = relayout(s, plan) or r
     if r.get("pdf") and Path(r["pdf"]).is_file():
         return Path(r["pdf"])
     html_path = Path(r.get("file") or "")
@@ -1245,17 +1529,18 @@ def options(lib: Any, settings: Any, course_id: str) -> dict[str, Any]:
 
 def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:
     """Roughly what a pack costs before it starts: tokens in and out, requests and time."""
-    from .ai import PROMPT_OVERHEAD, chars_per_token
+    from .ai import IMAGE_TOKENS, PROMPT_OVERHEAD, chars_per_token
     from .plans import main_model
 
     per = chars_per_token()
     facts = gather(lib, settings, course_id, scope)
     full = facts["full_chars"]
-    n = max(3, min(MAX_CHAPTERS, round(full / 14_000) + 2))
+    n = chapter_count(full)                        # (the outline makes n to n + 2: chapters_range)
     section_in = min(SECTION_CHARS, max(6_000, int(full / n * 1.3)))
     figures = n                                                        # about one drawing request per chapter
+    pictures = min(n * CHAPTER_PICTURES, sum(len(f.get("pictures") or []) for f in facts["files"]))
     tokens_in = (facts["chars"] / per + PROMPT_OVERHEAD + 1_200) + n * (section_in / per + PROMPT_OVERHEAD + 1_600) \
-        + figures * (5_000 + PROMPT_OVERHEAD)
+        + figures * (5_000 + PROMPT_OVERHEAD) + pictures * IMAGE_TOKENS          # (the pages with figures, seen)
     tokens_out = 3_500 + n * 5_500 + figures * 2_500
     a = 3 + round(n * 2.5 / SECTION_PARALLEL) + figures
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings),

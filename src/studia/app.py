@@ -648,13 +648,17 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
                                              "the download continues where it stopped.")):
             return False
         busy = services is not None and services.jobs.busy()
-        if busy and not api._close_ok and services.settings.ask_before_closing:
-            if api._ask_close():                  # the page asks, with "Don't ask again" (web/failsafe.js)
+        from .aiwait import running as ai_running   # an AI answer, notes, a plan or a pack being written: it stops too
+
+        ai = ai_running() if services is not None else []
+        if (busy or ai) and not api._close_ok and services.settings.ask_before_closing:
+            if api._ask_close(busy, ai):          # the page asks, with "Don't ask again" (web/failsafe.js)
                 return False
-            if not window.create_confirmation_dialog(
-                    t("Transcription in progress"), t("IEUStudia is still transcribing. Quit anyway? Next time, press "
-                                                      "Continue on the home page: the lectures go on where they "
-                                                      "stopped.")):
+            asked = (t("Transcription in progress"), t("IEUStudia is still transcribing. Quit anyway? Next time, press "
+                                                       "Continue on the home page: the lectures go on where they "
+                                                       "stopped.")) if busy else \
+                (t("AI at work"), t("The AI is still writing something you asked for. Quit anyway? It stops here."))
+            if not window.create_confirmation_dialog(*asked):
                 return False
         if setup and api._setup_cancel is not None:
             api._setup_cancel.set()

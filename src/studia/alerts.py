@@ -59,7 +59,8 @@ MAX_ITEMS = 120
 SAME_POINT_S = 120      # the same category again within two minutes of a lecture = the same point, keep the first
 # Each course's heads-up is kept in the library (meta "alerts:<course id>"), so a start doesn't read and scan every
 # transcript again. Bump this when the matching or the items change (a new release finds them again anyway).
-ALERTS_VERSION = 1
+ALERTS_VERSION = 3          # 2: the plan's assessments carry the day an announcement gave; 3: a bare
+                            # "I will ask" / "soracağım" is an exam cue only with an exam named
 
 log = logging.getLogger("studia")
 _cache: dict[str, tuple[Any, dict[str, Any]]] = {}
@@ -79,10 +80,29 @@ def matches(text: str, lang: str = "en") -> dict[str, tuple[int, int]]:
         return {}
     out: dict[str, tuple[int, int]] = {}
     for key, en, tr in _RE:
-        m = en.search(text) or (tr.search(low) if low is not None else None)
+        if key == "exam":
+            m = _exam_cue(text, low, en, tr)
+        else:
+            m = en.search(text) or (tr.search(low) if low is not None else None)
         if m:
             out[key] = m.span()
     return out
+
+
+# a passing "I will ask" / "soracağım" (the lecturer will ask the coordinator, a student asks a question) is no
+# exam hint: it counts only when the paragraph names an exam too
+_BARE_ASK = re.compile(r"i will ask|sorarım|soracağım")
+_EXAM_NAMED_EN = re.compile(r"\b(?:exams?|examinations?|midterms?|final exams?|quiz(?:zes)?)\b", re.I)
+_EXAM_NAMED_TR = re.compile(r"\bsınav\w*|\bvize\w*|\bfinal(?:de|da|e|i)?\b|\bquiz\w*|\bbütünleme\w*")
+
+
+def _exam_cue(text: str, low: Optional[str], en: re.Pattern, tr: re.Pattern) -> Optional[re.Match]:
+    named = bool(_EXAM_NAMED_EN.search(text) or (low is not None and _EXAM_NAMED_TR.search(low)))
+    for rx, src in ((en, text), (tr, low)):
+        for m in (rx.finditer(src) if src is not None else ()):
+            if named or not _BARE_ASK.fullmatch(m.group(0).lower()):
+                return m
+    return None
 
 
 def categories(text: str, lang: str = "en") -> list[str]:
@@ -292,6 +312,60 @@ _QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve|-|–
 _COVERS = re.compile(r"\bcover\w*\s+(?:(?!(?:held|given|take|taken|place|scheduled|be|on|during)\b)\w+\s+){0,6}"
                      r"weeks?\s*$")
 _ROMAN = {"i": 1, "ii": 2, "iii": 3}
+# the day an assessment is held on, as an announcement says it ("2. quizimiz 6 Kasım Cuma günü yapılacaktır", "Our 2nd
+# quiz will be held on Friday, November 6", "Midterm sınavımız 8 Kasım Pazar 17:30", a row "Quiz 2 / 3 Kasım"); not a
+# day its papers are shown or its results come, a make-up, a holiday that moved it, or what it covers
+_NOT_ON = re.compile(r"make-?up|telafi|mazeret|b[uü]t[uü]nleme|results?|grades?|scores?|sonu[cç]|\bnot(?:lar)?\w*|"
+                     r"papers?|k[aâ]g[iı]t|kagit|incele|review|itiraz|solutions?|[cç][oö]z[uü]m|answers?|cevap|cover|"
+                     r"kapsa|cancel|iptal|n't\b|\bno (?:quiz|exam|midterm|final)|yap[iı]lmayacak|holiday|tatil|bayram")
+_TR_NTH = {"ilk": 1, "birinci": 1, "ikinci": 2, "üçüncü": 3, "ucuncu": 3, "dördüncü": 4, "dorduncu": 4}
+_TR_ORDINAL = re.compile(r"\b(\d{1,2})\s*\.\s*(quiz)\w*|\b(" + "|".join(_TR_NTH) + r")\s+(quiz|ara sinav|vize)\w*")
+_CLOCK_NEAR = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b(?:\s*([ap])\.?m\b)?")
+
+
+def _turkish_ordinals(text: str) -> str:
+    """"2. quizimiz" → "quiz 2", "ilk quizimiz" → "quiz 1", "ikinci ara sınav" → "ara sinav 2" (folded text)."""
+    def one(m: re.Match) -> str:
+        if m.group(1):
+            return f"{m.group(2)} {m.group(1)}"
+        return f"{m.group(4)} {_TR_NTH[m.group(3)]}"
+    return _TR_ORDINAL.sub(one, text)
+
+
+def _held_on(text: str, near: tuple[int, int], posted: str) -> tuple[str, str]:
+    """The one day (and time) ``text`` gives for the assessment named at ``near`` (its span): ("2026-11-06",
+    "17:30"), or ("", "") for none, several, or one far from the name. A day without a year is the one after the
+    announcement (a day two months before it: the next year's)."""
+    from .coursesite import _date_of, date_matches
+
+    try:
+        ref = dt.date.fromisoformat((posted or "")[:10])
+    except ValueError:
+        ref = dt.date.today()
+    found: list[tuple[dt.date, int]] = []
+    for m in date_matches(text):
+        if not (near[1] - 40 <= m.start() <= near[1] + 80 or near[0] - 40 <= m.end() <= near[0]):
+            continue
+        d = _date_of(m, ref.year, 1)
+        if d is None:
+            continue
+        if not any(m.group(k) for k in ("iy", "ny", "dy", "my")):        # no year written
+            try:
+                d = d.replace(year=ref.year)
+                if d < ref - dt.timedelta(days=60):
+                    d = d.replace(year=ref.year + 1)
+            except ValueError:
+                continue
+        if ref - dt.timedelta(days=3) <= d <= ref + dt.timedelta(days=200):
+            found.append((d, m.end()))
+    if len({d for d, _ in found}) != 1:
+        return "", ""
+    day, end = found[0]
+    clock = _CLOCK_NEAR.search(text, end, end + 30)
+    if not clock:
+        return day.isoformat(), ""
+    hour = int(clock.group(1)) % (12 if clock.group(3) else 24) + (12 if clock.group(3) == "p" else 0)
+    return day.isoformat(), f"{hour:02d}:{clock.group(2)}"
 
 
 def _quiz_numbers(text: str) -> list[int]:
@@ -364,16 +438,21 @@ def _assessment(m: re.Match) -> tuple[str, int]:
 
 
 def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """[{kind, no, name, week, los, sources}] from the announcements (newer ones win on the week)."""
+    """[{kind, no, name, week, los, sources, date, time}] from the announcements (newer ones win on the week; "date"
+    and "time": the day, and the time, an announcement gave for it, "" when none did or a newer one moved its week)."""
     plan: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def add(key: tuple[str, int], week: Optional[int], los: set[int], a: dict[str, Any]) -> None:
-        e = plan.setdefault(key, {"week": None, "week_at": "", "los": set(), "sources": {}})
+    def add(key: tuple[str, int], week: Optional[int], los: set[int], a: dict[str, Any], day: str = "",
+            time: str = "") -> None:
+        e = plan.setdefault(key, {"week": None, "week_at": "", "los": set(), "sources": {}, "day": "", "time": "",
+                                  "day_at": "", "day_from": ""})
         date = a["posted_at"] or a["first_seen"] or ""
         if week:
             e["week"], e["week_at"] = week, date
+        if day:
+            e["day"], e["time"], e["day_at"], e["day_from"] = day, time, date, a["id"]
         e["los"] |= los
-        if week or los:
+        if week or los or day:
             e["sources"][a["id"]] = {"id": a["id"], "title": a["title"], "date": date}
 
     for a in sorted(anns, key=lambda x: x["posted_at"] or x["first_seen"] or ""):
@@ -392,7 +471,8 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     break
                 cells.append(nxt)
             text = " ".join(cells)
-            add(_assessment(m), _week(text), _los(text), a)
+            day, time = ("", "") if _NOT_ON.search(text) else _held_on(text, (0, 0), a["posted_at"] or a["first_seen"])
+            add(_assessment(m), _week(text), _los(text), a, day, time)
         named = list(_A_ANY.finditer(_ordinals(_fold(a["title"]))))
         if len(named) == 1:                            # a note about one assessment
             add(_assessment(named[0]), None, _los(body), a)
@@ -419,10 +499,21 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             week = int(next(g for g in held[-1].groups() if g))      # the last: "held in week 8, now moved to week 9"
             if len(said) == 1 and 1 <= week <= 20:
                 add(said.pop(), week, set(), a)
+        for sent in _SENTENCE.split(_turkish_ordinals(body)):   # "Our 2nd quiz will be held on Friday, November 6."
+            if _HELD.search(sent) or _NOT_ON.search(sent):       # (a week it was moved to says more)
+                continue
+            names = list(_A_ANY.finditer(sent))
+            if len({_assessment(m) for m in names}) != 1:
+                continue
+            day, time = _held_on(sent, names[0].span(), a["posted_at"] or a["first_seen"])
+            if day:
+                add(_assessment(names[0]), None, set(), a, day, time)
     if ("midterm", 0) in plan and {no for kind, no in plan if kind == "midterm"} == {0, 1}:
         one, other = plan[("midterm", 1)], plan.pop(("midterm", 0))     # "Midterm" and "Midterm 1": the same exam
         if other["week"] and other["week_at"] >= one["week_at"]:
             one["week"], one["week_at"] = other["week"], other["week_at"]
+        if other["day"] and other["day_at"] >= one["day_at"]:
+            one.update({k: other[k] for k in ("day", "time", "day_at", "day_from")})
         one["los"] |= other["los"]
         one["sources"].update(other["sources"])
     out = []
@@ -430,7 +521,9 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not e["sources"]:
             continue
         name = f"Quiz {no}" if kind == "quiz" else kind.title() + (f" {no}" if no else "")
+        day = e["day"] if e["day"] and e["day_at"] >= e["week_at"] else ""       # a newer announcement moved its week
         out.append({"kind": kind, "no": no, "name": name, "week": e["week"], "los": sorted(e["los"]),
-                    "sources": sorted(e["sources"].values(), key=lambda s: s["date"], reverse=True)})
+                    "sources": sorted(e["sources"].values(), key=lambda s: s["date"], reverse=True),
+                    "date": day, "time": e["time"] if day else "", "date_from": e["day_from"] if day else ""})
     out.sort(key=lambda e: (e["week"] or 99, e["kind"] != "quiz", e["no"]))
     return out

@@ -141,3 +141,22 @@ def test_the_ai_text_leaves_out_paragraphs_with_nothing_in_them():
     text = compact_day(COURSE, [rec("a", 8, 28)], {"a": tr("a", segs)})
     assert "[unclear]" not in text and "Stay tuned" not in text
     assert "⭐ ⚠ Quiz next week!" in text and "second example" in text and "[00:15] [TR] ⭐ Arkadaşlar" in text
+
+
+def test_an_ai_pack_captions_a_slide_shown_twice_with_the_time_of_each_showing():
+    """Slide 9 shown at 18:27 and again at 28:21 was captioned "on screen from 28:21" above the passages of 18:46."""
+    import re
+
+    from studia.export import render_pack_html
+    from studia.slides import Slide
+
+    segs = [Segment(s, s + 20, f"Passage at {s}.", "en", 0.9) for s in (10, 110, 210, 330, 420)]
+    shots = [Slide(1, 0.0, 100.0, "s/1.jpg", "C:/x/1.jpg"), Slide(2, 100.0, 200.0, "s/2.jpg", "C:/x/2.jpg"),
+             Slide(1, 200.0, 300.0, "s/1.jpg", "C:/x/1.jpg"),                     # slide 1 shown again
+             Slide(3, 300.0, 320.0, "s/3.jpg", "C:/x/3.jpg"),
+             Slide(3, 320.0, 400.0, "s/3.jpg", "C:/x/3.jpg"),                     # its next build-up step
+             Slide(2, 400.0, 500.0, "s/2.jpg", "C:/x/2.jpg")]
+    page = render_pack_html(COURSE, [rec("a", 8, 28)], {"a": tr("a", segs)}, {"a": shots}, {})
+    captions = re.findall(r"<figcaption>Slide (\d+) · on screen from ([\d:]+)</figcaption>", page)
+    assert captions == [("1", "00:00"), ("2", "01:40"), ("1", "03:20"), ("3", "05:00"), ("2", "06:40")]
+    assert page.index("03:20") < page.index("Passage at 210.") < page.index("05:00") < page.index("Passage at 330.")

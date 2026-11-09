@@ -281,6 +281,20 @@ def test_answers_are_plain_text_without_the_apps_action_blocks(lib):
     assert not _items(results(lib, "prep_pack", typing=False), "chat")
 
 
+def test_a_chat_without_a_name_is_shown_by_its_first_question(lib):
+    """Every chat found was shown as "New chat": the chat list shows one without a name by its first question, and so
+    does the search now."""
+    lib.create_chat("ch", "p", {}, "sonnet", "")
+    lib.add_chat_message("ch", "user", "Considering the course material,  what does the posterior   depend on "
+                                       "when the prior changes?")
+    lib.add_chat_message("ch", "assistant", "The posterior depends on the prior and the likelihood.")
+    lib.create_chat("ch2", "p", {}, "sonnet", "")
+    lib.add_chat_message("ch2", "assistant", "A likelihood, with no question before it.")
+    found = {c["chat_id"]: c["title"] for c in _items(results(lib, "likelihood", typing=False), "chat")}
+    assert found == {"ch": {"text": "Considering the course material, what does the posterior depe…", "marks": []},
+                     "ch2": {"text": "New chat", "marks": []}}                  # (cut as the chat list cuts it)
+
+
 def test_a_week_says_its_topics_and_a_lecture_its_moments_in_order(lib):
     week = _items(results(lib, "bayes", typing=False), "week")[0]
     assert week["week"] == 3 and week["snippet"]["text"] == "Independence, Reliability & Bayes · Hafta 3"

@@ -47,3 +47,36 @@
 .cx-how li .btn { margin-left: 4px; vertical-align: middle; }
 
 @media (max-width: 700px) { .cx-incs { grid-template-columns: 1fr; } .cx-wk .cx-dates { display: none; } }
+
+/* ------------------------------------------------------------------ the Export menu (exportmenu.js): a format, then
+ * what to save; a lecture's rows have a copy button; a course's weeks scroll; then "Saving…" and "Saved" toasts */
+.xp-menu { width: 340px; max-width: calc(100vw - 16px); padding: 8px; overflow-y: auto; display: flex; flex-direction: column; }
+.xp-menu > * { flex: none; }
+.xp-menu:focus { outline: none; }
+.xp-head { display: flex; flex-direction: column; gap: 1px; padding: 2px 4px 8px; }
+.xp-head b { font-size: 14px; }
+.xp-head span { font-size: 12px; color: var(--text-3); }
+.xp-menu .seg { display: flex; width: 100%; box-sizing: border-box; }
+.xp-menu .seg button { width: auto; flex: 1 1 auto; display: block; text-align: center; padding: 5px 6px; font-size: 12.5px;
+  white-space: nowrap; }
+.xp-menu .seg button:hover { background: none; color: var(--text); }
+.xp-menu .seg button.on:hover { background: var(--surface); }
+.xp-subs { margin-top: 6px; }
+.xp-hint { font-size: 12px; color: var(--text-2); padding: 6px 4px 0; line-height: 1.4; }
+.xp-menu > .xp-rows { flex: 0 1 auto; min-height: 54px; max-height: 290px; overflow-y: auto; }   /* the list gives way */
+.xp-opts { padding: 4px 0 0; }
+.xp-row { display: flex; align-items: stretch; gap: 2px; }
+.xp-row .xp-go { flex: 1; min-width: 0; }
+.xp-row .xp-go > .i { flex: none; color: var(--text-3); }
+.xp-l { display: flex; flex-direction: column; min-width: 0; }
+.xp-l .d { line-height: 1.35; margin-top: 1px; }
+.xp-row .xp-copy { width: 34px; flex: none; justify-content: center; padding: 0; color: var(--text-3); }
+.xp-row .xp-copy:hover { color: var(--text); }
+.xp-none { padding: 10px 6px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.xp-opt { display: flex; gap: 8px; align-items: center; padding: 5px 6px; font-size: 13px; cursor: pointer; }
+.xp-note { padding: 6px; font-size: 12.5px; line-height: 1.4; }
+.toast.xp-busy > .i, .toast.xp-saved > .i { flex: none; }
+.toast .xp-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.toast .xp-acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.toast.xp-saved b, .toast.xp-busy b { overflow-wrap: anywhere; font-weight: 600; }

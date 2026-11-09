@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import dataclasses as dc
 import json
-import os
 import threading
 from typing import Any
 
@@ -25,7 +24,7 @@ class AppConfig:
     notify_recordings: bool = True     # new lecture recordings (your section)
     notify_announcements: bool = True  # new announcements (assessment news first)
     notify_materials: bool = False     # new files on IEULearn
-    notify_reminders: bool = True      # the evening before an announced quiz, and before an exam week
+    notify_reminders: bool = True      # before quizzes, exams, deadlines and own entries (when: agenda.reminder_prefs)
     sync_minutes: int = 30             # how often the helper checks
     check_updates: bool = True         # look for a new version of IEUStudia on GitHub about once a day
     pending_downloads: list = dc.field(default_factory=list)   # what the setup still has to download (component ids)
@@ -83,11 +82,10 @@ def load() -> AppConfig:
 
 
 def save(cfg: AppConfig) -> None:
-    p = _path()
-    tmp = p.with_name(p.name + ".tmp")
-    with _lock:
-        tmp.write_text(json.dumps(cfg.to_json(), indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+    from .paths import write_durably
+
+    with _lock:        # on the disk before the swap: a power cut then brought the first-start setup back
+        write_durably(_path(), json.dumps(cfg.to_json(), indent=2).encode("utf-8"))
 
 
 def update(patch: dict[str, Any]) -> AppConfig:

@@ -89,7 +89,7 @@ def test_closing_asks_every_question_before_it_cancels_anything(isolated_home, m
         monkeypatch.setattr(api._s.jobs, "busy", lambda: True)                        # a transcription runs
         monkeypatch.setattr(api._s.jobs, "cancel", lambda job_id=None: seen.update(jobs_cancelled=True))
         api._setup_running, api._setup_cancel = True, threading.Event()              # and the setup downloads
-        api._ask_close = lambda: False           # a page that can't ask: Windows' own question (see the test below)
+        api._ask_close = lambda *_: False        # a page that can't ask: Windows' own question (see the test below)
         asked = iter(answers)
         w.create_confirmation_dialog = lambda title, text: next(asked)
         w.destroy()

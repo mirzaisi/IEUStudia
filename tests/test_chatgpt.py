@@ -542,7 +542,7 @@ def test_answers_stream_and_errors_are_explained(openai, monkeypatch):
     assert r["usage"] == {"input_tokens": 1200, "output_tokens": 3, "cache_read_input_tokens": 1000}
     body = [c[2] for c in openai.calls if c[1].endswith("/responses")][0]
     assert body["store"] is False and body["stream"] is True and body["instructions"] == "Be brief."
-    assert body["reasoning"] == {"effort": "high"} and body["input"][0]["content"][1]["image_url"] == "data:image/jpeg;base64,AAAA"
+    assert body["reasoning"] == {"effort": "high", "summary": "auto"} and body["input"][0]["content"][1]["image_url"] == "data:image/jpeg;base64,AAAA"
     # a model without an effort setting: asked again without it
     openai.stream_answers = [(400, {"error": {"code": "subscription_sharing_unsupported_capability", "param": "reasoning.effort",
                                               "message": "unsupported"}}),

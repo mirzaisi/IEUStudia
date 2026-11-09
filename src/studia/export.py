@@ -20,7 +20,7 @@ from .outputs.common import (course_display, engine_summary, format_duration, fo
                              kind_label, lang_tag, language_shares, long_date, time_range)
 from .outputs.highlights import LABELS, excerpt
 from .outputs.markdown import part_views
-from .outputs.prompts import TEMPLATES, TRANSCRIPT_NOTES
+from .outputs.prompts import ai_prompt
 from .outputs.writer import course_dir, day_stem, safe_name
 
 log = logging.getLogger("studia")
@@ -34,23 +34,23 @@ _BROWSERS = [
     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
 ]
 
+# The AI pack's PDF in the app's document look (the study pack's stylesheet and the exports' parts, outputs/doc.py):
+# the slides large, each passage under the slide on screen when it began
 _CSS = """
-@page { size: A4; margin: 13mm 13mm 14mm 13mm; }
-* { box-sizing: border-box; }
-body { font-family: "Segoe UI", system-ui, sans-serif; font-size: 10pt; line-height: 1.45; color: #1d2330; }
-h1 { font-size: 17pt; margin: 0 0 4pt; } h2 { font-size: 12.5pt; margin: 14pt 0 6pt; color: #312e81;
-  border-bottom: 1px solid #e3e6ef; padding-bottom: 3pt; break-after: avoid; }
-.meta { color: #4a5266; font-size: 9pt; margin-bottom: 8pt; } .meta b { color: #1d2330; }
-.legend { background: #f4f6fb; border-radius: 6pt; padding: 6pt 9pt; font-size: 8.6pt; color: #4a5266; }
-.notes { background: #fff7e6; border-left: 3pt solid #f59e0b; padding: 5pt 9pt; font-size: 9pt; margin: 8pt 0; }
-.hl { margin: 6pt 0 0 0; padding-left: 14pt; } .hl li { margin: 2pt 0; }
-figure { margin: 10pt 0 6pt; break-inside: avoid; } figure img { width: 100%; max-height: 118mm; object-fit: contain;
-  border: 1px solid #d9dde8; border-radius: 4pt; } figcaption { font-size: 8.4pt; color: #6b7385; margin-top: 2pt; }
-p { margin: 0 0 5pt; break-inside: avoid; } .ts { font-weight: 600; color: #4338ca; font-variant-numeric: tabular-nums; }
-.tr { background: #ecfdf5; } .tag { font-size: 7.6pt; font-weight: 700; color: #047857; border: 1px solid #a7f3d0;
-  border-radius: 3pt; padding: 0 3pt; margin-right: 3pt; } .star { color: #b45309; } .unc { color: #8a6d1d; }
-.part { break-before: page; } .part.first { break-before: auto; }
+.xp .sp-fig { margin: .9em auto .7em; }
+.xp .sp-fig img { max-width: 100%; max-height: 118mm; }
+.xp p.xp-pa { break-inside: avoid; }
+.xp .xp-star { color: #b45309; }
+.xp .xp-unc { color: #8a6d1d; }
+.xp .xp-hl li { margin: .2em 0; }
 """
+
+
+def _pack_css() -> str:
+    from .outputs.doc import EXTRA_CSS
+    from .studypack import CSS_FILE
+
+    return CSS_FILE.read_text(encoding="utf-8") + EXTRA_CSS + _CSS
 
 
 def find_browser() -> Optional[str]:
@@ -84,61 +84,74 @@ def html_to_pdf(html_path: Path, pdf_path: Path, timeout: int = 180) -> bool:
 
 def _p(para: Any) -> str:
     tag = lang_tag(para.lang)
-    cls = ' class="tr"' if tag else ""
-    marks = (f'<span class="tag">{tag}</span>' if tag else "") + ('<span class="star">⭐ </span>' if para.star else "")
-    marks += '<span class="unc">⚠ </span>' if para.uncertain else ""
-    return f'<p{cls}><span class="ts">[{format_ts(para.start)}]</span> {marks}{html.escape(para.text)}</p>'
+    cls = "xp-pa xp-tr" if tag else "xp-pa"
+    marks = (f'<span class="xp-tag">{tag}</span>' if tag else "") + ('<span class="xp-star">⭐ </span>' if para.star else "")
+    marks += '<span class="xp-unc">⚠ </span>' if para.uncertain else ""
+    return f'<p class="{cls}"><span class="xp-ts">[{format_ts(para.start)}]</span>{marks}{html.escape(para.text)}</p>'
 
 
 def render_pack_html(course: Course, recordings: Sequence[Recording], transcripts: Mapping[str, Any],
                      slides: Mapping[str, Sequence[Any]], image_for: Mapping[str, str]) -> str:
+    """The AI pack's page to print: a cover with what it is, the lecturer's highlights, then each part with its slides
+    and what was said while each was on screen, in the app's document look (as the Export menu's documents)."""
     recs = sorted(recordings, key=lambda r: r.start)
     parts = [p for p in part_views(recs, transcripts, slides) if p.transcript]
     first = parts[0].rec
     done = [p.transcript for p in parts]
+    esc = lambda s: html.escape(str(s), quote=False)       # noqa: E731
     title = f"{course.code or course_display(course)} · {kind_label(first.kind)} · {long_date(first.start.date())}"
-    out = [f"<!doctype html><html><head><meta charset='utf-8'><title>{html.escape(title)}</title>",
-           f"<style>{_CSS}</style></head><body>", f"<h1>{html.escape(title)}</h1>"]
-    meta = [f"<b>Course:</b> {html.escape(course_display(course))}"]
+    out = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>{esc(title)}</title>",
+           f"<style>{_pack_css()}</style></head><body class='sp-page'><article class='sp-doc xp'>",
+           f"<header class='sp-cover'><div class='sp-kicker'>{esc(course.code or course.name)} · AI pack</div>"
+           f"<h1>{esc(title)}</h1>"]
+    meta = [f"<b>Course:</b> {esc(course_display(course))}"]
     if course.instructor:
-        meta.append(f"<b>Lecturer:</b> {html.escape(course.instructor)}")
-    meta.append(f"<b>Recordings:</b> {len(parts)} part(s) · {format_duration(sum(p.rec.duration_s for p in parts))}")
+        meta.append(f"<b>Lecturer:</b> {esc(course.instructor)}")
+    meta.append(f"<b>Recordings:</b> {len(parts)} part{'s' if len(parts) != 1 else ''} · "
+                f"{format_duration(sum(p.rec.duration_s for p in parts))}")
     shares = language_shares(done)
     if shares:
         meta.append(f"<b>Languages:</b> {format_language_shares(shares)}")
-    meta.append(f"<b>Made with:</b> {html.escape(engine_summary(done))}")
-    out.append(f"<div class='meta'>{' · '.join(meta)}</div>")
-    out.append("<div class='legend'>Each slide is followed by what the lecturer said while it was on screen. "
-               "Timestamps are [mm:ss] from the start of each part. <b>TR</b> = spoken in Turkish, ⭐ = emphasised "
-               "by the lecturer, ⚠ = unclear audio. The transcript is automatic and may contain recognition errors."
-               "</div>")
+    meta.append(f"<b>Made with:</b> {esc(engine_summary(done))}")
+    out += [f"<div class='xp-meta'>{m}</div>" for m in meta]
+    out.append("</header><p class='xp-small'>Each slide is followed by what the lecturer said while it was on screen. "
+               "Times are from the start of each part. TR marks a passage in Turkish, ⭐ what the lecturer stressed, ⚠ "
+               "a passage the speech recognition was unsure of. The transcript is automatic, so now and then a word is "
+               "wrong.</p>")
     notes = [(p.index, w) for p in parts for w in p.warnings if w.get("level") in ("warning", "error")]
     if notes:
-        out.append("<div class='notes'><b>Audio notes:</b><br>" + "<br>".join(
-            f"Part {i}: {html.escape(w.get('message', ''))}" for i, w in notes) + "</div>")
+        out.append("<div class='sp-alert sp-alert-warning' role='note'><div class='sp-alert-h'><span class='sp-alert-i'>"
+                   "!</span><b>Audio notes</b></div><ul>" + "".join(
+                       f"<li>Part {i}: {esc(w.get('message', ''))}</li>" for i, w in notes) + "</ul></div>")
     stars = [(p, para) for p in parts for para in p.paragraphs if para.star]
     if stars:
-        out.append("<h2>⭐ Highlights</h2><ul class='hl'>")
+        out.append("<h2 class='xp-h1'>⭐ Highlights</h2><ul class='xp-hl'>")
         for p, para in stars[:16]:
             label = ", ".join(LABELS.get(t, t) for t in para.tags)
-            out.append(f"<li><b>Part {p.index} · {format_ts(para.start)}</b> — <i>{label}</i> — "
-                       f"{html.escape(excerpt(para.text, para.tags))}</li>")
+            out.append(f"<li><b>Part {p.index} · {format_ts(para.start)}</b> · <i>{esc(label)}</i>: "
+                       f"“{esc(excerpt(para.text, para.tags))}”</li>")
         out.append("</ul>")
     for n, p in enumerate(parts):
-        out.append(f"<section class='part{' first' if n == 0 else ''}'>"
-                   f"<h2>Part {p.index} · {time_range(p.rec)} ({format_duration(p.rec.duration_s)})</h2>")
-        by_index = {s.index: s for s in p.slides}
-        current = None
+        out.append(f"<section><h2 class='xp-h1{' xp-page' if n or stars else ''}'>Part {p.index} · {time_range(p.rec)} "
+                   f"({format_duration(p.rec.duration_s)})</h2>")
+        # each passage under the slide on screen when it began (as part_views), its figure captioned with the time
+        # that showing began: a slide shown twice has an entry for each showing (and one for each build-up step)
+        sl, k, current = p.slides, 0, None
         for para in p.paragraphs:
-            if para.slide is not None and para.slide != current and para.slide in by_index:
-                s = by_index[para.slide]
-                src = image_for.get(s.path) or s.image
-                out.append(f"<figure><img src='{html.escape(src)}'><figcaption>Slide {s.index} · on screen from "
-                           f"{format_ts(s.t)}</figcaption></figure>")
+            while k + 1 < len(sl) and sl[k + 1].t <= para.start + 0.5:
+                k += 1
+            if para.slide is not None and para.slide != current and sl and sl[k].index == para.slide:
+                j = k
+                while j and sl[j - 1].index == sl[k].index:
+                    j -= 1
+                s = sl[j]
+                src = image_for.get(sl[k].path) or sl[k].image
+                out.append(f"<figure class='sp-fig sp-frame'><img src='{html.escape(src)}' alt=''><figcaption>Slide "
+                           f"{s.index} · on screen from {format_ts(s.t)}</figcaption></figure>")
                 current = para.slide
             out.append(_p(para))
         out.append("</section>")
-    out.append("</body></html>")
+    out.append("</article></body></html>")
     return "\n".join(out)
 
 
@@ -170,7 +183,7 @@ def build_ai_pack(output_root: Path, course: Course, all_courses: Sequence[Cours
         refs = "\n".join(f"- {name}" for name in sorted(set(image_for.values())))
         (stage / "transcript.md").write_text(
             text + (f"\n\n## Slide images\n(slide N = slides/<part>-NN.jpg)\n{refs}\n" if refs else "\n"), encoding="utf-8")
-        (stage / "PROMPT.md").write_text(TEMPLATES["notes"]["prompt"] + TRANSCRIPT_NOTES + "\n", encoding="utf-8")
+        (stage / "PROMPT.md").write_bytes((ai_prompt("notes") + "\n").encode("utf-8"))
         tmp_zip = zip_path.with_name(zip_path.name + ".tmp")
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
             if pdf_ok:

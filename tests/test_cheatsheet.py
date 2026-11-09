@@ -111,6 +111,69 @@ def test_a_stopped_cheatsheet_resumes_where_it_stopped(env):  # noqa: F811
     assert asked.count("entries t1,t2,t3,t4,t5,t6") == (0 if data["entries"] else 1)
 
 
+def _made_on(lib, pid, day):
+    with lib._lock:
+        lib.db.execute("UPDATE plans SET created_at=? WHERE id=?", (f"{day}T18:29:00", pid))
+        lib.db.commit()
+
+
+def test_an_old_sheets_pdf_is_laid_out_again_from_its_saved_data_when_it_is_opened(env, monkeypatch):  # noqa: F811
+    """A 3.2.1 sheet kept printing its symbols' meanings over the next column: Open PDF, Save PDF and Show in folder
+    gave the stored PDF, and a deleted one was printed again from the stored HTML (its stylesheet inside)."""
+    log = []
+    runner = PlanRunner(env.svc, ask=fake_ai(log))
+    pid = runner.create("c", {"kind": "sheet", "weeks": [1], "files": ["r1"]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    printed = []
+
+    def printer(html_path, pdf_path):                    # Edge: a PDF of what the HTML holds now
+        printed.append(pdf_path.name)
+        pdf_path.write_bytes(b"%PDF new " + html_path.read_bytes()[-40:])
+        return True
+
+    monkeypatch.setattr(studypack, "print_pdf", printer)
+    plan = env.lib.plan(pid)
+    r = plan["result"]
+    html_path, pdf_path = Path(r["file"]), Path(r["file"]).with_suffix(".pdf")
+    html_path.write_text("<style>.cs-w > span { white-space: nowrap; }</style> 3.2.1", encoding="utf-8")
+    pdf_path.write_bytes(b"%PDF old")
+    old = {k: v for k, v in r.items() if k not in ("layout", "made")}      # as a sheet made before 4.0 has it
+    env.lib.update_plan(pid, result={**old, "pdf": str(pdf_path)})
+    _made_on(env.lib, pid, "2026-11-06")
+    log.clear()
+    got = studypack.make_pdf(env.svc, env.lib.plan(pid))
+    assert got == pdf_path and pdf_path.read_bytes().startswith(b"%PDF new") and log == []      # no AI
+    page = html_path.read_text(encoding="utf-8")
+    assert "cs-wrap" in page and "nowrap; }</style> 3.2.1" not in page and "· 6 Nov 2026</div>" in page
+    assert printed == [pdf_path.name + ".part"]                                  # the old one replaced when whole
+    again = env.lib.plan(pid)["result"]
+    assert again["layout"] == cs.layout() and again["made"] == "2026-11-06" and again["file"] == str(html_path)
+    assert sorted(p.name for p in html_path.parent.iterdir() if p.suffix in (".html", ".pdf", ".part")) == \
+        sorted([html_path.name, pdf_path.name])                                  # the same names, no copies
+    assert "· 6 Nov 2026</div>" in studypack.shown_body(env.svc, env.lib.plan(pid))   # the app's page: its day too
+    printed.clear()
+    assert studypack.make_pdf(env.svc, env.lib.plan(pid)) == pdf_path and printed == []   # laid out: as it is
+    html_path.unlink()
+    pdf_path.unlink()                                                            # both deleted: made again
+    assert studypack.make_pdf(env.svc, env.lib.plan(pid)) == pdf_path and html_path.is_file() and printed
+
+
+def test_an_old_sheets_pdf_stays_when_it_cant_be_printed_again(env, monkeypatch):  # noqa: F811
+    runner = PlanRunner(env.svc, ask=fake_ai([]))
+    pid = runner.create("c", {"kind": "sheet", "weeks": [1], "files": ["r1"]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    r = env.lib.plan(pid)["result"]
+    pdf_path = Path(r["file"]).with_suffix(".pdf")
+    pdf_path.write_bytes(b"%PDF old")
+    env.lib.update_plan(pid, result={**r, "pdf": str(pdf_path), "pages": 2, "layout": "1-old"})
+    monkeypatch.setattr(studypack, "print_pdf", lambda h, p: False)             # Edge busy
+    assert studypack.make_pdf(env.svc, env.lib.plan(pid)) == pdf_path and pdf_path.read_bytes() == b"%PDF old"
+    kept = env.lib.plan(pid)["result"]
+    assert kept["layout"] == "1-old" and kept["pdf"] == str(pdf_path) and kept["pages"] == 2   # tried again next time
+
+
 def test_the_topics_are_checked():
     raw = {"title": "", "topics": [
         {"id": "a", "title": "One", "items": ["Ohm's law", {"name": "KCL"}, "", "ohm’s  law"],
@@ -162,7 +225,7 @@ def test_latex_outside_a_formula_in_the_text_is_drawn():
     assert [w["means"] for w in e["where"]] == ["branch resistance (\\(\\Omega\\))", "$x_1$ to \\(\\omega_0^2\\) (k\\(\\Omega\\))"]
     assert e["text"] == "costs \\$5, $x$ in \\(\\mu\\mathrm{F}\\)" and e["when"] == "\\(\\alpha\\) > 0"
     page = cs.entry_html(e)
-    assert "(\\(\\Omega\\))" in page and "(\\Omega)" not in page
+    assert "(⁠\\(\\Omega\\)⁠)" in page and "(\\Omega)" not in page      # (kept on one line with its brackets)
 
 
 def test_a_long_symbol_legend_keeps_its_unit_and_a_cut_one_never_prints_latex():
@@ -229,7 +292,7 @@ def test_the_document():
     assert '<div class="cs-keep"><h2><span class="n">1</span>Basic laws</h2><div class="cs-e cs-rule">' in body
     assert "<b class=\"cs-n\">Ohm's law</b> <span class=\"cs-x\">\\(v = iR\\)</span>" in body      # short: in the line
     assert '<div class="cs-tex">\\[v_2 = \\frac{R_2}{R_1 + R_2}\\, v_s\\]</div>' in body           # a fraction: displayed
-    assert '<div class="cs-if"><b>if</b> $R_1$, $R_2$ in series, no load</div>' in body
+    assert '<div class="cs-if"><b>if</b> $R_1$⁠, $R_2$ in series, no load</div>' in body    # (its comma kept with it)
     assert "<span>\\(v_s\\) source voltage (V)</span>" in body
     assert "&lt;img src=x onerror=alert(1)&gt; <strong>bold</strong>" in body and "<img" not in body
     assert '<i class="cs-k">Method</i>' in body and '<i class="cs-k">Unit</i>' in body
@@ -358,3 +421,48 @@ def test_conditions_keep_their_abbreviations():
     prompt = cs.ENTRIES_RULES if hasattr(cs, "ENTRIES_RULES") else ""
     source = Path(cs.__file__).read_text(encoding="utf-8")
     assert "in lowercase, without" not in source and "keeping names and abbreviations" in source + prompt
+
+
+@pytest.mark.parametrize("when, shown", [
+    ("Thevenin resistance seen by C", "Thevenin resistance seen by C"),
+    ("Norton equivalent known", "Norton equivalent known"),
+    ("Kirchhoff's laws at each node", "Kirchhoff's laws at each node"),
+    ("Bayes' theorem with a partition", "Bayes' theorem with a partition"),
+    ("Gauss-Jordan elimination", "Gauss-Jordan elimination"),
+    ("Poisson limit", "Poisson limit"),
+    ("A is invertible", "A is invertible"),
+    ("Ax = b consistent", "Ax = b consistent"),
+    ("DC steady state", "DC steady state"),
+    ("Series RLC circuit", "series RLC circuit"),
+    ("Source-free RL circuit", "source-free RL circuit"),
+    ("No load on the output", "no load on the output"),
+])
+def test_a_condition_keeps_the_name_it_starts_with(when, shown):
+    """"if thevenin resistance…", "if bayes' theorem…": only a common first word is written in lowercase after "if"."""
+    e = {"kind": "formula", "name": "n", "tex": "x", "text": "", "where": [], "when": when, "covers": []}
+    assert f"<b>if</b> {shown}</div>" in cs.entry_html(e)
+
+
+def test_a_formula_too_wide_even_made_smaller_is_broken_over_lines_not_cut(tmp_path, edge):
+    """The three-event addition rule needs about two columns: at the smallest size it was still cut at the column's
+    edge ("…+P(A∩B∩"). It is broken over lines after its signs instead, at its own size."""
+    add3 = r"P(A\cup B\cup C)=P(A)+P(B)+P(C)-P(A\cap B)-P(A\cap C)-P(B\cap C)+P(A\cap B\cap C)"
+    sheet = {"title": "Wide", "topics": [{"id": "t1", "title": "Only", "items": ["x"]}]}
+    entries = {"t1": [{"kind": "rule", "name": "Three events", "tex": add3, "text": "", "where": [], "when": "",
+                       "covers": []}]}
+    doc = printed(tmp_path, sheet, entries, "add3")
+    try:
+        w = doc[0].get_size()[0]
+        tp = doc[0].get_textpage()
+        name = boxes(doc, 0, "Three events")
+        chars = [tp.get_charbox(i) for i in range(tp.count_chars())]
+        formula = [c for c in chars if c[3] < name[1] and c[1] > 60 and c[2] > c[0]]   # below its name, above the footer
+        col_right = 8 / 25.4 * 72 + (w - 16 / 25.4 * 72) / 3 + 2
+        assert len(formula) > 40 and max(c[2] for c in formula) < col_right             # none of it past the column
+        assert "+P(A∩B∩C)" in "".join(tp.get_text_range().split())                     # all of it
+        rows = {round(c[1] / 6) for c in formula}
+        assert len(rows) >= 3                                                           # on more than one line
+        heights = sorted(c[3] - c[1] for c in formula)
+        assert heights[len(heights) // 2] > 5                                           # not shrunk to 4.5 pt
+    finally:
+        doc.close()

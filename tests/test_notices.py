@@ -250,7 +250,7 @@ def test_the_page_draws_alerts_also_while_streaming_and_explains_errors(tmp_path
 # ------------------------------------------------------------------ fixes after the 3.1 review
 # every AI error the student can read with its reason: (English text, its placeholders, the reason notices.js gives)
 AI_ERRORS = [
-    ("You have reached your Claude usage limit — it resets {when}.", {"when": "10:40"}, "limit"),
+    ("You have reached your Claude usage limit. It resets {when}.", {"when": "10:40"}, "limit"),
     ("You have reached your Claude usage limit.", {}, "limit"),
     ("You have reached your ChatGPT usage limit for Codex. Try again later.", {}, "limit"),
     ("You have reached your ChatGPT usage limit for apps. See {url}.", {"url": "https://chatgpt.com"}, "limit"),

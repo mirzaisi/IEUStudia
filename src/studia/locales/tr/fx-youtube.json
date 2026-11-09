@@ -17,7 +17,7 @@
   "(shows: {skill})": "(gösterdiği: {skill})",
   "No good video for {name}:": "{name} için iyi bir video yok:",
   "At {time}: “{quote}”": "{time} anında: “{quote}”",
-  "The videos were checked by AI through their captions (a video without usable captions through what IEUStudia heard in it), and AI can make mistakes — the quotes under each video show what it actually says.": "Yapay zeka videoları altyazılarına bakarak kontrol etti (kullanılabilir altyazısı olmayan bir videoyu IEUStudia'nın onda duyduklarına bakarak) ve hata yapabilir: her videonun altındaki alıntılar videoda gerçekte ne söylendiğini gösterir.",
+  "The videos were checked by AI through their captions (a video without usable captions through what IEUStudia heard in it), and AI can make mistakes: the quotes under each video show what it actually says.": "Yapay zeka videoları altyazılarına bakarak kontrol etti (kullanılabilir altyazısı olmayan bir videoyu IEUStudia'nın onda duyduklarına bakarak) ve hata yapabilir: her videonun altındaki alıntılar videoda gerçekte ne söylendiğini gösterir.",
   "YouTube stopped answering IEUStudia for now (it asked to confirm it isn't a bot), so no video could be checked.": "YouTube şimdilik IEUStudia'ya yanıt vermiyor (bot olmadığını doğrulamasını istedi), bu yüzden hiçbir video kontrol edilemedi.",
   "No video in the plan's language came up in {n} YouTube search.": "{n} YouTube aramasında planın dilinde hiçbir video çıkmadı.",
   "No video in the plan's language came up in {n} YouTube searches.": "{n} YouTube aramasında planın dilinde hiçbir video çıkmadı.",

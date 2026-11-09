@@ -22,13 +22,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from . import ai, appconfig, chatfiles, chatlimits, chatread, chatslides, effort, notices, store
+from . import ai, aiwait, appconfig, chatfiles, chatlimits, chatread, chatslides, effort, notices, store
 from .cancel import Cancelled
 from .catchup import no_sound
 from .domain import Course, Recording
 from .i18n import date_long, date_short, t, tn
 from .knowledge import course_brief, retrieve
-from .outputs.ai_copy import compact_day, part_lines
+from .outputs.ai_copy import SCREEN_LINES, compact_day, part_lines
 from .outputs.common import course_display, kind_label, long_date, time_range
 from .outputs.markdown import part_views
 from .outputs.mathmd import dollar_math
@@ -74,6 +74,7 @@ def system_prompt(n_days: int, focus: str, slides: bool) -> str:
            "deadlines); ⚠ and [unclear] mark audio that was hard to understand.")
     if slides:
         fmt += " (slide N) is the slide on screen; the slide images are attached to the student's first message."
+    fmt += " " + SCREEN_LINES                    # (the screen timeline's lines: outputs/ai_copy.py)
     lines = [
         "You are a friendly, precise study assistant for a university engineering student, chatting about the "
         "student's own lectures. They are given below as automatic speech-recognition transcripts: mostly English, "
@@ -163,7 +164,9 @@ def lecture_pieces(course: Course, recs: list[Recording], trans: dict, slides: A
         if cur:
             chunks.append(cur)
         for chunk in chunks:
-            first, last = (x[1:x.index("]")] if "]" in x else "" for x in (chunk[0], chunk[-1]))
+            # (a screen line, "[Screen 3, 12:34-15:00] ...", by its start)
+            first, last = (x[1:x.index("]")].split(", ", 1)[-1].split("-", 1)[0] if "]" in x else ""
+                           for x in (chunk[0], chunk[-1]))
             label = f"[{f'L{n} ' if n else ''}P{p.index} {first}–{last}]"
             out.append(chatread.Page(label=label, group="lecture", file=key, name=name, page=len(out) + 1,
                                      text=f"Part {p.index} ({time_range(p.rec)})\n" + "\n".join(chunk),
@@ -358,9 +361,13 @@ class ChatService:
         texts: list[str] = []
         lecture_pages: list[Any] = []               # the lectures read in parts (chatread), with the slides' pages
         day_parts: list[dict[str, Any]] = []
+        tight = local or any(v != "full" for v in forms.values())    # the screens' titles only (outputs/ai_copy.py)
         for n, key, course, recs, trans, sl, text in loaded:
             how = forms[key]
             pieces: list[Any] = []
+            if how == "full" and tight and "\n[Screen " in text:
+                text = compact_day(course, recs, trans, sl if slides else None, label=f"L{n}" if multi else "",
+                                   only_starred=focus == "highlights", screens="titles")
             if how == "notes":
                 pieces = lecture_pieces(course, recs, trans, sl if slides else None, n if multi else 0, key)
                 lecture_pages += pieces
@@ -788,7 +795,7 @@ class ChatService:
         else:
             label = tn(0, "{n} class day", "{n} class days")
         if (chat.get("scope") or {}).get("focus") == "course":
-            return t("Whole course · {n} lectures + course files", n=len(days))
+            return tn(len(days), "Whole course · {n} lecture + course files", "Whole course · {n} lectures + course files")
         if (chat.get("scope") or {}).get("focus") == "highlights":
             label = t("{label} · highlights only", label=label)
         return label
@@ -800,7 +807,9 @@ class ChatService:
                 "title": self._title(chat, days), "scope_label": self._scope_label(chat, days),
                 "model": chat.get("model") or "sonnet", "updated_at": chat.get("updated_at"),
                 "n_messages": chat.get("n_messages", 0), "running": chat["id"] in self._running,
-                "effort": self._effort(chat)}
+                "effort": self._effort(chat),
+                # the chat list's filter finds a chat by its first question too (a titled chat doesn't show it)
+                "first_question": " ".join((chat.get("first_question") or "").split())[:300]}
 
     def list(self) -> list[dict[str, Any]]:
         out = []
@@ -877,9 +886,11 @@ class ChatService:
         fields: dict[str, Any] = {}
         if "title" in patch:
             fields["title"] = " ".join(str(patch["title"] or "").split())[:120]
-        if patch.get("model") in MODELS:
-            fields["model"] = patch["model"]          # the next question starts a new process with this model
         scope = dict((self.lib.get_chat(chat_id) or {}).get("scope") or {})
+        if patch.get("model") in MODELS:
+            if patch["model"] != chat.get("model"):   # a smaller window (Haiku): the chat must still fit in it
+                self._fits(chat, scope, patch["model"])
+            fields["model"] = patch["model"]          # the next question starts a new process with this model
         if patch.get("effort") in LEVEL_NAMES:        # the next question's reasoning level (Claude: a new process)
             fields["scope"] = scope = {**scope, "effort": patch["effort"]}
         if "read_all" in patch:                       # "Read everything": on, off, or None (as the chat's size says)
@@ -910,6 +921,36 @@ class ChatService:
         if fields:
             self.lib.update_chat(chat_id, **fields)
         return self.view(chat_id)
+
+    def _fits(self, chat: dict[str, Any], scope: dict[str, Any], model: str) -> None:
+        """Changing a chat's model (Claude's menu): refused when its material doesn't fit the new model's share, as
+        create() refuses it; a move to a model at least as big is always fine."""
+        if self.limit(model) >= self.limit(chat.get("model") or ""):
+            return
+        ctx = self.context(chat["course_id"], self._scope_days({"scope": scope}), scope.get("focus", "full"),
+                           bool(scope.get("slides")), scope.get("send"), chat["id"], model, scope.get("read_all"))
+        if ctx["tokens"] > ctx["limit"]:
+            raise RuntimeError(t("This chat is too big for {model} (~{k}k tokens, its limit is {max}k). Keep {current}, "
+                                 "or start a new chat with fewer class days or highlights only.",
+                                 model=model.capitalize(), k=ctx["tokens"] // 1000, max=ctx["limit"] // 1000,
+                                 current=(chat.get("model") or "sonnet").capitalize()))
+
+    @staticmethod
+    def _too_big(ctx: dict[str, Any], model: str) -> Optional[str]:
+        """A chat whose material no longer fits its model's window (the AI or the ChatGPT model changed in Settings
+        since it was made): what to do, before a question fails for good with the service's own words. Measured
+        against the window itself, not the app's margin, so a chat a little over the margin still works."""
+        lim = ctx.get("lim")
+        if lim is None or lim.provider == "local" or not lim.window or ctx["tokens"] <= lim.window:
+            return None
+        k, most = ctx["tokens"] // 1000, lim.window // 1000
+        if lim.provider == "claude":
+            return t("This chat no longer fits in {model} (~{k}k tokens, {model} holds {max}k). Pick a bigger model in "
+                     "the chat's model menu, or start a new chat with fewer class days or highlights only.",
+                     model=(model or "sonnet").capitalize(), k=k, max=most)
+        return t("This chat no longer fits in the ChatGPT model chosen in Settings → AI (~{k}k tokens, it holds "
+                 "{max}k). Choose a model with a bigger window there, or start a new chat with fewer class days or "
+                 "highlights only.", k=k, max=most)
 
     def delete(self, chat_id: str) -> None:
         self.stop(chat_id)
@@ -985,6 +1026,9 @@ class ChatService:
                            scope.get("send"), cid, chat.get("model") or "", scope.get("read_all"))
         if not ctx["n_days"]:
             raise RuntimeError(t("The class days of this chat are no longer available."))
+        too_big = self._too_big(ctx, chat.get("model") or "")
+        if too_big:
+            raise RuntimeError(too_big)
         session = ai.new_session(ctx["system"], model=chat.get("model") or "sonnet", effort=level)
         session.key = key
         session.notices = ctx["notices"]                # shown with the answer it starts with (not sent to the AI)
@@ -1016,6 +1060,12 @@ class ChatService:
         last_emit, last_save = [0.0], [time.monotonic()]
         shown: list[dict[str, Any]] = []               # the student's notices with this answer (never the AI's input)
         made_by = ai.provider()                        # kept with them: they name this AI, not the one chosen later
+        # what the student waits for: getting the material ready, sending, thinking, writing, a retry (aiwait)
+        # (its usage: the reading's progress is over once it says something: the page shows the wait then)
+        wait = aiwait.Wait(lambda snap: self._emit(cid, seq, "streaming", text, wait=snap,
+                                                   usage={"notices": shown} if shown else {}),
+                           ai=ai.ai_name(), provider=made_by, model=chat.get("model") or "", level=self._effort(chat),
+                           kind="chat", where="chat")
 
         def on_text(so_far: str) -> None:
             nonlocal text
@@ -1023,14 +1073,17 @@ class ChatService:
             now = time.monotonic()
             if now - last_emit[0] >= EMIT_EVERY_S:
                 last_emit[0] = now
-                self._emit(cid, seq, "streaming", so_far, **({"usage": {"notices": shown}} if shown else {}))
+                self._emit(cid, seq, "streaming", so_far, wait=wait.snapshot(),
+                           **({"usage": {"notices": shown}} if shown else {}))
             if now - last_save[0] >= SAVE_EVERY_S:     # keep the partial answer if the app is closed meanwhile
                 last_save[0] = now
                 self.lib.update_chat_message(cid, seq, so_far, "streaming")
 
         try:
-            self._emit(cid, seq, "streaming", "")
+            self._emit(cid, seq, "streaming", "", wait=wait.snapshot())
             session, images = self._session(chat)
+            if images is not None:                          # a new process: everything goes with its first question
+                wait.stage(kind="chat.first")
             content: list[dict[str, Any]] = []
             weight = getattr(session, "weight", 0)          # what the request weighs so far (chatlimits)
             if images is not None:                          # a new process: give it what it has not seen
@@ -1109,8 +1162,12 @@ class ChatService:
             if hasattr(session, "seed"):                # the conversation goes with every question too
                 weight += sum(chatlimits.text_bytes(q) + chatlimits.text_bytes(a)
                               for q, a in (getattr(session, "history", None) or [])[-ai.ChatGPTSession.MAX_TURNS:])
-            blocks, read, commit = self._read(session, cid, seq, question, history, stop, shown, weight)
+            asked_from = len(content)                       # what follows weighs on top of ``weight``
+            blocks, read, commit = self._read(session, cid, seq, question, history, stop, shown, weight, wait)
             content += blocks
+            if read and read.get("pages") and not read.get("again"):
+                wait.read(int(read["pages"]))             # "Went through all N pages": said with what comes next
+                wait.phase("prepare")                     # (the question is put together: the reading is over)
             shown += self._refused(read, history, shown)         # Codex turned the chosen model down while reading
             if read and read.get("full"):
                 shown += notices.fresh([notices.notice("pictures_full", "info")], history)
@@ -1138,7 +1195,10 @@ class ChatService:
                 if images is not None:      # it never got its first message: start afresh next time
                     self._drop(cid)
             else:
-                res = session.ask(content, on_text, stop)
+                wait.expect(weight + sum(chatlimits.block_bytes(b) for b in content[asked_from:]),
+                            0 if hasattr(session, "seed") else getattr(session, "pictures_sent", 0))
+                with aiwait.tracking(stop, wait):
+                    res = session.ask(content, on_text, stop)
                 self._sent(session, content, res["text"])     # it went: what the conversation now holds
                 commit()
                 if res.get("model_refused"):                  # Codex turned the chosen model down: said once
@@ -1233,7 +1293,7 @@ class ChatService:
 
     def _read(self, session: Any, cid: str, seq: int, question: str, history: list[dict[str, Any]],
               stop: threading.Event, shown: list[dict[str, Any]],
-              weight: int = 0) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]], Any]:
+              weight: int = 0, wait: Any = None) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]], Any]:
         """"Read everything" before a question: the pages that don't go whole are read in batches (chatread; kept, so
         only what isn't read yet), with progress in the chat. Returns the blocks for the question (the notes, the pages
         that matter most for it as pictures; this question's only), what was read, and what to note once the question
@@ -1261,7 +1321,8 @@ class ChatService:
             info = {k: v for k, v in st.items() if k != "notes"}
             self._reading[cid] = info
             if info.get("total"):                          # nothing to read: no progress to show
-                self._emit(cid, seq, "streaming", "", usage={"reading": info, **({"notices": shown} if shown else {})})
+                self._emit(cid, seq, "streaming", "", usage={"reading": info, **({"notices": shown} if shown else {})},
+                           **({"wait": wait.snapshot()} if wait is not None else {}))
                 if time.monotonic() - saved[0] >= READING_SAVE_S:   # if the app closes now, the answer says what
                     saved[0] = time.monotonic()                     # was kept (its notes are on disk already)
                     self.lib.update_chat_message(cid, seq, "", "streaming", {"reading_kept": kept(info)})

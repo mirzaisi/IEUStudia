@@ -108,6 +108,7 @@ class Material:
     link: bool = False               # a link (a web page, a video), not a file
     pages: int = 0
     reason: str = ""                 # why it couldn't be downloaded
+    students: bool = False           # it lists students by number (a class's grades or groups): not put in the zip
 
     @property
     def shown(self) -> str:
@@ -127,6 +128,7 @@ class Day:
     other: list[str] = dc.field(default_factory=list)   # only another section's lecture: its section numbers
     another: bool = False            # ... (False: yours, or a course with one section)
     live: bool = False
+    silent: list[int] = dc.field(default_factory=list)  # your parts with no speech on Panopto: nothing to transcribe
     _slides: Optional[dict[str, list[Any]]] = None
 
     @property
@@ -300,9 +302,13 @@ def _material(view: dict[str, Any], row: Optional[dict[str, Any]]) -> Material:
                     row.get("url") or "", local if have else "", size, link, int(view.get("pages") or 0))
 
 
-def _day(view: dict[str, Any], recs: list[Recording], done: set[str]) -> Optional[Day]:
+def _day(view: dict[str, Any], recs: list[Recording], done: set[str],
+         warnings: Optional[dict[str, list[dict[str, Any]]]] = None) -> Optional[Day]:
     """A class day for the export: your section's parts (transcribed or not), or another section's that you had
-    transcribed anyway (then it says whose). None when it has neither."""
+    transcribed anyway (then it says whose). None when it has neither. A part whose recording has no speech on
+    Panopto (catchup.no_sound: no sound, or only noise or music) is not "to transcribe": trying again finds the same."""
+    from .catchup import no_sound
+
     own = [r for r in view["recordings"] if r["part"] and r["mine"] is not False]
     have = [r.delivery_id for r in sorted(recs, key=lambda r: r.start) if r.delivery_id in done]
     if not own and not have:
@@ -311,10 +317,13 @@ def _day(view: dict[str, Any], recs: list[Recording], done: set[str]) -> Optiona
     if not own:
         found = {n for r in recs if r.delivery_id in done for n in re.findall(r"\d+", r.section_tag or parse_section_tag(r.name))}
         tags = sorted(found, key=int)
+    by_id = {r.delivery_id: r for r in recs}
+    silent = [r["part"] for r in own if r["id"] not in done and r["id"] in by_id
+              and no_sound(by_id[r["id"]], (warnings or {}).get(r["id"], ()))]
     d = _date(view["date"]) or dt.date.today()
     return Day(view["day_key"], d, view["day_key"].split("|")[-1] or "lecture", recs, have,
-               [r["part"] for r in own if r["id"] not in done], len(own), float(view.get("duration_s") or 0),
-               tags, not own, bool(view.get("live")))
+               [r["part"] for r in own if r["id"] not in done and r["part"] not in silent], len(own),
+               float(view.get("duration_s") or 0), tags, not own, bool(view.get("live")), silent)
 
 
 def plan_course(lib: Any, settings: Any, course_id: str, choice: Choice, today: dt.date) -> Optional[Plan]:
@@ -329,11 +338,12 @@ def plan_course(lib: Any, settings: Any, course_id: str, choice: Choice, today: 
     by_day: dict[str, list[Recording]] = defaultdict(list)
     for r in recs:
         by_day[r.day_key].append(r)
-    cv = views.course_view(course, recs, settings, {}, lib.all_warnings(), store.slide_ids())
+    warnings = lib.all_warnings()
+    cv = views.course_view(course, recs, settings, {}, warnings, store.slide_ids())
     done = lib.transcribed_ids()
     days: dict[str, Day] = {}
     for v in cv["days"]:
-        d = _day(v, by_day[v["day_key"]], done)
+        d = _day(v, by_day[v["day_key"]], done, warnings)
         if d is not None:
             days[v["day_key"]] = d
     placed: set[str] = set()
@@ -359,6 +369,80 @@ def plan_course(lib: Any, settings: Any, course_id: str, choice: Choice, today: 
     loose = sorted((d for k, d in days.items() if k not in placed and d.date <= today),
                    key=lambda d: (d.date, d.kind)) if picked is None else []
     return Plan(course, detail, chosen, weeks, general, loose)
+
+
+# A course file that lists students by number (a lab's grades, the project groups) is classmates' data: it stays out of
+# a zip meant for ChatGPT. Told by what it holds, not by its name ("Ders Notları" and "Lab results template" are study
+# material): many different numbers of one length of 8 to 11 digits, as student numbers are (not the fractional part
+# of a number, "3,14159265", and not binary, "10110010")
+_STUDENT_NO = re.compile(r"(?<!\d)(?<!\d[.,])\d{8,11}(?!\d)")
+STUDENTS_MIN = 20                # different ones of one length
+
+
+def lists_students(texts: Iterable[str]) -> bool:
+    """Is this the text of a list of students (their numbers with marks or groups)?"""
+    seen: dict[int, set[str]] = defaultdict(set)
+    for text in texts:
+        for n in _STUDENT_NO.findall(text or ""):
+            if not set(n) <= {"0", "1"}:
+                seen[len(n)].add(n)
+    return any(len(v) >= STUDENTS_MIN for v in seen.values())
+
+
+def _cells(path: Path) -> list[str]:
+    """The text of a course file whose text the app doesn't keep: an Excel workbook's cells, a CSV's fields."""
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        out: list[str] = []
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                sheet = info.filename == "xl/sharedStrings.xml" or re.fullmatch(r"xl/worksheets/sheet\d+\.xml",
+                                                                               info.filename)
+                if sheet and info.file_size < 64 * 1024 * 1024:
+                    xml = z.read(info).decode("utf-8", "replace")
+                    for v in re.findall(r"<(?:t|v)\b[^>]*>([^<]*)</(?:t|v)>", xml):
+                        if re.fullmatch(r"\d(?:\.\d+)?E\+?\d+", v):          # 2.0210602014E10: a number Excel wrote so
+                            v = f"{float(v):.0f}"
+                        out.append(v)
+        return out
+    if ext in (".csv", ".tsv"):
+        text = path.read_text(encoding="utf-8", errors="replace")[:20_000_000]
+        sep = ";" if text.count(";") > text.count(",") else ","
+        return re.split(rf"[{sep}\t|\n]", text)
+    return []
+
+
+def _lists_students(lib: Any, m: Material) -> bool:
+    """Does this course file list students? From the text the app keeps of it (MaterialStore.index_text), else from
+    the file itself: one not read yet, or a kind the app keeps no text of (an Excel workbook)."""
+    from .materials import TEXT_KINDS, extract_pages
+
+    status = (lib.get_material(m.id) or {}).get("text_status") or ""
+    if status in ("no-text", "failed"):                  # a scan, or a file that can't be read
+        return False
+    path = Path(m.path)
+    try:
+        if status == "done":
+            texts = lib.material_pages(m.id)
+        elif path.suffix.lower().lstrip(".") in TEXT_KINDS:
+            texts = extract_pages(path)
+        else:
+            texts = _cells(path)
+        return lists_students(texts)
+    except Exception as exc:  # noqa: BLE001 - a file that can't be read is put in as before
+        log.warning("Export: %s could not be read to check for a list of students: %s", m.id, exc)
+        return False
+
+
+def _leave_out_lists(lib: Any, plans: list["Plan"]) -> None:
+    """Mark the chosen course files that list students (each file read once: a unit for two weeks is in both)."""
+    found: dict[str, bool] = {}
+    for p in plans:
+        for m in _wanted(p):
+            if m.path and not m.link:
+                if m.id not in found:
+                    found[m.id] = _lists_students(lib, m)
+                m.students = found[m.id]
 
 
 def export_courses(lib: Any, course_id: str) -> list[Course]:
@@ -396,7 +480,7 @@ def _week_numbers(plan: Plan) -> dict[int, dict[str, Any]]:
         text = sum(d.text_bytes() for d in w.days)
         out[w.no] = {
             "no": w.no, "start": w.start, "end": w.end, "topic": w.topic, "current": w.current, "now": w.now,
-            "lectures": sum(1 for d in w.days if d.done), "untranscribed": sum(1 for d in w.days if d.todo or not d.done),
+            "lectures": sum(1 for d in w.days if d.done), "untranscribed": sum(1 for d in w.days if d.todo),
             "days": len(w.days), "files": sum(1 for m in files if m.path), "missing": [m.id for m in files if not m.path],
             "links": sum(1 for m in w.files if m.link), "screens": shots,
             "bytes": {"text": int(text * 1.12 / ZIP_TEXT) + (600 if w.days else 0),
@@ -476,7 +560,7 @@ def estimate(plans: list[Plan], choice: Choice) -> tuple[int, int]:
                 size += int(text * 1.2 / ZIP_TEXT) + pics
                 work += int(text * 1.2) + pics
         if choice.files:
-            files = sum(m.size for m in _wanted(p) if m.path)
+            files = sum(m.size for m in _wanted(p) if m.path and not m.students)
             size += files
             work += files
         size += 1500 * (len(p.weeks) + 2)
@@ -730,24 +814,39 @@ def _lecture_line(day: Day, rel: str, screens: int, choice: Choice) -> str:
         what += f" · {day.other_text}'s lecture"
     if not day.done:
         return f"- {what}: " + ("still being recorded on Panopto, so not transcribed yet." if day.live
-                                else "not transcribed in IEUStudia yet.")
+                                else "not transcribed in IEUStudia yet." if day.todo or not day.silent
+                                else _no_speech(len(day.silent)))
+    notes = ([f"Not transcribed yet: part{'s' if len(day.todo) > 1 else ''} {', '.join(map(str, day.todo))}."]
+             if day.todo else []) + ([_silent_parts(day.silent) + "."] if day.silent else [])
     if not rel:
-        return f"- {what}: transcribed (the transcripts were left out of this export)."
+        return " ".join([f"- {what}: transcribed (the transcripts were left out of this export).", *notes])
     bits = (["Transcript.md"] if choice.transcripts else []) + (
         ["Transcript by screen.md", f"{screens} screens"] if screens else [])
-    line = f"- {what}: {rel}/ ({', '.join(bits)})"
-    if day.todo:
-        line += f". Not transcribed yet: part{'s' if len(day.todo) > 1 else ''} {', '.join(map(str, day.todo))}."
-    return line
+    return f"- {what}: {rel}/ ({', '.join(bits)})" + (". " + " ".join(notes) if notes else "")
+
+
+def _no_speech(parts: int) -> str:
+    """A day whose recordings have no speech on Panopto (catchup.no_sound): Panopto has no sound for them, or only
+    noise or music (the microphone was off, or it recorded only the room), so there is no transcript, and trying again
+    finds the same."""
+    return (f"Panopto's recording{'s' if parts > 1 else ''} of it {'have' if parts > 1 else 'has'} no speech (no sound, "
+            "or only noise or music), so there is no transcript; use the week's course files for it.")
+
+
+def _silent_parts(parts: list[int]) -> str:
+    return (f"Part{'s' if len(parts) > 1 else ''} {', '.join(map(str, parts))} "
+            f"{'have' if len(parts) > 1 else 'has'} no speech on Panopto's recording, so no transcript")
 
 
 def _material_line(m: Material, rel: Optional[str], choice: Choice) -> str:
     if m.link:
         return f"- Link (not a file): {m.title or m.shown}" + (f" <{m.url}>" if m.url else "")
     if rel:
-        return f"- {rel}" + (f" ({m.pages} pages)" if m.pages else "")
+        return f"- {rel}" + (f" ({m.pages} page{'s' if m.pages > 1 else ''})" if m.pages else "")
     if not choice.files:
         return f"- {m.shown} (course files were left out of this export)"
+    if m.students:
+        return f"- {m.shown}: left out of this zip, as it lists students' numbers (a class's grades or groups)."
     if m.reason:
         return f"- {m.shown}: couldn't be downloaded ({m.reason.rstrip('.')}), so it isn't in this zip."
     return f"- {m.shown}: not downloaded in IEUStudia, so it isn't in this zip."
@@ -755,6 +854,14 @@ def _material_line(m: Material, rel: Optional[str], choice: Choice) -> str:
 
 def _outcomes(detail: dict[str, Any]) -> list[str]:
     return list(detail.get("outcomes_en") or detail.get("outcomes_tr") or [])
+
+
+def _other_topic(w: Week) -> str:
+    """The week's topic in IEULearn's course overview when it says something else than the syllabus' (it is in the
+    language it was typed in there, often English too: not a translation); "" when it is the same words."""
+    same = lambda s: re.sub(r"[\W_]+", "", (s or "").casefold())     # noqa: E731 - case, punctuation and spaces aside
+    other = (w.topic_tr or "").strip()
+    return other if other and same(other) != same(w.topic) else ""
 
 
 def course_title(course: Course, detail: dict[str, Any]) -> str:
@@ -795,8 +902,8 @@ def course_overview(course: Course, detail: dict[str, Any], plan: Plan) -> str:
         for w in plan.all_weeks:
             when = _en_range(w.start, w.end)
             bits = [f"Week {w.no}" + (f" ({when})" if when else ""), w.topic or "(no topic given)"]
-            if w.topic_tr and w.topic_tr != w.topic:
-                bits.append(f"in Turkish: {w.topic_tr}")
+            if _other_topic(w):
+                bits.append(f"on IEULearn: {_other_topic(w)}")
             if w.exam:
                 bits.append(f"exam week: {w.exam}")
             lines.append(f"- {'* ' if w.no in chosen else ''}{' · '.join(bits)}")
@@ -897,8 +1004,8 @@ def week_overview(course: Course, w: Week, plan: Plan, lectures: list[str], file
     when = _en_range(w.start, w.end)
     if when:
         lines.append(f"Dates: {when}")
-    if w.topic_tr and w.topic_tr != w.topic:
-        lines.append(f"Topic in Turkish: {w.topic_tr}")
+    if _other_topic(w):
+        lines.append(f"Topic on IEULearn: {_other_topic(w)}")
     units = [u for u in w.units if u and u != w.topic]
     if units:
         lines.append(f"IEULearn unit: {' · '.join(units)}")
@@ -1002,6 +1109,7 @@ class Notes:
     links: set[str] = dc.field(default_factory=set)
     untranscribed: int = 0
     missing: set[str] = dc.field(default_factory=set)
+    students: set[str] = dc.field(default_factory=set)      # files left out: lists of students
 
 
 def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: str, alone: bool) -> str:
@@ -1096,7 +1204,8 @@ class _CourseWriter:
         self.course = plan.course
         self.counters, self.ci, self.cn = counters, ci, cn
         self.notes = Notes()
-        self.counts = {"lectures": 0, "screens": 0, "files": 0}
+        self.counts = {"lectures": 0, "screens": 0, "files": 0}       # files: different ones (not their copies)
+        self._written: set[str] = set()
         self.week_lines: list[str] = []
 
     def write(self) -> None:
@@ -1144,6 +1253,11 @@ class _CourseWriter:
         ch, z = self.choice, self.z
         where = t("Week {n}", n=week_no) if week_no else t("Other lectures")
         when, kind = date_short(d.date), t(kind_label(d.kind))
+        if not d.done and not d.todo and d.silent and not d.live:      # nothing to transcribe: not "yet"
+            self.notes.lectures.append("- " + t("{week}, {date} ({kind}): Panopto's recording has no speech (no sound, "
+                                                "or only noise or music), so there is nothing to transcribe.",
+                                                week=where, date=when, kind=kind))
+            return _lecture_line(d, "", 0, ch)
         if not d.done:
             self.notes.untranscribed += 1
             self.notes.lectures.append("- " + t("{week}, {date} ({kind}): not transcribed in IEUStudia yet.",
@@ -1155,6 +1269,12 @@ class _CourseWriter:
                                                  "transcribed yet.", "{week}, {date} ({kind}): parts {parts} are not "
                                                  "transcribed yet.", week=where, date=when, kind=kind,
                                                  parts=", ".join(map(str, d.todo))))
+        if d.silent:
+            self.notes.lectures.append("- " + tn(len(d.silent), "{week}, {date} ({kind}): part {parts} has no speech "
+                                                 "on Panopto's recording, so it has no transcript.", "{week}, {date} "
+                                                 "({kind}): parts {parts} have no speech on Panopto's recording, so "
+                                                 "they have no transcript.", week=where, date=when, kind=kind,
+                                                 parts=", ".join(map(str, d.silent))))
         if not (ch.transcripts or ch.screens):
             return _lecture_line(d, "", 0, ch)
         label = f"{d.date.isoformat()} {WEEKDAYS_SHORT[d.date.weekday()]} - {kind_label(d.kind)}" + (
@@ -1184,6 +1304,8 @@ class _CourseWriter:
                 if d.todo:
                     notes.append(f"Not transcribed in IEUStudia yet: part{'s' if len(d.todo) > 1 else ''} "
                                  f"{', '.join(map(str, d.todo))}.")
+                if d.silent:
+                    notes.append(f"{_silent_parts(d.silent)} (no sound, or only noise or music).")
                 if d.another:
                     notes.append(f"This is {d.other_text}'s lecture: the dates and details it gives may differ for "
                                  "your section.")
@@ -1198,11 +1320,21 @@ class _CourseWriter:
         return _lecture_line(d, rel, len(names), ch)
 
     def _files(self, parent: str, sub: str, mats: list[Material], week_no: int) -> list[str]:
-        """Course files into ``parent/sub``; their lines for the week's overview (relative to ``parent``)."""
+        """Course files into ``parent/sub``; their lines for the week's overview (relative to ``parent``). A file that
+        lists students (Material.students) stays out, and the README says so."""
         ch, z = self.choice, self.z
         out = []
         for m in mats:
             rel = None
+            if m.students and ch.files:
+                if m.id not in self.notes.students:
+                    self.notes.students.add(m.id)
+                    self.notes.files.append("- " + t(
+                        "{where}: {name} was left out: it lists students' numbers (grades or groups), and your "
+                        "classmates' details shouldn't be uploaded. Open it on IEULearn if you need it.",
+                        where=t("Week {n}", n=week_no) if week_no else t("The whole course"), name=m.shown))
+                out.append(_material_line(m, None, ch))
+                continue
             if m.path and ch.files and not m.link:
                 self.counters["files"] += 1
                 z.tell(step="files", i=self.counters["files"], n=self.counters["files_total"])
@@ -1213,7 +1345,8 @@ class _CourseWriter:
                 got = z.file(folder, stem, ext, m.path, t("course file of week {n}", n=week_no) if week_no else
                              t("course file for the whole course"))
                 if got:
-                    self.counts["files"] += 1
+                    self._written.add(m.id)              # a unit for two weeks is in both: one file, counted once
+                    self.counts["files"] = len(self._written)
                     rel = folder[len(parent) + 1:] + "/" + got
             if m.link:
                 self.notes.links.add(m.id)
@@ -1272,6 +1405,7 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
     _check_space(folder, estimate(plans, choice)[0])      # before anything is downloaded or written
     if choice.files:
         _download(plans, choice, download, progress, cancel)
+        _leave_out_lists(lib, plans)
     check(cancel)
     span = span_name(choice, today, {w.no for p in plans for w in p.all_weeks})
     lead = "All courses" if every else course_folder_name(courses[0], all_courses)
@@ -1281,7 +1415,8 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
     _check_space(folder, size)                            # (with the files just downloaded)
     counters = {"screens": 0, "files": 0,
                 "screens_total": sum(len(d.screens()) for p in plans for d in _days(p) if d.done) if choice.screens else 0,
-                "files_total": sum(1 for p in plans for m in _wanted(p) if m.path and not m.link) if choice.files else 0}
+                "files_total": sum(1 for p in plans for m in _wanted(p) if m.path and not m.link and not m.students)
+                if choice.files else 0}
     progress({"step": "start", "estimate": size, "fraction": 0.0})
     tmp = target.with_name(target.name + ".tmp")
     message = first_message(courses, choice, all_courses, every)
@@ -1317,6 +1452,7 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
            "untranscribed": sum(w.notes.untranscribed for w in writers),
            "missing": len(set().union(*(w.notes.missing for w in writers))) if writers else 0,
            "links": len(set().union(*(w.notes.links for w in writers))) if writers else 0,
+           "students": len(set().union(*(w.notes.students for w in writers))) if writers else 0,
            "weeks": sorted({w.no for p in plans for w in p.weeks}), "first_message": message,
            "too_big": got > CHATGPT_MAX}
     log.info("Export: %s (%d KB; %d lectures, %d screens, %d files)", final.name, got // 1024, out["lectures"],

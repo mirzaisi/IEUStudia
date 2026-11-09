@@ -49,6 +49,7 @@ WHAT = {
     "ieulearn.course_page": N_("IEUStudia can't read the courses' learning outcomes and weekly topics right now."),
     "ieulearn.unit_plan": N_("IEUStudia can't read new course files from IEULearn right now."),
     "ieulearn.announcements": N_("IEUStudia can't read new announcements from IEULearn right now."),
+    "ieulearn.assignments": N_("IEUStudia can't read the times assignments are due from IEULearn right now."),
     "panopto.lti": N_("IEUStudia can't open Panopto through IEULearn right now, so new recordings can't be looked for "
                       "or downloaded."),
     "panopto.signin": N_("IEUStudia can't check its Panopto sign-in right now, so new recordings can't be looked for "
@@ -76,6 +77,7 @@ RANK = {"unknown": 0, "ok": 1, "down": 2, "changed": 3}
 
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"path": None, "mtime": None, "data": {}}
+_heard: dict[str, str] = {}      # each part's last answer in this process (the file's "seen": at most every SEEN_EVERY_S)
 on_change: Callable[[], None] = lambda: None     # the app: send the new state to the page
 
 
@@ -149,6 +151,8 @@ def _read() -> dict[str, Any]:
     except OSError:
         mtime = None
     if _cache["path"] != path or _cache["mtime"] != mtime:
+        if _cache["path"] != path:
+            _heard.clear()                   # (another app folder: another state)
         data: Any = {}
         if mtime is not None:
             try:
@@ -216,6 +220,7 @@ def _record(service: str, part: str, state: str, detail: str = "", where: str = 
     where = str(where or "")
     with _lock:
         data = _read()
+        _heard[key] = now
         parts = data["parts"]
         old = parts.get(key) if isinstance(parts.get(key), dict) else {}
         current = old.get("version") == __version__
@@ -312,6 +317,7 @@ def snapshot() -> dict[str, Any]:
     and the changed ones' ids (``changed``)."""
     with _lock:
         parts = dict(_read()["parts"])
+        heard = dict(_heard)
     out = []
     for sid, name in SERVICES:
         mine = []
@@ -327,7 +333,8 @@ def snapshot() -> dict[str, Any]:
             if state == "changed" and not whole and not subs:
                 state = "ok"                     # the courses it changed for weren't seen for days: let go
             mine.append({"part": part, "state": state, "since": str(p.get("since") or ""),
-                         "seen": str(p.get("seen") or ""), "what": what(sid, part) if state == "changed" else "",
+                         "seen": max(str(p.get("seen") or ""), heard.get(key, "")),       # (the latest answer)
+                         "what": what(sid, part) if state == "changed" else "",
                          "id": str(p.get("id") or p.get("since") or ""),
                          # (the courses its page changed for; "whole": for every course, or not read per course)
                          "where": subs, "whole": whole})

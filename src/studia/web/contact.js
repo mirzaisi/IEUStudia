@@ -20,7 +20,7 @@
     links: LINKS,
     // the bottom of the sidebar, under the profile: small, quiet, there on every page
     side: () => `<div class="side-contact"><span class="lbl">${t("Questions? Message me")}</span>${LINKS().map((l) => mark(l)).join("")}</div>`,
-    // the setup's welcome step: one short line under the notice
+    // the setup's welcome step: one short line in its bottom bar, beside Continue (always in view)
     line: () => `<div class="su-contact"><span>${t("Questions, or something not working? Message me.")}</span>${LINKS().map((l) => mark(l)).join("")}</div>`,
     // Settings → About: the note, and both links with their names
     card: () => `<div class="contact-card"><div class="grow"><b>${t("Contact")}</b>

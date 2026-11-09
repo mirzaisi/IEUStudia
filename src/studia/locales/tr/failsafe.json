@@ -11,5 +11,5 @@
   "Don't ask again": "Bir daha sorma",
   "Keep open": "Açık kalsın",
   "Ask before closing": "Kapatmadan önce sor",
-  "Asks first when you close IEUStudia while lectures are being transcribed. Either way, they go on where they stopped next time.": "Dersler yazıya dökülürken IEUStudia'yı kapatınca önce sorar. Her durumda dersler bir dahaki sefere kaldıkları yerden sürer."
+  "Asks first when you close IEUStudia while lectures are being transcribed or the AI is writing something for you. Lectures go on where they stopped next time.": "Dersler yazıya dökülürken ya da yapay zeka senin için bir şey yazarken IEUStudia'yı kapatınca önce sorar. Dersler bir dahaki sefere kaldıkları yerden sürer."
 }

@@ -101,7 +101,7 @@ def test_chatgpt_gets_reasoning_effort(monkeypatch):
     monkeypatch.setattr(chatgpt, "_stream", lambda body, *a: sent.append(body) or ("ok", {}))
     chatgpt.one_shot("S", [{"type": "text", "text": "q"}], "sonnet", "max")
     chatgpt.one_shot("S", [{"type": "text", "text": "q"}], "opus")             # no level: the old model level's
-    assert [b["reasoning"] for b in sent] == [{"effort": "max"}, {"effort": "high"}]
+    assert [b["reasoning"]["effort"] for b in sent] == ["max", "high"]
 
 
 def test_codex_gets_model_reasoning_effort(tmp_path, monkeypatch):
@@ -171,7 +171,7 @@ def test_study_notes_send_the_chosen_level(monkeypatch):
     appconfig.update({"ai_provider": "claude"})
     got = {}
     monkeypatch.setattr(ai, "run_claude", lambda prompt, text, images, **k: got.update(k) or {"text": "x", "usage": {}})
-    svc = types.SimpleNamespace(ai_inputs=lambda day, slides: ("text", [], None, []))
+    svc = types.SimpleNamespace(ai_inputs=lambda day, slides, screens="full": ("text", [], None, []))
     with pytest.raises(Exception):     # no recordings to name the file after: only what was sent matters here
         services.Services.ai_notes(svc, "c|2026-10-13|lecture", "notes", False, "sonnet", effort="high")
     assert got["effort"] == "high" and got["model"] == "sonnet"

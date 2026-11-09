@@ -138,7 +138,7 @@ def test_a_weeks_lectures_come_in_the_order_they_were_taught(env):
     facts = studypack.gather(env.lib, env.svc.settings, "c", Scope(kind="pack", weeks=[1]))
     assert [(x["ref"], x["date"]) for x in facts["lectures"]] == [("L1", "2026-09-23"), ("L2", "2026-09-25")]
     assert facts["pack"].index("Today: conditional probability") < facts["pack"].index("Friday: the total")
-    assert "Lectures: 2026-09-23, 2026-09-25" in studypack.document_body(
+    assert "Lectures: 23 Sep, 25 Sep" in studypack.document_body(
         {"title": "T", "intro": "", "chapters": []}, {}, {}, studypack.meta_of(facts), str)
     from studia import plans
 
@@ -211,7 +211,7 @@ def test_study_pack_pipeline_end_to_end(env):
     assert "foreignObject" not in svg and "javascript" not in svg and 'url(#c1f1-arr)' in svg
     assert data["figures"]["c1f1"]["caption"] == "A and B"                 # the outline's caption wins
     assert set(data["figures"]) == {"c1f1"}                                # c9f9 was never asked for
-    assert env.rendered == [("Week01.pdf", 2)]
+    assert set(env.rendered) == {("Week01.pdf", 2)}          # the figure, and the page its chapter's writer sees
     html_file = env.tmp / "out" / "MATH 240" / "Study packs"
     page = next(html_file.glob("*.html")).read_text(encoding="utf-8")
     assert "<h1>Conditional probability and Bayes</h1>" in page and 'id="c2"' in page and 'src="katex/katex.min.js"' in page and "file:" not in page
@@ -249,6 +249,54 @@ def test_image_links_of_a_title_with_a_hash_still_find_their_images(env):
     html_path = Path(env.lib.plan(pid)["result"]["file"])
     srcs = re.findall(r'<img src="([^"]+)"', html_path.read_text(encoding="utf-8"))
     assert srcs and all("#" not in s and (html_path.parent / unquote(s)).is_file() for s in srcs)
+
+
+def test_an_old_packs_pdf_is_laid_out_again_with_its_pictures_when_it_is_opened(env, monkeypatch):
+    """A pack made before 4.0 printed "1, 1, 1" in its check boxes and cut wide formulas: Open PDF gave the stored
+    PDF. It is laid out again from its saved chapters (no AI), its slide pictures as they are beside it."""
+    log = []
+    ask, ask_text = fake_ai(log)
+    runner = PlanRunner(env.svc, ask=ask, ask_text=ask_text)
+    pid = runner.create("c", {"kind": "pack", "weeks": [1], "files": ["r1"]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    printed = []
+
+    def printer(html_path, pdf_path):
+        printed.append(pdf_path.name)
+        pdf_path.write_bytes(b"%PDF new")
+        return True
+
+    monkeypatch.setattr(studypack, "print_pdf", printer)
+    monkeypatch.setattr("studia.materials.page_image", lambda *a, **k: None)     # the course file has moved since
+    r = env.lib.plan(pid)["result"]
+    html_path = Path(r["file"])
+    pdf_path = html_path.with_suffix(".pdf")
+    pdf_path.write_bytes(b"%PDF old")
+    old = {k: v for k, v in r.items() if k not in ("layout", "made")}
+    env.lib.update_plan(pid, result={**old, "pdf": str(pdf_path)})
+    with env.lib._lock:
+        env.lib.db.execute("UPDATE plans SET created_at='2026-11-02T10:00:00' WHERE id=?", (pid,))
+        env.lib.db.commit()
+    log.clear()
+    assert studypack.make_pdf(env.svc, env.lib.plan(pid)) == pdf_path and pdf_path.read_bytes() == b"%PDF new"
+    assert log == [] and printed and all(p == pdf_path.name + ".part" for p in printed)
+    page = html_path.read_text(encoding="utf-8")
+    assert "made with IEUStudia on 2 Nov 2026" in page and "Figure 1.2." in page and "c1f2.jpg" in page
+    again = env.lib.plan(pid)["result"]
+    assert again["layout"] == studypack.layout() and again["made"] == "2026-11-02" and again["figures"] == 2
+    assert "made with IEUStudia on 2 Nov 2026" in studypack.shown_body(env.svc, env.lib.plan(pid))
+
+
+def test_a_pack_without_its_saved_chapters_keeps_its_files(env, monkeypatch):
+    """Nothing to lay it out from: the PDF it has is given as it is."""
+    monkeypatch.setattr(studypack, "print_pdf", lambda h, p: p.write_bytes(b"%PDF new") or True)
+    pid = "old"
+    env.lib.create_plan(pid, "c", {"kind": "pack"}, "Old pack")
+    pdf = env.tmp / "Old pack.pdf"
+    pdf.write_bytes(b"%PDF old")
+    env.lib.update_plan(pid, status="done", data={}, result={"kind": "pack", "file": "", "pdf": str(pdf)})
+    assert studypack.make_pdf(env.svc, env.lib.plan(pid)) == pdf and pdf.read_bytes() == b"%PDF old"
 
 
 def test_a_stopped_pack_resumes_where_it_stopped(env):
@@ -314,6 +362,34 @@ def test_the_markdown_of_a_chapter():
     assert "<ul><li>one<ul><li>nested <em>two</em></li></ul></li><li>three</li></ul>" in out
     assert "<ol><li>first</li><li>second</li></ol>" in out and "<blockquote><p>quoted <strong>bold</strong></p></blockquote>" in out
     assert "<script" not in out and "Check yourself" in out
+
+
+def test_a_numbered_list_keeps_its_numbers_across_answers_formulas_and_text():
+    """A "Check yourself" box of questions, each with its answer after a blank line, read 1, 1, 1."""
+    box = md_html(":::check\n1. Is $R$ enough?\n\n   **Answer.** No.\n\n2. What is $\\omega_d$?\n\n   **Answer.** 980 rad/s."
+                  "\n\n3. Which root?\n\n   **Answer.** The one closest to zero.\n:::")
+    assert box.count("<ol") == 1 and box.count("<li>") == 3
+    assert "<li><p>Is $R$ enough?</p><p><strong>Answer.</strong> No.</p></li>" in box   # the answer under its question
+    one_line = md_html("1. Q one? A: yes.\n\n2. Q two? A: no.\n\n3. Q three? A: maybe.")
+    assert one_line == "<ol><li>Q one? A: yes.</li><li>Q two? A: no.</li><li>Q three? A: maybe.</li></ol>"
+    steps = md_html("1. First step.\n\n   $$x = 1$$\n\n2. Second step.\n\n$$y = 2$$\n\n3. Third step.")
+    assert steps.count("<ol") == 2 and '<ol start="3"><li>Third step.</li></ol>' in steps
+    assert '<li><p>First step.</p><div class="sp-math">$$x = 1$$</div></li>' in steps
+    split = md_html("1. a\n2. b\n\nA paragraph between them.\n\n3. c\n4. d")
+    assert '<ol><li>a</li><li>b</li></ol><p>A paragraph between them.</p><ol start="3"><li>c</li><li>d</li></ol>' == split
+    assert md_html("- a\n\n- b") == "<ul><li>a</li><li>b</li></ul>"
+
+
+def test_a_formula_over_lines_in_a_quote_or_an_alert_loses_the_quote_marks():
+    """"> " of each line of a $$ … $$ in a quote stayed in the formula: stray ">" signs, and "=" read as ">="."""
+    alert = md_html("> [!CAUTION]\n> The slides write\n> $$\n> W = CV^2\n> $$\n> without the half.")
+    assert '<div class="sp-math">$$\nW = CV^2\n$$</div>' in alert and "&gt;" not in alert
+    quote = md_html("> **Solution.** It is\n>\n> $$\n> W_C=\\frac{1}{2}CV^2\n> =18\\ \\mu\\mathrm{J}.\n> $$")
+    assert "$$\nW_C=\\frac{1}{2}CV^2\n=18\\ \\mu\\mathrm{J}.\n$$" in quote and "&gt;" not in quote
+    nested = md_html("> > $$\n> > a\n> > > 0\n> > $$")
+    assert "$$\na\n&gt; 0\n$$" in nested                     # a relation in it stays
+    plain = md_html("$$\nf(x) = x^2 + 1\n> 0\n$$")
+    assert '<div class="sp-math">$$\nf(x) = x^2 + 1\n&gt; 0\n$$</div>' == plain   # not in a quote: as written
 
 
 def test_figures_are_read_from_the_answer():
@@ -409,6 +485,39 @@ def test_contents_get_page_numbers_from_the_printed_pdf(tmp_path):
     assert studypack.print_pdf(page, pdf)
     pages = studypack.chapter_pages(pdf, ["Alpha", "Beta and gamma"])
     assert pages[0] == 3 and pages[1] > 3                    # cover, contents, then the chapters
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the layout is checked with Windows' fonts (Segoe UI)")
+def test_a_formula_or_code_line_wider_than_the_page_goes_on_the_next_line_on_paper(tmp_path):
+    """On paper a worked example's long chain lost its end ("…(0.125×10" without "^-6) = 10^3 rad/s"), a long code
+    line was cut, and a scrollbar was printed under each."""
+    import pypdfium2 as pdfium
+
+    from studia.export import find_browser
+
+    if not find_browser():
+        pytest.skip("no Edge or Chrome to print with")
+    chain = (r"$$\alpha=\frac{R}{2L}=\frac{8}{2(0.02)}=200\ \mathrm{rad/s},\qquad \omega_0=\frac{1}{\sqrt{LC}}"
+             r"=\frac{1}{\sqrt{(0.02)(8)(0.125\times10^{-6})}}=10^3\ \mathrm{rad/s},\qquad \frac{dv}{dt}(0^+)"
+             r"=\frac{i_C(0^+)}{C}=98\,000\ \mathrm{V/s}$$")
+    code = "```\nresult = solve_linear_system(coefficient_matrix_of_the_mesh_equations, source_vector_of_the_mesh_equations)\n```"
+    outline = {"title": "T", "intro": "", "chapters": [{"id": "c1", "title": "Alpha", "figures": []}]}
+    meta = {"course": "X 1", "span": "Week 1", "files": [], "lectures": [], "date": "4 Nov 2026"}
+    page = tmp_path / "p.html"
+    page.write_text(studypack.document_html(studypack.document_body(
+        outline, {"c1": f"Text.\n\n{chain}\n\n{code}\n"}, {}, meta, str), "T"), encoding="utf-8")
+    pdf = tmp_path / "p.pdf"
+    assert studypack.print_pdf(page, pdf)
+    doc = pdfium.PdfDocument(str(pdf))
+    try:
+        w = doc[2].get_size()[0]
+        tp = doc[2].get_textpage()
+        text = "".join(tp.get_text_range().split())
+        assert "98000V/s" in text and "source_vector_of_the_mesh_equations)" in text      # all of it
+        right = max(tp.get_charbox(i)[2] for i in range(tp.count_chars()))
+        assert right < w - 16 / 25.4 * 72 + 2                                              # within the right margin
+    finally:
+        doc.close()
 
 
 def test_the_pages_keep_the_documents_english_casing_and_name_a_class_day_once():

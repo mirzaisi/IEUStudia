@@ -1,68 +1,92 @@
-"""Prompts that turn a transcript (+ slides) into study material with ChatGPT / Claude."""
+"""Prompts that turn a transcript (+ slides) into study material with ChatGPT / Claude, and the house style every
+document the AI writes for IEUStudia shares (STYLE: study notes, study packs, cheatsheets, review sheets, video plans,
+the weekly digest)."""
 
 from __future__ import annotations
 
 from ..i18n import N_
 
+# How the AI writes: like a good tutor, not like a brochure (kept short: it goes with every request)
+STYLE = ("Write like a good tutor talking to one student: plain, concrete sentences that say why; detail where the "
+         "exam needs it, nothing for show. No filler openings or closings (\"In summary\", \"Let's\"), buzzwords, "
+         "hedging or em dashes. Bold only a term where it is defined; a short formula stays in its sentence.")
+
+
+def written_in(language: str = "") -> str:
+    """The language line: the one the course is taught in (English unless told otherwise)."""
+    return f"Write in {language or 'English'}, the language the course is taught in."
+
+
 TRANSCRIPT_NOTES = (
-    "About the material: it is an automatic speech-recognition transcript of a university lecture, so names, "
-    "symbols and formulas may be misheard — fix obvious recognition errors from context (and from the slides, "
-    "if attached) but say when you are guessing. Timestamps are [mm:ss] from the start of each part. Passages "
-    "tagged [TR] were spoken in Turkish: use them, translating when you quote. ⭐ marks moments the lecturer "
-    "emphasised (exam, important, homework, schedule); ⚠ and [unclear] mark audio that was hard to understand. "
-    "Answer in English unless I ask otherwise."
+    "About the material: an automatic transcript of a university lecture, so names, symbols and numbers may be "
+    "misheard. Fix obvious errors from context and the slides; where a reading stays doubtful, say so once, briefly. "
+    "Times are [mm:ss] from the start of each part. [TR] marks Turkish speech (translate what you quote), ⭐ what the "
+    "lecturer stressed, ⚠ and [unclear] audio that was hard to hear."
 )
 
 TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to show one (the prompts stay English)
     "notes": {
         "label": N_("Study notes"),
         "prompt": (
-            "You are my study assistant. Turn the lecture into complete, well-structured study notes.\n\n"
-            "1. **Overview** — 3–5 sentences: what was covered and how it connects to the course.\n"
-            "2. **Topics, in lecture order** — for each: a heading; a clear explanation; every definition, "
-            "theorem and formula (LaTeX: $P(A\\mid B)$ in a sentence, $$...$$ on lines of their own for a displayed "
-            "formula); the lecturer's worked examples step by step; "
-            "and the timestamp where it starts, e.g. (Part 2, 14:05). If slides are attached, refer to them "
-            "as (Part 2, slide 7) and use them to correct formulas.\n"
-            "3. **What the lecturer emphasised** — everything marked ⭐ or described as important / likely on "
-            "the exam, with timestamps.\n"
-            "4. **Announcements & deadlines** — homework, quizzes, exams, schedule changes.\n"
-            "5. **Check yourself** — 5 short questions with answers.\n"
-            "6. **Possibly misheard** — places that look wrong or are marked ⚠/[unclear], so I can re-watch them.\n\n"
+            "Write study notes on this lecture for a student who missed it.\n"
+            "- Open with two or three sentences: what the lecture covered and where it fits in the course.\n"
+            "- Then a ## section per topic, in lecture order, its start time in the heading, e.g. \"## Bayes' theorem "
+            "(Part 1, 09:54)\". Explain the idea, give every definition, result and formula the lecturer used, and work "
+            "through the lecturer's examples step by step with the numbers checked.\n"
+            "- ## What the lecturer stressed: what was called important or likely on the exam (⭐), with times.\n"
+            "- ## Announcements: homework, quizzes, exams, schedule changes (leave it out when there were none).\n"
+            "- ## Check yourself: five short questions, each followed by its answer.\n"
+            "- Last, only if some passages were too unclear to use: one line each with its time, to re-watch.\n\n"
         ),
     },
     "exam": {
         "label": N_("Exam focus"),
         "prompt": (
-            "You are helping me prepare for an exam. From the lecture, extract only what is most likely "
-            "to be examined:\n\n"
-            "1. **Lecturer's explicit hints** — everything said to be important, on the exam/quiz, or to be "
-            "remembered (⭐ moments), quoted briefly with timestamps.\n"
-            "2. **Core concepts & formulas** — the minimum set I must know, each with a one-line explanation "
-            "and when to use it.\n"
-            "3. **Typical exam questions** — 5–8 realistic questions in the lecturer's style (based on the "
-            "examples worked in class), with concise solutions.\n"
-            "4. **Common mistakes** the lecturer warned about.\n"
-            "5. **Announcements** — dates, deadlines, quiz/exam rules.\n\n"
+            "Write an exam-focus sheet for this lecture: only what is likely to be examined.\n"
+            "1. What the lecturer called important or said will be on an exam (⭐): a short quote and its time each.\n"
+            "2. The core definitions and formulas, each with one line on when to use it.\n"
+            "3. Five to eight exam questions in the lecturer's style, built on the examples worked in class, each with "
+            "a short worked solution.\n"
+            "4. The mistakes the lecturer warned about.\n"
+            "5. Dates, deadlines and rules announced for quizzes and exams.\n\n"
         ),
     },
     "flashcards": {
         "label": N_("Flashcards"),
         "prompt": (
-            "Create 20–30 flashcards from the lecture, covering definitions, formulas, key ideas and the "
-            "worked examples. Format each as:\n\nQ: …\nA: …  (Part n, mm:ss)\n\n"
-            "Keep answers short and precise; put formulas in LaTeX between single dollars ($...$). Prefer what the lecturer emphasised (⭐).\n\n"
+            "Write 20 to 30 flashcards on this lecture: definitions, formulas, key ideas and the worked examples, "
+            "first what the lecturer stressed (⭐). Each card as:\n\nQ: …\nA: …  (Part n, mm:ss)\n\n"
+            "Short, exact answers; formulas in LaTeX between single dollars ($...$).\n\n"
         ),
     },
     "plain": {"label": N_("Transcript only"), "prompt": ""},
 }
 
 
-def ai_prompt(template: str) -> str:
+def ai_prompt(template: str, language: str = "") -> str:
+    """The instruction for notes of ``template`` kind, in the course's ``language`` ("" for English)."""
     tpl = TEMPLATES.get(template) or TEMPLATES["notes"]
     if not tpl["prompt"]:
         return ""
-    return tpl["prompt"] + TRANSCRIPT_NOTES
+    return f"{tpl['prompt']}{TRANSCRIPT_NOTES}\n{STYLE} {written_in(language)}"
+
+
+# The slides sent with study notes: where they are in the transcript, and (notes, exam focus) the ones worth showing.
+# A figure line the AI writes, "![caption](Part 2, slide 7)", becomes the slide's picture (outputs/figures.py).
+NOTE_FIGURES_MAX = 6
+
+
+def slides_note(sent: int, total: int, figures: bool = True) -> str:
+    out = ("\n\nThe slide images are attached in order, each labelled [Part n, slide m]. In the transcript, (slide m) "
+           "on a paragraph of Part n is that part's slide m, the one on screen (every part numbers its slides from "
+           "1). Refer to a slide as (Part n, slide m).")
+    if sent < total:
+        out += f" {sent} of the {total} slides are attached, spread over the lecture; not the others."
+    if figures:
+        out += (f" Where a slide's diagram, graph, circuit, table or board work helps, show it on a line of its own "
+                f"right after the text that explains it: ![what it shows, in a few words](Part n, slide m). At most "
+                f"{NOTE_FIGURES_MAX}, only slides you were given, never a title slide or one of plain text.")
+    return out
 
 
 PROMPTS_MD = f"""# Using your transcripts with ChatGPT or Claude
@@ -77,19 +101,19 @@ transcript on your clipboard in one step.
 
 ## Study notes
 
-{TEMPLATES['notes']['prompt']}{TRANSCRIPT_NOTES}
+{ai_prompt('notes')}
 
 ## Exam focus
 
-{TEMPLATES['exam']['prompt']}{TRANSCRIPT_NOTES}
+{ai_prompt('exam')}
 
 ## Flashcards
 
-{TEMPLATES['flashcards']['prompt']}{TRANSCRIPT_NOTES}
+{ai_prompt('flashcards')}
 
 ## Tips
 
 - For a whole course before an exam, upload the course **Study pack** and use *Exam focus*.
 - Ask follow-ups such as "Explain the example at Part 2, 14:05 step by step" or "Quiz me on this lecture".
-- If something looks wrong, check the timestamp in Panopto — the transcript is automatic.
+- If something looks wrong, check the timestamp in Panopto: the transcript is automatic.
 """

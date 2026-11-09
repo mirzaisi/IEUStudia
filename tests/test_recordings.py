@@ -2,6 +2,7 @@
 simple checks that tell when something about a recording looks off."""
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
 from test_jobs import FakePanopto, env, finals, wait_for  # noqa: F401 - env is a fixture
@@ -306,6 +307,223 @@ def test_a_move_stays_noted_until_done_and_the_chats_follow_it(isolated_home, tm
     finally:
         s.shutdown()
         s.lib.close()
+
+
+def test_a_lecture_moved_to_another_of_your_courses_takes_its_files_there(isolated_home, tmp_path):
+    """A lecturer moves a transcribed recording between the two FENG 495 sections' folders: the next sync gave it to
+    the other course, but its day file, AI notes and slides stayed in the old course's folder (the new one got none),
+    and the old course's study pack kept listing it."""
+    from studia.outputs.writer import course_dir, day_file_name, day_stem
+    from studia.services import Services
+    from studia.slides import Slide
+
+    s = Services()
+    try:
+        s.settings.output_dir = str(tmp_path / "out")
+        lib = s.lib
+        one = Course(id="17855", title="2026-1 FENG 495 Sec 1", code="FENG 495", name="Project", section="1")
+        three = Course(id="19456", title="2026-1 FENG 495 Sec 3", code="FENG 495", name="Project", section="3")
+        lib.upsert_courses([one, three])
+        when = D(2026, 10, 8, 10, 0)
+        lib.merge_recordings("17855", [_rec("x", when, cid="17855"), _rec("y", D(2026, 10, 1, 10, 0), cid="17855")],
+                             first_sync=True)
+        lib.merge_recordings("19456", [_rec("z", D(2026, 10, 9, 10, 0), cid="19456")], first_sync=True)
+        for did in ("x", "y", "z"):
+            _transcribe(lib, did)
+            s.write_outputs(did)
+        old_dir = course_dir(s.output_root, one, lib.courses(True))
+        new_dir = course_dir(s.output_root, three, lib.courses(True))
+        assert old_dir != new_dir
+        old_stem, new_stem = day_stem(one, when.date(), "lecture"), day_stem(three, when.date(), "lecture")
+        pic = old_dir / "slides" / old_stem / "1000-x-01.jpg"
+        pic.parent.mkdir(parents=True, exist_ok=True)
+        pic.write_bytes(b"jpg")
+        store.save_slides("x", [Slide(1, 5.0, 60.0, f"slides/{old_stem}/{pic.name}", str(pic)),
+                                Slide(2, 70.0, 90.0, f"slides/{old_stem}/{pic.name}", str(pic))])    # shown twice
+        s.write_outputs("x")
+        notes = s._notes_path(old_dir, old_stem, "notes")
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text("my notes of x", encoding="utf-8")
+        lib.create_chat("ch", "17855", {"days": [f"17855|{when.date()}|lecture"]}, "sonnet")
+        # the lecturer moved x: 17855 lists it no more, 19456 does
+        lib.merge_recordings("17855", [_rec("y", D(2026, 10, 1, 10, 0), cid="17855")], first_sync=False)
+        lib.merge_recordings("19456", [_rec("z", D(2026, 10, 9, 10, 0), cid="19456"), _rec("x", when, cid="19456")],
+                             first_sync=False)
+        assert lib.get_recording("x").course_id == "19456"
+        assert lib.day_moves() == [["x", f"17855|{when.date()}|lecture"]]
+        assert s.move_days() == 1 and lib.day_moves() == []
+        assert not (old_dir / day_file_name(one, when.date(), "lecture")).exists()
+        new_day = new_dir / day_file_name(three, when.date(), "lecture")
+        assert "words of x" in new_day.read_text(encoding="utf-8")
+        assert s._notes_path(new_dir, new_stem, "notes").read_text(encoding="utf-8") == "my notes of x"
+        moved = store.load_slides("x")
+        assert {sl.image for sl in moved} == {f"slides/{new_stem}/{pic.name}"} and not pic.exists()
+        assert all(Path(sl.path).read_bytes() == b"jpg" and Path(sl.path).parent.parent.parent == new_dir
+                   for sl in moved)                                # one file for the slide shown twice
+        assert not pic.parent.exists()                             # its old folder held nothing else
+        assert lib.get_chat("ch")["scope"]["days"] == [f"17855|{when.date()}|lecture"]    # a chat stays with its course
+        packs = {c.id: sorted(course_dir(s.output_root, c, lib.courses(True)).glob("*tudy pack*")) for c in (one, three)}
+        assert packs["17855"] and packs["19456"]                   # both courses' study packs written again
+        assert not any("words of x" in p.read_text(encoding="utf-8") for p in packs["17855"] if p.suffix == ".md")
+        assert any("words of x" in p.read_text(encoding="utf-8") for p in packs["19456"] if p.suffix == ".md")
+    finally:
+        s.shutdown()
+        s.lib.close()
+
+
+def _twins(s, b_section, folders, files, days):
+    """MATH 250 taken in 2026-1 (course 100, section 1) and course 200 with the same code (a retake in 2027-1, or
+    another section) that came before 3.3.1, its folders as they were then: ``folders`` as 3.3.1 named them, ``files``
+    {resource id: folder} its downloaded files, ``days`` {date: folder} its day files."""
+    from studia.coursesite import Resource, Unit
+    from studia.services import TWINS_KEY
+
+    lib = s.lib
+    lib.upsert_courses([Course(id="200", title=f"2027-1 MATH 250 Linear Algebra {b_section}", code="MATH 250",
+                               name="Linear Algebra", section=b_section, position=0),
+                        Course(id="100", title="2026-1 MATH 250 Linear Algebra 1", code="MATH 250", name="Linear Algebra",
+                               section="1", position=1)])
+    lib.merge_recordings("100", [_rec("a1", D(2026, 9, 24, 10, 0), cid="100"), _rec("a2", D(2026, 10, 8, 10, 0), cid="100")],
+                         first_sync=True)
+    lib.merge_recordings("200", [_rec("b1", D(2027, 10, 7, 10, 0), cid="200")], first_sync=True)
+    for cid, when in (("100", "2026-09-20T10:00:00"), ("200", "2027-10-01T10:00:00")):   # 100 came first
+        lib.db.execute("UPDATE recordings SET first_seen=? WHERE course_id=?", (when, cid))
+    lib.db.commit()
+    for did in ("a1", "a2", "b1"):
+        _transcribe(lib, did)
+    for cid in ("100", "200"):
+        rids = [rid for rid in files if rid.startswith("ma" if cid == "100" else "mb")]
+        lib.merge_units(cid, [Unit(f"u{cid}", 0, "Week 1", resources=[Resource(rid, rid, f"{rid}.pdf", "resource", "pdf",
+                                                                                 f"https://l/{rid}", "") for rid in rids])],
+                        first_sync=True)
+    lib.set_folders(folders)
+    root = s.output_root
+    for rid, folder in files.items():
+        path = root / folder / "Materials" / "Week 01 - Week 1" / f"{rid}.pdf"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(rid.encode())
+        lib.set_material_file(rid, str(path), 3, "u")
+    for day, folder in days.items():
+        (root / folder).mkdir(parents=True, exist_ok=True)
+        (root / folder / f"MATH 250 - {day} Thu - Lecture.md").write_text("old copy", encoding="utf-8")
+    lib.set_meta(TWINS_KEY, "")
+    return lib, root
+
+
+def _where(lib, root):
+    """Each downloaded file's course folder, and that it is the course's own."""
+    out = {}
+    for cid in ("100", "200"):
+        for m in lib.materials(cid):
+            path = Path(m["local_path"])
+            assert path.read_bytes() == m["resource_id"].encode()
+            out[m["resource_id"]] = path.relative_to(root).parts[0]
+            assert out[m["resource_id"]] == lib.get_course(cid).folder
+    return out
+
+
+def _day_files(lib, root, written=("100", "200")):
+    """Each course's day files are in its own folder: written again there (``written``), or left as they were."""
+    for cid, days in (("100", ["2026-09-24", "2026-10-08"]), ("200", ["2027-10-07"])):
+        for day in days:
+            text = (root / lib.get_course(cid).folder / f"MATH 250 - {day} Thu - Lecture.md").read_text(encoding="utf-8")
+            assert ("words of" in text) == (cid in written), (cid, day)
+
+
+def test_a_retake_from_before_331_gives_the_first_course_its_folder_back(isolated_home, tmp_path):
+    """The same section's retake shared the first course's folder until 3.3.1, and 3.3.1 then named that folder for
+    the retake (listed first on the dashboard) and an empty new one for the first course: its files seemed gone."""
+    from studia.services import Services
+
+    s = Services()
+    try:
+        s.settings.output_dir = str(tmp_path / "out")
+        shared = "MATH 250 (sec 1)"
+        lib, root = _twins(s, "1", {"100": "MATH 250 (2026-1 sec 1)", "200": shared},
+                           {"ma1": shared, "ma2": shared, "mb1": shared},
+                           {"2026-09-24": shared, "2026-10-08": shared, "2027-10-07": shared})
+        notes = s._notes_path(root / shared, "MATH 250 - 2026-09-24 Thu - Lecture", "notes")
+        notes.parent.mkdir(parents=True, exist_ok=True)
+        notes.write_text("my notes of a1", encoding="utf-8")
+        assert s.repair_twin_folders() == 1                     # the retake's file: the first course's stay
+        assert lib.get_course("100").folder == shared and lib.get_course("200").folder == "MATH 250 (2027-1 sec 1)"
+        assert _where(lib, root) == {"ma1": shared, "ma2": shared, "mb1": "MATH 250 (2027-1 sec 1)"}
+        assert notes.read_text(encoding="utf-8") == "my notes of a1"
+        _day_files(lib, root)
+        assert not (root / shared / "MATH 250 - 2027-10-07 Thu - Lecture.md").exists()   # the retake's old copy
+        assert s.repair_twin_folders() == 0                     # once
+    finally:
+        s.shutdown()
+        s.lib.close()
+
+
+def test_the_folders_are_put_right_once_the_output_folder_can_be_reached(isolated_home, tmp_path):
+    """The output folder on a USB or network drive that isn't connected at the first 4.0 start: the one-time repair
+    was marked done without having looked, and the courses' files stayed mixed for good."""
+    from studia.services import TWINS_KEY, Services
+
+    s = Services()
+    try:
+        s.settings.output_dir = str(tmp_path / "out")
+        shared = "MATH 250 (sec 1)"
+        lib, root = _twins(s, "1", {"100": "MATH 250 (2026-1 sec 1)", "200": shared},
+                           {"ma1": shared, "ma2": shared, "mb1": shared},
+                           {"2026-09-24": shared, "2026-10-08": shared, "2027-10-07": shared})
+        (tmp_path / "usb").write_bytes(b"")
+        s.settings.output_dir = str(tmp_path / "usb" / "IEUStudia")    # a folder that can't be reached
+        assert s.repair_twin_folders() == 0 and lib.get_meta(TWINS_KEY) != "1"     # still to do
+        s.settings.output_dir = str(root)                                # the drive is back at a later start
+        assert s.repair_twin_folders() == 1 and lib.get_meta(TWINS_KEY) == "1"
+        assert _where(lib, root) == {"ma1": shared, "ma2": shared, "mb1": "MATH 250 (2027-1 sec 1)"}
+    finally:
+        s.shutdown()
+        s.lib.close()
+
+
+@pytest.mark.parametrize("b_section", ["1", "3"])
+def test_the_first_course_s_files_from_before_its_twin_join_the_rest(isolated_home, tmp_path, b_section):
+    """The first course was alone at first ("MATH 250"); once its twin came (before 3.3.1) its new files went to
+    "MATH 250 (sec 1)", shared with a retake of the same section: its files were in two folders."""
+    from studia.services import Services
+
+    s = Services()
+    try:
+        s.settings.output_dir = str(tmp_path / "out")
+        twin = "MATH 250 (sec 1)" if b_section == "1" else "MATH 250 (sec 3)"
+        lib, root = _twins(s, b_section, {"100": "MATH 250 (sec 1)" if b_section == "3" else "MATH 250 (2026-1 sec 1)",
+                                          "200": twin},
+                           {"ma1": "MATH 250", "ma2": "MATH 250", "ma3": "MATH 250 (sec 1)", "mb1": twin},
+                           {"2026-09-24": "MATH 250", "2026-10-08": "MATH 250 (sec 1)", "2027-10-07": twin})
+        mine = root / "MATH 250 (copy)" / "MATH 250 - 2026-09-24 Thu - Lecture.md"     # a copy you made yourself
+        mine.parent.mkdir()
+        mine.write_text("kept", encoding="utf-8")
+        s.repair_twin_folders()
+        assert mine.read_text(encoding="utf-8") == "kept"
+        assert lib.get_course("100").folder == "MATH 250"       # where most of its files are: its folder from before
+        assert lib.get_course("200").folder == twin
+        assert _where(lib, root) == {"ma1": "MATH 250", "ma2": "MATH 250", "ma3": "MATH 250", "mb1": twin}
+        _day_files(lib, root, written=("100",))                 # the twin's files were all in its folder: left alone
+        if b_section == "3":                                     # nothing of anyone's left there
+            assert not (root / "MATH 250 (sec 1)").exists()
+        else:
+            assert not (root / twin / "MATH 250 - 2026-10-08 Thu - Lecture.md").exists()
+    finally:
+        s.shutdown()
+        s.lib.close()
+
+
+def test_a_file_already_in_place_or_held_is_never_written_over(tmp_path):
+    from studia.services import _move_aside
+
+    a, b = tmp_path / "a" / "x.pdf", tmp_path / "b" / "x.pdf"
+    a.parent.mkdir()
+    b.parent.mkdir()
+    a.write_bytes(b"same")
+    b.write_bytes(b"same")
+    assert _move_aside(a, b) == b and not a.exists()           # the same file: this copy goes
+    a.write_bytes(b"other")
+    moved = _move_aside(a, b)
+    assert moved.name == "x (2).pdf" and moved.read_bytes() == b"other" and b.read_bytes() == b"same"
 
 
 # ------------------------------------------------------------------ what looks off

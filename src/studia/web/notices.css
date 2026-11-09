@@ -24,3 +24,35 @@
 .ntc-list > .ntc { margin: 0; }
 .msg.ai .md + .ntc { margin-top: 10px; }
 .plan-page > .ntc-list { margin: 14px 0; }
+
+/* what an AI run is doing while the student waits (waits.js): the step in words, the AI's thinking as short lines, the
+ * time so far and left, what to do meanwhile. Calm: the app's own grey surface, violet for the AI's thinking. */
+.aw { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); max-width: 560px; font-size: 13px; line-height: 1.5; }
+.aw-main { display: flex; align-items: flex-start; gap: 10px; }
+.aw-main > .i { flex: none; margin-top: 2px; }
+.aw[data-phase="retry"] .aw-main > .i:not(.spin) { color: var(--warning); }
+.aw-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.aw-now { color: var(--text); font-weight: 550; overflow-wrap: anywhere; }
+.aw ul.aw-lines { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 1px; }
+.aw ul.aw-lines li { margin: 0; color: var(--text-3); font-size: 12.5px; line-height: 1.45; padding-left: 10px;
+  border-left: 2px solid var(--border); overflow-wrap: anywhere; }
+.aw ul.aw-lines li.now { color: var(--text-2); border-left-color: var(--violet); }
+.aw-t { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.aw-slow { color: var(--warning); }
+.aw-read { color: var(--text-2); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+.aw-read .i { color: var(--success); }
+.aw-hint { display: flex; align-items: flex-start; gap: 6px; color: var(--text-3); font-size: 12px; }
+.aw-hint .i { flex: none; margin-top: 2px; }
+.aw-line { font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+.aw-line .aw-now { font-weight: 500; }
+.aw-line .aw-think { color: var(--text-3); }
+.aw-slot { margin: -2px 0 10px; }
+.pl-wait { margin: 2px 0 6px; }
+.pl-state:has(> .pl-wait) { flex-wrap: wrap; }           /* a plan's row: what its AI does now, on a line of its own */
+.pl-state > .pl-wait { flex: 1 0 100%; margin: 0; min-width: 0; }
+.pl-state > .pl-run { flex: 1 1 auto; min-width: 0; }
+.chip.aw-chip { cursor: pointer; font: inherit; font-size: 12.5px; max-width: 320px; }
+.chip.aw-chip > span:not(.aw-chip-t) { overflow: hidden; text-overflow: ellipsis; }
+.chip.aw-chip:hover { border-color: var(--border-strong); }
+.aw-chip-t { color: var(--text-3); font-variant-numeric: tabular-nums; }

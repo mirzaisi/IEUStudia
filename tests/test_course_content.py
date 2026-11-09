@@ -64,6 +64,106 @@ def test_an_announcement_keeps_its_link_addresses_and_attached_files():
     assert a.body == ("Link: Makeup Lesson | Toplantıya Katıl | Microsoft Teams "
                       "(https://teams.microsoft.com/l/meetup-join/19%3a1?a=1&b=2)\nSheet: https://docs.google.com/x\n"
                       "Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/student/announcements/5961/file/0)")
+    (f,) = a.files                                   # (the Teams and Google links are no attached files)
+    assert (f.title, f.file_name, f.ext, f.kind) == ("Quiz1 - Solutions", "Quiz1 - Solutions.pdf", "pdf", "announcement")
+    assert f.url == f.download_url == "https://learn.ieu.edu.tr/student/announcements/5961/file/0"
+
+
+ANN_PAGE = """<article class="ov-ann-card"><h4 class="ov-ann-card-title">Quiz 1 solutions</h4>
+  <div class="ov-ann-card-meta"><span>Dr X</span><span>27.10.2026 09:00</span></div>
+  <div class="st-ov-ann-full"><p>Here they are.</p><div class="ov-ann-card-files"><a class="ov-ann-file"
+  href="https://learn.ieu.edu.tr/student/announcements/5961/file/0" title="Quiz1 - Solutions.pdf"><span
+  class="ov-ann-file-name">Quiz1 - Solutions.pdf</span> <span class="ov-ann-file-size">142 KB</span></a><a
+  class="ov-ann-file" href="https://learn.ieu.edu.tr/student/announcements/5961/file/1"><span
+  class="ov-ann-file-name">Grades.xlsx</span></a></div></div></article>"""
+
+
+def test_announcement_files_are_course_files_of_their_own(tmp_path):
+    """3.3.1 let you open an announcement's attached files from the announcement only: they never came into the
+    course folder, so Export for AI chat, chats, the file search and the files list didn't have them."""
+    import types
+
+    from studia.catchup import course_needs
+    from studia.chatslides import course_files
+    from studia.library import ANN_UNIT
+    from studia.materials import MaterialStore
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="P")])
+    lib.merge_units("c", [Unit("u1", 0, "Hafta 1", dt.date(2026, 9, 21), dt.date(2026, 9, 27), "",
+                               [Resource("r1", "Week 1", "Week1.pdf", "pdf", "pdf", "u", "/d/r1")])], first_sync=True)
+    lib.merge_announcements("c", [], first_sync=True)
+    (ann,) = parse_announcements(ANN_PAGE)          # side by side on the page: each file on a line of its own
+    assert ann.body.splitlines()[1:] == ["Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/student/announcements/5961/file/0)",
+                                         "Grades.xlsx (https://learn.ieu.edu.tr/student/announcements/5961/file/1)"]
+    assert lib.merge_announcements("c", parse_announcements(ANN_PAGE), first_sync=False)
+    files = {m["resource_id"]: m for m in lib.materials("c") if m["unit_id"] == ANN_UNIT}
+    assert sorted(files) == ["ann-c-5961-0", "ann-c-5961-1"]
+    quiz = files["ann-c-5961-0"]
+    assert (quiz["title"], quiz["file_name"], quiz["ext"], quiz["is_new"]) == ("Quiz1 - Solutions", "Quiz1 - Solutions.pdf",
+                                                                              "pdf", 1)
+    assert quiz["first_seen"].startswith("2026-10-27")             # when the lecturer posted it
+    # the weekly plan comes again without them, and later IEULearn's list no longer has the announcement: they stay
+    lib.merge_units("c", [Unit("u1", 0, "Hafta 1", dt.date(2026, 9, 21), dt.date(2026, 9, 27), "",
+                               [Resource("r1", "Week 1", "Week1.pdf", "pdf", "pdf", "u", "/d/r1")])], first_sync=False)
+    lib.merge_announcements("c", [Announcement("other", "Hello", "Dr X", dt.datetime(2026, 11, 2, 9), "Hi")],
+                            first_sync=False)
+    assert {m["resource_id"]: m["gone"] for m in lib.materials("c", include_gone=True)} == \
+        {"r1": 0, "ann-c-5961-0": 0, "ann-c-5961-1": 0}
+    # their own group on the course page (and in Export for AI chat, which takes the page's groups)
+    d = course_detail(lib, Settings(), "c")
+    (group,) = [u for u in d["general"] if u["id"] == ANN_UNIT]
+    assert group["title"] == "From announcements" and [m["id"] for m in group["materials"]] == ["ann-c-5961-0",
+                                                                                               "ann-c-5961-1"]
+    assert not [u for u in d["general"] if u["id"] == ""]       # not "No longer in the weekly plan"
+    # a full or course sync downloads them; a chat can take the PDF; they go to their own folder
+    (need,) = course_needs(lib, Settings(), ["c"])
+    assert {"ann-c-5961-0", "ann-c-5961-1"} <= set(need.materials)
+    assert "ann-c-5961-0" in {f["id"] for f in course_files(lib, "c", [])["files"]}
+    got = []
+    session = types.SimpleNamespace(get=lambda url, **kw: got.append(url) or _PdfAnswer(url))
+    path = MaterialStore(types.SimpleNamespace(lib=lib, output_root=tmp_path / "out")).download("ann-c-5961-0", session)
+    assert got == ["https://learn.ieu.edu.tr/student/announcements/5961/file/0"]     # with the IEULearn session
+    assert path.parent.name == "From announcements" and path.name == "Quiz1 - Solutions.pdf"
+    assert lib.get_material("ann-c-5961-0")["local_path"] == str(path)
+    lib.close()
+
+
+def test_files_of_announcements_known_before_the_update_are_not_new(tmp_path):
+    """3.x kept an announcement without its files. The first sync after the update reads them, and they showed as new
+    course files ("2 new") although they were posted weeks before. A new announcement's files are new."""
+    def attached(n, name):
+        url = f"https://learn.ieu.edu.tr/student/courses/7/announcements/{n}/file/0"
+        return Resource("", name.rsplit(".", 1)[0], name, "announcement", "pdf", url, url)
+
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="7", title="2026-1 EEE 215", code="EEE 215", name="Circuits")])
+    old = Announcement("k1", "Quiz 1 solutions", "Hoca", dt.datetime(2026, 10, 1, 10, 0), "See the file")
+    lib.merge_announcements("7", [old], first_sync=True)              # 3.x: the announcement, not its file
+    old.files = [attached(11, "Quiz1 - Solutions.pdf")]
+    new = Announcement("k2", "Quiz 2 solutions", "Hoca", dt.datetime(2026, 11, 5, 10, 0), "See the file",
+                       [attached(12, "Quiz2 - Solutions.pdf")])
+    assert lib.merge_announcements("7", [new, old], first_sync=False) == ["k2"]
+    assert {m["file_name"]: m["is_new"] for m in lib.materials("7")} == {"Quiz1 - Solutions.pdf": 0,
+                                                                         "Quiz2 - Solutions.pdf": 1}
+    lib.close()
+
+
+class _PdfAnswer:
+    def __init__(self, url):
+        self.url, self.status_code, self.headers = url, 200, {"content-type": "application/pdf", "content-length": "9"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, size):
+        yield b"%PDF-1.7 "
 
 
 def test_parse_overview():

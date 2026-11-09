@@ -37,6 +37,11 @@ class NotReady(Exception):
     """Panopto is still processing this recording."""
 
 
+class Refused(RuntimeError):
+    """Panopto's own answer about one recording (DeliveryInfo's ErrorMessage: deleted, replaced, a link no longer
+    valid). Panopto itself answered, so the other recordings can still be asked about."""
+
+
 class Listing(list):
     """A course's recordings as Panopto listed them. ``complete`` False: fewer rows came than Panopto counted, or some
     couldn't be read, so one missing from it may still be there (nothing is marked gone)."""
@@ -67,6 +72,7 @@ class MediaSource:
     # a screen stream's stretches the recording keeps: (from, to) in the stream's own seconds and where in the
     # recording that stretch begins (see _spans); () for all of it, from the stream's start offset
     spans: tuple[tuple[float, float, float], ...] = ()
+    tag: str = ""             # a screen source's stream tag: "SCREEN", or "DV" (the camera stream, maybe a tablet)
 
 
 def _spans(stream: dict[str, Any]) -> tuple[tuple[float, float, float], ...]:
@@ -389,7 +395,7 @@ class Panopto:
             if "ErrorCode" in data or "ErrorMessage" in data:      # Panopto's own words about this recording (its
                 said = str(data.get("ErrorMessage") or "")          # "See other videos" link left out)
                 said = " ".join(re.sub(r"<a\b.*?</a>|<[^>]+>", " ", said, flags=re.S | re.I).split())
-                raise RuntimeError(said or t("Panopto refused the request."))
+                raise Refused(said or t("Panopto refused the request."))
             raise health.changed("panopto", "delivery", f"DeliveryInfo answered without Delivery ({_keys(data)})")
         d = data["Delivery"]
         if not isinstance(d, dict) or not any(k in d for k in ("Streams", "PodcastStreams", "IsAudioPodcastEncodeComplete")) \
@@ -417,15 +423,29 @@ class Panopto:
             raise NotReady(t("Panopto is still processing this recording. Try again later."))
         return out
 
-    def screen_sources(self, info: dict[str, Any]) -> list[tuple[MediaSource, float]]:
+    def screen_sources(self, info: dict[str, Any], cameras: bool = True) -> list[tuple[MediaSource, float]]:
         """The screen/slides videos (HLS) and their start offsets in seconds, in time order. Panopto makes one per
         stretch of screen sharing: a lecturer who stops and starts sharing again gives several. Each one's ``spans``:
-        the stretches of it the recording keeps (an edit or a pause cuts the others out)."""
-        out = [(MediaSource("hls", st["StreamUrl"], spans=_spans(st)), float(st.get("RelativeStart") or 0.0))
-               for st in info["Delivery"].get("Streams") or []
-               if isinstance(st, dict) and str(st.get("Tag") or "").upper() == "SCREEN"
-               and isinstance(st.get("StreamUrl"), str) and st["StreamUrl"]]
-        return sorted(out, key=lambda x: x[1])
+        the stretches of it the recording keeps (an edit or a pause cuts the others out). A recording with no screen
+        stream gives its camera streams instead (``cameras``), tagged "DV": some lecturers' tablet is recorded as the
+        camera (whether one shows a screen is told from its first keyframes, slides.still_share)."""
+        def streams(tag: str) -> list[tuple[MediaSource, float]]:
+            out = [(MediaSource("hls", st["StreamUrl"], spans=_spans(st), tag=tag), float(st.get("RelativeStart") or 0.0))
+                   for st in info["Delivery"].get("Streams") or []
+                   if isinstance(st, dict) and str(st.get("Tag") or "").upper() == tag
+                   and isinstance(st.get("StreamUrl"), str) and st["StreamUrl"]
+                   and (tag == "SCREEN" or ".m3u8" in st["StreamUrl"])]
+            return sorted(out, key=lambda x: x[1])
+        return streams("SCREEN") or (streams("DV") if cameras else [])
+
+    def slide_image(self, object_id: str, number: int) -> Optional[bytes]:
+        """Panopto's own picture of a PowerPoint slide (the viewer's Image.aspx: a 1920x1080 JPEG of the slide itself,
+        ~100-250 KB), from the slide's PowerPoint event (``ObjectIdentifier``, ``ObjectSequenceNumber``). None when the
+        answer isn't a JPEG (a viewer page, not a documented API: the captured pictures stay)."""
+        r = self.s.get(f"{BASE}/Panopto/Pages/Viewer/Image.aspx", params={"id": object_id, "number": number},
+                       headers=self._headers(), timeout=(15, 45))
+        data = r.content if getattr(r, "status_code", 0) == 200 else b""
+        return data if data[:3] == b"\xff\xd8\xff" and len(data) > 1000 else None
 
     def has_sound(self, src: MediaSource) -> Optional[bool]:
         """Whether a stream has a sound track, from its header alone (a few small reads instead of the whole

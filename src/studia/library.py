@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import re
@@ -64,11 +65,33 @@ CREATE TABLE IF NOT EXISTS plans(
 CREATE INDEX IF NOT EXISTS ix_plans_course ON plans(course_id);
 CREATE TABLE IF NOT EXISTS marks(
   delivery_id TEXT, t REAL, text TEXT DEFAULT '', note TEXT DEFAULT '', created_at TEXT, PRIMARY KEY(delivery_id, t));
+CREATE TABLE IF NOT EXISTS assignments(
+  course_id TEXT, asg_id TEXT, title TEXT DEFAULT '', due TEXT DEFAULT '', state TEXT DEFAULT '', done INTEGER DEFAULT 0,
+  url TEXT DEFAULT '', unit_id TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, gone INTEGER DEFAULT 0,
+  PRIMARY KEY(course_id, asg_id));
+CREATE TABLE IF NOT EXISTS calendar_entries(
+  id TEXT PRIMARY KEY, title TEXT, course_id TEXT DEFAULT '', date TEXT, time TEXT DEFAULT '', note TEXT DEFAULT '',
+  created_at TEXT, updated_at TEXT);
+-- 4.0 Practice (practice.py, cards.py): a student's flashcard reviews and quiz tries, in their own profile's library
+CREATE TABLE IF NOT EXISTS card_state(
+  card_id TEXT PRIMARY KEY, course_id TEXT, due TEXT, interval REAL DEFAULT 0, ease REAL DEFAULT 2.5,
+  reps INTEGER DEFAULT 0, lapses INTEGER DEFAULT 0, step INTEGER DEFAULT 0, relearn INTEGER DEFAULT 0,
+  first TEXT DEFAULT '', last TEXT DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_card_state_course ON card_state(course_id);
+CREATE TABLE IF NOT EXISTS card_reviews(card_id TEXT, course_id TEXT, at TEXT, grade TEXT, interval REAL);
+CREATE INDEX IF NOT EXISTS ix_card_reviews_course ON card_reviews(course_id, at);
+CREATE TABLE IF NOT EXISTS quiz_attempts(
+  id TEXT PRIMARY KEY, plan_id TEXT, course_id TEXT, started_at TEXT, finished_at TEXT DEFAULT '',
+  score REAL DEFAULT 0, total INTEGER DEFAULT 0, answers TEXT DEFAULT '[]', only TEXT DEFAULT '[]');
+CREATE INDEX IF NOT EXISTS ix_quiz_attempts_plan ON quiz_attempts(plan_id);
 """
 _REC_COLS = ["delivery_id", "course_id", "folder_id", "folder_path", "name", "start", "duration_s", "viewer_url",
              "session_id", "kind", "section_tag", "is_new", "duplicate_of", "hidden", "status", "error", "first_seen",
              "live", "uploaded"]
 DAY_MOVES_KEY = "day_moves"            # meta: transcribed lectures whose class day changed, files not moved yet
+# the files attached to a course's announcements: course files of this "unit" (no unit of the weekly plan), kept when
+# the announcement leaves IEULearn's list (merge_units never marks them gone)
+ANN_UNIT = "announcements"
 _COURSE_COLS = ["id", "title", "code", "name", "instructor", "term", "status", "section", "folder_id",
                 "has_panopto", "position", "cover_url", "progress", "folder"]
 
@@ -175,6 +198,51 @@ class Library:
             name = next((n for n in map(safe_name, names) if n.lower() not in taken), safe_name(f"{b} {r['id']}"))
             self.db.execute("UPDATE courses SET folder=? WHERE id=?", (name, r["id"]))
             taken.add(name.lower())
+
+    def set_folders(self, folders: dict[str, str]) -> None:
+        """Give courses these folders in the output folder (Services.repair_twin_folders)."""
+        with self._lock:
+            for cid, name in folders.items():
+                self.db.execute("UPDATE courses SET folder=? WHERE id=?", (name, cid))
+            self.db.commit()
+
+    def arrived(self) -> dict[str, str]:
+        """When each course's first lecture, file or announcement was seen: which of two courses came first."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT course_id, MIN(first_seen) FROM (SELECT course_id, first_seen FROM recordings UNION ALL "
+                "SELECT course_id, first_seen FROM materials UNION ALL SELECT course_id, first_seen FROM announcements) "
+                "WHERE first_seen IS NOT NULL AND first_seen<>'' GROUP BY course_id").fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def material_paths(self, course_ids: Iterable[str]) -> list[tuple[str, str, str]]:
+        """(resource id, course id, local path) of the courses' downloaded files."""
+        ids = list(course_ids)
+        if not ids:
+            return []
+        with self._lock:
+            return [tuple(r) for r in self.db.execute(
+                f"SELECT resource_id, course_id, local_path FROM materials WHERE local_path<>'' AND course_id IN "
+                f"({','.join('?' * len(ids))})", ids)]
+
+    def move_paths(self, moved: dict[str, str]) -> None:
+        """Downloaded files and plan files (with their PDF) that moved: ``moved`` maps an old path to its new one."""
+        if not moved:
+            return
+        with self._lock:
+            for rid, path in self.db.execute("SELECT resource_id, local_path FROM materials WHERE local_path<>''"
+                                             ).fetchall():
+                if path in moved:
+                    self.db.execute("UPDATE materials SET local_path=? WHERE resource_id=?", (moved[path], rid))
+            for pid, result in self.db.execute("SELECT id, result FROM plans").fetchall():
+                try:
+                    r = json.loads(result or "{}")
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and any(str(r.get(k) or "") in moved for k in ("file", "pdf")):
+                    r.update({k: moved[str(r[k])] for k in ("file", "pdf") if str(r.get(k) or "") in moved})
+                    self.db.execute("UPDATE plans SET result=? WHERE id=?", (json.dumps(r, ensure_ascii=False), pid))
+            self.db.commit()
 
     def _init_fts(self) -> bool:
         try:
@@ -304,12 +372,16 @@ class Library:
             existing = set(stored)
             fresh = [r.delivery_id for r in recs if r.delivery_id not in existing]
             elsewhere: dict[str, bool] = {}      # in another course: True if it is gone from there
+            was: dict[str, str] = {}             # its class day there, if it is transcribed
             for i in range(0, len(fresh), 500):
                 chunk = fresh[i:i + 500]
                 for row in self.db.execute(
-                        "SELECT r.delivery_id, r.gone, c.active FROM recordings r LEFT JOIN courses c ON c.id=r.course_id "
-                        f"WHERE r.delivery_id IN ({','.join('?' * len(chunk))})", chunk):
+                        "SELECT r.delivery_id, r.gone, c.active, r.course_id, r.start, r.kind, t.delivery_id FROM "
+                        "recordings r LEFT JOIN courses c ON c.id=r.course_id LEFT JOIN transcripts t ON "
+                        f"t.delivery_id=r.delivery_id WHERE r.delivery_id IN ({','.join('?' * len(chunk))})", chunk):
                     elsewhere[row[0]] = bool(row[1]) or not row[2]
+                    if row[6]:
+                        was[row[0]] = f"{row[3]}|{str(row[4])[:10]}|{row[5]}"
             for r in recs:
                 start = r.start.isoformat()
                 if r.delivery_id in elsewhere:   # already in another of your courses
@@ -321,6 +393,8 @@ class Library:
                             (course_id, r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url,
                              r.session_id, r.kind, r.section_tag, int(r.live), r.uploaded, now, r.delivery_id))
                         self.index.lecture_moved(r.delivery_id, course_id, start)
+                        if r.delivery_id in was:     # transcribed: its files follow it to this course (day_moves)
+                            moves.append([r.delivery_id, was[r.delivery_id]])
                     continue                         # listed by both: it stays where it is, and is not "new"
                 if r.delivery_id in existing:
                     row = (r.folder_id, r.folder_path, r.name, start, r.duration_s, r.viewer_url, r.session_id, r.kind,
@@ -439,6 +513,24 @@ class Library:
                     if k != canon:
                         dup_of[items[k][3]] = items[canon][3]
         dups = {k for k, v in dup_of.items() if v}
+        # a transcribed recording that left Panopto's list while another of the same kind and section starts within a
+        # minute of it: Panopto replaced it with a new copy (a live upload that broke off after 21 minutes, uploaded
+        # again whole as a new session). The new copy is its original, so once that is transcribed the class day holds
+        # the lecture once, not the first minutes twice (outputs.common.select_parts). Done at every merge: the old
+        # copy can leave in one sync and the new one come in a later one.
+        sections = {r[0]: r[1] or "" for r in self.db.execute(
+            "SELECT delivery_id, section_tag FROM recordings WHERE course_id=? AND gone=0", (course_id,))}
+        present = [i for i in items if dup_of.get(i[3]) is None]
+        for g in self.db.execute(
+                "SELECT r.delivery_id, r.start, r.kind, r.section_tag, r.duplicate_of FROM recordings r JOIN transcripts t "
+                "ON t.delivery_id=r.delivery_id WHERE r.course_id=? AND r.gone=1", (course_id,)).fetchall():
+            start = dt.datetime.fromisoformat(g["start"])
+            near = [i for i in present if i[2] == g["kind"] and sections.get(i[3], "") == (g["section_tag"] or "")
+                    and abs((i[0] - start).total_seconds()) <= 60]
+            canon = max(near, key=lambda i: (i[1], i[3]))[3] if near else None
+            if g["duplicate_of"] != canon:
+                self.db.execute("UPDATE recordings SET duplicate_of=?, is_new=CASE WHEN ? IS NULL THEN is_new ELSE 0 "
+                                "END WHERE delivery_id=?", (canon, canon, g["delivery_id"]))
         for did, canon in dup_of.items():
             self.db.execute("UPDATE recordings SET duplicate_of=?, is_new=CASE WHEN ? IS NULL THEN is_new ELSE 0 END "
                             "WHERE delivery_id=? AND duplicate_of IS NOT ?", (canon, canon, did, canon))   # (changed)
@@ -621,7 +713,7 @@ class Library:
             # what is stored, to write only what changed (last_seen: when it last changed; nothing reads it)
             stored = {r[0]: tuple(r[1:]) for r in self.db.execute(
                 "SELECT resource_id, unit_id, position, title, file_name, kind, ext, url, download_url, gone "
-                "FROM materials WHERE course_id=?", (course_id,))}
+                "FROM materials WHERE course_id=? AND unit_id<>?", (course_id, ANN_UNIT))}   # (not the weekly plan's)
             existing = set(stored)
             seen: set[str] = set()
             for u in units:
@@ -771,6 +863,8 @@ class Library:
                                       (aid, course_id, a.title, a.author,
                                        a.posted_at.isoformat(timespec="minutes") if a.posted_at else "", a.body, now,
                                        1 if news else 0))
+                # its files are news with it: an announcement known before (3.x kept none of its files) brings old ones
+                files_news = news and cur.rowcount > 0
                 if cur.rowcount and news:
                     new_ids.append(aid)
                 elif not cur.rowcount and a.body:      # known: an edited post keeps its id, so take its new text
@@ -779,8 +873,38 @@ class Library:
                                                                                 a.title, a.body))
                 if cur.rowcount:
                     self.index.announcement(aid)
+                self._merge_announcement_files(course_id, a, files_news, now)
             self.db.commit()
         return new_ids
+
+    def _merge_announcement_files(self, course_id: str, a: Any, news: bool, now: str) -> None:
+        """An announcement's attached files as course files (ANN_UNIT): downloaded like the weekly plan's, on demand
+        and in a full or course sync, so Export for AI chat, chats, the file search and the files list have them.
+        Never marked gone: IEULearn lists only its latest announcements, and the file stays a course file."""
+        posted = int(a.posted_at.timestamp()) // 60 if getattr(a, "posted_at", None) else 0
+        for i, f in enumerate(getattr(a, "files", None) or []):
+            if not f.url:
+                continue
+            m = re.search(r"/announcements/(\d+)/file/(\d+)", f.url)
+            rid = (f"ann-{course_id}-{m.group(1)}-{m.group(2)}" if m else
+                   f"ann-{course_id}-{hashlib.sha1(f.url.encode('utf-8')).hexdigest()[:12]}")
+            row = (f.title, f.file_name, f.kind, f.ext, f.url)
+            old = self.db.execute("SELECT title, file_name, kind, ext, url FROM materials WHERE resource_id=?",
+                                  (rid,)).fetchone()
+            if old is None:
+                self.db.execute("INSERT OR IGNORE INTO materials(resource_id, course_id, unit_id, position, title, "
+                                "file_name, kind, ext, url, download_url, first_seen, last_seen, is_new) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (rid, course_id, ANN_UNIT, -posted + i, f.title, f.file_name, f.kind, f.ext, f.url,
+                                 f.download_url or f.url, a.posted_at.isoformat(timespec="seconds") if posted else
+                                 now if news else "", now, int(news)))
+            elif tuple(old) != row:      # renamed, or a new file in its place (downloaded again: "Updated on IEULearn")
+                self.db.execute("UPDATE materials SET title=?, file_name=?, kind=?, ext=?, url=?, download_url=?, "
+                                "last_seen=?, gone=0, is_new=CASE WHEN url<>? AND downloaded_at<>'' THEN 1 ELSE is_new "
+                                "END WHERE resource_id=?", (*row, f.download_url or f.url, now, f.url, rid))
+            else:
+                continue
+            self.index.file(rid)
 
     def announcements(self, course_id: Optional[str] = None, limit: int = 200) -> list[dict[str, Any]]:
         q = "SELECT * FROM announcements" + (" WHERE course_id=?" if course_id else "") + \
@@ -872,7 +996,7 @@ class Library:
 
         with self._lock:
             self.db.execute("UPDATE plans SET status='paused', message=? WHERE status IN ('running','queued')",
-                            (t("Interrupted — resume to continue"),))
+                            (t("Interrupted: resume to continue"),))
             self.db.commit()
 
     # ------------------------------------------------------------------ chats with Claude
@@ -1024,3 +1148,78 @@ class Library:
                                        f"WHERE delivery_id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
         return sorted(({"delivery_id": r[0], "t": r[1], "text": r[2], "note": r[3], "created_at": r[4]} for r in rows),
                       key=lambda m: (m["delivery_id"], m["t"]))
+
+    # ------------------------------------------------------------------ IEULearn's assignments (the calendar's deadlines)
+    def merge_assignments(self, course_id: str, plan: Optional[list[Any]] = None,
+                          panel: Optional[list[Any]] = None) -> list[str]:
+        """A course's assignments (coursesite.Assignment) as its weekly plan and its assignments panel list them (None:
+        not read this time). The panel's day and time win over the plan's day (a time read before stays when only the
+        day is read again); IEULearn's "sent" counts from either. One the panel no longer lists is kept as gone.
+        Returns the ids new to the library."""
+        if plan is None and panel is None:
+            return []
+        got: dict[str, dict[str, Any]] = {}
+        for a in plan or []:
+            got[a.id] = {"title": a.title, "due": a.due, "state": "", "done": a.done, "url": a.url,
+                         "unit_id": a.unit_id, "listed": False}
+        for a in panel or []:
+            g = got.setdefault(a.id, {"title": "", "due": "", "state": "", "done": False, "url": "", "unit_id": "",
+                                      "listed": True})
+            g.update(title=a.title or g["title"], due=a.due or g["due"], state=a.state, url=g["url"] or a.url,
+                     listed=True, done=a.done)
+        now, new = _now(), []
+        with self._lock:
+            stored = {r["asg_id"]: dict(r) for r in self.db.execute("SELECT * FROM assignments WHERE course_id=?",
+                                                                     (course_id,))}
+            for aid, g in got.items():
+                old = stored.get(aid) or {}
+                due = g["due"] or old.get("due", "")
+                if len(due) == 10 and len(old.get("due", "")) > 10 and old["due"][:10] == due:
+                    due = old["due"]                        # the plan gives the day only: the time read before stays
+                state = g["state"] if g["listed"] else old.get("state", "")
+                done = g["done"] or (not g["listed"] and bool(old.get("done")))
+                row = (g["title"] or old.get("title", ""), due, state, int(done), g["url"] or old.get("url", ""),
+                       g["unit_id"] or old.get("unit_id", ""))
+                if not old:
+                    self.db.execute("INSERT INTO assignments(course_id, asg_id, title, due, state, done, url, unit_id, "
+                                    "first_seen, last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)", (course_id, aid, *row, now, now))
+                    new.append(aid)
+                elif row != (old["title"], old["due"], old["state"], old["done"], old["url"], old["unit_id"]) or old["gone"]:
+                    self.db.execute("UPDATE assignments SET title=?, due=?, state=?, done=?, url=?, unit_id=?, last_seen=?, "
+                                    "gone=0 WHERE course_id=? AND asg_id=?", (*row, now, course_id, aid))
+            if panel is not None:                 # the panel lists them all (an empty one is more likely a hiccup)
+                for aid in set(stored) - set(got) if panel else ():
+                    if not stored[aid]["gone"]:
+                        self.db.execute("UPDATE assignments SET gone=1 WHERE course_id=? AND asg_id=?", (course_id, aid))
+            self.db.commit()
+        return new
+
+    def assignments(self, course_id: Optional[str] = None, include_gone: bool = False) -> list[dict[str, Any]]:
+        q = "SELECT * FROM assignments WHERE 1=1" + (" AND course_id=?" if course_id else "") + \
+            ("" if include_gone else " AND gone=0") + " ORDER BY due, title"
+        with self._lock:
+            rows = self.db.execute(q, (course_id,) if course_id else ()).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ the student's own calendar entries
+    def calendar_entries(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM calendar_entries ORDER BY date, time, created_at").fetchall()
+        return [dict(r) for r in rows]
+
+    def save_calendar_entry(self, entry_id: str, title: str, date: str, time: str = "", course_id: str = "",
+                            note: str = "") -> None:
+        """Add an entry, or change the one with this id (agenda.save_entry checks what it holds)."""
+        now = _now()
+        with self._lock:
+            self.db.execute("INSERT INTO calendar_entries(id, title, course_id, date, time, note, created_at, updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, "
+                            "course_id=excluded.course_id, date=excluded.date, time=excluded.time, note=excluded.note, "
+                            "updated_at=excluded.updated_at", (entry_id, title, course_id, date, time, note, now, now))
+            self.db.commit()
+
+    def delete_calendar_entry(self, entry_id: str) -> bool:
+        with self._lock:
+            n = self.db.execute("DELETE FROM calendar_entries WHERE id=?", (entry_id,)).rowcount
+            self.db.commit()
+        return bool(n)

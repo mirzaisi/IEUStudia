@@ -49,15 +49,27 @@ outcomes and the assessment plan are there too, so you can see which quiz covers
 
 **Read and search your lectures.** Pick a lecture and it's transcribed on your PC with Whisper. Lectures are mostly in
 English; Turkish parts are kept the way they were said and marked `[TR]`. Each paragraph links back to its moment in
-the recording, and the slides from the screen recording show up next to the text. One search box covers all your
-lectures and course files, in English or Turkish. A long queue can be paused, the lectures you ask for go before a
+the recording, and the slides from the screen recording show up next to the text, each saying which slide it is and
+when it was on screen (PowerPoint lectures give the exact second and the slide's title). You can also play a lecture
+inside IEUStudia, with the slide and the transcript following along. One search box covers all your lectures, the
+words on their slides and your course files, in English or Turkish. A long queue can be paused, the lectures you ask for go before a
 full sync's batch, and if you close IEUStudia before it's done, it offers to go on next time. Mark a paragraph to come
 back to it, with a note if you like; your marks show up again in *Get ready* for the weeks a quiz covers.
 
 **Don't miss a quiz.** Whenever a lecture or an announcement mentions a quiz, the midterm, the final, homework or a
 change in the schedule, it shows up on the course page. Before a quiz, *Get ready* lists the lectures to catch up on,
-the files to download and what the lecturer said about it. The evening before an announced quiz, IEUStudia reminds
-you. Quizzes and exams can go into your calendar, and a weekly digest sums up what happened.
+the files to download and what the lecturer said about it. The Calendar shows the whole term: quizzes, exams,
+IEULearn assignment deadlines with their time, class days, make-up and cancelled classes, and entries of your own.
+IEUStudia reminds you before them (you choose how early), all of it can go into Google Calendar or Outlook, and a
+weekly digest sums up what happened.
+
+**Practise for exams.** Practice quizzes for the next quiz or midterm, for weeks you pick or for one lecture, where
+every question points to the slide or the lecture moment it comes from. Flashcards with spaced repetition, made from
+your lectures and files, that you can also send to Anki. And a list of what the lecturer stressed in class, week by
+week, with the quote and the time; that one needs no AI.
+
+**Save it the way you need it.** A lecture, a week, a whole course or a chat can be saved as PDF, Word, Markdown, text
+or subtitles, straight into the course's folder.
 
 **Get a notification when something new appears.** If you want, IEUStudia keeps checking IEULearn every half hour
 after you close its window (its icon stays next to the clock) and shows a Windows notification for new recordings,
@@ -178,11 +190,11 @@ AI is optional. Transcripts, heads-ups, search and everything else work without 
 
 | Choice | What you need | What you get |
 |---|---|---|
-| ChatGPT | A ChatGPT account whose plan apps may use: Plus and Pro can; for Free and Go, OpenAI decides | Everything: chat, notes, flashcards, review sheets, study packs, cheatsheets, video study plans. |
+| ChatGPT | A ChatGPT account whose plan apps may use: Plus and Pro can; for Free and Go, OpenAI decides | Everything: chat, notes, flashcards, practice quizzes, review sheets, study packs, cheatsheets, video study plans. |
 | Claude | A Claude Pro or Max subscription | The same features. |
 | ChatGPT through the Codex CLI | A ChatGPT plan with Codex (Free and Go have smaller limits) | The same features, for people who already use OpenAI's Codex CLI. |
 | Offline model | Nothing to pay for, but at least 8 GB of memory | Short notes and simple questions, on your PC (Qwen3 1.7B or 4B). No study plans. |
-| No AI | Nothing | The AI buttons are hidden. |
+| No AI | Nothing | The AI buttons are hidden. What the lecturer stressed, the Calendar and the lecture player still work. |
 
 You can change your choice any time in *Settings → AI*.
 
@@ -317,7 +329,7 @@ each release's downloads (installer, portable zip, `active.txt`), read from GitH
 |---|---|
 | IEULearn and Panopto | `ieulearn.py`, `panopto.py`, `coursesite.py`, `syllabus.py`, `sync.py` |
 | Transcription | `engine/`, `jobs.py`, `quality.py`, `slides.py`, `outputs/` |
-| Study features | `alerts.py`, `catchup.py`, `plans.py`, `videos.py`, `digest.py`, `calendar_export.py` |
+| Study features | `alerts.py`, `catchup.py`, `plans.py`, `videos.py`, `digest.py`, `agenda.py`, `calendar_export.py` |
 | AI | `ai.py`, `ai_setup.py`, `local_llm.py`, `chat.py`, `knowledge.py` |
 | Desktop | `app.py`, `api.py`, `splash.py`, `agent.py`, `tray.py`, `hardware.py`, `components.py` |
 | Interface | `web/` |

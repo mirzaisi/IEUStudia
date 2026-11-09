@@ -1,0 +1,6 @@
+{
+  "{week}, {date} ({kind}): Panopto's recording has no speech (no sound, or only noise or music), so there is nothing to transcribe.": "{week}, {date} ({kind}): Panopto'daki kayıtta konuşma yok (ses yok ya da yalnızca gürültü veya müzik var), bu yüzden yazıya dökülecek bir şey yok.",
+  "{week}, {date} ({kind}): part {parts} has no speech on Panopto's recording, so it has no transcript.": "{week}, {date} ({kind}): bölüm {parts} Panopto'daki kayıtta konuşma içermiyor, bu yüzden ders metni yok.",
+  "{where}: {name} was left out: it lists students' numbers (grades or groups), and your classmates' details shouldn't be uploaded. Open it on IEULearn if you need it.": "{where}: {name} eklenmedi: içinde öğrenci numaraları var (notlar ya da gruplar), sınıf arkadaşlarının bilgileri yüklenmemeli. Gerekirse IEULearn'de aç.",
+  "{n} course file was left out: it lists students' numbers (grades or groups), so your classmates' details stay private. README.md names it.": "{n} ders dosyası eklenmedi: içinde öğrenci numaraları var (notlar ya da gruplar), sınıf arkadaşlarının bilgileri gizli kalsın diye. README.md hangisi olduğunu yazıyor."
+}

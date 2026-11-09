@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -192,8 +193,8 @@ def test_try_again_replaces_the_failed_answer(env):
 
 def test_limit_messages_are_explained():
     assert ai.friendly_error("You've hit your session limit · resets 10:40am (Europe/Istanbul)") == \
-        "You have reached your Claude usage limit — it resets 10:40am (Europe/Istanbul)."
-    assert ai.friendly_error("Claude AI usage limit reached|1792568400").startswith("You have reached your Claude usage limit — it resets at ")
+        "You have reached your Claude usage limit. It resets 10:40am (Europe/Istanbul)."
+    assert ai.friendly_error("Claude AI usage limit reached|1792568400").startswith("You have reached your Claude usage limit. It resets at ")
     assert ai.friendly_error("Invalid API key · Please run /login").startswith("Claude Code is not signed in")
     assert ai.friendly_error("something else") == "Claude: something else"
     from studia import i18n
@@ -212,7 +213,7 @@ def test_a_limit_that_resets_another_day_says_the_day():
 
     at = int(dt.datetime(2025, 11, 3, 10, 40).timestamp())
     assert ai.friendly_error(f"Claude AI usage limit reached|{at}") == \
-        "You have reached your Claude usage limit — it resets at Mon 03 Nov, 10:40."     # the English of 2.4
+        "You have reached your Claude usage limit. It resets at Mon 03 Nov, 10:40."     # the English of 2.4
     i18n.set_language("tr")
     try:
         assert ai.friendly_error(f"Claude AI usage limit reached|{at}").endswith(": 3 Kas Pzt, 10:40.")
@@ -374,6 +375,34 @@ def test_study_notes_label_each_slide_with_its_part_and_spread_a_long_days_slide
     assert "60 of the 100 slides are attached, spread over the lecture" in prompt
     est = Api.ai_estimate(types.SimpleNamespace(_s=ns), DAY1, True)["estimate"]
     assert est["images"] == 60 and est["slides"] == 100
+
+
+def test_study_notes_show_the_slides_they_explain_and_flashcards_dont_ask_for_them(env):
+    """4.0: a slide's diagram goes next to the text that explains it: the AI names it on a line of its own, the saved
+    notes link the slide's picture from their folder (any Markdown viewer, the app and the exports show it)."""
+    from studia.outputs.figures import local_image
+
+    ns = env.svc._s
+    for name in ("ai_notes", "ai_inputs"):
+        setattr(ns, name, types.MethodType(getattr(Services, name), ns))
+    ns._notes_path = Services._notes_path
+    img = env.tmp / "slide.jpg"
+    img.write_bytes(b"\xff\xd8jpeg")
+    for rid in ("r0", "r1"):
+        store.save_slides(rid, [Slide(1, 0.0, 8.0, "x", str(img)), Slide(2, 8.0, 20.0, "x", str(img))])
+    got = []
+    answer = "## RC\n\nThe circuit.\n\n![The RC circuit](Part 2, slide 2)\n\n![Not sent](Part 7, slide 1)\n\nEnd."
+    env.mp.setattr(ai, "run_claude", lambda prompt, text, images, **k: got.append(prompt) or
+                   {"text": answer, "usage": {}, "model": "m"})
+    env.mp.setattr(ai, "claude_info", lambda: {})
+    path = ns.ai_notes(DAY1, "notes", True, "sonnet")
+    assert "![what it shows, in a few words](Part n, slide m)" in got[-1] and "Write in English" in got[-1]
+    text = path.read_text(encoding="utf-8")
+    link = re.search(r"!\[The RC circuit \(Part 2, slide 2\)\]\(([^)]+)\)", text).group(1)
+    assert not link.startswith(("file:", "/")) and local_image(link, path.parent) == img.resolve()
+    assert "Not sent" not in text
+    ns.ai_notes(DAY1, "flashcards", True, "sonnet")
+    assert "![" not in got[-1] and "Refer to a slide as (Part n, slide m)" in got[-1]
 
 
 def test_ai_notes_are_in_the_search_index_for_good_once_written(env):

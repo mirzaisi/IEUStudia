@@ -44,7 +44,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import aierrors, health
+from . import aierrors, aiwait, health
 from .cancel import Cancelled
 from .i18n import N_, Retold, date_short, day_month, language, retell, t
 from .notices import ALERTS_MD
@@ -223,14 +223,92 @@ def _claude_env() -> dict[str, str]:
     return claude_env()
 
 
+THINKING_FLAG_FROM = (2, 1, 287)      # the Claude Code that has --thinking-display (a hidden flag: checked there)
+_thinking_flag = {"off": False}       # a newer Claude Code that turns it down: asked without it from then on
+
+
 def _command(model: str, effort: str, system_prompt_file: Path, partial: bool = False) -> list[str]:
     cmd = [_require_claude(), "-p", "--restricted", "--strict-mcp-config", "--no-session-persistence",
            "--model", model, "--effort", effort or "low", "--system-prompt-file", str(system_prompt_file), "--tools", "",
            "--permission-prompts", "none", "--input-format", "stream-json", "--output-format", "stream-json",
            "--verbose"]
-    if partial:   # stream the answer token by token (chat)
+    if partial:   # stream the answer token by token (and its thinking: aiwait)
         cmd.append("--include-partial-messages")
+    if not _thinking_flag["off"] and _version_of(claude_cli_info().get("version") or "") >= THINKING_FLAG_FROM:
+        # its thinking as short summaries, said while the student waits (the newest models send none by default)
+        cmd += ["--thinking-display", "summarized"]
     return cmd
+
+
+def _thinking_flag_refused(message: str) -> bool:
+    """Claude Code turned down --thinking-display (a version without it): never passed again while the app runs."""
+    low = (message or "").lower()
+    if "thinking-display" in low and re.search(r"unknown option|unknown argument|unexpected argument|invalid", low):
+        log.warning("Claude Code turned down --thinking-display: %s", (message or "")[:200])
+        _thinking_flag["off"] = True
+        return True
+    return False
+
+
+_RETRY_WHY = {"overloaded": "overloaded", "rate_limit": "rate_limit", "server_error": "service"}
+
+
+class _ClaudeStream:
+    """One answer as Claude Code's stream-json prints it: the text as it streams (``on_text``), its thinking, the
+    moment the request reached Claude and the retries Claude Code makes by itself, told to the run's wait (aiwait)."""
+
+    def __init__(self, wait: Any, on_text: Optional[Callable[[str], None]]) -> None:
+        self.wait, self.on_text = wait, on_text
+        self.blocks: list[str] = []
+        self.streamed = False
+
+    def _said(self) -> None:
+        text = _join(self.blocks)
+        self.wait.text(text)
+        if self.on_text:
+            self.on_text(text)
+
+    def take(self, ev: dict[str, Any]) -> None:
+        kind = ev.get("type")
+        if kind == "stream_event":
+            e = ev.get("event") or {}
+            et = e.get("type")
+            if et == "message_start":
+                self.wait.sent()                       # Claude has the question
+            elif et == "content_block_start":
+                block = e.get("content_block") or {}
+                if block.get("type") == "text":
+                    self.blocks.append("")
+                elif block.get("type") in ("thinking", "redacted_thinking"):
+                    self.wait.thinking(str(block.get("thinking") or ""), new=True)
+            elif et == "content_block_delta":
+                d = e.get("delta") or {}
+                if d.get("type") == "text_delta":
+                    if not self.blocks:
+                        self.blocks.append("")
+                    self.blocks[-1] += d.get("text") or ""
+                    self.streamed = True
+                    self._said()
+                elif d.get("type") == "thinking_delta":
+                    self.wait.thinking(str(d.get("thinking") or ""))
+        elif kind == "assistant" and not self.streamed:      # a CLI without partial messages: whole blocks
+            for b in (ev.get("message") or {}).get("content") or []:
+                if b.get("type") == "text" and b.get("text"):
+                    self.blocks.append(b["text"])
+                    self._said()
+                elif b.get("type") == "thinking" and b.get("thinking"):
+                    self.wait.thinking(whole=str(b["thinking"]))
+        elif kind == "system" and ev.get("subtype") == "api_retry":   # Claude Code asks again by itself
+            why = "dropped" if ev.get("no_response") or (not ev.get("error_status") and ev.get("error") == "unknown") \
+                else _RETRY_WHY.get(str(ev.get("error") or ""), "service")
+            log.info("Claude Code asks again (%s, try %s of %s, in %s ms)", ev.get("error"), ev.get("attempt"),
+                     ev.get("max_retries"), ev.get("retry_delay_ms"))
+            self.wait.retry(why, float(ev.get("retry_delay_ms") or 0) / 1000, int(ev.get("attempt") or 0) + 1,
+                            int(ev.get("max_retries") or 0) + 1, int(ev.get("error_status") or 0))
+
+    @property
+    def text(self) -> str:
+        return _join(self.blocks)
 
 
 def chars_per_token(p: str = "") -> float:
@@ -303,6 +381,11 @@ def pdf_block(path: Path, title: str = "") -> dict[str, Any]:
     return {"type": "document", "title": title or Path(path).name,
             "source": {"type": "base64", "media_type": "application/pdf",
                        "data": base64.b64encode(Path(path).read_bytes()).decode()}}
+
+
+def _pictures(content: list[dict[str, Any]]) -> int:
+    """The pictures and files (PDFs) a request carries."""
+    return sum(1 for b in content if b.get("type") in ("image", "document"))
 
 
 def turn_blocks(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -413,8 +496,8 @@ CLAUDE_OLD = N_("The Claude Code on this PC ({version}) is too old for IEUStudia
 CLAUDE_NEWER = N_("This Claude Code ({version}) is newer than this IEUStudia knows, and it turned down how IEUStudia "
                   "asks it. Look for a new version of IEUStudia in Settings → About.")
 START_FAILED = N_("Claude Code could not be started: {error} Install it again under Settings → AI.")
-_OWN = (N_("You have reached your Claude usage limit — it resets {when}."),
-        N_("You have reached your Claude usage limit — it resets at {time}."),
+_OWN = (N_("You have reached your Claude usage limit. It resets {when}."),
+        N_("You have reached your Claude usage limit. It resets at {time}."),
         N_("You have reached your Claude usage limit."),
         N_("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max."),
         N_("Claude Code is not signed in. Settings → AI → Sign in with Claude."),
@@ -429,6 +512,18 @@ _CLAUDE_NETWORK = ("unable to connect", "connection error", "connection refused"
 _CERTIFICATE = ("self signed certificate", "self-signed certificate", "unable to get local issuer certificate",
                 "unable_to_get_issuer_cert", "certificate verify failed", "unable to verify the first certificate",
                 "cert_has_expired")
+
+
+TOO_LONG = N_("This chat's material and your question are more than {ai}'s model can read at once. Start a new chat "
+              "with fewer class days or highlights only, or choose a model with a bigger window.")
+_TOO_LONG = re.compile(r"prompt is too long|input is too long|context[_ ]length[_ ]exceeded|exceeds? the (?:model's )?"
+                       r"(?:maximum )?context (?:window|length)|maximum context length", re.I)
+
+
+def too_long(message: str) -> bool:
+    """The AI's own words for a request bigger than its model's window (Claude Code's "Prompt is too long", OpenAI's
+    context_length_exceeded / "exceeds the context window")."""
+    return bool(_TOO_LONG.search(message or ""))
 
 
 def _explained(m: str) -> bool:
@@ -448,15 +543,17 @@ def friendly_error(message: str) -> str:
     if re.search(r"hit your [\w -]{0,20}limit|limit reached|usage limit|rate.?limit", low):
         said = re.search(r"\bresets\s+(.+?)[.\s]*$", m, flags=re.I)   # "You've hit your session limit · resets 10:40am (…)"
         if said:
-            return t("You have reached your Claude usage limit — it resets {when}.", when=_said_when(said.group(1)))
+            return t("You have reached your Claude usage limit. It resets {when}.", when=_said_when(said.group(1)))
         stamp = re.search(r"\|(\d{9,11})\b", m)          # "Claude AI usage limit reached|<epoch>"
         full = [w for w in usage_limits().values() if isinstance(w, dict) and w.get("used", 0) >= 0.99]
         reset = _reset_text(int(stamp.group(1)) if stamp else max((w.get("resets_at", 0) for w in full), default=0))
         if reset:
-            return t("You have reached your Claude usage limit — it resets at {time}.", time=reset)
+            return t("You have reached your Claude usage limit. It resets at {time}.", time=reset)
         return t("You have reached your Claude usage limit.")
     if "does not have access to claude code" in low or "free plan" in low:
         return t("Your Claude plan doesn't include Claude Code. You need Claude Pro or Max.")
+    if too_long(m):                                       # "Prompt is too long": the chat's material, not the question
+        return t(TOO_LONG, ai="Claude")
     if re.search(r"unknown option|unknown argument|unexpected argument", low):     # older than the flags IEUStudia passes
         version = claude_cli_info().get("version") or ""
         if version and _version_of(version) >= CLAUDE_KNOWN_GOOD:
@@ -660,26 +757,50 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
     (DISABLE_PROMPT_CACHING). With a subscription Claude Code would otherwise write the whole request to a one-hour
     cache, priced at twice the rate of plain input. ``think=False``: no extended thinking (for Haiku, which
     ``--effort`` does not apply to, Claude Code otherwise allows 31,999 thinking tokens)."""
+    wait = aiwait.of(cancel)                     # the run the student waits for hears every step (aiwait)
+    ok = False
+    try:
+        res = _claude_once(system_prompt, content, model, effort, cancel, on_text, timeout_s, think, wait)
+        ok = True
+        return res
+    except _FlagRefused:                         # a Claude Code without --thinking-display: asked again without it
+        res = _claude_once(system_prompt, content, model, effort, cancel, on_text, timeout_s, think, wait)
+        ok = True
+        return res
+    finally:
+        wait.end(ok)
+
+
+class _FlagRefused(Exception):
+    """Claude Code turned down --thinking-display: the request is asked again without it."""
+
+
+def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
+                 cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]], timeout_s: float,
+                 think: bool, wait: Any) -> dict[str, Any]:
     _require_claude()
     env = {**_claude_env(), "DISABLE_PROMPT_CACHING": "1"}
     if not think:
         env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
     message = {"type": "user", "message": {"role": "user", "content": turn_blocks(content)}}
+    line = (json.dumps(message) + "\n").encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
         sp = Path(work) / "system.txt"
         sp.write_text(system_prompt, encoding="utf-8")
         started = time.monotonic()
         try:
-            proc = subprocess.Popen(_command(model, effort, sp), cwd=work, stdin=subprocess.PIPE,
+            proc = subprocess.Popen(_command(model, effort, sp, partial=True), cwd=work, stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=env)
         except OSError as exc:
             log.warning("Claude Code did not start: %r", exc)
             raise _start_failure("claude", exc) from None
         assert proc.stdin and proc.stdout
-        proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        wait.begin(len(line) + len(system_prompt.encode("utf-8")), _pictures(content), provider="claude", model=model,
+                   level=effort or "low")
+        proc.stdin.write(line)
         proc.stdin.close()
         result: dict[str, Any] = {}
-        text_parts: list[str] = []
+        stream = _ClaudeStream(wait, on_text)
         killer_stop = threading.Event()
         timed_out: list[bool] = []
 
@@ -705,22 +826,21 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
                     continue
                 if len(kinds) < 400:
                     kinds.append(str(ev.get("type")))
-                if ev.get("type") == "assistant":
-                    for block in (ev.get("message") or {}).get("content") or []:
-                        if block.get("type") == "text" and block.get("text"):
-                            text_parts.append(block["text"])
-                            if on_text:
-                                on_text("".join(text_parts))
-                elif ev.get("type") == "rate_limit_event":
+                if ev.get("type") == "rate_limit_event":
                     note_limits(ev.get("rate_limit_info") or {})
                 elif ev.get("type") == "result":
                     result = ev
+                else:
+                    stream.take(ev)
         finally:
             killer_stop.set()
             proc.wait(timeout=30)
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         err = (proc.stderr.read() or b"").decode("utf-8", "replace") if proc.stderr else ""
+    text_parts = [stream.text] if stream.text else []
+    if not result and _thinking_flag_refused(err):
+        raise _FlagRefused()
     if timed_out and not result:
         log.warning("Claude Code did not answer within %s s: %s", timeout_s, err[-400:])
         raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
@@ -759,6 +879,7 @@ class ClaudeSession:
 
     def __init__(self, system_prompt: str, model: str = "sonnet", effort: str = "") -> None:
         self.model = model
+        self.effort = effort or "low"
         self.key: Any = None                  # owner's fingerprint of what this session was started with
         _require_claude()
         self._work = Path(tempfile.mkdtemp(prefix="studia-chat-"))
@@ -809,6 +930,8 @@ class ClaudeSession:
         time.sleep(0.1)    # let the stderr reader catch the last lines
         tail = next((ln for ln in reversed(self._stderr) if ln), "")
         log.warning("Claude Code exited (code %s): %s", self._proc.returncode, " | ".join(self._stderr)[-600:])
+        if _thinking_flag_refused(" ".join(self._stderr)):      # the next process starts without that flag
+            return RuntimeError(t("Claude Code stopped unexpectedly. Try again."))
         return _claude_failure(tail) if tail else RuntimeError(t("Claude Code stopped unexpectedly. Try again."))
 
     def alive(self) -> bool:
@@ -824,16 +947,31 @@ class ClaudeSession:
 
         Returns ``{"text", "usage", "stopped"}``; ``stopped`` is True when ``stop`` was set (the partial
         answer is returned). Raises RuntimeError when Claude reports an error or the process dies."""
+        wait = aiwait.of(stop)                   # the answer the student waits for hears every step (aiwait)
+        ok = False
+        try:
+            res = self._ask(content, on_text, stop, timeout_s, wait)
+            ok = not res["stopped"]
+            return res
+        finally:
+            wait.end(ok)
+
+    def _ask(self, content: list[dict[str, Any]], on_text: Optional[Callable[[str], None]],
+             stop: Optional[threading.Event], timeout_s: float, wait: Any) -> dict[str, Any]:
         with self._turn:
             if not self.alive():
                 raise self._died()
             started = time.monotonic()
+            line = (json.dumps({"type": "user", "message": {"role": "user", "content": turn_blocks(content)}},
+                               ensure_ascii=False) + "\n").encode("utf-8")      # (made once: a first message is MBs)
+            wait.begin(len(line), _pictures(content), provider="claude", model=self.model, level=self.effort)
             try:
-                self._write({"type": "user", "message": {"role": "user", "content": turn_blocks(content)}})
+                assert self._proc.stdin
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
             except (OSError, ValueError):       # ValueError: the pipe was closed
                 raise self._died() from None
-            blocks: list[str] = []
-            streamed = False
+            stream = _ClaudeStream(wait, on_text)
             interrupted_at: Optional[float] = None
             timed_out = False
             result: Optional[dict[str, Any]] = None
@@ -866,28 +1004,13 @@ class ClaudeSession:
                         break
                     raise self._died()
                 kind = ev.get("type")
-                if kind == "stream_event":
-                    e = ev.get("event") or {}
-                    if e.get("type") == "content_block_start" and (e.get("content_block") or {}).get("type") == "text":
-                        blocks.append("")
-                    elif e.get("type") == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
-                        if not blocks:
-                            blocks.append("")
-                        blocks[-1] += e["delta"].get("text") or ""
-                        streamed = True
-                        if on_text:
-                            on_text(_join(blocks))
-                elif kind == "assistant" and not streamed:     # CLI without partial messages
-                    for b in (ev.get("message") or {}).get("content") or []:
-                        if b.get("type") == "text" and b.get("text"):
-                            blocks.append(b["text"])
-                            if on_text:
-                                on_text(_join(blocks))
-                elif kind == "rate_limit_event":
+                if kind == "rate_limit_event":
                     note_limits(ev.get("rate_limit_info") or {})
                 elif kind == "result":
                     result = ev
                     break
+                elif ev:
+                    stream.take(ev)                # the text, its thinking, Claude Code's own retries
             self.last_used = time.monotonic()
             if timed_out:
                 if kinds and not CLAUDE_KINDS & set(kinds):     # it printed, but nothing IEUStudia reads: changed
@@ -895,7 +1018,7 @@ class ClaudeSession:
                                                               f"know: {_kinds(kinds)}")
                 raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
                                      "reasoning level."))
-            text = _join(blocks)
+            text = stream.text
             if interrupted_at is None:
                 if result is None or result.get("is_error") or result.get("subtype") not in (None, "success"):
                     raise _claude_failure((result or {}).get("result") or "")
@@ -1310,6 +1433,8 @@ def _codex_error(message: str) -> str:
         return t("The Codex CLI is not signed in. Sign in under Settings → AI.")
     if _model_refused(message):
         return t("Your ChatGPT plan does not offer the chosen model. Settings → AI → ChatGPT model: Default.")
+    if too_long(message):
+        return t(TOO_LONG, ai="ChatGPT")
     service = aierrors.from_message("ChatGPT", message)  # "unexpected status 500 …": on OpenAI's side
     if service is not None:
         return str(service)
@@ -1382,14 +1507,32 @@ def _codex_one_shot(system_prompt: str, content: list[dict[str, Any]], model: st
     return {**_codex_once(system_prompt, content, model, effort, cancel, on_text, timeout_s), "model_refused": chosen}
 
 
+_RECONNECTING = re.compile(r"reconnecting\.*\s*(\d+)\s*/\s*(\d+)", re.I)
+
+
 def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                 cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
                 timeout_s: float) -> dict[str, Any]:
+    wait = aiwait.of(cancel)                     # the run the student waits for hears every step (aiwait)
+    ok = False
+    try:
+        res = _codex_run(system_prompt, content, model, effort, cancel, on_text, timeout_s, wait)
+        ok = True
+        return res
+    finally:
+        wait.end(ok)
+
+
+def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
+               cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
+               timeout_s: float, wait: Any) -> dict[str, Any]:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="studia-codex-") as tmp:
         work = Path(tmp)
         prompt, images = _codex_text(system_prompt, content, work)
         cmd = _codex_command(work, model, effort, images)
+        wait.begin(len(prompt.encode("utf-8")) + sum(img.stat().st_size for img in images), len(images),
+                   provider="codex", model=_codex_model(), level=effort or CODEX_EFFORT.get(model, "medium"))
         try:
             proc = subprocess.Popen(cmd, cwd=work, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=_codex_env())
@@ -1429,10 +1572,21 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
                 if len(kinds) < 400:
                     kinds.append(str(kind))
                 item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+                said = str(ev.get("message") or item.get("message") or "")
                 if kind == "item.completed" and item.get("type") == "agent_message" and item.get("text"):
                     texts.append(item["text"])
+                    wait.text(_join(texts))
                     if on_text:
                         on_text(_join(texts))
+                elif kind in ("item.started", "item.updated", "item.completed") and item.get("type") == "reasoning":
+                    wait.thinking(whole=str(item.get("text") or ""))     # its reasoning summary (aiwait)
+                elif kind == "turn.started":
+                    wait.sent()
+                elif kind in ("error", "item.completed") and _RECONNECTING.search(said):
+                    # the CLI asks again by itself ("Reconnecting... 2/5"): said; its words stay the error if it ends so
+                    n = _RECONNECTING.search(said)
+                    wait.retry("dropped", 0, int(n.group(1)), int(n.group(2)))
+                    error = said if kind == "error" else error
                 elif kind == "turn.completed":
                     u = ev.get("usage") or {}
                     usage = {"input_tokens": int(u.get("input_tokens") or 0), "output_tokens": int(u.get("output_tokens") or 0),

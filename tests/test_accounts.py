@@ -62,6 +62,56 @@ def test_registry_paths_cannot_point_elsewhere(isolated_home):
     assert accs[1].path == isolated_home / "profiles" / "p-12345678"
 
 
+def _two_students(isolated_home):
+    """The first student and an added one, each with a library that says whose it is; the added one is active."""
+    accounts.remember("main", "ali.v", "Ali V", "2023")
+    bob = accounts.create("bob.b", "Bob B", "2024")
+    for acc, who in ((accounts.get("main"), Profile("Ali V", "2023", "ali.v")), (bob, Profile("Bob B", "2024", "bob.b"))):
+        lib = Library(acc.path / "library.db")
+        lib.set_meta("profile", json.dumps({"name": who.name, "student_number": who.student_number,
+                                            "username": who.username}))
+        lib.close()
+    later = time.time() + 5
+    os.utime(bob.path / "library.db", (later, later))         # Bob's library is the one used last
+    accounts.set_active(bob.id)
+    return bob
+
+
+@pytest.mark.parametrize("damage", ["zeros", "gone"])
+def test_a_damaged_profile_list_is_made_again_from_the_profiles_folders(isolated_home, damage):
+    """A power cut just after profiles.json was written could bring it back as zeros: the first student's library
+    opened for everyone, the next save wrote the list with only that one, and the added students' libraries stayed in
+    their folders with nothing pointing at them (signing in again made a new, empty profile)."""
+    bob = _two_students(isolated_home)
+    registry = isolated_home / "profiles.json"
+    if damage == "zeros":
+        registry.write_bytes(b"\0" * registry.stat().st_size)
+    else:
+        registry.unlink()
+    active, accs = accounts.load()
+    assert active == bob.id and [a.id for a in accs] == ["main", bob.id]
+    assert [(a.username, a.name, a.student_number) for a in accs] == [("ali.v", "Ali V", "2023"),
+                                                                       ("bob.b", "Bob B", "2024")]
+    assert accounts.find("BOB.B").id == bob.id                  # signing in again finds Bob's own library
+    assert json.loads(registry.read_text(encoding="utf-8"))["active"] == bob.id     # written again at once
+    kept = sorted(p.name for p in isolated_home.glob("profiles.json.unreadable-*"))
+    assert len(kept) == (1 if damage == "zeros" else 0)        # the damaged one is kept aside, not written over
+    accounts.remember("main", "ali.v", "Ali V", "2023")         # (each start remembers the active identity)
+    assert [a.id for a in accounts.load()[1]] == ["main", bob.id]
+
+
+def test_the_profile_list_and_the_app_settings_are_on_the_disk_before_the_swap(isolated_home, monkeypatch):
+    from studia import appconfig
+
+    flushed, real = [], os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: flushed.append(fd) or real(fd))
+    accounts.create("bob.b", "Bob B", "2024")
+    assert flushed
+    flushed.clear()
+    appconfig.update({"tray": True})
+    assert flushed and appconfig.load().tray is True
+
+
 def test_seed_copies_machine_choices_not_course_choices(isolated_home):
     base = Settings(model="large-v3", theme="dark", first_run_done=True, output_dir="C:/somewhere",
                     course_prefs={"1": __import__("studia.config", fromlist=["CoursePrefs"]).CoursePrefs(alias="x")})
@@ -178,3 +228,57 @@ def test_single_instance_lock_on_linux_is_held_until_released(tmp_path, monkeypa
     assert linuxutil.acquire_single_instance(name, wait_s=5)
     linuxutil.release_single_instance()
     assert not linuxutil.instance_held(name)
+
+
+TICKS_PAGE = """
+const web = %(web)s, fs = require("fs"), saved = %(store)s;
+const stub = () => new Proxy(function () {}, { get: (t, k) => k === Symbol.toPrimitive ? () => "" : k === "length" ? 0 : stub(),
+  apply: () => stub(), construct: () => stub() });
+globalThis.window = globalThis;
+const el = () => ({ innerHTML: "", style: {}, dataset: {}, classList: { toggle() {}, add() {}, remove() {} }, scrollTo() {},
+  querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, remove() {}, focus() {} });
+globalThis.document = new Proxy({}, { get: (t, k) => k === "compatMode" ? "CSS1Compat" : k === "createElement" ? () => el()
+  : k === "querySelector" ? () => stub() : k === "querySelectorAll" ? () => [] : k === "addEventListener" ? () => {} : stub() });
+const data = JSON.parse(fs.readFileSync(saved, "utf-8"));        // the browser storage every profile's page shares
+globalThis.localStorage = { getItem: (k) => (k in data ? data[k] : null), setItem: (k, v) => { data[k] = String(v); } };
+globalThis.navigator = { userAgent: "node", platform: "Win32" };
+globalThis.CSS = { escape: (s) => s };
+globalThis.addEventListener = () => {}; globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+globalThis.requestAnimationFrame = (f) => f();
+globalThis.setInterval = () => 0; globalThis.setTimeout = () => 0;
+for (const f of ["i18n.js", "icons.js", "app.js", "effort.js", "course.js"]) require(web + "/" + f);
+const St = globalThis.Studia, S = St.S;
+S.profileId = %(profile)s;                  // (boot() knows the profile only after the page's scripts have loaded)
+S.day = { dayKey: "x" };
+for (const k of %(opened)s) St.after.day({ dayKey: k });
+for (const k of %(untick)s) St.A["rd-read"]({ dataset: { day: k }, checked: false });
+fs.writeFileSync(saved, JSON.stringify(data));
+process.stdout.write(JSON.stringify(data), () => process.exit(0));      // after the output is out (Linux pipes)
+"""
+
+
+@pytest.mark.skipif(not __import__("shutil").which("node"), reason="node is not installed")
+def test_the_days_you_read_are_ticked_for_your_profile_only(tmp_path):
+    """Every profile's page shares one browser storage, and the read ticks were kept under one key: the second student's
+    Get ready showed the first one's lectures as read, and unticking one there unticked it for the first student."""
+    from pathlib import Path
+
+    web = Path(paths.__file__).parent / "web"
+    store = tmp_path / "storage.json"
+    store.write_text(json.dumps({"studia-read": json.dumps(["c|2026-10-07|lecture"])}), encoding="utf-8")   # (3.3.1)
+
+    def launch(profile, opened=(), untick=()):
+        script = tmp_path / "page.js"
+        script.write_text(TICKS_PAGE % {"web": json.dumps(web.as_posix()), "store": json.dumps(str(store)),
+                                        "profile": json.dumps(profile), "opened": json.dumps(list(opened)),
+                                        "untick": json.dumps(list(untick))}, encoding="utf-8")
+        r = subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+        assert r.returncode == 0, r.stderr
+        return {k: json.loads(v) for k, v in json.loads(r.stdout).items() if k.startswith("studia-read")}
+
+    a, b, day = "main", "p-1234abcd", "c|2026-10-14|lecture"
+    assert launch(a, [day]) == {"studia-read": ["c|2026-10-07|lecture", day]}     # the first profile: its old key
+    assert launch(b, ["c|2026-10-21|lecture"]) == {"studia-read": ["c|2026-10-07|lecture", day],
+                                                   f"studia-read:{b}": ["c|2026-10-21|lecture"]}
+    got = launch(b, [day], untick=[day])        # the second student opens the day, then unticks it
+    assert got["studia-read"] == ["c|2026-10-07|lecture", day] and got[f"studia-read:{b}"] == ["c|2026-10-21|lecture"]

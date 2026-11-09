@@ -10,12 +10,21 @@
   const isSheet = (p) => ((p && p.scope) || {}).kind === "sheet";
   const STAGES = () => [["gather", t("Course material")], ["topics", t("Topics")], ["entries", t("Entries")], ["check", t("Check")], ["assemble", t("Layout")]];
 
-  // formulas too wide for their column are made smaller (as in the PDF: cheatsheet.py FIT_JS)
+  // formulas too wide for their column are made smaller, down to 70%; one that needs more is broken over lines after
+  // its = and + at its size, and only a piece still too wide is made smaller (as in the PDF: cheatsheet.py FIT_JS)
   function fit() {
     document.querySelectorAll(".cs-doc .cs-tex, .cs-doc .cs-x").forEach((el) => {
       el.style.fontSize = "";
-      const w = el.clientWidth, s = el.scrollWidth;
-      if (w && s > w + 1) el.style.fontSize = Math.max(55, Math.floor(100 * w / s)) + "%";
+      el.classList.remove("cs-wrap");
+      const w = el.clientWidth;
+      let s = el.scrollWidth;
+      if (!w || s <= w + 1) return;
+      if (100 * w / s < 70 && el.classList.contains("cs-tex")) {
+        el.classList.add("cs-wrap");
+        s = el.scrollWidth;
+        if (s <= w + 1) return;
+      }
+      el.style.fontSize = Math.max(55, Math.floor(100 * w / s)) + "%";
     });
   }
   let fitTimer = null;
@@ -44,9 +53,7 @@
         <h1>${esc(p.title || (busy ? t("Making your cheatsheet…") : t("Cheatsheet")))}</h1>
         <div class="pl-chips">${chips.map((x) => `<span class="chip">${esc(x)}</span>`).join("")}</div></div>
         <div class="pl-acts">
-          ${ready ? `<button class="btn primary sm" data-act="pk-pdf" data-how="save" data-id="${esc(p.id)}">${I("download", "sm")} ${t("Save PDF…")}</button>
-            <button class="btn sm" data-act="pk-pdf" data-how="open" data-id="${esc(p.id)}">${I("file-text", "sm")} ${t("Open PDF")}</button>
-            <button class="btn ghost sm" data-act="pk-pdf" data-how="folder" data-id="${esc(p.id)}">${I("folder-open", "sm")} ${t("Show in folder")}</button>` : ""}
+          ${ready ? St.pack.pdfActs(p) : ""}
           ${busy ? `<button class="btn sm" data-act="plan-stop" data-id="${esc(p.id)}">${I("stop", "sm")} ${t("Stop")}</button>` : ""}
           ${["error", "paused"].includes(p.status) ? `<button class="btn primary sm" data-act="plan-resume" data-id="${esc(p.id)}">${I("retry", "sm")} ${t("Resume")}</button>` : ""}
           <button class="btn ghost icon sm" data-act="plan-delete" data-id="${esc(p.id)}" title="${t("Delete this cheatsheet")}">${I("x", "sm")}</button></div></div>`;

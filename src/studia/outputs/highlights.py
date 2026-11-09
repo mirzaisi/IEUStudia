@@ -44,9 +44,27 @@ def detect(text: str, lang: str = "en") -> list[str]:
     turkish = lang == "tr" or any(c in text for c in "çğışöüÇĞİŞÖÜ")
     low_tr = _tr_lower(text)
     for key in ("exam", "important", "homework", "schedule"):
-        if _EN_RE[key].search(text) or (turkish and _TR_RE[key].search(low_tr)):
+        if key == "exam":
+            if _exam(text, low_tr, turkish):
+                found.append(key)
+        elif _EN_RE[key].search(text) or (turkish and _TR_RE[key].search(low_tr)):
             found.append(key)
     return found
+
+
+# a passing "I will ask" / "soracağım" is no exam hint: only with an exam named in the paragraph too
+_BARE_ASK = re.compile(r"i will ask|sorarım|soracağım")
+_EXAM_NAMED_EN = re.compile(r"\b(?:exams?|examinations?|midterms?|final exams?|quiz(?:zes)?)\b", re.I)
+_EXAM_NAMED_TR = re.compile(r"\bsınav\w*|\bvize\w*|\bfinal(?:de|da|e|i)?\b|\bquiz\w*|\bbütünleme\w*")
+
+
+def _exam(text: str, low_tr: str, turkish: bool) -> bool:
+    hits = [m.group(0).lower() for m in _EN_RE["exam"].finditer(text)]
+    if turkish:
+        hits += [m.group(0) for m in _TR_RE["exam"].finditer(low_tr)]
+    if any(not _BARE_ASK.fullmatch(x) for x in hits):
+        return True
+    return bool(hits) and bool(_EXAM_NAMED_EN.search(text) or (turkish and _EXAM_NAMED_TR.search(low_tr)))
 
 
 LABELS = {"exam": N_("Exam"), "important": N_("Important"), "homework": N_("Homework"), "schedule": N_("Schedule")}

@@ -76,7 +76,7 @@
       case "transcribe": {
         const weeks = new Set(a.weeks || []);
         const keys = a.date ? [dayOf(cid, a.date)].filter(Boolean)
-          : (d ? d.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.days.filter((x) => x.mine !== false && !x.transcribed).map((x) => x.day_key)) : []);
+          : (d ? d.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.days.filter((x) => x.mine !== false && !x.transcribed && !x.no_sound).map((x) => x.day_key)) : []);
         if (!keys.length) { toast(t("Those lectures are already transcribed (or not recorded yet)."), "info"); return; }
         if (!(await St.ask({ title: t.n(keys.length, "Transcribe {n} class day of {course} on this PC?", "Transcribe {n} class days of {course} on this PC?", { course: course(cid).code || t("this course") }),
           ok: t("Transcribe") }))) return;

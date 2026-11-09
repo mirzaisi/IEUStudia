@@ -5,6 +5,7 @@ import datetime as dt
 import os
 import time
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -101,6 +102,28 @@ def test_decode_goes_on_frame_by_frame_when_the_format_changes(tmp_path, monkeyp
     monkeypatch.setattr(audio_mod.av, "AudioFifo", Fifo)
     out = audio_mod.decode_audio(path)
     assert len(writes) == 40 and np.array_equal(out, _reference(path))
+
+
+@pytest.mark.parametrize("cut", [0, 16, 500])
+def test_a_file_whose_end_never_reached_the_disk_is_told_damaged(tmp_path, cut):
+    """Panopto's podcasts keep their track list (moov) at the end: zeros there (a power cut while it downloaded) gave
+    FFmpeg's raw "[Errno 1094995529] Invalid data found…" (all of it gone), "no audio track" (its first bytes left)
+    or 0 seconds, as a recording without sound (its start left). Each is now one error the download side handles."""
+    from studia.audio import NoAudioTrack, decode_audio
+    from studia.jobs import _damaged
+
+    path = _write(tmp_path / "a.m4a", "mp4", seconds=30)
+    data = bytearray(path.read_bytes())
+    start = data.index(b"moov") - 4 + cut
+    data[start:] = bytes(len(data) - start)
+    path.write_bytes(bytes(data))
+    with pytest.raises(ValueError) as got:
+        decode_audio(path)
+    assert _damaged(got.value) and not isinstance(got.value, NoAudioTrack)
+    picture = _write(tmp_path / "v.mp4", "mp4", video=True, sound=False)
+    with pytest.raises(NoAudioTrack) as got:              # only a picture: that is still a stream without sound
+        decode_audio(picture)
+    assert not _damaged(got.value)
 
 
 def test_silence_check_needs_no_copy():
@@ -209,6 +232,7 @@ def test_slides_of_several_streams_share_numbers_and_duplicates(tmp_path, monkey
     monkeypatch.setattr(slides, "find_avcc", lambda b: b"avcc")
     monkeypatch.setattr(slides, "_fetch_keyframe", lambda session, seg, avcc: shown[seg.url[0]][int(seg.url[1:])])
     monkeypatch.setattr(slides, "thumb", lambda f: np.full((4, 4), f, dtype=np.float32))
+    monkeypatch.setattr(slides, "big", lambda f: np.full((4, 4), f, dtype=np.int16))
     monkeypatch.setattr(slides, "changed_fraction", lambda a, b: float(abs(a - b).mean() > 0))
     monkeypatch.setattr(slides, "is_blank", lambda t: False)
     monkeypatch.setattr(slides, "added_only", lambda a, b: False)
@@ -246,7 +270,7 @@ def test_slides_come_from_every_screen_stream_and_are_made_once(tmp_path, isolat
 
     calls = []
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
         calls.append((url, offset))
         folder.mkdir(parents=True, exist_ok=True)
         idx = len(seen) + 1
@@ -280,13 +304,86 @@ def test_slides_come_from_every_screen_stream_and_are_made_once(tmp_path, isolat
     assert len(calls) == 7                                         # several: it read only the first, so again
 
 
+def test_two_lectures_starting_in_the_same_minute_keep_their_own_slides(tmp_path, isolated_home, monkeypatch):
+    """Files uploaded together get the same start minute: the slides were named <HHMM>-NN.jpg in the day's folder, so
+    the second lecture's pictures took the first one's place, and the first showed them from then on."""
+    from studia import slides, store
+    from studia.domain import Recording
+    from studia.panopto import MediaSource
+    from studia.services import Services
+    from studia.slides import Slide
+
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
+        folder.mkdir(parents=True, exist_ok=True)
+        out = []
+        for idx in (1, 2):
+            path = folder / f"{prefix}-{idx:02d}.jpg"
+            path.write_bytes(url.encode())
+            out.append(Slide(idx, offset + idx, offset + idx + 5, f"{rel}/{path.name}", str(path)))
+        return out
+
+    monkeypatch.setattr(slides, "extract_slides", extract)
+    svc = _services(tmp_path, isolated_home)
+    svc.lib.merge_recordings("c", [Recording(delivery_id=d, course_id="c", folder_id="f", folder_path="", name=d,
+                                             start=dt.datetime(2026, 10, 13, 11, 0, s), duration_s=d2, viewer_url="u")
+                                   for d, s, d2 in (("r1", 0, 2400), ("r2aaaaaaaa", 7, 1200))], first_sync=False)
+    for did in ("r1", "r2aaaaaaaa"):
+        Services.slides_task(svc, types.SimpleNamespace(id=did, cancel=None),
+                             [(MediaSource("hls", f"https://p/{did}.screen.hls/master.m3u8"), 0.0)], None)
+    first, second = store.load_slides("r1"), store.load_slides("r2aaaaaaaa")
+    assert not {s.path for s in first} & {s.path for s in second}
+    assert [Path(s.path).read_bytes() for s in first] == [b"https://p/r1.screen.hls/master.m3u8"] * 2
+    assert Path(second[0].path).name == "1100-r2aaaaaa-01.jpg"
+
+
+def test_capturing_a_lecture_again_keeps_the_pictures_another_lecture_shows(tmp_path, isolated_home, monkeypatch):
+    """Before 4.0 two lectures of a day that start in the same minute shared their pictures (<HHMM>-NN.jpg). Capturing
+    one of them again deleted its old pictures, and so the other lecture's: they were gone for good."""
+    from studia import slides, store
+    from studia.domain import Recording
+    from studia.outputs.writer import course_dir, day_stem
+    from studia.panopto import MediaSource
+    from studia.services import Services
+    from studia.slides import Slide
+
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{prefix}-01.jpg"
+        path.write_bytes(b"new")
+        return [Slide(1, offset, offset + 5, f"{rel}/{path.name}", str(path))]
+
+    monkeypatch.setattr(slides, "extract_slides", extract)
+    svc = _services(tmp_path, isolated_home)
+    svc.lib.merge_recordings("c", [Recording(delivery_id=d, course_id="c", folder_id="f", folder_path="", name=d,
+                                             start=dt.datetime(2026, 10, 13, 11, 0, s), duration_s=1200, viewer_url="u")
+                                   for d, s in (("r1", 0), ("r2aaaaaaaa", 7))], first_sync=False)
+    course, rec = svc.lib.get_course("c"), svc.lib.get_recording("r1")
+    stem = day_stem(course, rec.start.date(), rec.kind)
+    folder = course_dir(svc.output_root, course, svc.lib.courses(True)) / "slides" / stem
+    folder.mkdir(parents=True)
+    old = [folder / f"1100-{i:02d}.jpg" for i in (1, 2, 3)]           # as 3.x named them: the start minute only
+    for p in old:
+        p.write_bytes(b"3.x")
+    shown = [Slide(i, i * 10.0, i * 10.0 + 10, f"slides/{stem}/{p.name}", str(p)) for i, p in enumerate(old, 1)]
+    store.save_slides("r1", shown)
+    store.save_slides("r2aaaaaaaa", shown[:2])                        # the other lecture shows two of them
+    Services.slides_task(svc, types.SimpleNamespace(id="r1", cancel=None),
+                         [(MediaSource("hls", "https://p/r1.screen.hls/master.m3u8"), 0.0)], None, again=True)
+    assert [Path(s.path).name for s in store.load_slides("r1")] == ["1100-r1-01.jpg"]
+    assert [Path(s.path).name for s in store.load_slides("r2aaaaaaaa")] == ["1100-01.jpg", "1100-02.jpg"]
+    assert not old[2].exists()                                        # only the one no other lecture shows went
+    Services.slides_task(svc, types.SimpleNamespace(id="r2aaaaaaaa", cancel=None),
+                         [(MediaSource("hls", "https://p/r2.screen.hls/master.m3u8"), 0.0)], None, again=True)
+    assert not any(p.exists() for p in old)                           # no lecture shows them now: they go
+
+
 def test_a_failed_screen_stream_keeps_the_others_and_is_tried_again(tmp_path, isolated_home, monkeypatch):
     from studia import slides, store
     from studia.panopto import MediaSource
     from studia.services import Services
     from studia.slides import Slide
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
         if "bad" in url:
             raise RuntimeError("Unsupported screen-recording format.")
         return [Slide(1, offset, offset + 5, "", "")]
@@ -309,7 +406,7 @@ def test_a_capture_that_lost_its_connection_keeps_its_slides_and_is_tried_again(
 
     calls = []
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
         calls.append(url)
         raise Incomplete(200, 300, [Slide(1, offset, offset + 5, "", "")])    # the Wi-Fi dropped after slide 1
 
@@ -348,7 +445,7 @@ def test_slides_of_an_edited_recording_follow_its_cuts(tmp_path, isolated_home, 
     assert _slides_key([(edited, offset)]) != _slides_key([(plain, offset)])  # made before the cut: made again
     got = []
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=(), progress=None):
         got.append(spans)
         return [Slide(1, offset, offset + 5, "", "")]
 
@@ -377,7 +474,7 @@ def test_old_downloaded_audio_is_swept_unless_its_lecture_is_queued(tmp_path, is
     cache = audio_cache_dir()
     week_ago = time.time() - 8 * 86400
     names = ["old.m4a", "old.mp4.part0", "old.mp4.parts.json", "queued.m4a", "done.m4a", "new.m4a",
-             "other.m4a"]                                       # another profile's lecture (the folder is shared)
+             "other.m4a"]          # another profile's lecture, left from before 4.0 (the folder was shared then)
     for name in names:
         (cache / name).write_bytes(b"x")
         if not name.startswith("new"):
@@ -389,3 +486,95 @@ def test_old_downloaded_audio_is_swept_unless_its_lecture_is_queued(tmp_path, is
     lib.set_meta(QUEUE_KEY, "not json")
     os.utime(cache / "new.m4a", (week_ago, week_ago))
     assert sweep_audio_cache(lib, keep_audio=False) == 0           # the queue can't be read: nothing is deleted
+
+
+def test_each_profile_keeps_its_own_downloaded_audio(tmp_path, isolated_home):
+    """Two students on one PC who follow the same course download the same recordings: one's start swept the other's
+    kept or queued audio away, and a lecture one of them transcribed or cancelled deleted the other's file."""
+    from studia import accounts, paths
+    from studia.domain import Course, Recording
+    from studia.library import Library
+    from studia.services import sweep_audio_cache
+
+    week_ago = time.time() - 8 * 86400
+    b = accounts.create("b.student")
+    kept = {}
+    for acc in (accounts.get("main"), b):
+        accounts.activate(acc.id)
+        lib = Library(paths.db_path())
+        lib.upsert_courses([Course(id="c", title="t", code="EEE 215", name="n")])
+        lib.merge_recordings("c", [Recording(delivery_id="x", course_id="c", folder_id="f", folder_path="", name="x",
+                                             start=dt.datetime(2026, 10, 13, 11, 0), duration_s=2400, viewer_url="u")],
+                             first_sync=True)
+        lib.set_status("x", "done")
+        f = paths.audio_cache_dir() / "x.m4a"
+        f.write_bytes(acc.id.encode())
+        os.utime(f, (week_ago, week_ago))
+        kept[acc.id] = (lib, f)
+    assert kept["main"][1].parent == isolated_home / "cache" / "audio"          # the first profile's: where it was
+    assert kept[b.id][1].parent == isolated_home / "profiles" / b.id / "cache" / "audio"
+    accounts.activate("main")
+    assert sweep_audio_cache(kept["main"][0], keep_audio=False) == 1           # its own lecture's audio goes...
+    assert kept[b.id][1].read_bytes() == b.id.encode()                         # ...the other profile's stays
+    for lib, _ in kept.values():
+        lib.close()
+    accounts.activate("main")
+
+
+def test_an_added_profiles_audio_from_before_4_0_is_kept_and_found(isolated_home):
+    """Before 4.0 every profile's downloaded audio went to the first profile's folder. After the update the first
+    profile's start deleted what its own library doesn't know (an added profile's audio, kept by its "Keep downloaded
+    audio"), and the added profile looked only in its own new folder: its player and a transcription didn't find it."""
+    from studia import accounts, paths, player
+    from studia.config import load_settings, save_settings
+    from studia.domain import Course, Recording
+    from studia.library import Library
+    from studia.services import Services
+
+    shared, now = isolated_home / "cache" / "audio", time.time()
+    b = accounts.create("b.student")
+
+    def profile(acc_id, courses, keep):
+        accounts.activate(acc_id)
+        lib = Library(paths.db_path())
+        lib.upsert_courses([Course(id=c, title=f"2026-1 {c}", code=c, name=c) for c in courses])
+        for c, dids in courses.items():
+            lib.merge_recordings(c, [Recording(delivery_id=d, course_id=c, folder_id="f", folder_path="", name=d,
+                                               start=dt.datetime(2026, 10, 13, 11, 0), duration_s=2400, viewer_url="u")
+                                     for d in dids], first_sync=True)
+            for d in dids:
+                lib.set_status(d, "done")
+        lib.close()
+        s = load_settings()
+        s.keep_audio = keep
+        save_settings(s)
+
+    def start(acc_id):                         # as app.py: whose data this run uses, then the services
+        accounts.activate(acc_id)
+        s = Services()
+        s.shutdown()
+        s.lib.close()
+
+    def downloaded(name, days_ago):            # (jobs.py: audio_cache_dir() / "<delivery id>.m4a")
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / name).write_bytes(name.encode())
+        os.utime(shared / name, (now - days_ago * 86400,) * 2)
+
+    profile("main", {"EEE 215": ["both"]}, keep=True)
+    profile(b.id, {"EEE 215": ["both"], "PHYS 100": ["hers", "late"]}, keep=True)
+    for f in paths.profile_dir().glob("library.db*"):
+        os.utime(f, (now - 5 * 86400,) * 2)     # she last used it 5 days ago, before the update
+    downloaded("hers.m4a", 10)                 # 3.x kept it for her in the shared folder
+    start("main")                              # after the update the first profile starts first
+    assert (shared / "hers.m4a").read_bytes() == b"hers.m4a"           # not its lecture: never its to delete
+    downloaded("both.m4a", 2)                  # the first profile (Keep on) downloads a lecture both follow
+    start(b.id)
+    own = paths.audio_cache_dir()
+    assert own == isolated_home / "profiles" / b.id / "cache" / "audio"
+    assert player.local_file("hers") == own / "hers.m4a" and not (shared / "hers.m4a").exists()   # hers: moved
+    assert player.local_file("both") is None and (shared / "both.m4a").is_file()   # the first profile's: stays
+    downloaded("late.m4a", 10)
+    start(b.id)                                # moved once: the folder isn't looked at again at later starts
+    assert (shared / "late.m4a").is_file() and player.local_file("hers") == own / "hers.m4a"
+    accounts.activate("main")
+    assert player.local_file("both") == shared / "both.m4a"

@@ -25,6 +25,23 @@ def _facts(**over):
     return f
 
 
+def test_storage_counts_the_library_copies_the_codex_cli_an_update_and_the_logs(isolated_home):
+    """The Storage card left out backups\\ (up to three whole copies of the library), tools\\ (the Codex CLI, about
+    440 MB), updates\\ and logs\\; an added profile's downloaded audio counts as temporary, not as its library."""
+    files = {"library.db": 100, "transcripts/a.json": 10, "backups/library-3.2.5.db": 1000,
+             "tools/codex/bin/codex.exe": 5000, "updates/IEUStudia-9.9.9-setup.exe": 700, "logs/studia.log": 30,
+             "cache/audio/x.m4a": 3, "profiles/p-12345678/library.db": 50,
+             "profiles/p-12345678/cache/audio/y.m4a": 7}
+    for name, size in files.items():
+        (isolated_home / name).parent.mkdir(parents=True, exist_ok=True)
+        (isolated_home / name).write_bytes(b"x" * size)
+    use = components.disk_usage()
+    assert use["library"] == 100 + 10 + 1000 + 50
+    assert use["ai_tools"] == 5000
+    assert use["cache"] == 3 + 700 + 30 + 7
+    assert sum(use.values()) == sum(files.values())                 # nothing in the app's folder is left out
+
+
 def test_removing_a_speech_model_found_only_in_the_shared_cache_says_why_it_stays(tmp_path, monkeypatch):
     from studia.engine import models
 
@@ -273,9 +290,16 @@ def _quiz(**kw):
             "start": "2026-10-13", "end": "2026-10-15", "week": 5, **kw}
 
 
-def test_a_quiz_is_reminded_once_the_evening_before():
-    from studia.agent import reminders
+def _evening_before():
+    """agent.reminders with Calendar → Reminders set to "The evening before" for quizzes and exams (the default is
+    2 days before: test_calendar.py)."""
+    from studia import agent
 
+    return lambda events, now, seen: agent.reminders(events, now, seen, {"exams": 1})
+
+
+def test_a_quiz_is_reminded_once_the_evening_before():
+    reminders = _evening_before()
     seen = {}
     assert reminders([_quiz()], dt.datetime(2026, 10, 12, 16, 30), seen) is None          # not yet
     title, text, payload = reminders([_quiz()], dt.datetime(2026, 10, 12, 19, 0), seen)
@@ -293,8 +317,7 @@ def test_a_quiz_is_reminded_once_the_evening_before():
 
 
 def test_an_exam_week_is_reminded_once_without_a_day():
-    from studia.agent import reminders
-
+    reminders = _evening_before()
     mid = _quiz(uid="b-syllabus-week8", name="Midterm Exam", kind="exam", classes=[], ends=[], los=[],
                 start="2026-11-09", end="2026-11-15", week=8)
     seen = {}

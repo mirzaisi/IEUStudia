@@ -47,6 +47,7 @@
 .cs-tex { overflow: hidden; padding-left: .6em; }
 .cs-tex .katex-display, .cs-tex .math-display { margin: 1px 0 2px; text-align: left; overflow: visible; }
 .cs-tex .katex-display > .katex { text-align: left; }
+.cs-tex.cs-wrap .katex-display > .katex { white-space: normal; }   /* too wide even at 70%: broken after its = and + */
 .cs-doc .katex { font-size: 1.06em; }
 .cs-t { margin-top: 1px; }
 .cs-w, .cs-if { color: var(--cs-dim); font-size: .9em; line-height: 1.35; }

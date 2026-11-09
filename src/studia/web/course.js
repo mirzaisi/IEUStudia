@@ -74,7 +74,8 @@
     const st = S.mat[m.id] || {};
     const busy = st.state === "queued" || st.state === "downloading";
     let status = "";
-    if (busy) status = st.total ? `<span class="bar"><i style="width:${Math.round((100 * st.done) / st.total)}%"></i></span>` : `${SPIN()} ${st.state === "queued" ? (st.offline ? t("Waiting for the internet connection") : t("Waiting")) : t("Downloading")}`;
+    const mb = (b) => t.num(b / 1e6, b < 1e7 ? 1 : 0, false);           // (how far, in MB, next to its bar)
+    if (busy) status = st.total ? `<span class="bar"><i style="width:${Math.round((100 * st.done) / st.total)}%"></i></span> <span class="dim mat-mb">${t("{done} of {total} MB", { done: mb(st.done), total: mb(st.total) })}</span>` : `${SPIN()} ${st.state === "queued" ? (st.offline ? t("Waiting for the internet connection") : t("Waiting")) : t("Downloading")}`;
     else if (st.state === "error") status = `<span class="err-txt" title="${esc(st.error)}">${I("alert-circle", "sm")} ${t("Failed")}</span>`;
     else if (m.downloaded) status = m.outdated ? `<span class="pill processing">${t("Updated on IEULearn")}</span>`
       : `<span class="dim">${m.pages ? (m.ext === "pptx" ? t.n(m.pages, "{n} slide", "{n} slides") : t.n(m.pages, "{n} page", "{n} pages")) : ""} ${fmtSize(m.size)}</span>`;
@@ -86,7 +87,7 @@
     const name = m.file_name || m.title;
     return `<div class="mat ${m.downloaded ? "have" : ""} ${m.gone ? "gone" : ""}" data-mid="${esc(m.id)}">
       <span class="mat-ico ext-${esc(m.ext)}">${I(EXT_ICON[m.ext] || "file", "sm")}</span>
-      <button class="mat-name" data-act="mat-open" data-id="${esc(m.id)}" title="${m.downloaded ? t.html("{name} — open", { name }) : t.html("{name} — download and open", { name })}">${marks && marks.length ? Match.html(m.title, marks) : esc(m.title)}</button>
+      <button class="mat-name" data-act="mat-open" data-id="${esc(m.id)}" title="${m.downloaded ? t.html("{name}: open", { name }) : t.html("{name}: download and open", { name })}">${marks && marks.length ? Match.html(m.title, marks) : esc(m.title)}</button>
       <span class="mat-ext">${esc((m.ext || "").toUpperCase())}</span><span class="mat-st">${status}</span><span class="mat-acts">${acts}</span></div>`;
   }
   function updateMatRow(id) {
@@ -96,11 +97,13 @@
   }
   function lectureChipHTML(dd) {
     const label = `${dmw(dd.date)} · ${esc(dd.kind_label)}${dd.parts > 1 ? ` · ${t.n(dd.parts, "{n} part", "{n} parts")}` : ""}`;
-    const state = dd.live && !dd.transcribed ? `<span class="pill processing" title="${t("It can be transcribed once Panopto has finished it.")}">${I("video")}${t("Being recorded")}</span>` : dd.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>` : dd.any_done ? `<span class="pill">${t("Partly")}</span>` : dd.is_new ? `<span class="pill new">${t("New")}</span>` : "";
+    const silent = dd.no_sound && !dd.transcribed;      // nothing to transcribe: its Transcribe queued nothing
+    const state = dd.live && !dd.transcribed ? `<span class="pill processing" title="${t("It can be transcribed once Panopto has finished it.")}">${I("video")}${t("Being recorded")}</span>` : dd.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
+      : silent ? St.silentPill() : dd.any_done ? `<span class="pill">${t("Partly")}</span>` : dd.is_new ? `<span class="pill new">${t("New")}</span>` : "";
     return `<div class="lec ${dd.transcribed ? "done" : ""}">
       <span class="lec-ico">${I("video", "sm")}</span><span class="lec-name">${label}</span><span class="lec-state">${St.oddMark(dd.anomalies)}${state}</span>
       <span class="lec-acts">${dd.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(dd.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}
-      ${(dd.live ? !dd.ready : dd.transcribed) ? "" : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
+      ${(dd.live ? !dd.ready : dd.transcribed || silent) ? "" : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
   }
 
   // ------------------------------------------------------------------ heads-up: what the lecturer said
@@ -129,7 +132,7 @@
     return `<button class="alert-item" data-act="alert-open" ${target} title="${lecture ? t("Read it in the transcript") : t("Open the announcement")}">
       ${catChip(a.category)}
       <span class="alert-main">
-        <span class="alert-text">${course ? `<b class="alert-course">${esc(course.code)}</b>` : ""}${lecture ? "" : `<b>${esc(a.title)}</b> — `}${lecture ? "“" : ""}${markHL(a.text, a.hl)}${lecture ? "”" : ""}${a.lang === "tr" ? ` <span class="tag-tr">TR</span>` : ""}</span>
+        <span class="alert-text">${course ? `<b class="alert-course">${esc(course.code)}</b>` : ""}${lecture ? "" : `<b>${esc(a.title)}</b>: `}${lecture ? "“" : ""}${markHL(a.text, a.hl)}${lecture ? "”" : ""}${a.lang === "tr" ? ` <span class="tag-tr">TR</span>` : ""}</span>
         <span class="alert-meta">${src}${others.map((k) => `<span class="cat-mini cat-${k}">${esc(cats[k][0])}</span>`).join("")}</span>
       </span>
       <span class="alert-go">${I("chevron-right", "sm")}</span></button>`;
@@ -154,8 +157,24 @@
     const rel = code === "today" ? t("today") : code === "this-week" ? t("this week") : code === "next-week" ? t("next week") : t("in {n} weeks", { n });
     return { w, code, rel, past: false, now: n <= 0, days: left.map((c) => c.date) };
   }
-  // when it is: the class day(s) still ahead if the course's schedule is known, else the week's dates
-  const relWhen = (r) => (r.days && r.days.length && r.days.length <= 2 ? t.list(r.days.map(dmw), "disjunction") : range(r.w.start, r.w.end));
+  // an assessment of the plan: the day (and time) an announcement gave for it, as the calendar shows it ("Quiz 2 is
+  // on Friday, 6 November"), else its week. Done once that day is over.
+  function planRel(d, e) {
+    if (!e.date) return weekRel(d, e.week, e.kind);
+    const today = localToday();
+    const w = d.weeks.find((x) => x.start && e.date >= x.start && e.date <= (x.end || x.start)) || (e.week ? d.weeks.find((x) => x.no === e.week) : undefined);
+    const at = { w, date: e.date, time: e.time || "" };
+    if (e.date < today) return { ...at, code: "done", rel: t.c("assessment", "done"), past: true };
+    const n = Math.round((monday(e.date) - monday(today)) / 6048e5);
+    const code = e.date === today ? "today" : n <= 0 ? "this-week" : n === 1 ? "next-week" : "later";
+    const rel = code === "today" ? t("today") : code === "this-week" ? t("this week") : code === "next-week" ? t("next week") : t("in {n} weeks", { n });
+    return { ...at, code, rel, past: false, now: n <= 0, days: [e.date] };
+  }
+  St.planRel = planRel;              // (the tests)
+  const dayAt = (r) => (r.date ? dmw(r.date) + (r.time ? `, ${r.time}` : "") : "");     // Fri 6 Nov, 10:00
+  // when it is: the day an announcement gave, the class day(s) still ahead if the course's schedule is known, else
+  // the week's dates
+  const relWhen = (r) => (r.date ? dayAt(r) : r.days && r.days.length && r.days.length <= 2 ? t.list(r.days.map(dmw), "disjunction") : range(r.w.start, r.w.end));
   function loLabel(los) {
     const runs = [];
     for (const n of los) { const r = runs[runs.length - 1]; if (r && n === r[1] + 1) r[1] = n; else runs.push([n, n]); }
@@ -165,7 +184,7 @@
     return los.map((n) => [`LO${n}: ${d.outcomes_en[n - 1] || "?"}`, d.outcomes_tr[n - 1] && d.outcomes_tr[n - 1] !== d.outcomes_en[n - 1] ? `   IEULearn LO${n}: ${d.outcomes_tr[n - 1]}` : ""].filter(Boolean).join("\n")).join("\n");
   }
   function upcoming(d) {
-    return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !weekRel(d, e.week, e.kind).past);
+    return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !planRel(d, e).past);
   }
   // the syllabus' exam weeks this week and next that no announcement covers (a course whose lecturer posted no
   // assessment plan): Coming up lists them too, as the calendar and the reminders do; a click opens that week
@@ -179,19 +198,20 @@
       <b>${esc(x.name)}</b><span>${t("week {n}", { n: x.w.no })}${x.r.rel ? ` · ${esc(x.r.rel)}` : ""}</span></button>`;
   const readyTip = (d, e) => t("Get ready: what to transcribe, download and read") + (e.los.length ? "\n" + loTitle(d, e.los) : "");
   function planPill(c, d, e) {
-    const r = weekRel(d, e.week, e.kind);
+    const r = planRel(d, e);
+    const when = r.date ? esc(dayAt(r)) : e.week ? t("week {n}", { n: e.week }) : "";
     return `<button class="plan-pill ${r.now ? "now" : ""} kind-${e.kind}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}">
-      <b>${esc(e.name)}</b>${e.week ? `<span>${t("week {n}", { n: e.week })}${r.rel ? ` · ${esc(r.rel)}` : ""}</span>` : ""}${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`;
+      <b>${esc(e.name)}</b>${when ? `<span>${when}${r.rel ? ` · ${esc(r.rel)}` : ""}</span>` : ""}${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`;
   }
   function planHTML(c, d) {
     const plan = (d.alerts && d.alerts.plan) || [];
     if (!plan.length) return "";
-    return `<div class="card plan"><div class="mg-head"><b>${I("cap", "sm")} ${t("Assessment plan")}</b><span class="dim">${t("as announced on IEULearn — hover an outcome for its text")}</span></div>
+    return `<div class="card plan"><div class="mg-head"><b>${I("cap", "sm")} ${t("Assessment plan")}</b><span class="dim">${t("as announced on IEULearn; hover an outcome for its text")}</span></div>
       ${plan.map((e) => {
-        const r = weekRel(d, e.week, e.kind);
+        const r = planRel(d, e);
         return `<div class="plan-row ${r.past ? "past" : ""} ${r.now ? "now" : ""}">
           <span class="plan-name kind-${e.kind}">${esc(e.name)}</span>
-          <span class="plan-when">${e.week ? `${t("Week {n}", { n: e.week })}${r.w && r.w.start ? ` · ${esc(range(r.w.start, r.w.end))}` : ""}` : `<span class="dim">${t("week not announced")}</span>`}${r.rel ? ` <span class="plan-rel">${esc(r.rel)}</span>` : ""}</span>
+          <span class="plan-when">${e.week || r.date ? `${e.week ? t("Week {n}", { n: e.week }) : ""}${r.date ? `${e.week ? " · " : ""}${esc(dayAt(r))}` : r.w && r.w.start ? ` · ${esc(range(r.w.start, r.w.end))}` : ""}` : `<span class="dim">${t("week not announced")}</span>`}${r.rel ? ` <span class="plan-rel">${esc(r.rel)}</span>` : ""}</span>
           <span class="plan-los">${e.los.length ? e.los.map((n) => `<span class="lo-chip" title="${esc(loTitle(d, [n]))}">LO${n}</span>`).join("") : `<span class="dim">${t("no outcomes listed")}</span>`}</span>
           <span class="plan-acts">${e.week && !r.past ? `<button class="btn sm" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}">${I("list-checks", "sm")} ${t("Get ready")}</button>` : ""}
           <button class="btn ghost sm plan-src" data-act="plan-ann" data-cid="${esc(c.id)}" data-ann="${esc(e.sources[0].id)}" title="${esc(e.sources.map((s) => s.title).join("\n"))}">${I("megaphone", "xs")}<span>${esc(e.sources[0].title)}</span></button></span></div>`;
@@ -201,13 +221,14 @@
     const al = d && d.alerts;
     const key = al ? al.items.filter(isKey) : [];
     const next = upcoming(d).slice(0, 3), exams = examWeeks(d);
-    if (!key.length && !next.length && !exams.length) return "";
-    const chips = KEY_ORDER.filter((k) => al.counts[k]).map((k) => catChip(k, al.counts[k], true)).join("");
+    const asg = St.calPills ? St.calPills(c, d) : "";          // its assignments due soon (calendar.js)
+    if (!key.length && !next.length && !exams.length && !asg) return "";
+    const chips = KEY_ORDER.filter((k) => ((al || {}).counts || {})[k]).map((k) => catChip(k, al.counts[k], true)).join("");
     return `<div class="card heads ${S.headsOpen ? "" : "closed"}">
       <div class="heads-head"><span class="heads-ico">${I("alert", "sm")}</span><b>${t("Heads-up from the lecturer")}</b><span class="heads-chips">${chips}</span><span class="spacer"></span>
         <button class="btn ghost sm" data-act="course-tab" data-tab="alerts">${t("See all")} ${I("chevron-right", "sm")}</button>
         <button class="btn ghost icon sm" data-act="heads-toggle" title="${S.headsOpen ? t("Collapse") : t("Expand")}">${I(S.headsOpen ? "chevron-up" : "chevron-down", "sm")}</button></div>
-      ${next.length || exams.length ? `<div class="plan-strip"><span class="plan-strip-label">${I("cap", "xs")} ${t("Coming up")}</span>${next.map((e) => planPill(c, d, e)).join("")}${exams.map((x) => examPill(c, x)).join("")}</div>` : ""}
+      ${next.length || exams.length || asg ? `<div class="plan-strip"><span class="plan-strip-label">${I("cap", "xs")} ${t("Coming up")}</span>${next.map((e) => planPill(c, d, e)).join("")}${exams.map((x) => examPill(c, x)).join("")}${asg}</div>` : ""}
       ${S.headsOpen && key.length ? `<div class="heads-list">${key.slice(0, 3).map((a) => alertHTML(a, c.id)).join("")}</div>` : ""}</div>`;
   }
   function alertsHTML(c, d) {
@@ -232,7 +253,7 @@
       g.items.push(a);
     }
     return `${planHTML(c, d)}<div class="fchips">${chips.map(([k, l, n]) => `<button class="fchip ${f === k ? "on" : ""} ${cats[k] ? `cat-${k}` : ""}" data-act="alert-cat" data-cat="${k}">${esc(l)} <span>${n}</span></button>`).join("")}</div>
-      <div class="note-sm">${I("info", "sm")}<span>${t("Found automatically in your transcribed lectures and the IEULearn announcements — click one to read it in context. Lectures you haven’t transcribed aren’t included.")}</span></div>
+      <div class="note-sm">${I("info", "sm")}<span>${t("Found automatically in your transcribed lectures and the IEULearn announcements. Click one to read it in context. Lectures you haven’t transcribed aren’t included.")}</span></div>
       ${list.length ? groups.map((g) => `<div class="card alert-group"><div class="mg-head"><b>${esc(g.label)}</b><span class="dim">${t.n(g.items.length, "{n} item", "{n} items")}</span></div>${g.items.map((a) => alertHTML(a, c.id)).join("")}</div>`).join("")
         : `<div class="dim" style="padding:16px 4px">${t("Nothing in this category.")}</div>`}`;
   }
@@ -243,7 +264,7 @@
   const sectionOf = (c) => c.my_section || (manySections(c) ? "" : c.section);
   function sectionChip(c) {
     if (manySections(c)) {
-      return `<button class="chip-btn ${c.my_section ? "" : "ask"}" data-act="section-menu" data-id="${esc(c.id)}" title="${t("Lectures of several sections are published for this course — choose yours")}">
+      return `<button class="chip-btn ${c.my_section ? "" : "ask"}" data-act="section-menu" data-id="${esc(c.id)}" title="${t("Lectures of several sections are published for this course: choose yours")}">
         ${I("users", "sm")}${c.my_section ? t.html("Section {tag}", { tag: c.my_section }) : t("Your section?")}${I("chevron-down", "xs")}</button>`;
     }
     return sectionOf(c) ? `<span>${I("users", "sm")}${t.html("Section {tag}", { tag: sectionOf(c) })}</span>` : "";
@@ -264,27 +285,42 @@
   St.setSection = (cid, sec) => setSection(cid, { my_section: sec, show_mode: "mine" });     // also the sync dialog's
 
   // ------------------------------------------------------------------ course page
+  // what Home and the course page count as lectures: your section's class days (a 3-hour class is recorded in 3
+  // parts: "26 lectures" was 7, views.py); one with no speech on Panopto can't be transcribed, so it is said apart
+  // and not counted as still to do
+  function lectureCounts(c) {
+    const n = c.counts || {};
+    if (n.days == null) return { done: n.done || 0, total: n.total || 0, silent: 0 };
+    return { done: n.days_done || 0, total: Math.max(0, n.days - (n.days_no_sound || 0)), silent: n.days_no_sound || 0 };
+  }
+  St.lectureCounts = lectureCounts;
   function courseHero(c, d) {
     const cur = d && d.weeks.find((w) => w.current);
     const ects = d && d.syllabus.ects ? `<span>${I("cap", "sm")}${t.html("{n} ECTS", { n: d.syllabus.ects })}</span>` : "";
     const ai = S.system.ai || {};
+    const k = lectureCounts(c);
     return `<div class="card hero course-hero" style="--h:${hue(c)}"><div class="badge">${esc(c.code).replace(" ", "<br>")}</div><div class="grow">
       <h1>${esc(c.display_name)}</h1>
       <div class="meta">${c.instructor ? `<span>${I("user", "sm")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span>${I("calendar", "sm")}${esc(c.term)}</span>` : ""}
         ${sectionChip(c)}${ects}</div>
       <div class="stats">${cur ? `<button class="stat now" data-act="goto-week" data-no="${cur.no}" title="${t("Show this week")}">${I("sparkle", "xs")}<b>${t("Week {n}", { n: cur.no })}</b>${cur.exam ? t("exam week") : t("this week")}</button>` : ""}
         <div class="stat"><b>${d ? d.materials.total : "…"}</b>${t("materials")}${d && d.materials.downloaded ? ` · ${t("{n} saved", { n: d.materials.downloaded })}` : ""}</div>
-        <div class="stat">${t.html("<b>{done}</b>of {total} lectures transcribed", { done: c.counts.done, total: c.counts.total })}</div></div></div>
-      <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available && (c.counts.done_any ?? c.counts.done) ? "" : "disabled"} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? t.html("Chat with {name} about this course", { name: St.aiName() }) : t("Transcribe a lecture first")) : St.aiHint()}">${I("chat", "sm")} ${t.html("Ask {name}", { name: St.aiName() })}</button>
+        ${k.total || k.silent ? `<div class="stat">${t.n(k.total, "<b>{done}</b>of {n} lecture transcribed", "<b>{done}</b>of {n} lectures transcribed", { done: k.done })}</div>`
+          : `<div class="stat dim">${t("No lectures recorded yet")}</div>`}
+        ${k.silent ? `<div class="stat dim" title="${esc(St.silentTip(k.silent))}">${t.n(k.silent, "<b>{n}</b>lecture has no speech on Panopto", "<b>{n}</b>lectures have no speech on Panopto")}</div>` : ""}</div></div>
+      <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${St.aiBtn(ai.available && (c.counts.done_any ?? c.counts.done))} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? t.html("Chat with {name} about this course", { name: St.aiName() }) : t("Transcribe a lecture first")) : St.aiHint()}">${I("chat", "sm")} ${t.html("Ask {name}", { name: St.aiName() })}</button>
         <button class="btn sm" data-act="course-sync" data-id="${c.id}" title="${t("Sync, then transcribe this course's lectures that aren't transcribed yet (your section) and download its materials")}">${I("zap", "sm")} ${t("Sync course")}</button>
-        <button class="btn sm" data-act="plan-new" data-id="${c.id}" ${ai.available && ai.can_plans !== false ? "" : "disabled"} title="${ai.available ? t("Find YouTube videos that teach this course's weeks, checked through their captions") : St.aiHint()}">${I("youtube", "sm")} ${t("Video plan")}</button>
+        <button class="btn sm" data-act="plan-new" data-id="${c.id}" ${St.aiBtn(ai.available && ai.can_plans !== false, true)} title="${ai.available ? t("Find YouTube videos that teach this course's weeks, checked through their captions") : St.aiHint()}">${I("youtube", "sm")} ${t("Video plan")}</button>
         <button class="btn sm" data-act="cx-open" data-id="${c.id}" title="${t("A zip of this course for ChatGPT: the transcripts, the screens with what was said, the course files and the announcements of the weeks you pick, in a folder for each week")}">${I("archive", "sm")} ${t("Export for AI chat")}</button>
+        ${St.exportBtn ? St.exportBtn("course", c.id, false, !k.done) : ""}
         <button class="btn sm" data-act="open-folder" data-id="${c.id}" title="${t("Open this course's folder")}">${I("folder-open", "sm")} ${t("Folder")}</button></div></div>`;
   }
   function tabsHTML(c, d, tab) {
     const cn = c.content || {};
     const heads = d && d.alerts ? d.alerts.items.filter((a) => isKey(a) && daysAgo(a.date) <= RECENT_DAYS).length : 0;
-    const tabs = [["weeks", t("Weeks"), "calendar", 0], ["alerts", t("Heads-up"), "alert", heads], ["overview", t("Overview"), "target", 0], ["lectures", t("Lectures"), "video", c.counts.new],
+    const tabs = [["weeks", t("Weeks"), "calendar", 0], ["alerts", t("Heads-up"), "alert", heads],
+      ...(St.practice ? [["practice", t("Practice"), "list-checks", St.practice.tabCount(c.id)]] : []),       // practice.js
+      ["overview", t("Overview"), "target", 0], ["lectures", t("Lectures"), "video", c.counts.new],
       ["materials", t("Materials"), "layers", cn.materials_new], ["announcements", t("Announcements"), "megaphone", cn.announcements_new]];
     const tips = { alerts: t("Quizzes, exams, homework and schedule changes your lecturer announced or mentioned in class") };
     return `<div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button role="tab" class="tab ${tab === k ? "on" : ""}" data-act="course-tab" data-tab="${k}"${tips[k] ? ` title="${esc(tips[k])}"` : ""}>${I(ic, "sm")}${l}${n ? `<span class="count ${k === "alerts" ? "warn" : "new"}" ${k === "alerts" ? `title="${t("In the last {n} days", { n: RECENT_DAYS })}"` : ""}>${n}</span>` : ""}</button>`).join("")}</div>`;
@@ -296,6 +332,7 @@
     const tab = v.tab || "weeks";
     let body;
     if (tab === "lectures") body = St.courseHTML(c, { bare: true });
+    else if (tab === "practice" && St.practice) body = St.practice.tab(c, d);      // quizzes, flashcards, stressed
     else if (!d) body = skeleton();
     else if (tab === "alerts") body = alertsHTML(c, d);
     else if (tab === "overview") body = overviewHTML(c, d);
@@ -308,16 +345,26 @@
     return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${changed}${body}</div>${sq}</div>`;
   }
 
+  // the files attached to the course's announcements (views.course_detail: a unit of their own in "general")
+  const ANN_UNIT = "announcements";
+  const annFiles = (d) => d.general.filter((u) => u.id === ANN_UNIT).flatMap((u) => u.materials);
+  const courseWide = (d) => d.general.filter((u) => u.id !== ANN_UNIT);
   function weeksHTML(c, d) {
     if (!d.weeks.length && !d.general.length) {
       return emptyHTML("calendar", d.content_at ? t("No weekly plan on IEULearn") : t("Loading the weekly plan…"),
         d.content_at ? t("This course has no unit plan on IEULearn yet.") : t("It appears after the next sync."));
     }
     let h = "";
-    if (d.general.length) {
+    const gen = courseWide(d), ann = annFiles(d);
+    if (gen.length) {
       h += `<div class="card week general"><div class="week-head"><div class="week-no gen">${I("layers")}</div><div class="week-title"><div class="t">${t("Course-wide")}</div>
-        <div class="s">${esc(d.general.map((u) => u.title).join(" · "))}</div></div></div>
-        <div class="week-body one">${d.general.flatMap((u) => u.materials).map(matRowHTML).join("") || `<div class="dim">${t("No files")}</div>`}</div></div>`;
+        <div class="s">${esc(gen.map((u) => u.title).join(" · "))}</div></div></div>
+        <div class="week-body one">${gen.flatMap((u) => u.materials).map(matRowHTML).join("") || `<div class="dim">${t("No files")}</div>`}</div></div>`;
+    }
+    if (ann.length) {
+      h += `<div class="card week general ann-files"><div class="week-head"><div class="week-no gen">${I("megaphone")}</div><div class="week-title"><div class="t">${t("From announcements")}</div>
+        <div class="s">${t("Files your lecturer attached to an announcement")}</div></div></div>
+        <div class="week-body one">${ann.map(matRowHTML).join("")}</div></div>`;
     }
     for (const w of d.weeks) h += weekCard(c, d, w);
     return h;
@@ -329,7 +376,8 @@
     const title = w.topic_en || unitTitle || w.topic_tr || t("Week {n}", { n: w.no });
     const sub = [range(w.start, w.end), unitTitle && unitTitle !== title ? `IEULearn: ${unitTitle}` : (w.topic_tr && w.topic_tr !== title ? w.topic_tr : "")].filter(Boolean).join(" · ");
     const due = ((d.alerts && d.alerts.plan) || []).filter((e) => e.week === w.no);
-    const duePills = due.map((e) => `<span class="pill due kind-${e.kind}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: e.sources[0].title }))}">${I("cap")}${esc(e.name)}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</span>`).join("");
+    const duePills = due.map((e) => `<span class="pill due kind-${e.kind}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: e.sources[0].title }))}">${I("cap")}${esc(e.name)}${e.date ? ` · ${esc(dayAt({ date: e.date, time: e.time }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</span>`).join("");
+    const asgPills = St.calWeekPills ? St.calWeekPills(d, w) : "";          // the week's assignments (calendar.js)
     const quiet = !w.current && !mats.length && !w.days.length && !due.length;
     const foldable = w.past && !w.current && !quiet;
     const shut = foldable && !(S.weeksOpen[c.id] && S.weeksOpen[c.id].has(w.no));
@@ -340,7 +388,7 @@
     return `<div class="card week ${w.current ? "current" : ""} ${w.past ? "past" : ""} ${w.exam ? "exam" : ""} ${quiet ? "quiet" : ""} ${shut ? "shut" : ""}" id="week-${w.no}">
       <div class="week-head" ${foldable ? `data-act="week-toggle" data-no="${w.no}" tabindex="0" role="button" aria-expanded="${!shut}" title="${shut ? t("Show this week's files and lectures") : t("Hide this week's files and lectures")}"` : ""}>
         <div class="week-no">${t.html("<b>{n}</b><span>week</span>", { n: w.no })}</div>
-        <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<span class="pill processing">${I("cap")}${t("Exam")}</span>` : "")}</div>
+        <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<span class="pill processing">${I("cap")}${t("Exam")}</span>` : "")}${asgPills}</div>
           <div class="s">${esc(sub)}${shut && summary ? ` · <span class="week-sum">${esc(summary)}</span>` : ""}</div></div>
         ${foldable ? `<span class="week-fold">${I(shut ? "chevron-down" : "chevron-up", "sm")}</span>` : ""}
       </div>
@@ -377,9 +425,12 @@
   }
 
   function matGroups(d) {
-    return [...(d.general.length ? [{ label: t("Course-wide"), mats: d.general.flatMap((u) => u.materials) }] : []),
-      ...d.weeks.filter((w) => w.units.some((u) => u.materials.length)).map((w) => ({ label: `${t("Week {n}", { n: w.no })} · ${w.topic_en || w.units.map((u) => u.title).join(" · ")}`, sub: range(w.start, w.end), mats: w.units.flatMap((u) => u.materials) }))];
+    const gen = courseWide(d), ann = annFiles(d);
+    return [...(gen.length ? [{ label: t("Course-wide"), mats: gen.flatMap((u) => u.materials) }] : []),
+      ...d.weeks.filter((w) => w.units.some((u) => u.materials.length)).map((w) => ({ label: `${t("Week {n}", { n: w.no })} · ${w.topic_en || w.units.map((u) => u.title).join(" · ")}`, sub: range(w.start, w.end), mats: w.units.flatMap((u) => u.materials) })),
+      ...(ann.length ? [{ label: t("From announcements"), sub: t("Files your lecturer attached to an announcement"), mats: ann }] : [])];
   }
+  St.matGroups = matGroups; St.weeksHTML = weeksHTML;       // (the tests)
   function materialsHTML(c, d) {
     const groups = matGroups(d);
     const all = eachOnce(groups.flatMap((g) => g.mats));
@@ -420,26 +471,29 @@
     if (!d.announcements.length) return emptyHTML("megaphone", t("No announcements"), t("Announcements your lecturer posts on IEULearn appear here."));
     const anyNew = d.announcements.some((a) => a.is_new);
     return `<div class="toolbar"><span class="spacer"></span>${anyNew ? `<button class="btn ghost sm" data-act="course-seen" data-id="${c.id}" data-what="announcements">${t("Mark as seen")}</button>` : ""}</div>` +
-      d.announcements.map((a) => annCard(a)).join("");
+      d.announcements.map((a) => annCard(a, null, c.id)).join("");
   }
   // an announcement's text with its web addresses as links: the app keeps a link's address after its text, and an
   // attached file's ("Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/…/file/0)"), so a Teams link opens
-  function linkText(s) {
+  function linkText(s, cid) {
     return String(s || "").split(/(https?:\/\/[^\s<>"]+)/).map((p, i) => {
       if (!(i % 2)) return esc(p);
       const url = p.replace(/[).,;:!?'"\]]+$/, "");
       const label = url.length > 60 ? url.replace(/^https?:\/\//, "").slice(0, 45) + "…" : url;
-      return `<a class="ext" role="link" tabindex="0" data-act="url" data-url="${esc(url)}" title="${esc(url)}">${esc(label)}</a>${esc(p.slice(url.length))}`;
+      // a file attached to the announcement: opened through IEUStudia (its IEULearn session), as the course's files
+      const file = cid && url.match(/^https:\/\/learn\.ieu\.edu\.tr\/student\/announcements\/(\d+)\/file\/(\d+)\b/);
+      const act = file ? `data-act="ann-file" data-id="${esc(`ann-${cid}-${file[1]}-${file[2]}`)}"` : `data-act="url"`;
+      return `<a class="ext" role="link" tabindex="0" ${act} data-url="${esc(url)}" title="${esc(url)}">${esc(label)}</a>${esc(p.slice(url.length))}`;
     }).join("");
   }
   St.linkText = linkText;            // (the tests)
-  function annCard(a, course) {
+  function annCard(a, course, cid) {
     const open = S.ann.has(a.id) || a.body.length < 420;
     const flash = S.flashAnn && S.flashAnn.id === a.id && Date.now() < S.flashAnn.until;
     return `<div class="card ann ${a.is_new ? "is-new" : ""} ${flash ? "flash" : ""}" data-ann-id="${esc(a.id)}">
       <div class="ann-head">${I("megaphone")}<div class="grow"><div class="t">${esc(a.title)} ${a.is_new ? `<span class="pill new">${t("New")}</span>` : ""}</div>
         <div class="s">${course ? `<b>${esc(course.code)}</b> · ` : ""}${esc(a.author)}${a.posted_at ? ` · ${esc(when(a.posted_at))}` : ""}</div></div></div>
-      <div class="ann-body ${open ? "" : "clamp"}">${linkText(a.body)}</div>
+      <div class="ann-body ${open ? "" : "clamp"}">${linkText(a.body, cid || (course && course.id) || a.course_id)}</div>
       ${open ? "" : `<button class="btn ghost sm" data-act="ann-more" data-id="${esc(a.id)}">${t("Show all")}</button>`}</div>`;
   }
 
@@ -459,7 +513,8 @@
     const heads = d && d.alerts ? d.alerts.items.filter((a) => isKey(a) && daysAgo(a.date) <= RECENT_DAYS).length : 0;
     const exam = d && d.weeks.find((x) => x.exam && !x.past);
     const next = upcoming(d)[0];
-    const done = c.counts.total ? Math.round((100 * c.counts.done) / c.counts.total) : 0;
+    const k = lectureCounts(c), done = k.total ? Math.round((100 * k.done) / k.total) : 0;
+    const barTip = t("Lectures transcribed in IEUStudia") + (k.silent ? ` · ${t.n(k.silent, "{n} more has no speech on Panopto", "{n} more have no speech on Panopto")}` : "");
     const topic = w ? (w.topic_en || w.units.map((u) => u.title).join(" · ") || w.topic_tr || "") : "";
     return `<button class="cc" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${t.html("Open {code}", { code: c.code })}">
       <span class="cc-cover" style="--h:${hue(c)}${c.cover ? `;background-image:url('${esc(c.cover)}')` : ""}">
@@ -470,14 +525,21 @@
         <span class="cc-info">${c.instructor ? `<span title="${t("Instructor")}">${I("user", "xs")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span title="${t("Term")}">${I("calendar", "xs")}${esc(c.term)}</span>` : ""}</span>
         <span class="cc-week">${w ? `<b>${w.current ? t("This week · Week {n}", { n: w.no }) : t("Next · Week {n}", { n: w.no })}</b><span>${esc(topic)}</span>` : `<span class="dim">${d ? t("No weekly plan yet") : t("Loading…")}</span>`}</span>
         <span class="cc-bars">
-          ${c.has_panopto && c.counts.total ? `<span class="cc-bar" title="${t("Lectures transcribed in IEUStudia")}"><span>${I("wave", "xs")}${t("{done}/{total} lectures transcribed", { done: c.counts.done, total: c.counts.total })}</span><i><b style="width:${done}%"></b></i></span>` : ""}
+          ${c.has_panopto && k.total ? `<span class="cc-bar" title="${esc(barTip)}"><span>${I("wave", "xs")}${t.n(k.total, "{done}/{n} lecture transcribed", "{done}/{n} lectures transcribed", { done: k.done })}</span><i><b style="width:${done}%"></b></i></span>` : ""}
           ${c.lms_progress != null ? `<span class="cc-bar lms" title="${t("Your progress on IEULearn (İlerleme)")}"><span>${I("zap", "xs")}${t("IEULearn progress {pct}", { pct: t.pct(c.lms_progress / 100) })}</span><i><b style="width:${Math.min(100, c.lms_progress)}%"></b></i></span>` : ""}
         </span>
         <span class="cc-foot">${heads ? `<span class="cc-heads">${I("alert", "xs")}${t("{n} heads-up", { n: heads })}</span>` : ""}
-          ${next ? `<span class="exam-chip" title="${esc(next.los.length ? loTitle(d, next.los) : next.sources[0].title)}">${I("cap", "xs")}${esc(next.name)}${next.week ? ` · ${esc(weekRel(d, next.week, next.kind).rel || t("week {n}", { n: next.week }))}` : ""}${next.los.length ? ` · ${esc(loLabel(next.los))}` : ""}</span>`
+          ${next ? `<span class="exam-chip" title="${esc(next.los.length ? loTitle(d, next.los) : next.sources[0].title)}">${I("cap", "xs")}${esc(next.name)}${nextWhen(d, next)}${next.los.length ? ` · ${esc(loLabel(next.los))}` : ""}</span>`
             : exam ? `<span class="exam-chip">${I("cap", "xs")}${esc(exam.exam_label || exam.topic_en || exam.topic_tr || t("Exam"))} · ${t("week {n}", { n: exam.no })}</span>` : ""}
           <span class="spacer"></span><span class="cc-go">${I("arrow-right", "sm")}</span></span>
       </span></button>`;
+  }
+  // the course card's next assessment: " · Fri 6 Nov" (" · today") when an announcement gave its day, else " · next
+  // week" (or its week)
+  function nextWhen(d, e) {
+    const r = planRel(d, e);
+    if (r.date) return ` · ${esc(r.code === "today" ? r.rel : dmw(r.date))}`;
+    return e.week ? ` · ${esc(r.rel || t("week {n}", { n: e.week }))}` : "";
   }
   // the first days: what to do, in three steps (until the first lecture is transcribed, or "Got it")
   function howToHTML() {
@@ -512,7 +574,7 @@
     const recs = St.newHTML({ embedded: true });
     const soon = courses.flatMap((c) => {
       const d = S.cd[c.id];
-      return d ? [...upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week, e.kind) })).filter((x) => x.r.now || x.r.code === "next-week"),
+      return d ? [...upcoming(d).map((e) => ({ c, d, e, r: planRel(d, e) })).filter((x) => x.r.now || x.r.code === "next-week"),
         ...examWeeks(d).map((x) => ({ c, d, e: { name: x.name, los: [] }, r: x.r, w: x.w }))] : [];
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
     const twin = (c) => S.courses.filter((x) => x.code === c.code).length > 1;     // FENG 495 twice: which one
@@ -525,7 +587,7 @@
         <div class="home-acts"><button class="btn sm" data-act="go" data-view="digest">${I("calendar", "sm")} ${t("Weekly digest")}</button>
           <button class="btn sm" data-act="plan-new">${I("youtube", "sm")} ${t("New study plan")}</button>
           <button class="btn sm" data-act="full-sync" title="${t("Sync every course, then transcribe your untranscribed lectures and download the materials (asks first)")}">${I("zap", "sm")} ${t("Full sync")}</button>
-          <button class="btn sm" data-act="export-calendar" title="${t("Save the announced quizzes and exams as a calendar file (.ics) for Google Calendar, Outlook or your phone")}">${I("calendar", "sm")} ${t("Add to calendar")}</button>
+          <button class="btn sm" data-act="go" data-view="calendar" title="${t("Quizzes, exams, assignment deadlines and classes of your courses, and your own entries")}">${I("calendar-days", "sm")} ${t("Calendar")}</button>
           <button class="btn sm" data-act="cx-open" data-id="" title="${t("A zip of all your courses for ChatGPT: the transcripts, the screens with what was said, the course files and the announcements of the weeks you pick, in a folder for each course and week")}">${I("archive", "sm")} ${t("Export for AI chat")}</button></div></div>
         <img class="home-logo" src="../assets/logo.svg" alt=""></div>`;
     if (wait.offline) {
@@ -544,11 +606,14 @@
         <button class="btn ghost sm" data-act="resume-forget">${t("Forget them")}</button><button class="btn primary sm" data-act="resume-go">${I("wave", "sm")} ${t("Continue")}</button></div>`;
     }
     if (courses.length && !courses.some((c) => (c.counts || {}).done_any) && store("studia-howto") !== "seen") h += howToHTML();
-    if (soon.length) {
-      h += `<div class="section-title">${I("cap")} ${t("Coming up")} <span class="dim sm">${t("this week and next, as announced")}</span></div>
+    if (St.practice) h += St.practice.homeNote();        // flashcards due today (practice.js)
+    const later = St.calSoon ? St.calSoon() : "";       // assignments, your entries, make-up classes (calendar.js)
+    if (soon.length || later) {
+      h += `<div class="section-title">${I("cap")} ${t("Coming up")} <span class="dim sm">${t("this week and next")}</span><span class="spacer"></span>
+          <button class="btn ghost sm" data-act="go" data-view="calendar">${I("calendar-days", "sm")} ${t("Calendar")} ${I("chevron-right", "sm")}</button></div>
         <div class="soon">${soon.map(({ c, d, e, r, w }) => `<button class="soon-card ${r.now ? "now" : ""}" ${w ? `data-act="exam-week" data-cid="${esc(c.id)}" data-no="${w.no}" title="${esc(t("Week {n}", { n: w.no }))}"` : `data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}"`}>
-          <span class="soon-code">${esc(c.code)}${twin(c) && c.section ? ` · ${esc(c.section)}` : ""}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w && r.code !== "today" ? ` · ${esc(relWhen(r))}` : ""}</span>
-          ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}</div>`;
+          <span class="soon-code">${esc(c.code)}${twin(c) && c.section ? ` · ${esc(c.section)}` : ""}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.code === "today" ? (r.time ? ` · ${esc(r.time)}` : "") : r.date || r.w ? ` · ${esc(relWhen(r))}` : ""}</span>
+          ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}${later}</div>`;
     }
     h += `<div class="section-title">${I("book")} ${t("My courses")} <span class="dim sm">${courses.length}</span></div>`;
     if (courses.length) h += `<div class="cc-grid">${courses.map(courseCard).join("")}</div>`;
@@ -577,10 +642,22 @@
   // A checklist built from what IEUStudia already knows, without AI: the weeks the assessment covers, your
   // section's lectures and the files of those weeks, what the lecturer said about it and stressed in class.
   const R = { cid: null, name: null };
-  const readDays = new Set((() => { try { return JSON.parse(store("studia-read") || "[]"); } catch (e) { return []; } })());
+  // the days you read, per profile (every profile's page shares one browser storage): read when first needed, as
+  // the profile is known only once the app has started; the first profile keeps the key it always had
+  const readKey = () => (S.profileId === "main" ? "studia-read" : `studia-read:${S.profileId}`);
+  let readSet = null, readFor = "";
+  const readDays = { has: (k) => reads().has(k) };
+  function reads() {
+    if (!readSet || readFor !== S.profileId) {
+      readFor = S.profileId;
+      try { const v = JSON.parse(store(readKey()) || "[]"); readSet = new Set(Array.isArray(v) ? v : []); } catch (e) { readSet = new Set(); }
+    }
+    return readSet;
+  }
   function setRead(dayKey, on) {
-    if (on) readDays.add(dayKey); else readDays.delete(dayKey);
-    store("studia-read", JSON.stringify([...readDays].slice(-3000)));
+    const r = reads();
+    if (on) r.add(dayKey); else r.delete(dayKey);
+    store(readKey(), JSON.stringify([...r].slice(-3000)));
   }
   St.after.day = (v) => { if (S.day && v.dayKey && !readDays.has(v.dayKey)) setRead(v.dayKey, true); };   // opened = read
 
@@ -597,7 +674,9 @@
   function readiness(c, d, e) {
     const nos = new Set(e.week ? coveredWeeks(d, e) : []);
     const weeks = d.weeks.filter((w) => nos.has(w.no));
-    const days = weeks.flatMap((w) => w.days.filter((x) => x.mine !== false && x.parts));
+    // your section's lectures; one with no speech on Panopto is not one to transcribe or read (said apart)
+    const all = weeks.flatMap((w) => w.days.filter((x) => x.mine !== false && x.parts));
+    const days = all.filter((x) => !(x.no_sound && !x.transcribed));
     const mats = eachOnce(weeks.flatMap((w) => w.units.flatMap((u) => u.materials))).filter((m) => !m.gone);
     const inWeeks = (a) => { const dd = (a.date || "").slice(0, 10); return weeks.some((w) => w.start && dd >= w.start && dd <= (w.end || w.start)); };
     const kinds = e.kind === "quiz" ? ["quiz"] : [e.kind, "exam"];
@@ -608,11 +687,11 @@
     const stressed = items.filter((a) => a.source === "lecture" && a.category === "important" && inWeeks(a)).slice(0, 6);
     const cv = St.findCourse(c.id) || { days: [] };
     const todo = days.filter((x) => !x.transcribed).flatMap((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || [])
-      .filter((r) => r.part && r.mine !== false && r.status !== "done" && !["queued", "downloading", "transcribing", "live"].includes(r.status)).map((r) => r.id));
+      .filter((r) => r.part && r.mine !== false && r.status !== "done" && !r.no_sound && !["queued", "downloading", "transcribing", "live"].includes(r.status)).map((r) => r.id));
     const busy = days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => ["queued", "downloading", "transcribing"].includes(r.status)));
     const todoDays = new Set(days.filter((x) => ((cv.days.find((y) => y.day_key === x.day_key) || {}).recordings || []).some((r) => todo.includes(r.id))).map((x) => x.day_key)).size;
     const marks = (R.marks || []).filter((m) => weeks.some((w) => w.start && m.date >= w.start && m.date <= (w.end || w.start)));
-    return { weeks, days, mats, said, stressed, todo, todoDays, marks, busy: busy.length,
+    return { weeks, days, mats, said, stressed, todo, todoDays, marks, busy: busy.length, silent: all.length - days.length,
       transcribed: days.filter((x) => x.transcribed).length, read: days.filter((x) => x.any_done && readDays.has(x.day_key)).length,
       readable: days.filter((x) => x.any_done).length, downloaded: mats.filter((m) => m.downloaded).length,
       missing: mats.filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state))).map((m) => m.id) };
@@ -628,13 +707,14 @@
     const e = d && ((d.alerts || {}).plan || []).find((x) => x.name === R.name);
     if (!c || !d || !e) return `<h2>${I("cap")} ${t("Get ready")}</h2><p class="lead">${t("This assessment is no longer in the course's plan.")}</p>
       <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button></div>`;
-    const r = readiness(c, d, e), rel = weekRel(d, e.week, e.kind);
+    const r = readiness(c, d, e), rel = planRel(d, e);
     const plans = (R.plans || []).filter((p) => p.course_id === c.id && (p.scope || {}).focus === e.name);
     const prep = plans.find((p) => (p.scope || {}).kind === "prep"), video = plans.find((p) => (p.scope || {}).kind !== "prep");
     const left = r.todoDays;                                       // lectures (class days), not their parts
     const steps = [
       [r.days.length && r.transcribed === r.days.length, t("Lectures transcribed: {done} of {n}", { done: r.transcribed, n: r.days.length }),
-        r.busy ? t.n(r.busy, "{n} lecture transcribing now", "{n} lectures transcribing now") : r.days.length ? t("your section, in the weeks it covers") : t("no recorded lectures in these weeks yet"),
+        [r.busy ? t.n(r.busy, "{n} lecture transcribing now", "{n} lectures transcribing now") : r.days.length ? t("your section, in the weeks it covers") : r.silent ? "" : t("no recorded lectures in these weeks yet"),
+          !r.silent ? "" : r.days.length ? t.n(r.silent, "{n} more has no speech on Panopto", "{n} more have no speech on Panopto") : t.n(r.silent, "{n} lecture has no speech on Panopto", "{n} lectures have no speech on Panopto")].filter(Boolean).join(" · "),
         r.todo.length ? `<button class="btn sm" data-act="rd-transcribe" title="${t.n(r.todo.length, "{n} recording", "{n} recordings")}">${I("wave", "sm")} ${left > 1 ? t.n(left, "Transcribe {n} lecture", "Transcribe {n} lectures") : t("Transcribe it")}</button>` : ""],
       [r.mats.length && !r.missing.length, t("Files on this PC: {done} of {n}", { done: r.downloaded, n: r.mats.length }), r.mats.length ? t("slides and PDFs of those weeks") : t("no files listed for these weeks"),
         r.missing.length ? `<button class="btn sm" data-act="rd-download">${I("download", "sm")} ${t("Download {n}", { n: r.missing.length })}</button>` : ""],
@@ -650,7 +730,7 @@
     const read = r.days.filter((x) => x.any_done);
     const first = r.weeks.length && r.weeks[0].no, last = r.weeks.length && r.weeks[r.weeks.length - 1].no;
     return `<h2>${I("cap")} ${t.html("Get ready: {name}", { name: e.name })} <span class="dim sm">${esc(c.code)}</span></h2>
-      <p class="lead">${e.week ? `${t("Week {n}", { n: e.week })}${rel.w && rel.w.start ? ` · ${esc(range(rel.w.start, rel.w.end))}` : ""}${rel.rel ? ` · <b>${esc(rel.rel)}</b>` : ""}` : t("Week not announced")}
+      <p class="lead">${e.week || rel.date ? `${e.week ? t("Week {n}", { n: e.week }) : ""}${rel.date ? `${e.week ? " · " : ""}${esc(dayAt(rel))}` : rel.w && rel.w.start ? ` · ${esc(range(rel.w.start, rel.w.end))}` : ""}${rel.rel ? ` · <b>${esc(rel.rel)}</b>` : ""}` : t("Week not announced")}
         ${r.weeks.length ? ` · ${r.weeks.length === 1 ? t("covers week {n}", { n: first }) : t("covers weeks {from}–{to}", { from: first, to: last })}` : ""}
         · <button class="link" data-act="plan-ann" data-cid="${esc(c.id)}" data-ann="${esc(e.sources[0].id)}">${t("as announced")}</button></p>
       ${e.los.length ? `<div class="rd-los">${e.los.map((n) => `<div><span class="lo-chip">LO${n}</span> ${esc(d.outcomes_en[n - 1] || d.outcomes_tr[n - 1] || "")}</div>`).join("")}</div>` : ""}
@@ -827,6 +907,9 @@
       else download([el.dataset.id], true);
     },
     "mat-reveal": (el) => openMaterial(el.dataset.id, true),
+    // an announcement's attached file: downloaded (with IEUStudia's IEULearn session) and opened as a course file;
+    // one the app doesn't know yet (until the next sync) opens in the browser, as before
+    "ann-file": (el) => (findMaterial(el.dataset.id) ? A["mat-open"](el) : A.url(el)),
     "mat-all": (el) => {
       const d = S.cd[el.dataset.id]; if (!d) return;
       const ids = allMaterials(d).filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state))).map((m) => m.id);
@@ -863,8 +946,8 @@
     "export-calendar": async () => {
       const r = await call("export_calendar");
       if (!r.ok) { toast(r.error, "info"); return; }
-      toast(t.n(r.count, "Saved {n} quiz or exam to a calendar file. Double-click it to add them to Outlook or Windows Calendar, or import it in Google Calendar (Settings → Import).",
-        "Saved {n} quizzes and exams to a calendar file. Double-click it to add them to Outlook or Windows Calendar, or import it in Google Calendar (Settings → Import)."), "success");
+      toast(t.n(r.count, "Saved {n} date to a calendar file. Double-click it to add it to Outlook or Windows Calendar, or import it in Google Calendar (Settings → Import).",
+        "Saved {n} dates to a calendar file. Double-click it to add them to Outlook or Windows Calendar, or import it in Google Calendar (Settings → Import)."), "success");
     },
     "rd-read": (el) => { setRead(el.dataset.day, el.checked); drawReady(); },
     "rd-transcribe": async () => {
@@ -944,7 +1027,7 @@
         { id: "a2", title: "Quiz Takvimi ve Uygulama Kuralları", author: c.instructor, posted_at: "2026-10-05T10:05", body: "Sevgili Öğrenciler,\n\nQuiz ve ara sınav takvimi aşağıdaki gibidir. Quizlerin kapsadığı öğrenme çıktıları (LO) tabloda belirtilmiştir.\n\nQuiz 1 — 3. hafta — LO1, LO2\nQuiz 2 — 5. hafta — LO3\nAra sınav — 8. hafta — LO1–LO4", is_new: false }],
       materials: { total: 9, downloaded: 3, new: 1 }, content_at: "2026-10-21T08:00:00", alerts: mockAlerts(c) } };
   };
-  St.mocks.export_calendar = () => ({ ok: true, count: 7, path: "C:\\Users\\student\\Documents\\IEUStudia\\IEUStudia - quizzes and exams.ics" });
+  St.mocks.export_calendar = () => ({ ok: true, count: 7, path: "C:\\Users\\student\\Documents\\IEUStudia\\IEUStudia - calendar.ics" });
   St.mocks.materials_download = (ids) => {
     ids.forEach((id, k) => {
       let done = 0;

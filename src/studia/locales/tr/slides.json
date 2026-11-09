@@ -33,7 +33,6 @@
   "Add the slides from the lecture video": "Ders videosundaki slaytları da ekle",
   "No slides were captured from these lectures' videos.": "Bu derslerin videolarından slayt alınmadı.",
   "{n} slide captured from the screen recording: also shows what the lecturer wrote or showed that isn't in the files.": "Ekran kaydından alınan {n} slayt: hocanın yazdığı ya da gösterdiği, dosyalarda olmayan şeyleri de içerir.",
-  "{pages} pages ({pics} as pictures)": "{pages} sayfa ({pics} tanesi resim olarak)",
   "{n} page as text": "metin olarak {n} sayfa",
   "{n} slide from the video": "videodan {n} slayt",
   "The offline model has room for only a few pages: for each question it reads the passages of your files that match it.": "Çevrimdışı model yalnızca birkaç sayfa alabilir: her soruda dosyalarının soruyla eşleşen kısımlarını okur.",

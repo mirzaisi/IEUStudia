@@ -182,7 +182,7 @@
     const lines = [];
     if (!rd.pages) lines.push(t.html("Everything fits in one request: {ai} sees every page whole.", { ai }));
     else if (rd.on) {
-      lines.push(t.n(rd.pages, "Before it answers, {ai} goes through {n} page that doesn't fit whole, in {b} requests, and writes notes of it.", "Before it answers, {ai} goes through the {n} pages that don't fit whole, in {b} requests, and writes notes of them.", { ai: esc(ai), b: t.num(Math.max(1, rd.batches || 0)) }));
+      lines.push(t.n(rd.pages, "Before it answers, {ai} goes through {n} page that doesn't fit whole, {requests}, and writes notes of it.", "Before it answers, {ai} goes through the {n} pages that don't fit whole, {requests}, and writes notes of them.", { ai: esc(ai), requests: St.inRequests(Math.max(1, rd.batches || 0)) }));
       if (rd.lectures) lines.push(esc(t.n(rd.lecture_days || 1, "Among them: {n} lecture that doesn't fit whole, in {k} pieces of its transcript.", "Among them: {n} lectures that don't fit whole, in {k} pieces of their transcripts.", { k: t.num(rd.lectures) })));
       lines.push(rd.batches ? t("About {k} tokens read and {o} written, once: the notes are kept and serve every question, so follow-ups reuse them.", { k: St.fmtK(rd.tokens || 0), o: St.fmtK(rd.output || 0) })
         : t("All of them were read before: the kept notes go with your questions."));
@@ -258,8 +258,9 @@
       const pct = Math.round(((rd.read || 0) / Math.max(1, rd.pages || 1)) * 100);
       const parts = (rd.parts || []).slice().sort((a, b) => a.n - b.n).map((x) => partLine(x, rd, ai)).join("");
       const left = rd.eta != null && rd.at ? `<span data-eta="${rd.eta}" data-at="${rd.at}">${esc(leftText(rd.eta - (now() - rd.at)))}</span> · ` : "";
-      const title = rd.lectures ? t("Reading your lectures, slides and files: {read} of {pages} pieces", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) })
-        : t("Reading your slides and files: {read} of {pages} pages", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) });
+      const of = { read: t.num(rd.read || 0), n: t.num(rd.pages || 0) };
+      const title = rd.lectures ? t.n(rd.pages || 0, "Reading your lectures, slides and files: {read} of {n} piece", "Reading your lectures, slides and files: {read} of {n} pieces", of)
+        : t.n(rd.pages || 0, "Reading your slides and files: {read} of {n} page", "Reading your slides and files: {read} of {n} pages", of);
       return { body: `<div class="cf-reading" role="status">${St.SPIN()}<div class="cf-reading-t"><b>${title}</b>${parts}
         <span class="dim sm">${left}${t("Stop keeps every page read so far: asking again reads only the rest.")}</span>
         <div class="cf-bar light"><i style="width:${pct}%"></i></div></div></div>`, foot: "" };
@@ -267,8 +268,8 @@
     if (!done) return { body: "", foot: "" };
     if (done.stopped || done.failed) {
       const rest = Math.max(0, (done.pages || 0) - (done.read || 0));
-      const said = (rest ? t("{read} of {pages} pages were read and kept: asking again reads only the {n} still missing.", { read: t.num(done.read || 0), pages: t.num(done.pages || 0), n: t.num(rest) })
-        : t("All {pages} pages were read and kept: asking again doesn't read them again.", { pages: t.num(done.pages || 0) }))
+      const said = (rest ? t.n(done.pages || 0, "{read} of {n} page was read and kept: asking again reads only the {missing} still missing.", "{read} of {n} pages were read and kept: asking again reads only the {missing} still missing.", { read: t.num(done.read || 0), n: t.num(done.pages || 0), missing: t.num(rest) })
+        : t.n(done.pages || 0, "The {n} page was read and kept: asking again doesn't read it again.", "All {n} pages were read and kept: asking again doesn't read them again.", { n: t.num(done.pages || 0) }))
         + (done.failed && done.tries > 1 ? " " + t.n(done.tries, "IEUStudia had tried that part {n} time.", "IEUStudia had tried that part {n} times.") : "");
       return { body: done.stopped && !m.text ? `<div class="cf-reading stopped">${I("info", "sm")}<div class="cf-reading-t"><b>${t("Stopped while reading the slides.")}</b><span class="dim sm">${esc(said)}</span></div></div>` : "",
         foot: done.failed ? `<span class="cf-read-foot dim sm">${esc(said)}</span>` : "" };
@@ -452,7 +453,7 @@
       shell(r.title, local ? t("The offline model can't see pictures: this photo isn't sent.") : t.html("{ai} sees this photo as it is.", { ai }), zoomTools(),
         `<div class="cf-img"><img src="${r.data}" alt="${esc(r.title)}"></div>`);
     } else if (r.kind === "strip") {
-      shell(t("Slides from the video"), t.html("{n} pictures of the lecture's screen go to {ai} with the first question.", { n: t.num(r.items.length), ai }), "",
+      shell(t("Slides from the video"), t.n(r.items.length, "{n} picture of the lecture's screen goes to {ai} with the first question.", "{n} pictures of the lecture's screen go to {ai} with the first question.", { n: t.num(r.items.length), ai: esc(ai) }), "",
         `<div class="cf-strip">${r.items.map((label, i) => `<figure class="cf-shot" data-n="${i + 1}"><div class="cf-ph skel"></div><figcaption>${esc(label.replace(/^\[|\]$/g, ""))}</figcaption></figure>`).join("")}</div>`);
       lazy($("#cf-vb"), ".cf-shot", async (el) => {
         const p = await call("chat_file_view", sp, ref, +el.dataset.n, 1);

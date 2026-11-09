@@ -36,12 +36,18 @@ class CourseNeeds:
     my_section: Optional[str] = None
     unknown: list[tuple[str, str]] = dc.field(default_factory=list)  # several sections, yours set, but these match
     unknown_audio_s: float = 0.0                                     # none: left out unless you include them
+    # the class days of lectures, unknown and waiting (a lecture's parts together): what the dialog calls lectures,
+    # as the course page counts them
+    days: int = 0
+    unknown_days: int = 0
+    waiting_days: int = 0
 
     def view(self) -> dict[str, Any]:
         return {"course_id": self.course_id, "code": self.code, "name": self.name, "lectures": len(self.lectures),
                 "audio_s": round(self.audio_s), "materials": len(self.materials), "other_sections": self.other_sections,
                 "needs_section": self.needs_section, "waiting": self.waiting, "sections": self.sections,
-                "my_section": self.my_section, "unknown": len(self.unknown), "unknown_audio_s": round(self.unknown_audio_s)}
+                "my_section": self.my_section, "unknown": len(self.unknown), "unknown_audio_s": round(self.unknown_audio_s),
+                "days": self.days, "unknown_days": self.unknown_days, "waiting_days": self.waiting_days}
 
 
 def _downloaded(m: dict[str, Any]) -> bool:
@@ -79,7 +85,7 @@ def course_needs(lib: Any, settings: Settings, course_ids: Optional[Iterable[str
         sections = available_sections(recs)
         several = len(sections) > 1
         mine = classify(c, recs, my_section) if sections else {}
-        todo, unknown, other, waiting = [], [], 0, 0
+        todo, unknown, other, waiting, held = [], [], 0, 0, set()
         for r in recs:
             if (r.duplicate_of or r.hidden or r.status not in READY or r.live or r.delivery_id in busy
                     or 0 < r.duration_s < settings.min_duration_s or no_sound(r, warnings.get(r.delivery_id, ()))):
@@ -89,6 +95,7 @@ def course_needs(lib: Any, settings: Settings, course_ids: Optional[Iterable[str
                 other += 1
             elif several and not my_section:
                 waiting += 1
+                held.add(r.day_key)
             elif several and verdict is None and c.id not in include:
                 unknown.append(r)
             else:
@@ -101,7 +108,8 @@ def course_needs(lib: Any, settings: Settings, course_ids: Optional[Iterable[str
                                sum(max(0.0, r.duration_s) for r in todo), mats, other, several and not my_section,
                                waiting, sections, my_section if several else None,
                                [(r.delivery_id, r.start.isoformat()) for r in unknown],
-                               sum(max(0.0, r.duration_s) for r in unknown)))
+                               sum(max(0.0, r.duration_s) for r in unknown),
+                               len({r.day_key for r in todo}), len({r.day_key for r in unknown}), len(held)))
     return out
 
 
@@ -112,6 +120,7 @@ def speed(gpu: bool, model: str) -> float:
 def summary(needs: list[CourseNeeds], gpu: bool, model: str = "large-v3-turbo") -> dict[str, Any]:
     audio = sum(n.audio_s for n in needs)
     return {"courses": [n.view() for n in needs], "lectures": sum(len(n.lectures) for n in needs),
+            "days": sum(n.days for n in needs),
             "audio_s": round(audio), "materials": sum(len(n.materials) for n in needs),
             "work_s": round(audio / speed(gpu, model)), "speed": speed(gpu, model), "gpu": gpu,
             "audio_mb": round(audio / 60 * 0.75),            # audio-only streams: ~0.75 MB a minute, deleted afterwards

@@ -1,6 +1,6 @@
 [project]
 name = "studia"
-version = "3.3.1"
+version = "4.0.0"
 description = "IEUStudia: an unofficial study app for IEU students. IEULearn courses and Panopto lectures transcribed on your PC, heads-ups about quizzes and exams, study plans and optional AI."
 readme = "README.md"
 license = "MIT"

@@ -10,12 +10,14 @@ from typing import Any, Collection, Iterable, Optional
 
 from . import store
 from .anomalies import course_anomalies
+from .catchup import no_sound
 from .config import Settings
 from .domain import Course, Recording
 from .i18n import date_long, t, weekday
+from .library import ANN_UNIT
 from .outputs.common import format_ts, kind_label, lang_tag, language_shares, time_range
 from .outputs.highlights import LABELS, _tr_lower, excerpt
-from .outputs.markdown import part_views
+from .outputs.markdown import para_spans, part_views
 from .quality import worst_level
 from .sections import available_sections, classify, guess_my_section, parse_section_tag
 from .slides import jpeg_size
@@ -44,7 +46,7 @@ def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], par
         "status": status, "progress": progress, "detail": detail, "error": error, "viewer_url": rec.viewer_url,
         "warnings": [{"level": w.get("level", "info"), "message": w.get("message", "")} for w in warnings],
         "warn_level": worst_level(warnings), "has_slides": has_slides,
-        "no_sound": any(w.get("code") == "no_speech" for w in warnings),
+        "no_sound": no_sound(rec, warnings),         # (also one that failed so before 2.3: only its error says it)
         "anomalies": anomalies or [],
     }
 
@@ -73,6 +75,7 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
     for r in recs:
         days[r.day_key].append(r)
     found = course_anomalies(recs, warnings, min_s=settings.min_duration_s)
+    follow = len(sections) > 1 and prefs.show_mode != "all"      # several sections publish here and you follow yours
     day_views = []
     for key, rs in days.items():
         rs.sort(key=lambda r: (r.start, bool(r.duplicate_of), r.delivery_id))
@@ -84,17 +87,30 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
                   for r in rs]
         flags = [mine_map.get(r.delivery_id) for r in countable] or [None]
         mine = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
-        done = [r for r in countable if r.status == "done"]
+        # what the day's state is about: your section's parts when you follow yours (a day two sections share was
+        # never done while the other one's part wasn't), else all of them (also another section's own day)
+        scope = [r for r in countable if mine_map.get(r.delivery_id) is not False] if follow else countable
+        scope = scope or countable
+        done = [r for r in scope if r.status == "done"]
+        # parts with no speech on Panopto (the microphone was off, or only noise or music): trying again finds the
+        # same, so a day whose other parts are transcribed is transcribed, and one with nothing else has no sound
+        # (as a full sync leaves them out: catchup.no_sound); not one being transcribed again now
+        quiet = {r.delivery_id for r in scope if r.status != "done" and not r.live and r.delivery_id not in jobs
+                 and no_sound(r, warnings.get(r.delivery_id, []))}
+        settled = bool(scope) and len(done) + len(quiet) == len(scope)
         d = rs[0].start.date()
         day_views.append({
             "day_key": key, "date": d.isoformat(), "weekday": weekday(d, short=True), "label": _day_label(d),
             "kind": rs[0].kind, "kind_label": t(kind_label(rs[0].kind)), "mine": mine,
-            "transcribed": bool(countable) and len(done) == len(countable), "any_done": bool(done),
+            "transcribed": settled and bool(done), "any_done": any(r.status == "done" for r in countable),
+            # all of it that isn't transcribed has no speech (without "transcribed": none of it has: nothing to do)
+            "no_sound": settled and bool(quiet),
             "duration_s": round(sum(r.duration_s for r in countable)), "parts": len(countable),
             "is_new": any(r.is_new for r in countable),
             "warn_level": worst_level([w for r in countable for w in warnings.get(r.delivery_id, [])]),
             "live": any(r.live for r in rs if not r.hidden),
-            "ready": any(not r.live and r.status != "done" for r in countable),     # finished parts still to transcribe
+            # finished parts still to transcribe
+            "ready": any(not r.live and r.status != "done" and r.delivery_id not in quiet for r in scope),
             "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, []))),
             "recordings": rviews,
         })
@@ -102,8 +118,11 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
     active = [r for r in recs if not r.duplicate_of and not r.hidden and not _too_short(r, settings)]
     # several sections publish here and you follow yours: count your section's lectures (badges, progress)
     own = active
-    if len(sections) > 1 and prefs.show_mode != "all":
+    if follow:
         own = [r for r in active if mine_map.get(r.delivery_id) is not False]
+    # what Home and the course page call lectures: your section's class days, as the Lectures and Weeks tabs show
+    # them (a 3-hour class is recorded in 3 parts: "26 lectures" was 7); one with no speech on Panopto is said apart
+    own_days = [d for d in day_views if d["parts"] and not (follow and d["mine"] is False)]
     return {
         "id": course.id, "code": course.code, "name": course.name,
         "display_name": prefs.alias or course.name or course.code, "instructor": course.instructor,
@@ -115,7 +134,9 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
                    "done": sum(1 for r in own if r.status == "done"),
                    "processing": sum(1 for r in own if r.status == "processing"),
                    "done_any": sum(1 for r in active if r.status == "done"),    # any section: enough for Claude
-                   "other_sections": len(active) - len(own)},
+                   "other_sections": len(active) - len(own),
+                   "days": len(own_days), "days_done": sum(1 for d in own_days if d["transcribed"]),
+                   "days_no_sound": sum(1 for d in own_days if d["no_sound"] and not d["transcribed"])},
         "days": day_views,
     }
 
@@ -149,11 +170,22 @@ def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]
 
 # an exam week's topic ("Midterm", "Ara Sınav", "Final Exam"); not "… final report" or "review for the final"
 EXAM_TOPIC = re.compile(r"\b(?:mid-?terms?|exams?|examination|vize)\b|ara sınav|final sınav|^\s*final\b|\bfinal exam")
+# what talks about an exam rather than holds one, taken out before EXAM_TOPIC looks: a week to get ready for it
+# ("Review and Preparation for the Midterm", "Midterm review", "Ara sınav öncesi konuların gözden geçirilmesi") and
+# a clinical topic ("Mental Status Exam I", "Physical examination"). "Review and Midterm Exam", "Midterm Exam and
+# Review" and "Genel tekrar ve ara sınav" stay exam weeks: a missed exam week is worse than an extra one.
+NOT_AN_EXAM = re.compile(
+    r"\b(?:review|revision|preparation|preparing|prep|recap)\b(?:\s+\w+){0,3}?\s+(?:for|before|of|to)\s+(?:the\s+)?"
+    r"(?:mid-?terms?|finals?|exams?|examinations?)(?:\s+exam(?:ination)?s?)?\b"
+    r"|\b(?:mid-?terms?|finals?|exams?)(?:\s+exams?)?\s+(?:review|revision|preparation|prep|recap)\b"
+    r"|\b(?:mental status|physical|clinical|neurological|medical|eye|oral)\s+exam(?:ination)?s?\b|\bexamination of\b"
+    r"|(?:\b(?:ara|final|vize)\s+)?s[ıi]nav\w*\s+(?:öncesi|oncesi|hazırlı\w*|hazirli\w*)|\bvize\w*\s+(?:öncesi|oncesi|hazırlı\w*)")
 
 
 def exam_topic(text: str) -> bool:
-    """Is this week's topic an exam? Turkish ("ARA SINAV") and English in capitals ("MIDTERM") too."""
-    return bool(text) and bool(EXAM_TOPIC.search(_tr_lower(text)) or EXAM_TOPIC.search(text.lower()))
+    """Is this week's topic an exam? Turkish ("ARA SINAV") and English in capitals ("MIDTERM") too; not a week that
+    only gets ready for one, or a clinical "exam" (NOT_AN_EXAM)."""
+    return bool(text) and any(EXAM_TOPIC.search(NOT_AN_EXAM.sub(" ", low)) for low in (_tr_lower(text), text.lower()))
 
 
 def material_view(m: dict[str, Any]) -> dict[str, Any]:
@@ -218,16 +250,11 @@ def classes_over(classes: list[dict[str, str]], now: dt.datetime) -> bool:
     return bool(classes) and all(c["date"] < today or (c["date"] == today and c["end"] <= hm) for c in classes)
 
 
-_NOT_A_WEEK = re.compile(r"konu|topic|unit|ünite|bölüm|chapter", re.I)
-
-
 def _own_weeks(m: dict[str, Any]) -> set[int]:
-    """The weeks a file's own name or title gives ("MATH_250_Week 8-9.pdf": 8 and 9), by week or hafta only (a
-    "Chapter 5.pdf" is the book's chapter, not the term's week)."""
-    from .chatslides import title_weeks
+    """The weeks a file's own name or title gives, as a chat's files are matched (chatslides.own_weeks)."""
+    from .chatslides import own_weeks
 
-    return {n for s in (m.get("title") or "", m.get("file_name") or "") for n in title_weeks(_NOT_A_WEEK.sub(" ", s))
-            if n <= 20}
+    return own_weeks(m)
 
 
 def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[dict[str, Any]] = (),
@@ -300,17 +327,21 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
             if ms or not item["materials"]:
                 week(x)["units"].append(item if len(ms) == len(item["materials"]) else {**item, "materials": ms})
     known_units = {u["unit_id"] for u in units}
-    stray = [m for uid, ms in mats.items() if uid not in known_units for m in ms]
+    stray = [m for uid, ms in mats.items() if uid not in known_units and uid != ANN_UNIT for m in ms]
     if stray:          # downloaded files of a week that left the plan: still on your PC, so still listed
         general.append({"id": "", "title": t("No longer in the weekly plan"), "readings": "", "materials": stray})
+    if mats.get(ANN_UNIT):        # the files attached to its announcements: a group of their own
+        general.append({"id": ANN_UNIT, "title": t("From announcements"), "readings": "", "materials": mats[ANN_UNIT]})
     for n in sorted(set(tr_topics) | set(en_weeks)):
         week(n)
     for d in cv["days"]:
         n = week_of(dt.date.fromisoformat(d["date"]), first) if first else None
         if n:
             week(n)["days"].append({k: d[k] for k in ("day_key", "date", "label", "kind_label", "parts", "transcribed",
-                                                     "any_done", "is_new", "mine", "duration_s", "live", "ready", "anomalies")})
+                                                     "any_done", "no_sound", "is_new", "mine", "duration_s", "live",
+                                                     "ready", "anomalies")})
     alerts = _label_other_sections(course_alerts(lib, course_id, recs), cv["days"])
+    alerts = {**alerts, "plan": dated_plan(alerts.get("plan") or [], first)}
     for e in alerts.get("plan") or []:              # a week an assessment was announced for, also without a unit
         if e.get("week") and first:
             week(e["week"])
@@ -325,6 +356,10 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
     anns = [{"id": a["id"], "title": a["title"], "author": a["author"], "posted_at": a["posted_at"], "body": a["body"],
              "is_new": bool(a["is_new"])} for a in lib.announcements(course_id)]
     all_mats = [m for ms in mats.values() for m in ms]
+    from .materials import week_of
+
+    asgs = [assignment_view(a, week_of(dt.date.fromisoformat(a["due"][:10]), first) if a["due"] and first else None)
+            for a in lib.assignments(course_id)]
     return {
         **{k: cv[k] for k in ("id", "code", "name", "display_name", "instructor", "term", "section", "has_panopto",
                               "counts", "my_section", "cover", "lms_progress")},
@@ -341,7 +376,30 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
                       "new": sum(m["is_new"] for m in all_mats)},
         "content_at": info.get("content_at", ""),
         "alerts": alerts,
+        "assignments": asgs,                     # IEULearn's assignments: when each is due, and whether it was sent
     }
+
+
+def assignment_view(a: dict[str, Any], week: Optional[int] = None) -> dict[str, Any]:
+    """An assignment as the pages show it: the day ("due") and the time ("time", "" when IEULearn gave only the
+    day), whether it was sent, and where it opens on IEULearn."""
+    due = a.get("due") or ""
+    return {"id": a["asg_id"], "title": a["title"], "due": due[:10], "time": due[11:16], "done": bool(a["done"]),
+            "state": a.get("state") or "", "url": a.get("url") or "", "week": week}
+
+
+def dated_plan(plan: list[dict[str, Any]], first: Optional[dt.date]) -> list[dict[str, Any]]:
+    """The assessment plan with each one an announcement gave a day for in that day's week (copies: the plan is the
+    heads-up's, kept between calls). Without week 1's date the weeks stay as announced."""
+    from .materials import week_of
+
+    out = []
+    for e in plan:
+        e = dict(e)
+        if e.get("date") and first:
+            e["week"] = week_of(dt.date.fromisoformat(e["date"]), first) or e.get("week")
+        out.append(e)
+    return out
 
 
 def _label_other_sections(alerts: dict[str, Any], days: list[dict[str, Any]]) -> dict[str, Any]:
@@ -384,14 +442,20 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
         sl = {s.index: s for s in p.slides}
         paras = []
         own = marks.get(p.rec.delivery_id, {})
-        for para in p.paragraphs:
+        # the screen timeline (screens.py): each picture's caption, "Slide 12 · 34:10–36:40 · title"
+        screens = ((store.load_screens(p.rec.delivery_id) or {}).get("screens") or {}) if p.slides else {}
+        for para, span in zip(p.paragraphs, para_spans(p)):
             s = sl.get(para.slide) if para.slide is not None else None
             w, h = jpeg_size(s.path) if s and s.path else (0, 0)
             m = own.get(round(para.start, 1))
+            scr = screens.get(str(para.slide)) or {} if s else {}
             paras.append({"t": round(para.start, 1), "e": round(para.end, 1), "ts": format_ts(para.start),
                           "text": para.text, "lang": para.lang, "tag": lang_tag(para.lang), "star": para.star,
                           "tags": para.tags, "uncertain": para.uncertain, "slide": para.slide,
                           "slide_image": Path(s.path).as_uri() if s and s.path else None, "slide_w": w, "slide_h": h,
+                          "slide_t0": round(span.t, 1) if s and span else None,
+                          "slide_range": f"{format_ts(span.t)}–{format_ts(span.end)}" if s and span else "",
+                          "slide_title": " ".join(str(scr.get("title") or "").split()),
                           "mark": {"note": m["note"]} if m else None})
             if para.star:
                 highlights.append({"part": p.index, "t": round(para.start, 1), "ts": format_ts(para.start),

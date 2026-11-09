@@ -102,6 +102,24 @@ def test_a_file_s_own_week_beats_its_unit_s_number(env, monkeypatch):
     assert cat["modes"]["upto"] == ["m7", "m8", "m9", "m10"]                         # not next week's file
 
 
+def test_a_chapter_in_a_file_s_name_is_not_a_week_in_chats_either(env, monkeypatch):
+    """The Weeks tab counted only "Week"/"Hafta" in a file's name, a chat also "Chapter 5" (the book's chapter): the
+    same file sat in week 3 on the course page and in weeks 3 and 5 in a chat. One rule now, in both."""
+    from studia import views
+
+    env.lib.upsert_courses([Course(id="p", title="p", code="MATH 240", name="Probability")])
+    env.lib.merge_units("p", [_unit("k3", 3, "Konu 3", "", [_res("c5", "Chapter 5 Conditional probability"),
+                                                             _res("p4", "Week 4 examples")])], first_sync=True)
+    monkeypatch.setattr(chatslides, "first_week_day", lambda lib, cid, units: dt.date(2026, 9, 21))
+    weeks = {f["id"]: f["weeks"] for f in chatslides.course_files(env.lib, "p", [])["files"]}
+    assert weeks == {"c5": [3], "p4": [4]}
+    for m in ({"title": "Chapter 5", "file_name": "Chapter_5.pdf"}, {"title": "Ünite 2 / Bölüm 7"},
+              {"title": "MATH_250_Week 8-9", "file_name": "x.pdf"}, {"title": "Hafta 21"}):
+        assert views._own_weeks(m) == chatslides.own_weeks(m)
+    assert chatslides.own_weeks({"title": "Chapter 5", "file_name": "Week05_Student.pdf"}) == {5}
+    assert chatslides.own_weeks({"title": "Hafta 21"}) == set()                 # past a term's weeks
+
+
 def test_a_unit_that_names_its_weeks_keeps_them_with_the_file_s_own(env, monkeypatch):
     # EEE 215: the undated unit "Hafta 6 ve 7 ..." holds files named for week 6 that were taught in weeks 6 and 7
     env.lib.upsert_courses([Course(id="e", title="e", code="EEE 215", name="Circuits")])

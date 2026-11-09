@@ -50,7 +50,7 @@ KNOWN_WORDS = 60000          # the library's own words the page gets for its fin
 META_KEY = "search_index"
 CANDIDATES = 1200            # rows looked at closely per query (the index's own ranking picks them)
 NEWEST = 400                 # ... while only a letter or two is typed: the newest rows
-KINDS = ("lecture", "file", "announcement", "week", "note", "chat")
+KINDS = ("lecture", "screen", "file", "announcement", "week", "note", "chat")
 
 # ------------------------------------------------------------------ words: folding and tokens
 _WORD = re.compile(r"[^\W\d_]+|\d+")
@@ -373,7 +373,7 @@ SCENE = frozenset(words("lecturer lecturers instructor instructors teacher teach
                         "say says said tell tells told talk talks talked mention mentions mentioned"))
 
 # how much a row's kind and field count: a title or an announcement says more than a passing mention in a lecture
-FIELD_WEIGHT = {("lecture", "body"): 1.0, ("file", "title"): 1.7, ("file", "body"): 1.2,
+FIELD_WEIGHT = {("lecture", "body"): 1.0, ("screen", "body"): 1.15, ("file", "title"): 1.7, ("file", "body"): 1.2,
                 ("announcement", "title"): 1.9, ("announcement", "body"): 1.35, ("week", "title"): 1.6,
                 ("note", "body"): 1.05, ("chat", "title"): 1.3, ("chat", "body"): .9}
 
@@ -1077,12 +1077,38 @@ class Index:
 
     def lecture_moved(self, delivery_id: str, course_id: str, start: str) -> None:
         with self.lib._lock:
-            self.lib.db.execute("UPDATE search_doc SET course=?, at=? WHERE kind='lecture' AND ref=?",
+            self.lib.db.execute("UPDATE search_doc SET course=?, at=? WHERE kind IN ('lecture', 'screen') AND ref=?",
                                 (course_id, start, delivery_id))
 
     def drop_lecture(self, delivery_id: str) -> None:
         with self.lib._lock:
             self._drop("lecture", delivery_id)
+            self._drop("screen", delivery_id)
+
+    def screens(self, delivery_id: str) -> None:
+        """A recording's screens (screens.py's timeline): each one's title and words, at the time it first came on;
+        ``extra`` holds its number and title ("12|Δ - Y transformation")."""
+        from . import store
+
+        with self.lib._lock:
+            rec = self.lib.db.execute("SELECT course_id, start FROM recordings WHERE delivery_id=?",
+                                      (delivery_id,)).fetchone()
+        doc = store.load_screens(delivery_id) or {}
+        first: dict[int, float] = {}
+        for sl in store.load_slides(delivery_id):
+            first[sl.index] = min(first.get(sl.index, sl.t), sl.t)
+        docs = []
+        for key, scr in (doc.get("screens") or {}).items():
+            try:
+                n = int(key)
+            except ValueError:
+                continue
+            title = " ".join(str(scr.get("title") or "").split())
+            text = " ".join(str(scr.get("text") or "").split())
+            if n in first and (title or text) and rec is not None:
+                docs.append(("screen", "body", delivery_id, f"{first[n]:.1f}", rec[0], rec[1] or "",
+                             " · ".join(x for x in (title, text) if x), f"{n}|{title}"))
+        self._put("screen", delivery_id, docs)
 
     def file(self, resource_id: str) -> None:
         """A course file: its title and the text of its pages."""
@@ -1215,6 +1241,7 @@ class Index:
             courses = [r[0] for r in lib.db.execute("SELECT id FROM courses")]
             chats = [r[0] for r in lib.db.execute("SELECT id FROM chats")]
         steps: list[Callable[[], None]] = [functools.partial(self.lecture, i) for i in ids]
+        steps += [functools.partial(self.screens, i) for i in ids]
         steps += [functools.partial(self.file, i) for i in mats]
         steps += [functools.partial(self.announcement, i) for i in anns]
         steps += [functools.partial(self.weeks, i) for i in courses]
@@ -1413,7 +1440,7 @@ def _days(a: str, b: str) -> float:
 # ------------------------------------------------------------------ results: what the page shows
 GROUP_LIMIT = 8              # items per group (the page asks for more of one group)
 MOMENTS = 3                  # a class day's best moments, a file's best pages shown (one each while all kinds are)
-_MORE = {"lecture": .08, "file": .06, "announcement": 0.0, "week": 0.0, "note": .04, "chat": .04}
+_MORE = {"lecture": .08, "screen": .04, "file": .06, "announcement": 0.0, "week": 0.0, "note": .04, "chat": .04}
 
 
 class Item:
@@ -1428,7 +1455,7 @@ class Item:
 
 def _group(lib: Any, hits: list[Hit], newest: bool = False) -> list[Item]:
     recs: dict[str, tuple] = {}
-    ids = list({h.ref for h in hits if h.kind == "lecture"})
+    ids = list({h.ref for h in hits if h.kind in ("lecture", "screen")})
     with lib._lock:
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
@@ -1437,7 +1464,7 @@ def _group(lib: Any, hits: list[Hit], newest: bool = False) -> list[Item]:
                 recs[r[0]] = r
     items: dict[tuple[str, str], Item] = {}
     for h in hits:
-        if h.kind == "lecture":
+        if h.kind in ("lecture", "screen"):              # (a class day: its moments, its screens)
             r = recs.get(h.ref)
             if r is None:
                 continue
@@ -1483,11 +1510,12 @@ def _context(lib: Any, items: list[Item]) -> dict[str, Any]:
     for it in items:
         keys[it.kind].append(it.key)
     ctx: dict[str, Any] = {"courses": {c.id: c for c in lib.courses(True)},
-                           "done": lib.transcribed_ids() if keys["lecture"] else set(),
+                           "done": lib.transcribed_ids() if keys["lecture"] or keys["screen"] else set(),
                            "materials": lib.get_materials(keys["file"]) if keys["file"] else {}}
     with lib._lock:
         for kind, sql in (("announcement", "SELECT id, title, author, posted_at FROM announcements"),
-                          ("chat", "SELECT id, title, updated_at FROM chats")):
+                          ("chat", "SELECT id, title, updated_at, (SELECT text FROM chat_messages m WHERE "
+                                   "m.chat_id=chats.id AND m.role='user' ORDER BY seq LIMIT 1) FROM chats")):
             ids = keys[kind]
             ctx[kind] = {r[0]: r for r in lib.db.execute(f"{sql} WHERE id IN ({','.join('?' * len(ids))})", ids)} \
                 if ids else {}
@@ -1521,6 +1549,24 @@ def _render(lib: Any, it: Item, docs: dict[int, tuple[str, str]], ctx: dict[str,
         return {**base, "day_key": it.key, "date": day, "time": f"{first.start:%H:%M}" if first else "",
                 "kind_label": t(kind_label(kind)), "parts": len(parts), "moments": moments,
                 "more": max(0, len(pool) - len(moments))}
+    if it.kind == "screen":                    # "Slide 12 · 34:10 · Δ - Y transformation": opens the lecture there
+        cid, day, kind = (it.key.split("|") + ["", "", ""])[:3]
+        recs = sorted(lib.day_recordings(it.key), key=lambda r: r.start)
+        parts = {r.delivery_id: n for n, r in enumerate([r for r in recs if r.delivery_id in ctx["done"]], start=1)}
+        first = recs[0] if recs else None
+        pool = _best_pool(bodies)
+        chosen = sorted(pool[:ctx["shown"]], key=lambda h: (parts.get(h.ref, 1), float(h.sub or 0)))
+        screens = []
+        for h in chosen:
+            text, extra = docs.get(h.id, ("", ""))
+            n, _, title = (extra or "").partition("|")
+            at = float(h.sub or 0)
+            screens.append({"delivery_id": h.ref, "t": at, "ts": format_ts(at), "part": parts.get(h.ref, 1),
+                            "slide": int(n) if n.isdigit() else 0, "title": title,
+                            "snippet": _marked(text, h.occ, 220)})
+        return {**base, "day_key": it.key, "date": day, "time": f"{first.start:%H:%M}" if first else "",
+                "kind_label": t(kind_label(kind)), "parts": len(parts), "moments": screens,
+                "more": max(0, len(pool) - len(screens))}
     if it.kind == "file":
         m = ctx["materials"].get(it.key) or {}
         title_hit = next((h for h in it.hits if h.field == "title" and h.sub == "0"), None)
@@ -1554,11 +1600,13 @@ def _render(lib: Any, it: Item, docs: dict[int, tuple[str, str]], ctx: dict[str,
                 "date": day_key.split("|")[1] if "|" in day_key else base["date"],
                 "snippet": _marked(docs.get(h.id, ("", ""))[0], h.occ)}
     # a chat
-    row = ctx["chat"].get(it.key) or ("", "", "")
+    row = ctx["chat"].get(it.key) or ("", "", "", "")
     title = title_hit and docs.get(title_hit.id)
     body = bodies[0] if bodies else None
+    q = " ".join((row[3] or "").split())        # one without a name: its first question, as the chat list shows it
     return {**base, "chat_id": it.key, "title": _marked(title[0], title_hit.occ, 300) if title else
-            {"text": row[1] or t("New chat"), "marks": []}, "date": (row[2] or base["date"])[:10],
+            {"text": row[1] or (q if len(q) <= 64 else q[:61].rstrip() + "…") or t("New chat"), "marks": []},
+            "date": (row[2] or base["date"])[:10],
             "role": docs.get(body.id, ("", ""))[1] if body else "",
             "snippet": _marked(docs.get(body.id, ("", ""))[0], body.occ) if body else None}
 

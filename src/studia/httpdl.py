@@ -18,7 +18,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -165,6 +165,7 @@ def _fetch_range(session: requests.Session, link: _Link, part: Path, start: int,
                             fh.write(chunk)
                             with lock:
                                 counter[0] += len(chunk)
+                    _on_disk(fh)              # a part of its full size is trusted when the download goes on later
             got = part.stat().st_size
             if got == want:
                 return
@@ -187,6 +188,17 @@ def _fetch_range(session: requests.Session, link: _Link, part: Path, start: int,
                 raise
             log.info("Download part retry %d (%s)", tries, exc)
             _sleep(min(20.0, 0.8 * 2 ** min(tries, 5)), cancel)
+
+
+def _on_disk(fh: Any) -> None:
+    """What was written is on the disk, not only in Windows' cache: after a power cut a file can come back with its
+    full size but zeros at its end (NTFS keeps a file's size safe, not its data), and a damaged recording or model of
+    the right size would then be taken as downloaded."""
+    try:
+        fh.flush()
+        os.fsync(fh.fileno())
+    except OSError as exc:                   # only a safeguard
+        log.debug("Could not flush %s: %s", getattr(fh, "name", "?"), exc)
 
 
 def move_into_place(src: Path, dst: Path, cancel: Optional[threading.Event] = None,
@@ -219,6 +231,7 @@ def _join(part_files: list[Path], tmp: Path, cancel: Optional[threading.Event] =
             with open(pf, "rb") as fh:
                 while buf := fh.read(4 * 1024 * 1024):
                     out.write(buf)
+            _on_disk(out)                        # before its part goes: a power cut then leaves no zeros in its place
             try:                                 # already appended: a part an antivirus still holds is only left over
                 pf.unlink()
             except OSError as exc:
@@ -236,6 +249,7 @@ def _stream_plain(session: requests.Session, url: str, tmp: Path, counter: list[
                     fh.write(chunk)
                     with lock:
                         counter[0] += len(chunk)
+            _on_disk(fh)
 
 
 def download(url: str, dest: Path, *, session: Optional[requests.Session] = None,

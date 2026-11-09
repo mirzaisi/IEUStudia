@@ -312,6 +312,109 @@ def test_a_unit_for_two_weeks_is_in_both(env):
     assert f"{root}/Week 04 - Random Variables/Course files/Hafta3-4.pdf" in names
 
 
+def test_a_file_of_a_unit_for_two_weeks_is_counted_once(env):
+    """The README said "13 course files" for a course with 10: the copies of a two-week unit's files were counted."""
+    out = build(env, weeks=[3, 4])
+    readme = read(out["path"], "MATH 240 - weeks 3-4 - 8 Oct 2026/README.md")
+    assert out["files"] == 2 and "and 2 course files." in readme              # Hafta3-4.pdf and the formula sheet
+    assert readme.count("· 1 course file") == 2                                 # each week holds its copy
+    every = build(env, course_id="", weeks=[3, 4])
+    top = read(every["path"], "All courses - weeks 3-4 - 8 Oct 2026/README.md")
+    assert every["files"] == 2 and "- MATH 240/: MATH 240 · Probability for Engineers · 1 lecture · 2 course files" in top
+
+
+def test_a_recording_with_no_speech_is_not_called_not_transcribed_yet(env):
+    """Panopto's recording of 30 Sep had no sound: the README told ChatGPT it was "not transcribed in IEUStudia yet"
+    and the dialog counted it, though there is nothing to transcribe."""
+    env.lib.set_status("d2", "failed", "No speech was found (only noise or music).")
+    env.lib.set_status("d3b", "failed", "")
+    env.lib.set_warnings("d3b", [{"code": "no_speech", "level": "warning", "message": "No sound on Panopto."}])
+    out = build(env)
+    assert out["untranscribed"] == 0
+    week2 = read(out["path"], f"{ROOT}/Week 02 - Counting/Week overview.md")
+    assert "- Wed 30 Sep · Lecture · 50 min: Panopto's recording of it has no speech (no sound, or only noise or " \
+           "music), so there is no transcript; use the week's course files for it." in week2
+    week3 = read(out["path"], f"{ROOT}/Week 03 - Bayes/Week overview.md")
+    assert "Part 2 has no speech on Panopto's recording, so no transcript." in week3 and "Not transcribed yet" not in week3
+    readme = read(out["path"], f"{ROOT}/README.md")
+    assert "not transcribed" not in readme
+    assert "- Week 2, Wed 30 Sep (Lecture): Panopto's recording has no speech (no sound, or only noise or music), so " \
+           "there is nothing to transcribe." in readme
+    assert "- Week 3, Wed 7 Oct (Lecture): part 2 has no speech on Panopto's recording, so it has no transcript." in readme
+    text = read(out["path"], f"{ROOT}/Week 03 - Bayes/Lectures/2026-10-07 Wed - Lecture/Transcript.md")
+    assert "Part 2 has no speech on Panopto's recording, so no transcript (no sound, or only noise or music)." in text
+    o = ce.options(env.lib, env.settings, env.out, "c", today=TODAY)
+    assert all(w["untranscribed"] == 0 for w in o["weeks"])                     # the dialog says nothing is left
+
+
+def test_the_weeks_topic_on_ieulearn_is_labelled_by_where_it_comes_from(env):
+    """"in Turkish:" labelled English text, and the same topic again with a full stop added."""
+    env.lib.set_course_info("c", overview={"weeks": [{"no": 1, "topic": "Sample spaces."}, {"no": 2, "topic": "Sayma"},
+                                                     {"no": 3, "topic": "Random Variables"}]})
+    out = build(env)
+    ov = read(out["path"], f"{ROOT}/Course overview.md")
+    assert "Week 1 (Mon 21 Sep to Sun 27 Sep 2026) · Sample Spaces\n" in ov             # the same words: once
+    assert "· Counting · on IEULearn: Sayma" in ov and "· Bayes · on IEULearn: Random Variables" in ov
+    assert "in Turkish" not in ov
+    week2 = read(out["path"], f"{ROOT}/Week 02 - Counting/Week overview.md")
+    assert "Topic on IEULearn: Sayma" in week2 and "Topic in Turkish" not in week2
+    assert "Topic on IEULearn" not in read(out["path"], f"{ROOT}/Week 01 - Sample Spaces/Week overview.md")
+
+
+STUDENTS = "\n".join(f"{20210600000 + 37 * n} {60 + n % 40} {55 + n % 45} 22.09.2026" for n in range(30))
+
+
+def test_a_list_of_students_is_told_by_what_it_holds():
+    assert ce.lists_students([STUDENTS])
+    assert not ce.lists_students(["\n".join(f"{20210600000 + n} 85" for n in range(19))])         # too few
+    assert not ce.lists_students([" ".join(format(n, "08b") for n in range(60, 160))])         # bytes: 10110010
+    assert not ce.lists_students(["\n".join(f"x = 1,{41421356 + 7 * n} and 2.{71828182 + n}" for n in range(40))])
+    assert not ce.lists_students(["Ders Notları: grades, results and the lab report template (Hafta 3)."])
+    mixed = [f"{10_000_000 + 9 * n}" for n in range(12)] + [f"{100_000_000 + 9 * n}" for n in range(12)]
+    assert not ce.lists_students([" ".join(mixed)])                                               # not of one length
+
+
+def test_a_course_file_that_lists_students_stays_out_of_the_zip(tmp_path):
+    """EEE 215's "Lab Grades 22.10.26.pdf" (classmates' student numbers and marks) went into the zip the README says
+    to drag into ChatGPT."""
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="e", title="2026-1 EEE 215 X 1", code="EEE 215", name="Circuits", term="T")])
+    lib.merge_units("e", [
+        Unit("u1", 0, "Hafta 1", dt.date(2026, 9, 21), dt.date(2026, 9, 27), "", [
+            Resource("r1", "Week 1", "Week01.pdf", "pdf", "pdf", "u1", "/d/r1"),
+            Resource("g1", "Lab Grades", "Lab Grades 22.10.26.pdf", "pdf", "pdf", "u2", "/d/g1")]),
+        Unit("ug", 1, "Lab Grades Weeks 1-3", None, None, "", [
+            Resource("g2", "Groups", "Groups.xlsx", "xlsx", "xlsx", "u3", "/d/g2"),
+            Resource("n1", "Ders Notları", "Ders Notları.pdf", "pdf", "pdf", "u4", "/d/n1")])], first_sync=True)
+    files = tmp_path / "files"
+    for rid, name in (("r1", "Week01.pdf"), ("g1", "Lab Grades 22.10.26.pdf"), ("n1", "Ders Notları.pdf")):
+        lib.set_material_file(rid, _file(files / name), 13, "u")
+    lib.set_material_text("r1", ["Ohm's law, KVL and KCL."])
+    lib.set_material_text("g1", [STUDENTS])
+    lib.set_material_text("n1", ["Notlar: Thevenin, Norton; sonuçlar ve puanlar (results)."])
+    xlsx = files / "Groups.xlsx"
+    with zipfile.ZipFile(xlsx, "w") as z:                                        # numbers as Excel keeps them
+        z.writestr("xl/sharedStrings.xml", '<sst><si><t>Student no</t></si><si><t>Group</t></si></sst>')
+        z.writestr("xl/worksheets/sheet1.xml", "<worksheet><sheetData>" + "".join(
+            f'<row><c><v>{2.0210600000e10 + 41 * n:.10E}</v></c><c t="s"><v>1</v></c></row>' for n in range(25))
+            + "</sheetData></worksheet>")
+    lib.set_material_file("g2", str(xlsx), xlsx.stat().st_size, "u")
+    out = ce.build(lib, Settings(), tmp_path / "out", "e", ce.Choice(), today=TODAY)
+    root = "EEE 215 - everything up to 8 Oct 2026"
+    names = set(entries(out["path"]))
+    assert f"{root}/Week 01 - Hafta 1/Course files/Week01.pdf" in names
+    assert f"{root}/General course files/Lab Grades Weeks 1-3/Ders Notları.pdf" in names       # study material stays
+    assert not any("Grades 22" in n or "Groups" in n for n in names)
+    assert out["students"] == 2 and out["files"] == 2
+    readme = read(out["path"], f"{root}/README.md")
+    assert "- Week 1: Lab Grades 22.10.26.pdf was left out: it lists students' numbers (grades or groups), and your " \
+           "classmates' details shouldn't be uploaded. Open it on IEULearn if you need it." in readme
+    assert "- The whole course: Groups.xlsx was left out" in readme
+    week1 = read(out["path"], f"{root}/Week 01 - Hafta 1/Week overview.md")
+    assert "- Lab Grades 22.10.26.pdf: left out of this zip, as it lists students' numbers (a class's grades or " \
+           "groups)." in week1
+
+
 def test_two_files_of_one_name_in_a_folder_are_kept_apart(env):
     out = build(env, weeks=[2])
     names = [n.rsplit("/", 1)[1] for n in entries(out["path"]) if "/Course files/" in n]

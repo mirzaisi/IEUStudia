@@ -37,11 +37,16 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
     with av.open(str(path), mode="r") as container:
         streams = [s for s in container.streams if s.type == "audio"]
         if not streams:
+            if not any(s.type == "video" for s in container.streams):
+                # not even a picture: its track list is damaged (an .m4a whose end never reached the disk), it isn't
+                # a recording without sound
+                raise ValueError(t("The audio could not be decoded (the file seems to be damaged)."))
             raise NoAudioTrack(t("This file has no audio track."))
         stream = streams[0]
         stream.thread_type = "AUTO"
         seconds = (float(stream.duration * stream.time_base) if stream.duration and stream.time_base else
                    float(container.duration) / av.time_base if container.duration else 0.0)
+        declared = seconds
         if max_s:
             seconds = min(seconds, max_s) if seconds else max_s
         limit = int(max_s * SAMPLE_RATE) if max_s else 0
@@ -95,7 +100,9 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
     if skipped:
         log.warning("Skipped %d of %d corrupt audio packets in %s", skipped, packets, Path(path).name)
     if not n:
-        if skipped:
+        # nothing decoded from a track whose header gives it a length: the file is damaged (an .m4a whose index at
+        # the end is cut, say), not a recording without sound
+        if skipped or declared >= 1.0:
             raise ValueError(t("The audio could not be decoded (the file seems to be damaged)."))
         return np.zeros(0, dtype=np.float32)
     out.resize(n, refcheck=False)                    # gives back the unused end (no copy)

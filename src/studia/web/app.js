@@ -15,6 +15,8 @@
   const leftText = t.left;
   const jobDetail = (j) => [j.detail, leftText(etaNow(j))].filter(Boolean).join(" · ");   // "Transcribing passage 40 of 600 · about 25 min left" (counting down)
   const rel = t.ago;
+  // "in 1 request" · "in 3 requests" (Turkish "3 istekte"): a second count in a sentence whose plural follows another
+  const inRequests = (n) => t.n(n, "in {n} request", "in {n} requests", { n: t.num(n) });
   const initials = (n) => t.upper((n || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join(""));   // in Turkish i → İ
 
   // ------------------------------------------------------------------ state
@@ -24,7 +26,7 @@
     view: { name: "new" }, selected: new Set(), expanded: new Set(),
     sync: { running: false, message: "", error: "" }, engine: null,
     day: null, dayFind: "", ai: { running: false, text: "", dayKey: null },
-    lib: null, search: { q: "", res: null, course: "", kind: "", busy: false, items: [] }, signin: { busy: false, error: "" }, exporting: null,
+    lib: null, search: { q: "", res: null, course: "", kind: "", busy: false, items: [] }, signin: { busy: false, error: "" },
     chat: { list: null, id: null, data: null, draft: null, input: "", sending: false, scroll: null }, limits: {},
     update: {},      // a new version: updates.status(), plus state/done/total/error while it downloads
   };
@@ -107,7 +109,6 @@
       case "toast": toast(e.message, e.level); break;
       case "open": openTarget(e.target); break;
       case "update": onUpdate(e); break;
-      case "export": onExport(e); break;
       case "ai": onAi(e); break;
       case "chat": onChat(e); break;
       default: if (Studia.onEvents[e.type]) Studia.onEvents[e.type](e);
@@ -207,19 +208,8 @@
         : t("Transcribed {title} (see \"Local files\" in your IEUStudia folder)", { title: e.title }), e.stage !== "done" ? "error" : e.unwritten ? "warning" : "success");
     }
   }
-  function onExport(e) {
-    if (e.phase === "start") { S.exporting = e.day_key; toast(t("Making the PDF, with the slides next to the transcript…"), "info"); }
-    else if (e.phase === "done") {
-      S.exporting = null;
-      if (e.files && !e.files.pdf) toast(t("The PDF couldn't be made: the pack has the transcript and slides without it. It's shown in Explorer."), "warning");
-      else toast(t("PDF ready — shown in Explorer. You can also upload it to ChatGPT or Claude."), "success");
-      if (S.view.name === "day") openDay(S.view.dayKey, true);
-    }
-    else { S.exporting = null; toast(e.message || t("Export failed"), "error"); }
-    if (S.view.name === "day") renderDayActions();
-  }
-  function onAi(e) {   // study notes being written ("start" may be coalesced away)
-    if (e.phase === "start" || e.phase === "progress") S.ai = { running: true, text: e.text || "", dayKey: e.day_key, kind: e.kind || "notes", label: e.label || t("Study notes") };
+  function onAi(e) {   // study notes being written ("start" may be coalesced away); wait: what the AI does now (waits.js)
+    if (e.phase === "start" || e.phase === "progress") S.ai = { running: true, text: e.text || "", dayKey: e.day_key, kind: e.kind || "notes", label: e.label || t("Study notes"), wait: e.wait || null };
     else if (e.phase === "done") {
       S.ai = { running: false, text: "", dayKey: e.day_key, kind: e.kind, label: e.label };
       toast(t("{label} saved next to the transcript.", { label: e.label || t("Study notes") }), "success");
@@ -235,6 +225,7 @@
       let m = c.messages.find((x) => x.seq === e.seq);
       if (!m) { m = { seq: e.seq, role: "assistant", text: "", status: "streaming", usage: {} }; c.messages.push(m); c.messages.sort((a, b) => a.seq - b.seq); }
       m.text = e.text || ""; m.status = e.state;
+      m.wait = e.state === "streaming" ? e.wait || m.wait || null : null;      // what the AI does now (waits.js)
       if (e.usage) m.usage = e.usage;
       if (e.error) m.usage = { ...(m.usage || {}), error: e.error };
       c.running = e.state === "streaming";
@@ -368,7 +359,7 @@
     const syncLabel = waiting ? `${I("wifi-off", "sm")} ${step.why === "internet" ? t("IEULearn doesn't answer…") : t("Waiting for the internet…")}`
       : S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
       : S.content && S.content.message ? `${SPIN()} ${esc(S.content.message)}`
-      : S.sync.error || S.sync.changed ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
+      : S.sync.error || S.sync.changed ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed: retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
     const problems = [S.sync.error, S.sync.changed].filter(Boolean).join(" ");
     const stopWaiting = !waiting ? "" : S.stopping ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Stopping…")}</button>`
       : `<button class="btn ghost sm" data-act="sync-stop" title="${esc(step.message || "")}">${I("stop", "sm")} ${t("Stop waiting")}</button>`;
@@ -377,7 +368,7 @@
     const bgOff = app.onboarded && app.tray === false && S.view.name !== "settings"
       ? `<button class="btn ghost sm bg-off" data-act="bg-settings" aria-label="${t("Background checks off")}" title="${t("You get no notifications about new lectures, announcements or coming quizzes. Click to turn them on again in Settings.")}">${I("info", "sm")} <span class="lbl">${t("Background checks off")}</span></button>` : "";
     top.innerHTML = `<div class="crumbs">${crumbs()}</div>
-      ${Studia.downloadChip ? Studia.downloadChip() : ""}
+      ${Studia.downloadChip ? Studia.downloadChip() : ""}${Studia.waitChip ? Studia.waitChip() : ""}
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
       ${bgOff}
       <button class="btn ghost sm ${problems && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running || waiting ? "disabled" : ""} title="${waiting ? esc(step.message || "") : problems && !S.sync.running ? t.html("{error} Click to try again.", { error: problems }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>${stopWaiting}
@@ -404,9 +395,17 @@
   document.addEventListener("visibilitychange", refreshAppConfig);
 
   // ------------------------------------------------------------------ views
+  // a box being typed in when the page is drawn again in the background (a lecture's stage, a file that came in, a
+  // plan's step, a service's state): it keeps the focus and the caret (the next keys went nowhere)
+  const TYPING = "input[type=search],input[type=text],input:not([type]),textarea";
   function renderView() {
     const el = $("#view"); if (!el) return;
     const v = S.view;
+    let again = "", caret = null;
+    try {
+      const a = document.activeElement;
+      if (a && el.contains(a) && a.matches(TYPING)) { again = focusKey(a); caret = [a.selectionStart, a.selectionEnd]; }
+    } catch (e) { /* nothing focused that keeps a caret */ }
     if (Studia.views[v.name]) el.innerHTML = Studia.views[v.name](v);   // home, course pages, plans (course.js …)
     else if (v.name === "course") el.innerHTML = courseHTML(findCourse(v.courseId));
     else if (v.name === "new") el.innerHTML = newHTML();
@@ -417,6 +416,11 @@
     el.classList.toggle("chat-mode", v.name === "chat");
     el.classList.toggle("find-on", v.name === "day" && !!dayFinder());       // finding in a transcript: its text only
     syncChecks();
+    const box = again ? el.querySelector(again) : null;      // (before the hooks: one that moves the focus on purpose wins)
+    if (box && box !== document.activeElement) {
+      box.focus({ preventScroll: true });
+      try { box.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not every kind of box has a caret */ }
+    }
     if (Studia.after[v.name]) Studia.after[v.name](v);
     if (Studia.views[v.name] && Studia.renderMath) Studia.renderMath(el);   // formulas in plans, review sheets, study packs, course pages
   }
@@ -451,7 +455,7 @@
       case "transcribing": return `<span class="pill active">${I("wave")}${prog ? t("Transcribing {pct}", { pct: pctText(prog) }) : t("Transcribing")}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
       case "done": return `<span class="pill done">${I("check")}${t("Transcribed")}</span>`;
       case "failed":
-        if (noiseOnly(r)) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No speech found")}</span><span class="detail" title="${esc(r.error || "")}">${t("only noise or music — check it on Panopto")}</span>`;
+        if (noiseOnly(r)) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No speech found")}</span><span class="detail" title="${esc(r.error || "")}">${t("only noise or music: check it on Panopto")}</span>`;
         if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No sound on Panopto")}</span><span class="detail" title="${esc(r.error || "")}">${t("microphone was off")}</span>`;
         return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}${t("Failed")}</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
       case "processing": return `<span class="pill processing" title="${t("Panopto is still preparing this recording. Try again later.")}">${I("hourglass")}${t("Not ready on Panopto yet")}</span>`;
@@ -508,12 +512,17 @@
   }
 
   // ---- day cards
+  // a class day whose recordings have no speech on Panopto: settled, nothing to transcribe (views.py "no_sound")
+  const silentTip = (n = 1) => t.n(n, "Panopto's recording of this lecture has no speech in it (the microphone was probably off), so there is nothing to transcribe.",
+    "Panopto's recordings of these lectures have no speech in them (the microphone was probably off), so there is nothing to transcribe.");
+  const silentPill = () => `<span class="pill processing" title="${esc(silentTip())}">${I("ban")}${t("No speech found")}</span>`;
   function dayCardHTML(d, c) {
     const dt = new Date(d.date + "T00:00:00");
     const selIds = d.recordings.filter(selectable).map((r) => r.id);
     const todo = d.recordings.filter((r) => selectable(r) && !["done", "processing"].includes(r.status) && !r.hidden && !r.no_sound);
     const others = d.recordings.filter((r) => r.mine === false && c.show_mode === "mine");
     const status = d.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
+      : d.no_sound ? silentPill()
       : d.is_new ? `<span class="pill new">${I("sparkle")}${t("New")}</span>` : d.any_done ? `<span class="pill">${t("Partly transcribed")}</span>` : "";
     const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="${t("See the notes on the transcript page")}">${I("alert", "sm")}</span>` : "";
     return `<div class="card day" data-day="${esc(d.day_key)}">
@@ -561,7 +570,7 @@
   function heroHTML(c) {
     const code = esc(c.code).replace(" ", "<br>");
     const ai = S.system.ai || {};
-    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${ai.available ? "" : "disabled"} title="${ai.available ? t.html("Chat with {ai} about this course's lectures", { ai: aiName() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>` : "";
+    const ask = (c.counts.done_any ?? c.counts.done) ? `<button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${aiBtn(ai.available)} title="${ai.available ? t.html("Chat with {ai} about this course's lectures", { ai: aiName() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>` : "";
     return `<div class="card hero"><div class="badge">${code}</div><div class="grow">
       <h1>${esc(c.display_name)}</h1>
       <div class="meta">${c.instructor ? `<span>${I("user", "sm")}${esc(c.instructor)}</span>` : ""}${c.term ? `<span>${I("calendar", "sm")}${esc(c.term)}</span>` : ""}${(c.my_section || c.section) ? `<span>${I("users", "sm")}${t.html("Section {tag}", { tag: c.available_sections.length && c.my_section ? c.my_section : c.section })}</span>` : ""}</div>
@@ -583,6 +592,7 @@
   function newDayStateHTML(d) {
     const busy = d.recordings.find((r) => ["queued", "downloading", "transcribing"].includes(r.status));
     return busy ? statusHTML(busy) : d.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
+      : d.no_sound ? silentPill()
       : d.any_done ? `<span class="pill">${t("Partly transcribed")}</span>` : `<span class="pill new">${I("sparkle")}${t("New")}</span>`;
   }
   function newDayRowHTML(d, c) {   // Home: one row per class day
@@ -657,6 +667,7 @@
       saveChatScroll();
       S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view, scroll: $("#view").scrollTop } }; S.day = null; S.dayFind = (to && to.find) || "";
       S.dayFindSome = !!(to && to.some);         // (a result with some of the words: the passages with some of them)
+      if (S.dayFind) S.screensOnly = false;      // the words are shown in the passages, as finding does (refreshFind)
       renderTop(); renderSidebar(); $("#view").classList.remove("chat-mode"); $("#view").innerHTML = `<div class="view-inner">${skeleton()}</div>`;
     }
     const res = await call("get_day", dayKey);
@@ -690,7 +701,7 @@
           ${t("English {pct}", { pct: pctText(en) })}${tr ? ` · <span style="color:var(--teal)">${t("Turkish {pct}", { pct: t.pct(Math.max(1, Math.round(tr * 100)) / 100) })}</span>` : ""}` : ""}
           · ${t.n(d.parts.length, "{n} part", "{n} parts")}</div></div>
         <div class="find-box"><input class="input find" type="search" placeholder="${t("Find in transcript  (Ctrl+F)")}" data-act="find" value="${esc(S.dayFind)}" aria-label="${t("Find in transcript")}" autocomplete="off" spellcheck="false">
-          <span class="find-count" id="find-count" aria-live="polite">${findCountHTML()}</span></div></div>
+          <span class="find-count" id="find-count" aria-live="polite">${findCountHTML()}</span>${screensToggleHTML(d)}</div></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
     if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? t("Notes") : t("Transcript quality")}</b><ul>${warns.map((w) => `<li>${t("Part {n}", { n: w.part })}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
     const odd = new Map();          // each note once, with the parts it is about
@@ -702,20 +713,84 @@
     h += `<div id="hl-slot">${highlightsHTML()}</div>`;
     for (const p of d.parts) {
       h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
-        <span style="flex:1"></span><button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I("play", "sm")} ${t("Watch")}</button></div>`;
+        <span style="flex:1"></span>${screensAgainHTML(d, p)}${d.parts.length > 1 && Studia.player && Studia.player.partBtn ? Studia.player.partBtn(p) : ""}<button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I(Studia.player && Studia.player.partBtn ? "external" : "play", "sm")} ${t("Watch")}</button></div>`;
       if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : p.status === "live" ? t("Being recorded. It can be transcribed once Panopto has finished it.") : t("Not transcribed yet.")}</div>`; continue; }
+      if (screensOnly(d)) { h += screensOnlyHTML(p); continue; }
       let slide = null;
       for (const para of p.paragraphs) {
         if (para.slide_image && para.slide !== slide) {
           slide = para.slide;
-          const size = para.slide_w ? ` width="${+para.slide_w}" height="${+para.slide_h}"` : "";   // space reserved before it loads
-          h += `<div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}" tabindex="0" role="button" title="${t("Show it larger")}"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="${t("Slide {n}", { n: para.slide })}"><span class="cap">${t("Slide {n}", { n: para.slide })}</span></div>`;
+          h += slideHTML(p, para);
         }
         h += paraHTML(para, p);
       }
     }
     return h + dayNavHTML() + `<div style="height:45vh"></div></div>`;   // room to centre the last paragraphs on a jump
   }
+  // ---- the screens (screens.py's timeline): each picture with its caption, "Slide 12 · 34:10–36:40 · title"
+  function slideHTML(p, para) {
+    const size = para.slide_w ? ` width="${+para.slide_w}" height="${+para.slide_h}"` : "";   // space reserved before it loads
+    const cap = [t("Slide {n}", { n: para.slide }), para.slide_range, para.slide_title].filter(Boolean).join(" · ");
+    const at = para.slide_t0 != null ? para.slide_t0 : para.t;
+    const play = Studia.player && Studia.player.open ? `<button class="btn ghost sm" data-act="scr-play" data-part="${p.index}" data-t="${at}">${I("play", "sm")} ${t("Play from here")}</button>` : "";
+    return `<figure class="slide-fig"><div class="slide" data-act="zoom" data-src="${esc(para.slide_image)}" tabindex="0" role="button" title="${t("Show it larger")}"><img loading="lazy" src="${esc(para.slide_image)}"${size} alt="${esc(cap)}"></div>
+      <figcaption class="slide-cap"><span class="ttl">${esc(cap)}</span>${play}<button class="btn ghost sm" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${at}">${I("external", "sm")} ${t("Open in Panopto at this moment")}</button></figcaption></figure>`;
+  }
+  // the Screens filter: only the screens, each with what was said while it was on (a click reads it in the transcript)
+  const screensOnly = (d) => !!S.screensOnly && d.parts.some((p) => p.slides);
+  function screensOnlyHTML(p) {
+    const groups = [];
+    for (const para of p.paragraphs) {
+      const cur = groups[groups.length - 1];
+      if (para.slide_image && (!cur || para.slide !== cur.para.slide)) groups.push({ para, said: [para] });
+      else if (cur) cur.said.push(para);
+    }
+    if (!groups.length) return `<div class="empty" style="padding:14px 20px">${t("No screens were captured for this part.")}</div>`;
+    return groups.map((g) => slideHTML(p, g.para) + `<button class="scr-said" data-act="scr-read" data-part="${p.index}" data-t="${g.said[0].t}" title="${t("Read it in the transcript")}">
+      <span class="ts">${esc(g.said[0].ts)}</span><span class="txt">${esc(g.said.map((x) => x.text).join(" "))}</span></button>`).join("");
+  }
+  function screensToggleHTML(d) {
+    if (!d.parts.some((p) => p.slides)) return "";
+    const on = screensOnly(d);
+    return `<button class="btn ${on ? "primary" : "ghost"} sm scr-only" data-act="scr-only" aria-pressed="${on}" title="${t("Show only the screens, each with what was said while it was on")}">${I("monitor", "sm")} ${t("Screens")}</button>`;
+  }
+  // ---- capturing a lecture's screens again (screens.py's ScreenWorker, in the background): asked from its first part
+  function screensAgainHTML(d, p) {
+    if (p.index !== 1 || !d.parts.some((x) => x.status === "done" && !String(x.id).startsWith("local-"))) return "";
+    const st = d.screens_again || {}, ids = d.parts.map((x) => x.id);
+    if (ids.includes(st.current)) return `<span class="pill active">${SPIN()} ${t("Capturing the screens…")}</span>`;
+    if ((st.waiting || []).some((x) => ids.includes(x))) return `<span class="pill">${I("clock", "sm")} ${t("Waiting to capture the screens")}</span>`;
+    return `<button class="btn ghost sm" data-act="scr-again" title="${t("Capture this lecture's slides and board again from Panopto")}">${I("monitor", "sm")} ${t("Capture the screens again")}</button>`;
+  }
+  function screensAgainDialog() {
+    const d = S.day; if (!d) return;
+    const c = findCourse(d.course.id), n = c ? c.days.filter((x) => x.any_done).length : 0;
+    modal(`<h2>${I("monitor")} ${t("Capture the screens again?")}</h2>
+      <p class="lead">${t("IEUStudia downloads the lecture's screen recording from Panopto again, only the frames it needs (about a third of it, usually 25 to 95 MB a lecture), and finds its slides and board afresh. This newer capture misses fewer slides, mostly where a slide filled only part of the screen.")}</p>
+      <div class="callout info">${I("info")}<div>${t("It runs in the background, a minute or two a lecture, and the transcript shows the new pictures when it's done. Your transcript, notes and marks stay as they are.")}</div></div>
+      <div class="actions"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
+        ${n > 1 ? `<button class="btn" data-act="scr-again-go" data-all="1">${t.n(n, "All {n} lecture of {course}", "All {n} lectures of {course}", { course: d.course.code || d.course.name })}</button>` : ""}
+        <button class="btn primary" data-act="scr-again-go" autofocus>${t("This lecture")}</button></div>`);
+  }
+  async function screensAgainGo(all) {
+    const d = S.day; if (!d) return;
+    closeModal();
+    const r = await call("screens_again", d.day_key, !!all);
+    if (!r.ok) { toast(r.error, "error"); return; }
+    if (S.day && S.day.day_key === d.day_key) { S.day.screens_again = { current: r.current, waiting: r.waiting }; renderView(); }
+    toast(r.added ? t.n(r.added, "Capturing the screens of {n} lecture again in the background.", "Capturing the screens of {n} lectures again in the background.")
+      : t("Those screens are being captured already."), "info");
+  }
+  Studia.onEvents.screens = (e) => {      // {current, waiting} and, when one is done: updated / done / failed
+    if (e.failed && e.error) toast(t("The screens couldn't be captured again: {error}", { error: e.error.replace(/[.\s]+$/, "") }), "warning");
+    const d = S.day;
+    if (S.view.name !== "day" || !d) return;
+    const ids = d.parts.map((p) => p.id), mine = (st) => JSON.stringify([ids.includes(st.current), (st.waiting || []).some((x) => ids.includes(x))]);
+    const was = mine(d.screens_again || {});
+    d.screens_again = { current: e.current, waiting: e.waiting || [] };
+    if (ids.includes(e.updated) || ids.includes(e.done)) openDay(S.view.dayKey, true);   // its new pictures
+    else if (mine(d.screens_again) !== was) renderView();
+  };
   function highlightsHTML() {   // what the lecturer stressed; while finding, only those with the words (marked)
     const d = S.day, m = dayFinder();
     const shown = (d.highlights || []).map((x) => [x, m && m.match(x.text)]).filter(([, hit]) => !m || findShows(hit));
@@ -764,7 +839,7 @@
     const text = hit && hit.marks.length ? Match.html(para.text, hit.marks) : esc(para.text);
     const hidden = !!m && !findShows(hit);
     const marks = [para.tag ? `<span class="pill tr">${esc(para.tag)}</span>` : "", para.star ? `<span class="pill processing" title="${esc((para.tags || []).join(", "))}">${I("star")}</span>` : "",
-      para.uncertain ? `<span class="pill" title="${t("Unclear audio — check the recording")}">${I("alert")}${t("unclear")}</span>` : ""].join("");
+      para.uncertain ? `<span class="pill" title="${t("Unclear audio: check the recording")}">${I("alert")}${t("unclear")}</span>` : ""].join("");
     const mk = para.mark;
     return `<div class="para ${para.tag ? "tr" : ""} ${para.star ? "star" : ""} ${para.uncertain ? "uncertain" : ""} ${mk ? "marked" : ""}" data-part="${p.index}" data-t="${para.t}" data-e="${para.e ?? para.t}" ${hidden ? 'style="display:none"' : ""}>
       <span class="ts-col"><span class="ts" data-act="ts" data-url="${esc(p.viewer_url)}" data-t="${para.t}" tabindex="0" role="button" title="${t("Open in Panopto at this moment")}">${esc(para.ts)}</span>
@@ -777,10 +852,10 @@
     const ai = S.system.ai || {};
     const hasText = d.parts.some((p) => p.paragraphs.length);
     return `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>
-      <button class="btn sm" data-act="export" ${hasText && S.exporting !== d.day_key ? "" : "disabled"} title="${t("PDF with slides next to the transcript + ZIP, for ChatGPT / Claude")}">
-        ${S.exporting === d.day_key ? SPIN() : I("download", "sm")} ${t("Save as PDF")}</button>
-      <button class="btn grad sm" data-act="ask-day" ${hasText && ai.available ? "" : "disabled"} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
-      <button class="btn sm" data-act="claude" ${hasText && ai.available && !S.ai.running ? "" : "disabled"} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
+      ${Studia.exportBtn ? Studia.exportBtn("day", d.day_key, false, !hasText) : ""}
+      ${Studia.player && Studia.player.btn ? Studia.player.btn(!d.parts.length) : ""}
+      <button class="btn grad sm" data-act="ask-day" ${aiBtn(hasText && ai.available)} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
+      <button class="btn sm" data-act="claude" ${aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
       <span class="spacer"></span>
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
@@ -795,11 +870,13 @@
     if (!shown) return "";
     const kinds = !writing && notes.length > 1 ? `<span class="seg sm">${notes.map((n) => `<button class="${n.kind === shown.kind ? "on" : ""}" data-act="notes-kind" data-val="${n.kind}">${esc(n.label)}</button>`).join("")}</span>` : "";
     const cards = !writing && shown.kind === "flashcards" ? (shown.cards || []).length : 0;
-    return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || t("Study notes"))} ${writing ? `<span class="pill active">${SPIN()} ${t.html("{ai} is writing…", { ai: aiName() })}</span>
+    const step = writing && S.ai.wait && Studia.waitShort ? Studia.waitShort(S.ai.wait) : "";     // (waits.js)
+    return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || t("Study notes"))} ${writing ? `<span class="pill active">${SPIN()} ${step ? esc(step) : t.html("{ai} is writing…", { ai: aiName() })}</span>
       <button class="btn ghost sm" data-act="ai-cancel">${t("Stop")}</button>` : `<span class="pill done">${I("check")}${t("Saved")}</span>${kinds}
       ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="${t("One card at a time: think of the answer, then check it")}">${I("list-checks", "sm")} ${t("Practise {n} cards", { n: cards })}</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} ${t("Open file")}</button>`}</h3>
-      <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true, streaming: writing }) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
+      ${writing && shown.md && S.ai.wait && Studia.waitLine ? `<div class="aw-slot">${Studia.waitLine(S.ai.wait, { bare: true })}</div>` : ""}
+      <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true, streaming: writing, base: (d.files || {})["notes:" + shown.kind] }) : writing && S.ai.wait && Studia.waitHTML ? Studia.waitHTML(S.ai.wait) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
   }
   function renderNotes() { const el = $("#notes-slot"); if (el) el.innerHTML = notesHTML(); renderDayActions(); }
   function marksHTML() {   // the passages you marked, in the lecture's order
@@ -978,6 +1055,15 @@
       }
       if (lists.length && /^\s{2,}\S/.test(raw)) { out += `<p class="li-p">${inline(line.trim())}</p>`; i++; continue; }
       if (lists.length) closeLists();
+      if (opts.base && (m = line.match(/^\s*!\[([^\]\n]*)\]\(\s*<?([^)\n>]+?)>?\s*\)\s*$/))) {   // a lecture slide the notes show
+        flushPara();                     // (outputs/figures.py): only a picture on this PC, linked from the notes' file
+        let url = "";
+        const slide = m[2].match(/^Part\s*(\d+)\s*,\s*slide\s*(\d+)$/i);   // still being written: its caption for now
+        try { if (!slide && /\.(jpe?g|png)$/i.test(m[2]) && !/^[a-z][\w+.-]*:|^[\\/]{2}|\s/i.test(m[2])) url = new URL(m[2], "file:///" + opts.base.replace(/\\/g, "/").replace(/[#?]/g, encodeURIComponent)).href; } catch (e) { url = ""; }
+        const cap = m[1].match(/^(.*?)\s*(\(Part \d+, slide \d+\))?$/i), src = slide ? `(Part ${slide[1]}, slide ${slide[2]})` : cap[2];
+        out += url || slide ? `<figure class="md-fig">${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : ""}<figcaption>${inline(cap[1])}${src ? ` <span class="dim">${esc(src)}</span>` : ""}</figcaption></figure>` : "";
+        i++; continue;
+      }
       para.push(line.trim()); i++;
     }
     flushAll();
@@ -996,7 +1082,7 @@
   // ---- search: the page (Search, in the sidebar) and the quick box at the top of the sidebar (Ctrl+K). Python finds
   // (search.py); a result opens where it is: the transcript at the moment (its words marked), the file, the
   // announcement, the week, the notes or the chat
-  const KINDS = () => [["lecture", t("Lectures"), "wave"], ["file", t("Files"), "layers"], ["announcement", t("Announcements"), "megaphone"],
+  const KINDS = () => [["lecture", t("Lectures"), "wave"], ["screen", t("Screens"), "monitor"], ["file", t("Files"), "layers"], ["announcement", t("Announcements"), "megaphone"],
     ["week", t("Weekly plan"), "calendar"], ["note", t("AI notes"), "ai"], ["chat", t("Chats"), "chat"]];
   const kindOf = (k) => KINDS().find((x) => x[0] === k) || [k, k, "search"];
   const recentKey = () => `studia-recent-search:${S.profileId}`;
@@ -1118,6 +1204,10 @@
       title = esc([day(it.date), it.kind_label, it.time].filter(Boolean).join(" · "));
       rows = it.moments.map((m) => [`<span class="sr-at">${esc(m.ts)}${it.parts > 1 ? `<small>${esc(t("part {n}", { n: m.part }))}</small>` : ""}</span>`, marked(m.snippet), t("Open the transcript at {ts}", { ts: m.ts })]);
       if (it.more) more = t.n(it.more, "+{n} more moment in this lecture", "+{n} more moments in this lecture");
+    } else if (it.kind === "screen") {          // a lecture's screens (slides and board): "Slide 12 · 34:10"
+      title = esc([day(it.date), it.kind_label, it.time].filter(Boolean).join(" · "));
+      rows = it.moments.map((m) => [`<span class="sr-at">${esc([t("Slide {n}", { n: m.slide }), m.ts].join(" · "))}${it.parts > 1 ? `<small>${esc(t("part {n}", { n: m.part }))}</small>` : ""}</span>`, marked(m.snippet), t("Open the transcript at {ts}", { ts: m.ts })]);
+      if (it.more) more = t.n(it.more, "+{n} more screen in this lecture", "+{n} more screens in this lecture");
     } else if (it.kind === "file") {
       title = marked(it.title);
       meta = `<span class="sr-ext ext-${esc(it.ext)}">${esc((it.ext || "").toUpperCase())}</span>${it.downloaded ? "" : `<span class="sr-tag">${t("not downloaded")}</span>`}`;
@@ -1144,20 +1234,28 @@
     if (quick) rows = rows.slice(0, 1);
     const icon = quick ? `<span class="sr-ico">${I(kindOf(it.kind)[2], "sm")}</span>` : "";
     const head = `<span class="sr-top">${icon}${code}<span class="sr-title">${title}</span>${meta}${some}</span>`;
-    return `<div class="sr-item">${rows.map(([lead, text, tip], k) => `<button class="sr-hit ${k ? "sub" : ""}" data-act="${quick ? "qs-open" : "sr-open"}" data-i="${i}" data-m="${k}" title="${esc(tip)}">${k ? "" : head}${text || lead ? `<span class="sr-line">${lead}<span class="snippet">${text}</span></span>` : ""}</button>`).join("")}
+    const row = (b, k) => (it.kind === "lecture" && !quick && Studia.player && Studia.player.hitRow ? Studia.player.hitRow(b, i, k) : b);   // a moment: Play beside it
+    return `<div class="sr-item">${rows.map(([lead, text, tip], k) => row(`<button class="sr-hit ${k ? "sub" : ""}" data-act="${quick ? "qs-open" : "sr-open"}" data-i="${i}" data-m="${k}" title="${esc(tip)}">${k ? "" : head}${text || lead ? `<span class="sr-line">${lead}<span class="snippet">${text}</span></span>` : ""}</button>`, k)).join("")}
       ${more && !quick ? `<div class="sr-more">${esc(more)}</div>` : ""}</div>`;
   }
   function noneHTML() {
-    const s = S.search;
+    const s = S.search, picked = S.courses.length && (s.course || s.kind);     // (no course synced yet: nothing to search)
     return `<div class="sr-none">${I("search")}<h3>${t.html("Nothing found for “{q}”", { q: s.q.trim() })}</h3>
-      <p>${s.course || s.kind ? t("Nothing in what you picked. Look everywhere?") : t("Check the spelling, try fewer words, or try the word in the other language (sınav for exam).")}</p>
-      ${s.course || s.kind ? `<button class="btn" data-act="search-widen">${I("search", "sm")} ${t("Search everything")}</button>` : ""}</div>`;
+      <p>${!S.courses.length ? t("Nothing to search yet. Sync your courses first: their announcements, files and transcribed lectures are searched here.")
+        : picked ? t("Nothing in what you picked. Look everywhere?") : t("Check the spelling, try fewer words, or try the word in the other language (sınav for exam).")}</p>
+      ${picked ? `<button class="btn" data-act="search-widen">${I("search", "sm")} ${t("Search everything")}</button>` : ""}</div>`;
   }
   // a result opens where it is
   async function openHit(it, k, q) {
     if (!it) return;
     rememberSearch(q);
+    if (it.kind === "lecture" && Studia.player && Studia.player.hit && Studia.player.hit(it, k)) return;        // the player is open: it plays there
     if (it.kind === "lecture") { const m = it.moments[k] || it.moments[0]; openDay(it.day_key, false, { find: q, some: !it.every, t: m.t, id: m.delivery_id }); }
+    else if (it.kind === "screen") {          // at that screen: in the lecture player when it is open, else the transcript
+      const m = it.moments[k] || it.moments[0];
+      if (Studia.player && Studia.player.isOpen && Studia.player.isOpen()) Studia.player.open(it.day_key, m.part, m.t);
+      else openDay(it.day_key, false, { t: m.t, id: m.delivery_id });
+    }
     else if (it.kind === "note") openDay(it.day_key, false, { find: q, some: !it.every, notes: it.note_kind });
     else if (it.kind === "announcement") go({ name: "course", courseId: it.course_id, tab: "announcements", annFocus: it.id });
     else if (it.kind === "week") go({ name: "course", courseId: it.course_id, tab: "weeks", jumpWeek: it.week });
@@ -1242,17 +1340,20 @@
     const s = S.settings, sys = S.system, p = S.profile || {};
     const slowHere = (id) => sys.gpu && !gpuUsed(sys.gpu) && id !== "small";      // hours per lecture on a processor
     const small = ((sys.presets || []).find((x) => x.id === "small") || { label: "Small" }).label;   // its name as its card shows it
-    const presets = (sys.presets || []).map((x) => `<button class="preset ${x.id === s.model ? "on" : ""}" data-act="set" data-key="model" data-val="${x.id}">
-      <div class="n">${esc(x.label)} <span class="sz">${t.num(+(x.size_mb / 1000).toFixed(1), 1)} GB${x.downloaded ? " · ✓" : ""}</span></div><div class="d">${esc(x.description)}</div>
+    const presets = (sys.presets || []).map((x) => `<button class="preset ${x.id === s.model ? "on" : ""}" data-act="set" data-key="model" data-val="${x.id}" aria-pressed="${x.id === s.model}">
+      <div class="n">${esc(x.label)} <span class="sz">${t.num(+(x.size_mb / 1000).toFixed(1), 1)} GB</span></div><div class="d">${esc(x.description)}</div>
+      ${x.downloaded ? `<div class="d ok-txt">${I("check", "xs")} ${t("on this PC")}</div>` : ""}
       ${slowHere(x.id) ? `<div class="d warn-txt">${I("alert", "xs")} ${t.html("Very slow on this PC (no NVIDIA graphics card in use): {model} is the one for it.", { model: small })}</div>` : ""}</button>`).join("");
     const g = sys.gpu;
     const row = (title, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
-    const sw = (key) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""}>`;
+    const sw = (key, label) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""} aria-label="${esc(label)}">`;
+    const rb = (group) => (Studia.resetBtn ? Studia.resetBtn(group) : "");       // "Back to the defaults" (settings.js)
     const profs = S.profiles.length ? S.profiles : [{ id: "main", main: true, active: true, has_login: true, ...p }];
-    const sections = [["set-profiles", t("Profiles")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")], ...(Studia.yt ? [["set-yt", "YouTube"]] : []),
-      ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ...(Studia.services ? [["set-services", t("Services")]] : []), ["set-look", t("Appearance")]];
+    const sections = [["set-profiles", t("Profiles")], ["set-look", t("Appearance")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")],
+      ...(Studia.practiceCard ? [["set-practice", t("Practice")]] : []), ...(Studia.yt ? [["set-yt", "YouTube"]] : []),
+      ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ...(Studia.services ? [["set-services", t("Services")]] : [])];
     return `<div class="view-inner" style="max-width:820px">
-      <nav class="set-nav">${sections.map(([id, l]) => `<button class="btn ghost sm" data-act="set-jump" data-id="${id}">${l}</button>`).join("")}</nav>
+      <nav class="set-nav" aria-label="${esc(t("Settings"))}">${sections.map(([id, l]) => `<button class="btn ghost sm" data-act="set-jump" data-id="${id}">${l}</button>`).join("")}</nav>
       <div class="card set-card" id="set-profiles"><h3>${t("Profiles")} <span class="dim sm">${t("one per IEULearn account")}</span></h3>
         ${profs.map((x) => `<div class="set-row prof-row"><div class="avatar">${esc(initials(x.name || x.username))}</div>
           <div class="txt"><div class="t">${esc(x.name || x.username || t("New profile"))} ${x.active ? `<span class="pill">${t("This profile")}</span>` : ""}</div>
@@ -1261,7 +1362,13 @@
             : `<button class="btn sm" data-act="profile-switch" data-id="${esc(x.id)}">${t("Switch")}</button>${x.main ? "" : `<button class="btn ghost icon sm" data-act="profile-remove" data-id="${esc(x.id)}" title="${t("Remove this profile from this PC")}">${I("x", "sm")}</button>`}`}</div></div>`).join("")}
         ${row(t("Add another account"), t("Someone else uses this PC, or you have a second IEULearn account? Each profile keeps its own courses, transcripts, notes and settings; switch from the menu at the bottom left."),
           `<button class="btn sm" data-act="profile-add">${I("plus", "sm")} ${t("Add account")}</button>`)}</div>
-      <div class="card set-card" id="set-tx"><h3>${t("Transcription")}</h3>
+      <div class="card set-card" id="set-look"><h3>${t("Appearance")}${rb("appearance")}</h3>
+        ${row(t.lang() === "en" ? "Language" : `${t("Language")} · Language`, t("IEUStudia starts in the language Windows uses. Pick one here to keep it."), langSeg())}
+        ${row(t("Theme"), t("System follows Windows: light or dark, as you set it there."), `<div class="seg">${[["system", t.c("theme", "System")], ["light", t.c("theme", "Light")], ["dark", t.c("theme", "Dark")]].map(([v, l]) => `<button class="${s.theme === v ? "on" : ""}" data-act="set" data-key="theme" data-val="${v}">${l}</button>`).join("")}</div>`)}
+        ${row(t("Reading text"), t("Transcripts, notes and chat. Ctrl and + or − change it too, anywhere in IEUStudia."), `<div class="seg">${TEXT_SIZES().map(([v, l]) => `<button class="${+(s.text_size || 100) === v ? "on" : ""}" data-act="set-size" data-val="${v}">${l}</button>`).join("")}</div>`)}
+      </div>
+      <div class="card set-card" id="set-tx"><h3>${t("Transcription")}${rb("transcription")}</h3>
+        <div class="set-lead">${t("Speech model: faster or more accurate. One that isn't on this PC yet is downloaded the first time it transcribes.")}</div>
         <div class="presets">${presets || `<div class="skel" style="height:70px"></div>`}</div>
         ${row(t("Transcribe with"), !g ? t("Checking…") : s.device === "cpu" && g.available ? t.html("Processor only, as chosen here: your {name} is not used.", { name: g.name || t("NVIDIA graphics card") })
             : gpuUsed(g) ? t.html("Your NVIDIA graphics card: {name} ({mb} MB)", { name: g.name, mb: g.vram_mb })
@@ -1271,26 +1378,22 @@
             : g.available ? t.html("Your {name} can't transcribe (too little graphics memory or an old driver): the processor does it, slower.", { name: g.name || t("NVIDIA graphics card") })
             : t("No NVIDIA graphics card found: the processor transcribes (slower)."),
           `<select class="input" style="width:170px" data-act="set-sel" data-key="device">${["auto", "cuda", "cpu"].map((v) => `<option value="${v}" ${s.device === v ? "selected" : ""}>${{ auto: t("Automatic"), cuda: t("Graphics card"), cpu: t("Processor only") }[v]}</option>`).join("")}</select>`)}
-        ${row(t("Languages"), t("English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR]."), `<span class="chip">${t("English + Turkish")}</span>`)}
-        ${row(t("Capture slides"), t("Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture)."), sw("capture_slides"))}
-        ${row(t("Ask before closing"), t("Asks first when you close IEUStudia while lectures are being transcribed. Either way, they go on where they stopped next time."), sw("ask_before_closing"))}
-        ${row(t("Hide very short recordings"), t("Recordings shorter than this (usually started by mistake) are greyed out."), `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? t("{n} s", { n: v }) : t("{m} min", { m: v / 60 })}</option>`).join("")}</select>`)}
+        ${row(t("Languages"), t("English with Turkish passages: each passage is transcribed in the language actually spoken and tagged [TR]."), `<span class="set-val">${t("English + Turkish")}</span>`)}
+        ${row(t("Capture slides"), t("Takes the slides and board from Panopto's screen recording and shows them next to the transcript (adds about a minute of downloading per lecture)."), sw("capture_slides", t("Capture slides")))}
+        ${row(t("Ask before closing"), t("Asks first when you close IEUStudia while lectures are being transcribed or the AI is writing something for you. Lectures go on where they stopped next time."), sw("ask_before_closing", t("Ask before closing")))}
+        ${row(t("Hide very short recordings"), t("Recordings shorter than this (usually started by mistake) are greyed out."), `<select class="input" style="width:110px" data-act="set-sel" data-key="min_duration_s" aria-label="${esc(t("Hide very short recordings"))}">${[30, 60, 120, 300].map((v) => `<option value="${v}" ${+s.min_duration_s === v ? "selected" : ""}>${v < 60 ? t("{n} s", { n: v }) : t("{m} min", { m: v / 60 })}</option>`).join("")}</select>`)}
       </div>
-      <div class="card set-card" id="set-files"><h3>${t("Files")}</h3>
-        ${row(t("Save transcripts and notes in"), `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">${t("Change…")}</button><button class="btn ghost sm" data-act="open-output">${I("folder-open", "sm")}</button></div>`)}
-        ${row(t("Subtitles (.srt)"), t("Also write a subtitle file per recording."), sw("write_srt"))}
-        ${row(t("Keep downloaded audio"), t("Keep the audio files (≈40 MB per hour) after transcription."), sw("keep_audio"))}
+      <div class="card set-card" id="set-files"><h3>${t("Files")}${rb("files")}</h3>
+        ${row(t("Save transcripts and notes in"), `<span class="path">${esc(s.output_dir)}</span>`, `<div style="display:flex;gap:6px"><button class="btn sm" data-act="pick-folder">${t("Change…")}</button><button class="btn ghost sm" data-act="open-output" title="${esc(t("Open IEUStudia folder"))}" aria-label="${esc(t("Open IEUStudia folder"))}">${I("folder-open", "sm")}</button></div>`)}
+        ${row(t("Subtitles (.srt)"), t("Also write a subtitle file per recording."), sw("write_srt", t("Subtitles (.srt)")))}
+        ${row(t("Keep downloaded audio"), t("Keep the audio files (≈40 MB per hour) after transcription."), sw("keep_audio", t("Keep downloaded audio")))}
       </div>
-      <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}</h3>
+      <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}${rb("ai")}</h3>
         ${Studia.settingsAI ? Studia.settingsAI() : ""}
         ${Studia.aiLevelsHTML ? Studia.aiLevelsHTML(sys, s) : ""}
       </div>
-      ${Studia.settingsMore ? Studia.settingsMore() : ""}
-      <div class="card set-card" id="set-look"><h3>${t("Appearance")}</h3>
-        ${row(t.lang() === "en" ? "Language" : `${t("Language")} · Language`, t("IEUStudia starts in the language Windows uses. Pick one here to keep it."), langSeg())}
-        ${row(t("Theme"), "", `<div class="seg">${[["system", t.c("theme", "System")], ["light", t.c("theme", "Light")], ["dark", t.c("theme", "Dark")]].map(([v, l]) => `<button class="${s.theme === v ? "on" : ""}" data-act="set" data-key="theme" data-val="${v}">${l}</button>`).join("")}</div>`)}
-        ${row(t("Reading text"), t("Transcripts, notes and chat. Ctrl and + or − change it too, anywhere in IEUStudia."), `<div class="seg">${TEXT_SIZES().map(([v, l]) => `<button class="${+(s.text_size || 100) === v ? "on" : ""}" data-act="set-size" data-val="${v}">${l}</button>`).join("")}</div>`)}
-      </div></div>`;
+      ${Studia.practiceCard ? Studia.practiceCard() : ""}
+      ${Studia.settingsMore ? Studia.settingsMore() : ""}</div>`;
   }
 
   const TEXT_SIZES = () => [[90, t("Smaller")], [100, t("Normal")], [115, t("Larger")], [130, t("Largest")]];   // a function: labels in the current language
@@ -1326,6 +1429,24 @@
   const aiHint = () => { const ai = S.system.ai || {};   // why an AI button is greyed out
     return ai.provider === "local" ? t("Download the offline model in Settings → AI to use this")
       : ai.label ? t("Connect {ai} in Settings → AI to use this", { ai: ai.label }) : t("Turn on AI in Settings → AI to use this"); };
+  // An AI button while the AI it needs isn't set up looks greyed out, but a click says why and offers Settings → AI (a
+  // disabled one said it only on hover). ``ok``: it can be used now; ``plans``: it needs ChatGPT or Claude (the offline
+  // model is too small for it). Anything else that keeps it from working disables it, as before.
+  function aiBtn(ok, plans) {
+    if (ok) return "";
+    const ai = S.system.ai || {};
+    return !ai.available || (plans && ai.can_plans === false) ? `aria-disabled="true" data-ai-off="${plans ? "plans" : "any"}"` : "disabled";
+  }
+  async function aiOffAsk(plans) {
+    const ai = S.system.ai || {};
+    const text = plans && ai.available ? t("This needs ChatGPT or Claude: the offline model is too small for it. You can choose one in Settings → AI.")
+      : ai.provider === "local" ? t("The offline model isn't downloaded yet. Download it in Settings → AI to use this.")
+      : ai.label && ai.provider && ai.provider !== "none" ? t("{ai} isn't connected yet. Connect it in Settings → AI to use this.", { ai: ai.label })
+      : t("AI is off. To use this, choose ChatGPT, Claude or the offline model in Settings → AI. It only runs when you ask.");
+    if (!(await Studia.ask({ title: t("AI isn't set up yet"), text, ok: t("Set up AI"), cancel: t("Not now") }))) return;
+    go({ name: "settings" });
+    const card = $("#set-ai"); if (card) card.scrollIntoView({ block: "start", behavior: "instant" });
+  }
   // ChatGPT ("Continue with ChatGPT" or the Codex CLI) has no model names to pick from, only how much it reasons (effort.js)
   const isChatGPT = (ai) => ["chatgpt", "codex"].includes((ai || S.system.ai || {}).provider);
   const gpuUsed = (g) => !!g && !!g.available && !!g.libraries && S.settings.device !== "cpu"     // does the graphics card transcribe?
@@ -1368,7 +1489,7 @@
     ? `<label class="list-filter">${I("search", "sm")}<input class="input sm" type="search" data-act="chat-filter" value="${esc(S.chat.filter || "")}" placeholder="${t("Find a chat")}" aria-label="${t("Find a chat")}" autocomplete="off" spellcheck="false"></label>` : "");
   function chatHTML() {
     return `<div class="chat-layout"><aside class="chat-list">
-        <button class="btn grad sm block" data-act="chat-new" ${(S.system.ai || {}).available ? "" : "disabled"}>${I("plus", "sm")} ${t("New chat")}</button>
+        <button class="btn grad sm block" data-act="chat-new" ${aiBtn((S.system.ai || {}).available)}>${I("plus", "sm")} ${t("New chat")}</button>
         <div id="chat-filter-slot">${chatFilterHTML()}</div>
         <div class="chat-items" id="chat-items">${chatItemsHTML()}</div></aside>
       <section class="chat-main" id="chat-main">${chatMainHTML()}</section>${Studia.chatSideHTML ? Studia.chatSideHTML() : ""}</div>`;
@@ -1383,25 +1504,34 @@
     const l = q ? all.filter((c) => q.match(about(c)).every) : all;
     if (!l.length) return `<div class="chat-none">${t.html("No chat has “{q}”.", { q: f })}</div>`;
     const title = (c) => { const m = q && q.match(c.title || ""); return m && m.marks.length ? Match.html(c.title, m.marks) : esc(c.title || t("New chat")); };
-    return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
-      <span class="t">${c.running ? SPIN() : ""}${title(c)}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
+    // the whole title on hover, and cut with "…" in its own box (the row is a flex box: it was cut mid-letter)
+    return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}" title="${esc(c.title || t("New chat"))}">
+      <span class="t">${c.running ? SPIN() : ""}<span class="tt">${title(c)}</span></span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
       <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : isChatGPT() && Studia.effortName ? Studia.effortName(c.effort) : levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
     const d = S.chat.draft, c = S.chat.data;
-    if (!(S.system.ai || {}).available) {
-      const ai = S.system.ai || {};
-      const [title, text, btn] = ai.provider === "local" ? [t("The offline model isn't downloaded yet"), t("Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it."), t("Download it")]
-        : ai.label ? [t("{ai} isn't connected yet", { ai: ai.label }), t("Connect your {ai} plan to chat about your lectures. Everything else in IEUStudia works without it.", { ai: ai.label }), t("Connect {ai}", { ai: ai.label })]
-        : [t("AI is off"), t("Pick ChatGPT (with your ChatGPT plan), Claude (your Claude Pro or Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it."), t("Turn on AI")];
-      return `<div class="chat-scroll">${emptyHTML("chat", title, text)}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} ${btn}</button></div></div>`;
+    // without the AI: what to do about it; a chat you had stays readable (only asking more needs the AI)
+    const off = !(S.system.ai || {}).available, ai = S.system.ai || {};
+    const [offTitle, offText, offBtn] = !off ? [] : ai.provider === "local" ? [t("The offline model isn't downloaded yet"), t("Download it to chat about your lectures on this PC. Everything else in IEUStudia works without it."), t("Download it")]
+      : ai.label ? [t("{ai} isn't connected yet", { ai: ai.label }), t("Connect your {ai} plan to chat about your lectures. Everything else in IEUStudia works without it.", { ai: ai.label }), t("Connect {ai}", { ai: ai.label })]
+      : [t("AI is off"), t("Pick ChatGPT (with your ChatGPT plan), Claude (your Claude Pro or Max plan) or the offline model to chat about your lectures. Everything else in IEUStudia works without it."), t("Turn on AI")];
+    if (off && (d || !S.chat.id)) {
+      return `<div class="chat-scroll">${emptyHTML("chat", offTitle, offText)}<div style="text-align:center"><button class="btn primary" data-act="setup-ai">${I("ai", "sm")} ${offBtn}</button></div></div>`;
     }
     if (!d && !S.chat.id) {
       return `<div class="chat-scroll"><div class="chat-empty"><div class="art">${I("chat")}</div><h3>${t.html("Ask {ai} about your lectures", { ai: aiName() })}</h3>
-        <div class="sub">${t.html("Pick one lecture or several and ask anything: likely quiz topics, explanations, practice questions… It uses {plan}, only when you ask. AI can make mistakes — check important answers.", { plan: aiPlan() })}</div>
+        <div class="sub">${t.html("Pick one lecture or several and ask anything: likely quiz topics, explanations, practice questions… It uses {plan}, only when you ask. AI can make mistakes: check important answers.", { plan: aiPlan() })}</div>
         <button class="btn grad" data-act="chat-new">${I("plus", "sm")} ${t("New chat")}</button>${limitsHTML() ? `<div class="limits-row">${limitsHTML()}</div>` : ""}</div></div>`;
     }
-    if (!d && (!c || c.id !== S.chat.id)) return `<div class="chat-scroll"><div class="chat-msgs-inner">${skeleton()}</div></div>`;
+    // (a whole course's chat takes some seconds to open: its lectures and files are gathered again)
+    if (!d && (!c || c.id !== S.chat.id)) return `<div class="chat-scroll"><div class="chat-msgs-inner"><div class="dim sm chat-opening">${SPIN()} ${t("Opening the chat…")}</div>${skeleton()}</div></div>`;
+    if (off) {
+      return `<header class="chat-head" id="chat-head">${chatHeadHTML()}</header>
+        <div class="chat-scroll" id="chat-msgs"><div class="chat-msgs-inner" id="chat-msgs-inner">${chatMsgsHTML()}</div></div>
+        <div class="composer composer-off">${I("info", "sm")}<span class="grow"><b>${esc(offTitle)}.</b> ${esc(t("You can read this chat; asking more needs the AI."))}</span>
+          <button class="btn primary sm" data-act="setup-ai">${I("ai", "sm")} ${esc(offBtn)}</button></div>`;
+    }
     return `<header class="chat-head" id="chat-head">${chatHeadHTML()}</header>
       <div class="chat-scroll" id="chat-msgs"><div class="chat-msgs-inner" id="chat-msgs-inner">${chatMsgsHTML()}</div></div>
       <form class="composer" data-form="chat">${Studia.chatToolsHTML ? Studia.chatToolsHTML() : ""}${Studia.chatFilesRowHTML ? Studia.chatFilesRowHTML() : ""}<div class="composer-inner">
@@ -1413,7 +1543,7 @@
   function chatHeadHTML() {
     const d = S.chat.draft, c = S.chat.data, x = d || c;
     const days = d ? d.labels : c.days;
-    const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(t("{day} — open the transcript", { day: day.long || day.label }))}">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
+    const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(t("{day}: open the transcript", { day: day.long || day.label }))}">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
       + (days.length > 6 ? `<span class="dim">${t("+{n} more", { n: days.length - 6 })}</span>` : "");
     const model = x.model || "sonnet";
     const sel = isChatGPT() ? "" : `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
@@ -1428,7 +1558,7 @@
     const tokens = d ? d.tokens : c.context_tokens;
     const title = d || !c.title ? t("New chat") : c.title;
     return `<div class="ch-top"><div class="ch-title"><h2 title="${esc(title)}">${esc(title)}</h2>${d ? "" : `<button class="btn ghost icon sm" data-act="chat-rename" title="${esc(t("Rename"))}">${I("pencil", "sm")}</button>`}</div>
-        ${sel}${Studia.chatSideBtn ? Studia.chatSideBtn() : ""}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} ${t("Change…")}</button>` : `<button class="btn ghost icon sm" data-act="chat-menu" title="${esc(t("More"))}">${I("more")}</button>`}</div>
+        ${sel}${Studia.chatSideBtn ? Studia.chatSideBtn() : ""}${d ? `<button class="btn ghost sm" data-act="draft-change">${I("list-checks", "sm")} ${t("Change…")}</button>` : `${Studia.exportBtn ? Studia.exportBtn("chat", c.id, true, !c.messages.length) : ""}<button class="btn ghost icon sm" data-act="chat-menu" title="${esc(t("More"))}">${I("more")}</button>`}</div>
       <div class="ch-scope"><span class="pill new">${esc(x.course_code || "")}</span>${chips}${focus}${slides}
         ${tokens ? `<span class="ch-meta" title="${esc(t("{ai} reads this with your first question", { ai: aiName() }))}">${t("~{k} tokens", { k: fmtK(tokens) })}</span>` : ""}<span class="spacer"></span>${limitsHTML()}</div>`;
   }
@@ -1450,9 +1580,12 @@
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
     const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
     const reading = Studia.chatReadingHTML ? Studia.chatReadingHTML(m) : { body: "", foot: "" };   // "Read everything" (chatfiles.js)
-    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : reading.body || (streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "");
+    // before its words come: the reading's progress, else what the AI does now (sending, thinking: waits.js)
+    const waiting = streaming && !acts.text && !reading.body && m.wait && Studia.waitHTML ? Studia.waitHTML(m.wait) : "";
+    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : reading.body || waiting || (streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "");
     const notes = Studia.chatNotices ? Studia.chatNotices(m, isLast) : {};    // the app's notices with this answer (notices.js)
-    const foot = streaming ? `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`
+    const line = streaming && m.text && m.wait && Studia.waitLine ? Studia.waitLine(m.wait) : "";
+    const foot = streaming ? (waiting ? "" : line ? `<span class="dim">${SPIN()} ${line}</span>` : `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`)
       : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${reading.foot}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
     const err = m.status === "error" ? notes.error || `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
@@ -1666,7 +1799,7 @@
         ${tooBig ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
         </div>
         <div class="cp-foot"><div class="cp-cost"><div id="cp-cost-line">${costHTML(tot)}</div>
-          ${used ? `<div class="cp-limits">${used}</div>` : ""}<div class="dim sm">${I("info", "xs")} ${t("Nothing is sent until you ask. AI can make mistakes — check important answers.")}</div></div>
+          ${used ? `<div class="cp-limits">${used}</div>` : ""}<div class="dim sm">${I("info", "xs")} ${t("Nothing is sent until you ask. AI can make mistakes: check important answers.")}</div></div>
           <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button><button class="btn grad" data-act="cp-go" ${chosen().length && !tooBig ? "" : "disabled"}>${I("chat", "sm")} ${t("Start chat")}</button></div></div>`);
       $(".modal").classList.add("cp");
       const nl = $(".cp-days"); if (nl) nl.scrollTop = keepScroll;
@@ -1679,7 +1812,7 @@
       const rd = st.est;
       if (!rd || !rd.on || !chosen().length || (S.system.ai || {}).provider === "local") return "";
       if (!rd.pages) return esc(t("With this choice everything fits whole: nothing is read first."));
-      const line = rd.batches ? t.n(rd.pages, "With this choice: {n} page read first, about {k} tokens in {b} requests.", "With this choice: {n} pages read first, about {k} tokens in {b} requests.", { k: fmtK(rd.tokens || 0), b: t.num(rd.batches) })
+      const line = rd.batches ? t.n(rd.pages, "With this choice: {n} page read first, about {k} tokens {requests}.", "With this choice: {n} pages read first, about {k} tokens {requests}.", { k: fmtK(rd.tokens || 0), requests: inRequests(rd.batches) })
         : t.n(rd.pages, "With this choice: {n} page, read before: its notes are used again.", "With this choice: {n} pages, read before: their notes are used again.");
       const warn = Studia.effortBig && Studia.effortBig.read ? Studia.effortBig.read(rd) : "";
       return `<b>${esc(line)}</b>${warn ? `<div class="callout warning eff-note">${I("alert")}<div>${warn}</div></div>` : ""}`;
@@ -2066,7 +2199,7 @@
     const s = S.signin;
     const others = (S.profiles || []).filter((x) => !x.active && x.has_login);
     const user = s.user != null ? s.user : (S.profile || {}).username || "";      // what you typed stays after an error
-    return `<div class="signin"><form class="card signin-card" data-form="signin" autocomplete="on">
+    return `<div class="signin"><div class="card signin-card"><form data-form="signin" autocomplete="on">
       <div class="brand"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</div>
       <p class="lead">${t("Sign in with your IEULearn (EkoID) account. IEUStudia finds your courses and their Panopto recordings.")}</p>
       <div class="field"><label for="si-user">${t("EkoID / username")}</label><input id="si-user" class="input" name="username" autocomplete="username" value="${esc(user)}"></div>
@@ -2080,14 +2213,14 @@
       <div class="note">${I("info", "sm")}<span>${t("IEUStudia is an independent student project, not affiliated with İzmir University of Economics, IEULearn or Panopto. Use it at your own risk.")}</span></div>
       ${others.length ? `<div class="si-others"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
         <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>` : ""}
-    </form></div>`;
+    </form>${Studia.contact ? Studia.contact.line() : ""}</div></div>`;     // (how to reach the maker: outside the form, its buttons send nothing)
   }
 
   // ---- profiles: several IEULearn accounts on this PC (switching restarts the app with that account's data)
   function addAccountDialog(err = "", busy = false, user = "", openSite = false) {
     modal(`<form data-form="add-account" autocomplete="off">
       <h2>${t("Add another account")}</h2>
-      <p class="lead">${t("Sign in with another IEULearn (EkoID) account. It gets a profile of its own — its own courses, transcripts, notes and settings — and you can switch between profiles from the menu at the bottom left.")}</p>
+      <p class="lead">${t("Sign in with another IEULearn (EkoID) account. It gets a profile of its own, with its own courses, transcripts, notes and settings, and you can switch between profiles from the menu at the bottom left.")}</p>
       <div class="field"><label for="aa-user">${t("EkoID / username")}</label><input id="aa-user" class="input" name="username" autocomplete="off" value="${esc(user)}"></div>
       <div class="field"><label for="aa-pass">${t("Password")}</label><div class="input-wrap"><input id="aa-pass" class="input" type="password" name="password" autocomplete="new-password">
         <button type="button" class="btn ghost icon sm" data-act="peek" data-for="aa-pass" title="${esc(t("Show password"))}">${I("eye", "sm")}</button></div></div>
@@ -2286,7 +2419,7 @@
       const how = local ? `<div><b>${t("Offline model")}</b><span>${t("runs on this PC")}</span></div>`
         : isChatGPT(ai) ? "" : `<div><b>${esc(levelLabel(S.settings.ai_model || "sonnet"))}</b><span>${t("model (Settings → AI)")}</span></div>`;
       modal(`<h2>${I("ai")} ${t.html("Study notes with {ai}", { ai: aiName() })}</h2>
-        <p class="lead">${t.html("Uses {plan}. Nothing runs until you press Generate. AI can make mistakes — check the notes against the lecture.", { plan: aiPlan() })}</p>
+        <p class="lead">${t.html("Uses {plan}. Nothing runs until you press Generate. AI can make mistakes: check the notes against the lecture.", { plan: aiPlan() })}</p>
         <div class="field"><label>${t("What should it write?")}</label><div class="seg">
           ${NOTE_KINDS().map(([k, l]) => `<button class="${tpl === k ? "on" : ""}" data-act="cl-tpl" data-val="${k}">${l}</button>`).join("")}</div></div>
         ${Studia.effortField ? `<div class="cp-opts">${Studia.effortField("notes", "chat", "", { big: local ? "" : Studia.effortBig.notes(e.input) })}</div>` : ""}
@@ -2452,19 +2585,17 @@
     },
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
+    "scr-again": () => screensAgainDialog(),
+    "scr-again-go": (el) => screensAgainGo(el.dataset.all === "1"),
+    "scr-only": () => { S.screensOnly = !S.screensOnly; renderView(); const h = $("#part-1"); if (h && S.screensOnly) h.scrollIntoView({ block: "start", behavior: "instant" }); },
+    "scr-read": (el) => { S.screensOnly = false; renderView(); setTimeout(() => jumpTo(+el.dataset.part, +el.dataset.t), 30); },
+    "scr-play": (el) => { if (Studia.player && Studia.player.open && S.day) Studia.player.open(S.day.day_key, +el.dataset.part, +el.dataset.t); },
     "show-mode": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { show_mode: el.dataset.mode }); if (r.ok) { setCourses(r.courses); renderView(); } },
     "mark-seen": async (el) => { const r = await call("mark_seen", el.dataset.id || null); if (r.ok) { setCourses(r.courses); renderSidebar(); renderView(); } },
     "toggle-others": (el) => { S.expanded.has(el.dataset.id) ? S.expanded.delete(el.dataset.id) : S.expanded.add(el.dataset.id); renderView(); },
     "open-folder": (el) => Studia.said(call("open_course_folder", el.dataset.id)),
     "open-output": async () => { const r = await call("open_output"); if (!r.ok) toast(r.error, "error"); },
     file: (el) => Studia.said(call("open_file", S.day.day_key, el.dataset.what)),
-    export: async () => {
-      const key = S.day && S.day.day_key;
-      if (!key || S.exporting === key) return;
-      S.exporting = key; renderDayActions();      // at once, not when its "start" comes: a second click makes no second one
-      const r = await call("export_pack", key);
-      if (!r.ok) { S.exporting = null; if (S.view.name === "day") renderDayActions(); toast(r.error || t("Export failed"), "error"); }
-    },
     claude: () => claudeDialog(),
     "ai-cancel": () => call("ai_cancel"),
     "cl-tpl": (el) => { window.__cl.tpl = el.dataset.val; },
@@ -2538,7 +2669,7 @@
     "chat-model": async (el) => {
       const c = S.chat.data; if (!c) return;
       const r = await call("chat_update", c.id, { model: el.value });
-      if (!r.ok) { toast(r.error, "error"); return; }
+      if (!r.ok) { toast(r.error, "error"); el.value = c.model; return; }     // (too big for it: the menu shows the model kept)
       c.model = r.chat.model; loadChats();
       if (c.messages.length) toast(t("Next answers use {model}. {ai} reads the lectures again once.", { model: levelLabel(el.value), ai: aiName() }), "info");
     },
@@ -2547,8 +2678,6 @@
     "draft-change": () => { const d = S.chat.draft; if (d) chatPicker(d.course_id, d); },
     "chat-menu": (el) => menu(el, [
       { id: "rename", icon: "pencil", label: t("Rename"), run: () => A["chat-rename"]() },
-      { id: "export", icon: "file-text", label: t("Save as Markdown"), desc: t("In the course folder, under “AI chats”"),
-        run: async () => { const r = await call("chat_export", S.chat.data.id); toast(r.ok ? t("Chat saved — shown in Explorer.") : r.error, r.ok ? "success" : "error"); } },
       "-",
       { id: "delete", icon: "x", label: t("Delete chat"), run: async () => {
         if (!(await Studia.ask({ title: t("Delete this chat?"), text: t("This cannot be undone."), ok: t("Delete"), danger: true }))) return;
@@ -2644,7 +2773,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
-    otherSection, oddMark, renderChatHead, trapTab });
+    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2662,6 +2791,7 @@
     toast(r.ok ? done : r.error || t("Copy failed"), r.ok ? "success" : "error");
   }
   function jumpTo(part, sec, deliveryId) {
+    if (S.day && screensOnly(S.day)) { S.screensOnly = false; renderView(); }   // a moment is read in the transcript, as scr-read does
     let paras = $$(".para");
     if (deliveryId && S.day) { const p = S.day.parts.find((x) => x.id === deliveryId); if (p) part = p.index; }
     if (part) paras = paras.filter((p) => +p.dataset.part === part);
@@ -2691,6 +2821,7 @@
     // dropdowns act on "change" only: handling their click re-rendered the page and closed the list
     if (el.tagName === "SELECT" || el.tagName === "OPTION") return;
     if (el.tagName === "INPUT" && el.type !== "button" && !["sel", "sel-day", "set-bool", "cl-slides", "cp-day", "cp-slides", "draft-slides", "pd-week", "plan-mark", "cu-pick", "cu-mats", "rd-read", ...(Studia.inputActs || [])].includes(el.dataset.act)) return;
+    if (el.dataset.aiOff) { aiOffAsk(el.dataset.aiOff === "plans"); return; }        // an AI button without its AI (aiBtn)
     const fn = A[el.dataset.act];
     if (fn && !el.disabled) fn(el, e);
   });
@@ -2725,6 +2856,11 @@
   }
   function refreshFind() {
     if (!S.day) return;
+    if (S.screensOnly && dayFinder()) {          // finding shows the passages with the words: the Screens filter goes
+      S.screensOnly = false; renderView();
+      const f = $("[data-act='find']"); if (f) { f.focus(); f.setSelectionRange(f.value.length, f.value.length); }
+      return;
+    }
     const c = $("#find-count"); if (c) c.innerHTML = findCountHTML();
     const hl = $("#hl-slot"); if (hl) hl.innerHTML = highlightsHTML();
     $("#view").classList.toggle("find-on", !!dayFinder());
@@ -2882,7 +3018,8 @@
     modal(`<h2>${t.html("IEUStudia {version} is installed", { version: v })}</h2>
       <p class="lead">${t.html("Updated from {version}. Everything you had is still here.", { version: S.boot.updated_from })}</p>
       <div class="update-notes md">${mdToHtml(u.notes)}</div>
-      <div class="actions"><button class="btn primary" data-act="modal-close">${t("OK")}</button></div>`);
+      <div class="actions"><button class="btn ghost" data-act="update-page">${I("external", "sm")} ${t("Release page")}</button><span class="spacer"></span>
+        <button class="btn primary" data-act="modal-close">${t("OK")}</button></div>`);
   }
   // what a notification opens: "course:<id>[:<tab>]", "day:<class day>", "ready:<course id>:<assessment>" (Get
   // ready), "week:<course id>:<week>", "update" or "home"
@@ -2896,6 +3033,7 @@
     } else if (kind === "day") openDay(String(target).slice(4));
     else if (kind === "week" && findCourse(id)) go({ name: "course", courseId: id, jumpWeek: +rest[0] || "now" });
     else if (kind === "ready" && findCourse(id) && Studia.openReady) { go({ name: "course", courseId: id }); Studia.openReady(id, rest.join(":")); }
+    else if (kind === "calendar") go({ name: "calendar", focus: [id, ...rest].filter(Boolean).join(":") });   // calendar.js
     else if (kind === "update") { go({ name: "home" }); updateModal(); }
     else go({ name: "home" });
   }
@@ -3072,7 +3210,7 @@
         notes: "**Transcription**\n- Faster on laptops without a graphics card.\n- The time left is shown for the whole queue.", checked_at: Date.now() / 1000, error: "" }),
       update_install: () => { [0, 25, 60, 100].forEach((p, i) => setTimeout(() => emit({ type: "update", state: p < 100 ? "downloading" : "installing", done: p * 750000, total: 75000000 }), 500 * i)); return { ok: true }; },
       update_cancel: () => ({ ok: true }),
-      copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }), export_pack: (k) => { emit({ type: "export", phase: "start", day_key: k }); setTimeout(() => emit({ type: "export", phase: "done", day_key: k, files: location.hash.includes("nopdf") ? { zip: "pack.zip" } : { pdf: "pack.pdf", zip: "pack.zip" } }), 1500); return { ok: true }; },
+      copy_for_ai: () => ({ ok: true, chars: 41234, tokens: 11450 }),
       ai_estimate: (k, s) => ({ ok: true, estimate: { input: s ? 38400 : 11800, output: 3500, images: s ? 33 : 0 }, ai: { available: true }, model: "sonnet" }),
       ai_notes: (k, kind = "notes") => { const label = { notes: "Study notes", exam: "Exam focus", flashcards: "Flashcards" }[kind]; emit({ type: "ai", phase: "start", day_key: k, kind, label }); let i = 0; const txt = "# Overview\nThis lecture covered **conditional probability** and Bayes' theorem.\n\n## Topics\n1. Multiplication rule — $P(A\\cap B)=P(A\\mid B)P(B)$ (Part 1, 00:31)\n2. Screening example (Part 1, 08:00)\n\n## What the lecturer emphasised\n- The denominator in Bayes' theorem — *likely midterm question* (Part 1, 18:41)\n";
         const iv = setInterval(() => { i += 40; emit({ type: "ai", phase: i >= txt.length ? "done" : "progress", day_key: k, kind, label, text: txt.slice(0, i), path: "notes.md" }); if (i >= txt.length) clearInterval(iv); }, 120); return { ok: true }; },

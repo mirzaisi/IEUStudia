@@ -70,9 +70,20 @@ def main():
                  "result": "Claude AI usage limit reached|1792568400", "usage": {}})
             continue
         out({"type": "system", "subtype": "init"})
+        if "RETRY" in question:                           # Claude Code asks again by itself (Anthropic overloaded)
+            out({"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 10, "retry_delay_ms": 2000,
+                 "error_status": 529, "error": "overloaded"})
         out({"type": "rate_limit_event", "rate_limit_info": {
             "status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.25, "resetsAt": 1792568400},
                                                     "seven_day": {"utilization": 0.5, "resetsAt": 1792965600}}}})
+        out({"type": "stream_event", "event": {"type": "message_start", "message": {"role": "assistant"}}})
+        if "THINK" in question:                           # its thinking, summarized (--thinking-display summarized)
+            out({"type": "stream_event", "event": {"type": "content_block_start", "index": 0,
+                                                   "content_block": {"type": "thinking", "thinking": ""}}})
+            for piece in ("**Reading the lecture**\n\nIt covers", " the quiz topics."):
+                out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                                       "delta": {"type": "thinking_delta", "thinking": piece}}})
+            out({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}})
         images = sum(1 for b in content if b.get("type") == "image")
         replay = any("conversation so far" in t for t in texts)
         slow = "SLOW" in question

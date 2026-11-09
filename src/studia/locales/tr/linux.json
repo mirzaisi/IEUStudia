@@ -9,7 +9,7 @@
   "Start checking when I log in": "Oturum açınca kontrole başla",
   "You can change all of this later in Settings.": "Bunların hepsini sonra Ayarlar'dan değiştirebilirsin.",
   "On, starts at login": "Açık, oturum açılınca başlar",
-  "After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn every 30 minutes and shows notifications. It never transcribes or downloads anything on its own.": "Pencereyi kapattıktan sonra IEUStudia arka planda çalışmaya devam eder (yaklaşık 50 MB bellek). IEULearn'ü 30 dakikada bir kontrol eder ve bildirim gösterir. Kendi başına hiçbir şeyi yazıya dökmez ya da indirmez.",
+  "After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own.": "Pencereyi kapattıktan sonra IEUStudia arka planda çalışmaya devam eder (yaklaşık 50 MB bellek). IEULearn'ü ara ara kontrol eder ve bildirim gösterir. Kendi başına hiçbir şeyi yazıya dökmez ya da indirmez.",
   "Start at login": "Oturum açılınca başlat",
   "Start the background checks when you log in.": "Arka plan kontrolleri, oturum açtığında başlar.",
   "IEUStudia needs a 64-bit system.": "IEUStudia için 64 bit bir sistem gerekiyor.",

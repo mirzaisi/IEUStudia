@@ -102,8 +102,10 @@ def test_both_links_are_in_the_sidebar_the_welcome_step_and_settings_about(tmp_p
         assert f'title="{tip}"' in button.group(0) and f'aria-label="{tip}"' in button.group(0)
         assert button.group(1).strip().startswith("<svg") and "<img" not in button.group(1)   # drawn inline
     assert out["opened"] == [IG, IN]
-    # the setup's welcome step: one short line with the two marks, under the notice
-    welcome = out["welcome"].split('class="card su-notice"')[1]
+    # the setup's welcome step: one short line with the two marks, in the bottom bar beside Continue (under the notice
+    # it was below the fold in a small window, 1266x763)
+    welcome = out["welcome"].split('class="su-foot"')[1]
+    assert 'class="su-contact"' not in out["welcome"].split('class="su-foot"')[0]
     line = welcome.split('class="su-contact"')[1].split("</div>")[0]
     assert "Questions, or something not working? Message me." in line and IG in line and IN in line
     assert line.count("<svg") == 2

@@ -1,0 +1,23 @@
+{
+  "_unit": "4.0.0 screens: capturing a lecture's screens again (a lecture or a whole course), the screen timeline's captions on the transcript page, the Screens filter, screen results in the search",
+  "Capturing the screens…": "Ekranlar alınıyor…",
+  "Waiting to capture the screens": "Ekranları almak için sırada",
+  "Capture this lecture's slides and board again from Panopto": "Bu dersin slaytlarını ve tahtasını Panopto'dan yeniden al",
+  "Capture the screens again": "Ekranları yeniden al",
+  "Capture the screens again?": "Ekranlar yeniden alınsın mı?",
+  "IEUStudia downloads the lecture's screen recording from Panopto again, only the frames it needs (about a third of it, usually 25 to 95 MB a lecture), and finds its slides and board afresh. This newer capture misses fewer slides, mostly where a slide filled only part of the screen.": "IEUStudia dersin ekran kaydından yalnızca gereken kareleri Panopto'dan yeniden indirir (kaydın yaklaşık üçte biri, genelde ders başına 25-95 MB) ve slaytları ve tahtayı baştan çıkarır. Bu yeni yöntem daha az slayt kaçırır, özellikle slaytın ekranın yalnızca bir kısmını kapladığı derslerde.",
+  "It runs in the background, a minute or two a lecture, and the transcript shows the new pictures when it's done. Your transcript, notes and marks stay as they are.": "Arka planda çalışır, ders başına bir iki dakika sürer. Bitince ders metninde yeni resimler görünür. Ders metnin, notların ve işaretlerin olduğu gibi kalır.",
+  "All {n} lecture of {course}": "{course}: {n} dersin hepsi",
+  "This lecture": "Bu ders",
+  "Capturing the screens of {n} lecture again in the background.": "{n} dersin ekranları arka planda yeniden alınıyor.",
+  "Those screens are being captured already.": "Bu ekranlar zaten alınıyor.",
+  "The screens couldn't be captured again: {error}": "Ekranlar yeniden alınamadı: {error}",
+  "Panopto couldn't be reached. Check your connection and try again.": "Panopto'ya ulaşılamadı. Bağlantını kontrol edip tekrar dene.",
+  "This lecture has no screen recording in Panopto.": "Bu dersin Panopto'da ekran kaydı yok.",
+  "Play from here": "Buradan oynat",
+  "No screens were captured for this part.": "Bu bölümün ekranları alınmadı.",
+  "Read it in the transcript": "Ders metninde oku",
+  "Show only the screens, each with what was said while it was on": "Yalnızca ekranları göster, her birinin altında o sırada söylenenlerle",
+  "Screens": "Ekranlar",
+  "+{n} more screen in this lecture": "Bu derste {n} ekran daha"
+}

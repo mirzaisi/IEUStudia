@@ -22,6 +22,7 @@ plans'; the material chooser (studypack.options), its page's document (studypack
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import html
 import re
 import threading
@@ -29,9 +30,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
+from . import aiwait
 from .cancel import Cancelled
 from .i18n import N_, t, tn
 from .notices import ALERTS_JSON
+from .outputs.prompts import written_in
 
 STAGES = [("gather", N_("Reading the course material")), ("topics", N_("Listing the formulas and concepts")),
           ("entries", N_("Writing the entries")), ("check", N_("Checking that nothing is missing")),
@@ -45,10 +48,11 @@ PARALLEL = 2                  # entries requests at once
 KINDS = ("formula", "definition", "rule", "method", "unit", "concept")
 TAGS = {"definition": "Def", "rule": "Rule", "method": "Method", "unit": "Unit", "concept": "Idea"}
 
-SYSTEM = ("You are an expert university lecturer making a cheatsheet for an engineering student: a compact, complete "
-          "reference of every formula, definition, rule, unit and standard method the course material requires, "
-          "built only on the material you are given, in its notation. You answer with the JSON asked for, maths in "
-          "LaTeX, and never ask questions. " + ALERTS_JSON)
+SYSTEM = ("You are an experienced university lecturer making a cheatsheet for a student: a compact, complete reference "
+          "of every formula, definition, rule, unit and standard method the course material requires, built only on "
+          "the material you are given, in its notation. Its words are plain and exact, like a good tutor's margin "
+          "notes: no filler, no em dashes. You answer with the JSON asked for, maths in LaTeX, and never ask "
+          "questions. " + ALERTS_JSON)
 
 
 def _str(v: Any, limit: int = 400) -> str:
@@ -67,9 +71,10 @@ Answer with one JSON object:
  "topics": [{{"id": "t1", "title": "…", "items": ["Ohm's law", "voltage divider", "…"],
    "sources": {{"files": [{{"ref": "F1", "pages": [3, 9]}}], "lectures": [{{"ref": "L1", "part": 1, "from": "12:00", "to": "41:30"}}]}}}}]}}
 Rules:
-- "items": EVERYTHING the material requires the student to know or use, each named in a few words: every formula (also the derived forms and special cases the material uses), definition, key concept, theorem, law, rule or property, unit, constant and conversion, standard method or procedure, and the conditions that decide which one applies. Nothing the material requires may be left out; nothing outside the material is added. Each item once, in the topic where the material teaches it.
+- "items": EVERYTHING the material requires the student to know or use, each named in a few words: every formula (also the derived forms and special cases the material uses), definition, key concept, theorem, law, rule or property, unit, constant and conversion, standard method or procedure, and the conditions that decide which one applies. Nothing the material requires may be left out; nothing outside the material is added, nor what every student of the course already knows (basic algebra, SI prefixes). Each item once, in the topic where the material teaches it.
 - Topics in the course's order (by week, then in the material's order), 2–25 of them, each with 2–30 items.
 - "sources": the file pages ([first, last]) and lecture passages (part, from–to as m:ss or h:mm:ss) each topic is taught in. Use only the references (F…, L…) listed below.
+- Titles and items in {facts.get('language') or 'English'}.
 
 === COURSE MATERIAL ===
 {facts['pack']}"""
@@ -97,7 +102,8 @@ def clean_topics(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
                            "sources": clean_sources(x.get("sources"), facts)})
     if not topics:
         raise RuntimeError(t("The AI found nothing to put on the cheatsheet. Try again."))
-    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "topics": topics}
+    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "topics": topics,
+            "language": facts.get("language") or ""}
 
 
 # ------------------------------------------------------------------ entries (AI)
@@ -158,7 +164,7 @@ Rules:
 - kind: "formula", "definition", "rule" (a theorem, law, property or identity), "method" (a standard procedure), "unit" (a unit, constant or conversion) or "concept" (a key idea in one line).
 - name: what it is, in at most 6 words.
 - tex: the formula in LaTeX without dollars ("" if there is none). Related forms may share one entry with \\\\begin{aligned}…\\\\end{aligned}; matrices with pmatrix or bmatrix, piecewise definitions with cases, units upright (\\\\,\\\\mathrm{V}, \\\\Omega).
-- text: at most 25 words, maths in $...$, only what the formula doesn't already say ("" if nothing). A definition: the definition itself. A method: its steps as "1) … 2) … 3) …" (at most 5).
+- text: at most 25 plain words, maths in $...$, only what the formula doesn't already say ("" if nothing). A definition: the definition itself. A method: its steps as "1) … 2) … 3) …" (at most 5).
 - where: the symbols of tex a student could misread, each with its meaning and unit (sym in LaTeX without dollars; means is plain text of at most 12 words with any maths, units like $\\\\Omega$ too, in $...$), at most 4. A symbol is explained once on the whole sheet: not again in later entries. [] when none.
 - when: only a condition under which it holds or is used, without "if", starting in lowercase but keeping names and abbreviations as they are written (RC, RL, RLC, DC, KCL, Thevenin), e.g. "$\\\\alpha > \\\\omega_0$", "no load on the output", "source-free RL circuit"; "" if none. Never a remark or a description.
 - covers: the items of the list above that this entry holds, written exactly as in the list.
@@ -180,7 +186,8 @@ def entries_prompt(sheet: dict[str, Any], topics: list[dict[str, Any]], mat: str
                 + "\n".join(f"{tp['id']} · {tp['title']}: {'; '.join(tp['items'])}" for tp in topics)
                 + "\nEvery item must be in an entry of its topic. Add what else of these topics' material a student "
                   "needs to solve its problems (a formula, special case, condition, unit or shortcut the list missed).")
-    return f"{head}\n{_FORMAT}\n\n=== THE COURSE MATERIAL OF THESE TOPICS ===\n{mat}"
+    return (f"{head}\n{_FORMAT}\n- {written_in(sheet.get('language', ''))}\n\n"
+            f"=== THE COURSE MATERIAL OF THESE TOPICS ===\n{mat}")
 
 
 _CONTROL = {9: "\\t", 12: "\\f", 8: "\\b", 13: "\\r"}      # "\t", "\f"… JSON read where LaTeX meant \times, \frac
@@ -337,10 +344,25 @@ def missing_items(topics: list[dict[str, Any]], entries: dict[str, list]) -> dic
 # ------------------------------------------------------------------ the document
 CSS_FILE = Path(__file__).resolve().parent / "web" / "cheatsheet.css"
 _SHORT = re.compile(r"\\(?:frac|dfrac|tfrac|sum|prod|int|iint|oint|lim|begin|binom|over|underbrace|overbrace|sqrt\{.{10,})")
+# A formula too wide for its column is made smaller, down to 70%; one that would need more is broken over lines after
+# its = and + (KaTeX's own break points: class cs-wrap) at its size, and only a piece still too wide is made smaller,
+# down to 55%. Nothing is cut off. (web/cheatsheet.js fit() is the same for the app's page.)
 FIT_JS = ("(function(){function fit(){document.querySelectorAll('.cs-doc .cs-tex, .cs-doc .cs-x').forEach(function(el){"
-          "el.style.fontSize='';var w=el.clientWidth,s=el.scrollWidth;if(w&&s>w+1)el.style.fontSize="
-          "Math.max(55,Math.floor(100*w/s))+'%';});}fit();if(document.fonts&&document.fonts.ready)"
-          "document.fonts.ready.then(fit);window.StudiaSheetFit=fit;})();")
+          "el.style.fontSize='';el.classList.remove('cs-wrap');var w=el.clientWidth,s=el.scrollWidth;if(!w||s<=w+1)"
+          "return;if(100*w/s<70&&el.classList.contains('cs-tex')){el.classList.add('cs-wrap');s=el.scrollWidth;"
+          "if(s<=w+1)return;}el.style.fontSize=Math.max(55,Math.floor(100*w/s))+'%';});}fit();"
+          "if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit);window.StudiaSheetFit=fit;})();")
+
+
+# How a sheet is drawn: raised when the code draws it differently (entry_html, document_body), as changes of the
+# stylesheet and of FIT_JS are seen by themselves. A finished sheet laid out with another is laid out again from its
+# saved data, no AI, before its PDF is opened or saved (studypack.make_pdf).
+LAYOUT = 3           # 2 (4.0): conditions keep their names, wide formulas are broken over lines instead of cut;
+                     # 3 (4.0): a formula keeps the punctuation after it on its line
+
+
+def layout() -> str:
+    return f"{LAYOUT}-{hashlib.sha1(CSS_FILE.read_bytes() + FIT_JS.encode()).hexdigest()[:12]}"
 
 
 def _esc(s: Any) -> str:
@@ -360,6 +382,21 @@ def _rich(text: str) -> str:
     return _inline(_MATH.sub(hold, text.replace("\x00", "")), keep)
 
 
+# a condition that starts with one of these words reads on after "if" in lowercase ("Series RLC circuit" → "if series
+# RLC circuit"); any other capital stays: a name ("Thevenin resistance", "Bayes' theorem") or a symbol ("A is
+# invertible")
+_COMMON_START = set("""series parallel source-free no not all each every both any either the an linear nonlinear ideal
+    initial steady small large constant zero finite infinite for in at on with without under after before between using
+    only one two three several independent dependent discrete continuous mutually positive negative real complex square
+    sinusoidal natural forced open short first second higher lower low high equal same different given known there its
+    this these those sum product""".split())
+
+
+def _condition(when: str) -> str:
+    m = re.match(r"([A-Z][a-z]+(?:-[a-z]+)*)(?![\w'’])", when)
+    return when[0].lower() + when[1:] if m and m.group(1).lower() in _COMMON_START else when
+
+
 def entry_html(e: dict[str, Any], explained: Optional[set[str]] = None) -> str:
     """One entry: its kind (not for a formula), name, formula (in the line when it is short), text, symbols and
     conditions. A symbol already ``explained`` (by an entry before it in its topic) is not explained again."""
@@ -367,9 +404,7 @@ def entry_html(e: dict[str, Any], explained: Optional[set[str]] = None) -> str:
     explained = set() if explained is None else explained
     where = [w for w in e["where"] if re.sub(r"\s+", "", w["sym"]) not in explained]
     explained.update(re.sub(r"\s+", "", w["sym"]) for w in where)
-    when = e["when"]
-    if re.match(r"[A-Z][a-z]", when):                    # "Series RLC circuit" → "if series RLC circuit"
-        when = when[0].lower() + when[1:]
+    when = _condition(e["when"])
     inline = e["tex"] and len(e["tex"]) <= 34 and not _SHORT.search(e["tex"])
     out = [f'<div class="cs-e cs-{e["kind"]}"><div class="cs-h">'
            + (f'<i class="cs-k">{tag}</i>' if tag else "") + f'<b class="cs-n">{_rich(e["name"])}</b>'
@@ -437,10 +472,11 @@ def document_html(body: str, title: str, folder: Optional[Path] = None) -> str:
             f"{katex_tags(folder)}<script>{FIT_JS}</script></body></html>")
 
 
-def meta_of(facts: dict[str, Any]) -> dict[str, Any]:
+def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, Any]:
     c = facts["course"]
     return {"course": " · ".join(x for x in (c.get("code"), c.get("name")) if x), "span": facts["span"].capitalize(),
-            "files": facts["files"], "lectures": facts["lectures"], "date": f"{dt.date.today():%d %b %Y}".lstrip("0")}
+            "files": facts["files"], "lectures": facts["lectures"],
+            "date": f"{made or dt.date.today():%d %b %Y}".lstrip("0")}
 
 
 def files_for(s: Any, plan: dict[str, Any], title: str, data: Optional[dict[str, Any]] = None) -> tuple[Path, Path]:
@@ -472,23 +508,26 @@ def pdf_pages(pdf: Path) -> int:
 
 
 def assemble(s: Any, plan: dict[str, Any], sheet: dict[str, Any], facts: dict[str, Any],
-             entries: dict[str, list], checks: dict[str, Any], data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Write the document and its PDF; the result the app shows."""
-    from .studypack import _write, print_pdf
+             entries: dict[str, list], checks: dict[str, Any], data: Optional[dict[str, Any]] = None,
+             made: Optional[dt.date] = None) -> dict[str, Any]:
+    """Write the document and its PDF; the result the app shows. ``made``: the day it says it was made (today)."""
+    from .studypack import _print_to, _write
 
+    made = made or dt.date.today()
     html_path, pdf_path = files_for(s, plan, sheet["title"], data)
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    _write(html_path, document_html(document_body(sheet, entries, meta_of(facts)), sheet["title"], html_path.parent))
+    _write(html_path, document_html(document_body(sheet, entries, meta_of(facts, made)), sheet["title"],
+                                    html_path.parent))
     pdf_ok = False
     try:
-        pdf_ok = print_pdf(html_path, pdf_path) and pdf_path.is_file()
+        pdf_ok = _print_to(html_path, pdf_path) and pdf_path.is_file()
     except Exception:  # noqa: BLE001 - the sheet is still shown in the app
         import logging
 
         logging.getLogger("studia").warning("The cheatsheet's PDF could not be made", exc_info=True)
     shown = [tp for tp in sheet["topics"] if entries.get(tp["id"])]
     return {"kind": "sheet", "title": sheet["title"], "file": str(html_path), "pdf": str(pdf_path) if pdf_ok else "",
-            "pages": pdf_pages(pdf_path) if pdf_ok else 0,
+            "pages": pdf_pages(pdf_path) if pdf_ok else 0, "layout": layout(), "made": made.isoformat(),
             "topics": [{"id": tp["id"], "title": tp["title"], "entries": len(entries[tp["id"]])} for tp in shown],
             "entries": sum(len(v) for v in entries.values()), "items": sum(len(tp["items"]) for tp in sheet["topics"]),
             "uncovered": [i for v in (checks.get("missing") or {}).values() for i in v],
@@ -500,11 +539,13 @@ def assemble(s: Any, plan: dict[str, Any], sheet: dict[str, Any], facts: dict[st
 
 def shown_body(s: Any, plan: dict[str, Any]) -> str:
     """The sheet's body for the app's page (the same HTML as its file)."""
+    from .studypack import made_on
+
     data = plan.get("data") or {}
     sheet, facts = data.get("topics"), data.get("gather")
     if not sheet or not facts:
         return ""
-    return document_body(sheet, _all_entries(data), meta_of(facts))
+    return document_body(sheet, _all_entries(data), meta_of(facts, made_on(plan)))
 
 
 def _all_entries(data: dict[str, Any]) -> dict[str, list]:
@@ -582,6 +623,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
                   t("Writing the entries ({model})…", model=shown) if len(batches) == 1 else
                   t("Writing the entries: part {n} of {total} ({model})…", n=min(len(done) + 1, len(batches)),
                     total=len(batches), model=shown))
+            aiwait.of(cancel).units(len(done), len(batches), PARALLEL)      # the parts still to come (time left)
 
         def write(i: int) -> tuple[int, Any, dict]:
             group = [by_id[x] for x in batches[i]]

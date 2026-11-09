@@ -73,7 +73,7 @@
     const video = `<label class="cp-opt cp-switch"><div><div class="t">${t("Add the slides from the lecture video")}</div><div class="d">${vt ? t.n(vt, "{n} slide captured from the screen recording: also shows what the lecturer wrote or showed that isn't in the files.", "{n} slides captured from the screen recording: also show what the lecturer wrote or showed that isn't in the files.") : t("No slides were captured from these lectures' videos.")}</div></div>
         <input type="checkbox" class="switch" data-act="sp-video" ${st.slides && vt ? "checked" : ""} ${vt ? "" : "disabled"}></label>`;
     const parts = [];
-    if (s.files.length) parts.push(t.n(s.files.length, "{n} file", "{n} files") + " · " + (s.page_images ? t("{pages} pages ({pics} as pictures)", { pages: t.num(s.pages), pics: t.num(s.page_images) }) : t.n(s.pages, "{n} page as text", "{n} pages as text")));
+    if (s.files.length) parts.push(t.n(s.files.length, "{n} file", "{n} files") + " · " + (s.page_images ? t.n(s.pages, "{n} page ({pics})", "{n} pages ({pics})", { n: t.num(s.pages), pics: t.n(s.page_images, "{n} as a picture", "{n} as pictures", { n: t.num(s.page_images) }) }) :t.n(s.pages, "{n} page as text", "{n} pages as text")));
     if (s.video_images) parts.push(t.n(s.video_images, "{n} slide from the video", "{n} slides from the video"));
     const [wk, wl] = weight(s.tokens), over = r.tokens > r.max_tokens;
     const notes = [];

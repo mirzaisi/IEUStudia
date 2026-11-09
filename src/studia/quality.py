@@ -73,7 +73,7 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
 
     if loudest < 10 ** (SILENT_DBFS / 20):
         raise NoSpeech(t("This recording has no sound on Panopto (the microphone was probably off). "
-                         "All available audio streams are silent — check it on Panopto or ask the lecturer."))
+                         "All available audio streams are silent: check it on Panopto or ask the lecturer."))
     if speech_s < 8:
         raise NoSpeech(t("No speech was found in this recording (only noise or music). Check it on Panopto."))
 
@@ -116,12 +116,12 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
         gap = (s2 - e1) / SR
         if gap >= 300:
             when = {"start": _mmss(e1 / SR), "end": _mmss(s2 / SR), "gap": _mmss(gap)}
-            message = (t("No speech from {start} to {end} ({gap}, at the start) — break, muted microphone or the "
-                         "recording kept running.", **when) if e1 == 0 else
-                       t("No speech from {start} to {end} ({gap}, at the end) — break, muted microphone or the "
-                         "recording kept running.", **when) if s2 == n else
-                       t("No speech from {start} to {end} ({gap}) — break, muted microphone or the recording kept "
-                         "running.", **when))
+            message = (t("No speech from {start} to {end} ({gap}, at the start): a break, a muted microphone or "
+                         "the recording kept running.", **when) if e1 == 0 else
+                       t("No speech from {start} to {end} ({gap}, at the end): a break, a muted microphone or "
+                         "the recording kept running.", **when) if s2 == n else
+                       t("No speech from {start} to {end} ({gap}): a break, a muted microphone or the recording "
+                         "kept running.", **when))
             warnings.append({"code": "gap", "level": "info", "start": e1 / SR, "end": s2 / SR, "message": message})
     return warnings, stats, gain
 

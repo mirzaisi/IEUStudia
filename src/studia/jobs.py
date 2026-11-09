@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
@@ -35,7 +36,7 @@ import requests
 from . import hls, local_llm, net, store
 from .cancel import Cancelled
 from .config import Settings
-from .i18n import date_short, t
+from .i18n import date_short, pct, t
 from .ieulearn import AuthError, NeedLogin
 from .library import Library
 from .net import plain_error
@@ -94,6 +95,52 @@ def _no_sound_error() -> Exception:
     from .audio import NoAudioTrack
 
     return NoAudioTrack(t("Panopto has no sound for this recording (only a picture), so there's nothing to transcribe."))
+
+
+_CARD_FAILED = ("CUDA failed", "cuBLAS failed", "cuDNN failed")     # CTranslate2's words for the card's errors
+
+
+def _card_stopped(engine: Any, exc: BaseException) -> bool:
+    """The graphics card failed while the engine on it transcribed: an error of the card itself (a driver reset or
+    update, "unspecified launch failure", "illegal memory access"), or out of memory with one passage at a time."""
+    return (getattr(engine, "device", "") == "cuda" and isinstance(exc, RuntimeError)
+            and str(exc).lstrip().startswith(_CARD_FAILED))
+
+
+def _out_of_memory(exc: BaseException) -> bool:
+    low = str(exc).lower()
+    return "out of memory" in low or "alloc_failed" in low
+
+
+def _card_stopped_text(exc: BaseException) -> str:
+    if _out_of_memory(exc):
+        return t("The graphics card ran out of memory while this lecture was transcribed: another program may be using "
+                 "it. Close other programs (games, video editors), then transcribe the lecture again.")
+    return t("The graphics card stopped working while this lecture was transcribed (a driver update or reset can do "
+             "this). Close IEUStudia, open it again and transcribe the lecture again.")
+
+
+class DamagedAudio(ValueError):
+    """A downloaded recording's file can't be decoded, also when downloaded again; it is deleted (see _prepare)."""
+
+
+def _damaged(exc: BaseException) -> bool:
+    """Decoding a downloaded file failed on what is in it (FFmpeg's "Invalid data found when processing input", or
+    audio.decode_audio's "the file seems to be damaged"), not on the disk, the memory or a cancel."""
+    if isinstance(exc, (Cancelled, OSError, MemoryError)) or _no_sound(exc):
+        return False
+    av = sys.modules.get("av")
+    return isinstance(exc, ValueError) or (av is not None and isinstance(exc, av.error.FFmpegError))
+
+
+def _forget_download(dest: Path) -> None:
+    """A downloaded file and what is left of its download (its parts and their marker, an HLS stream's segments so far
+    and theirs): the next try starts afresh."""
+    for f in [dest, *dest.parent.glob(dest.name + ".*")]:
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class ModelFailed(RuntimeError):
@@ -217,6 +264,7 @@ class Job:
     passages: list = dc.field(default_factory=lambda: [0, 0])     # transcribed so far, of all its passages
     own_speed: bool = True           # its transcribing time is its own: not gone on from a checkpoint, the card unshared
     model_phase: str = ""            # what the speech model was doing for it last: "download" or "load" (see _ensure_model)
+    slides_read: float = 0.0         # how much of its screen recording the slide capture has gone through (0 to 1)
 
     def spent(self, step: str) -> float:
         """Seconds it has spent in this step so far (all its times in it)."""
@@ -301,6 +349,9 @@ class JobManager:
         self._last_emit: dict[str, float] = {}
         self._idle_gen = 0
         self._preloading = False
+        # the graphics card stopped working in the middle of a lecture (a driver reset or update): CUDA's error lasts
+        # until IEUStudia closes, so the processor's engine that took over stays (see _transcribe)
+        self._card_stopped = False
         self.setup_busy: Callable[[], bool] = lambda: False      # the setup still downloads models (the app sets it)
 
     # ------------------------------------------------------------------ public
@@ -732,7 +783,7 @@ class JobManager:
         if not self._try_place(job):
             try:
                 self._update(job, "queued", 0.0, t("Waiting to prepare the audio") if job.local_path else
-                             t("Downloaded — waiting to prepare the audio"), force=True, step="place")
+                             t("Downloaded, waiting to prepare the audio"), force=True, step="place")
                 while not self._try_place(job, 0.5):
                     if job.cancel.is_set():
                         raise Cancelled()
@@ -854,7 +905,7 @@ class JobManager:
                 if job.cancel.is_set():
                     raise Cancelled()
                 self._update(job, "queued", 0.0, t("Waiting to be transcribed") if job.local_path else
-                             t("Downloaded — waiting to be transcribed"), step="turn")         # Cancel ends it at once
+                             t("Downloaded, waiting to be transcribed"), step="turn")         # Cancel ends it at once
                 self._put_gpu(job)
                 continue
             except BaseException as exc:  # noqa: BLE001 - every way out gives back the place for its audio
@@ -882,7 +933,7 @@ class JobManager:
                 job.attempts += 1
                 if job.attempts <= 2 and not lasting and not job.cancel.is_set():
                     self.log.info("Download problem for %s (%s); retrying", job.id, error)
-                    self._update(job, "queued", 0.0, t("Connection problem — retrying shortly"), force=True)
+                    self._update(job, "queued", 0.0, t("Connection problem, retrying shortly"), force=True)
                     retry = threading.Timer(4.0 * job.attempts, self._put_dl, args=(job,))
                     retry.daemon = True
                     retry.start()
@@ -1010,7 +1061,7 @@ class JobManager:
                 # the first audio was silent: only fetch a camera (HLS) stream that demonstrably has sound
                 if src.kind != "hls":
                     continue
-                self._update(job, "downloading", 0.0, t("The audio is silent — checking Panopto's other streams"))
+                self._update(job, "downloading", 0.0, t("The audio is silent: checking Panopto's other streams"))
                 try:
                     peak = hls.audio_peak_dbfs(s, src.url)
                 except Exception as exc:  # noqa: BLE001
@@ -1042,34 +1093,44 @@ class JobManager:
                              t("Downloading audio {done}/{total} MB", done=f"{done / 1e6:.0f}", total=f"{total / 1e6:.0f}")
                              if total > 1000 else t("Downloading audio"))
 
-            try:
-                p.download(src, dest, prog, job.cancel, prefer="audio")
-            except Cancelled:
-                raise
-            except Exception as exc:  # noqa: BLE001 - try the next source
-                self.log.info("Source %s failed for %s: %s", src.kind, job.id, exc)
-                last_exc = exc
-                continue
-            job.audio_path = dest
-            self._take_audio_place(job)
-            self._update(job, "downloading", 1.0, t("Decoding audio"), force=True, step="decode")    # after the last MB
-            try:
-                audio = decode_audio(dest, job.cancel)
-            except ValueError as exc:
-                from .audio import NoAudioTrack
-
-                if not isinstance(exc, NoAudioTrack):
-                    raise
-                # a stream Panopto made without sound (from the screen recording, say): the next one may have it
-                self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
-                job.no_audio.add(src.url)
-                if last_exc is None or isinstance(last_exc, NoAudioTrack):     # a failed download says more
-                    last_exc = _no_sound_error()
-                job.audio_path = None
+            audio = None
+            for again in (False, True):               # a downloaded file that turns out damaged: downloaded once more
                 try:
-                    dest.unlink()
-                except OSError:
-                    pass
+                    p.download(src, dest, prog, job.cancel, prefer="audio")
+                except Cancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - try the next source
+                    self.log.info("Source %s failed for %s: %s", src.kind, job.id, exc)
+                    last_exc = exc
+                    break
+                job.audio_path = dest
+                self._take_audio_place(job)
+                self._update(job, "downloading", 1.0, t("Decoding audio"), force=True, step="decode")  # after the last MB
+                try:
+                    audio = decode_audio(dest, job.cancel)
+                    break
+                except Exception as exc:  # noqa: BLE001 - only these two are handled here
+                    if _no_sound(exc):
+                        # a stream Panopto made without sound (from the screen recording, say): the next one may
+                        # have it
+                        self.log.info("%s: %s has no audio track; trying another stream", job.id, src.kind)
+                        job.no_audio.add(src.url)
+                        if last_exc is None or _no_sound(last_exc):     # a failed download says more
+                            last_exc = _no_sound_error()
+                        job.audio_path = None
+                        self._unlink(dest)
+                        break
+                    if not _damaged(exc):
+                        raise
+                    # its end never reached the disk (a power cut while it downloaded), say: the file the cache
+                    # keeps would fail the same way at every try, with FFmpeg's own words
+                    self.log.warning("%s: the downloaded %s can't be decoded (%s); %s", job.id, src.kind, exc,
+                                     "trying another stream" if again else "downloading it again")
+                    job.audio_path = None
+                    _forget_download(dest)
+                    last_exc = DamagedAudio(t("The lecture's audio couldn't be read: the downloaded file was damaged, "
+                                              "so it was deleted. Transcribe the lecture again to download it afresh."))
+            if audio is None:
                 continue
             if is_silent(audio) and i + 1 < len(sources):
                 self.log.info("%s: %s audio is silent; looking for another stream", job.id, src.kind)
@@ -1377,8 +1438,8 @@ class JobManager:
         the lecture, so the next one loads the model again and really tries the card, as its note says (a card that was
         only full, or failed once, often works then). Kept on Automatic when the card is remembered as unusable (the
         next engine would go to the processor at once), and while a study plan still uses it."""
-        if not getattr(engine, "gpu_error", "") or getattr(engine, "device", "") == "cuda":
-            return
+        if not getattr(engine, "gpu_error", "") or getattr(engine, "device", "") == "cuda" or self._card_stopped:
+            return                    # (a card that stopped working mid-batch can't work again before a restart)
         from . import hardware
 
         try:
@@ -1394,6 +1455,49 @@ class JobManager:
         self.log.info("The speech model ran on the processor after the graphics card failed; the next lecture tries "
                       "the card again")
 
+    def _run_engine(self, engine: Any, job: Job, settings: Settings) -> Any:
+        """The lecture's transcript, with this engine (its model loaded first if need be)."""
+        units = getattr(job.speech, "units", None)
+        if getattr(engine, "loaded", False) and units is not None:
+            # the model is there: its first batch is transcribing, not "Loading the speech model" (that step took
+            # the first batch's time, ~9 s, as if the model loaded again for every lecture)
+            self._update(job, "transcribing", 0.05, t("Transcribing passage {done} of {n}", done=0, n=len(units)),
+                         force=True, step="transcribe")
+        elif not getattr(engine, "loaded", False):
+            self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
+        self._ensure_model(engine, job)
+        self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
+        self._drive_card(engine)
+        info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
+        job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
+        if self._card_stopped and getattr(engine, "gpu_error", "") and job.device != "cuda":
+            note = t("The graphics card stopped working during the batch (a driver update or reset can do this), so "
+                     "the processor transcribed this lecture. Close IEUStudia and open it again to use the card again.")
+        else:
+            note = self._card_note(engine, job.model) or info.get("warning")
+        if note and note not in job.notes:
+            job.notes.append(note)
+        job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
+        found = {"speech": job.speech} if job.speech is not None else {}
+        transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d),
+                                       job.cancel, self._meta(job), **found)
+        if getattr(engine, "resumed_passages", 0):    # (Job.metrics)
+            job.own_speed = False
+        return transcript
+
+    def _drop_engine(self, engine: Any) -> None:
+        """An engine whose graphics card stopped working: the next lecture makes a new one, as after a change of the
+        settings (a study plan still using it finishes first)."""
+        with self._lock:
+            while self._engine is engine and self._engine_users:
+                self._engine_free.wait(0.5)
+            if self._engine is engine:
+                self._engine, self._engine_key = None, None
+        try:
+            engine.unload()
+        except Exception:  # noqa: BLE001 - it is dropped anyway
+            self.log.debug("Unloading the engine whose card stopped failed", exc_info=True)
+
     def _transcribe(self, job: Job) -> None:
         if self.setup_busy():                     # the speech model (or the graphics card's files) are on their way
             self._update(job, "transcribing", 0.0, t("Waiting for the speech model to finish downloading"), force=True,
@@ -1403,33 +1507,30 @@ class JobManager:
                     raise Cancelled()
                 time.sleep(0.5)
         settings = self.settings()
-        engine = self._use_engine(settings)
-        try:
-            units = getattr(job.speech, "units", None)
-            if getattr(engine, "loaded", False) and units is not None:
-                # the model is there: its first batch is transcribing, not "Loading the speech model" (that step took
-                # the first batch's time, ~9 s, as if the model loaded again for every lecture)
-                self._update(job, "transcribing", 0.05, t("Transcribing passage {done} of {n}", done=0, n=len(units)),
-                             force=True, step="transcribe")
-            elif not getattr(engine, "loaded", False):
-                self._update(job, "transcribing", 0.0, t("Preparing the speech model"), force=True, step="model")
-            self._ensure_model(engine, job)
-            self.emit({"type": "engine", "phase": "ready", "progress": 1.0, "message": "Model ready"})
-            self._drive_card(engine)
-            info = getattr(engine, "device_info", None) or {}           # (the pane says what it is transcribed with)
-            job.model, job.device = getattr(engine, "model_name", "") or settings.model, info.get("device", "")
-            note = self._card_note(engine, job.model) or info.get("warning")
-            if note and note not in job.notes:
-                job.notes.append(note)
-            job.audio = _to_float32(job.audio)                # its turn: the samples as decoded
-            found = {"speech": job.speech} if job.speech is not None else {}
-            transcript = engine.transcribe(job.audio, lambda st, f, d: self._engine_progress(job, st, f, d),
-                                           job.cancel, self._meta(job), **found)
-            if getattr(engine, "resumed_passages", 0):    # (Job.metrics)
-                job.own_speed = False
-        finally:
-            self._done_with_engine()
-            self._let_fallback_go(engine)
+        for again in (False, True):
+            engine = self._use_engine(settings)
+            stopped: Optional[BaseException] = None
+            try:
+                transcript = self._run_engine(engine, job, settings)
+            except Exception as exc:
+                if not _card_stopped(engine, exc):
+                    raise
+                stopped = exc
+            finally:
+                self._done_with_engine()
+                self._let_fallback_go(engine)
+            if stopped is None:
+                break
+            # the graphics card failed in the middle of the lecture (a driver reset or update, a fault): such an error
+            # lasts until the app closes, so every later lecture would fail on that engine within seconds. The lecture
+            # is transcribed once more with a fresh one, which loads on the processor when the card stays broken.
+            self.log.warning("The graphics card stopped working while %s was transcribed (%s)%s", job.id, stopped,
+                             "" if again else "; the speech model loads again")
+            self._card_stopped = self._card_stopped or not _out_of_memory(stopped)
+            job.own_speed = False
+            self._drop_engine(engine)
+            if again:                     # in plain words, not CUDA's (it failed again with the fresh model)
+                raise ModelFailed(_card_stopped_text(stopped)) from stopped
         self._drop_audio(job)
         transcript.delivery_id = job.id
         path = store.save_transcript(transcript)
@@ -1439,6 +1540,10 @@ class JobManager:
         if job.local_path is None:
             self.lib.save_transcript(transcript, path, quality=quality.get("stats"))
             self.lib.set_warnings(job.id, warnings)
+        # saved: its checkpoint goes only now (a save that failed went on from it the next time)
+        from .engine.checkpoint import discard
+
+        discard(job.id)
         self.note_unwritten(job.id, True)         # until its files are written (closing now writes them next start)
         # its slides and files are finished by another thread: this one takes the next lecture meanwhile. Its step
         # moves on now, so a wait behind another lecture's slides doesn't count as transcribing (Job.metrics)
@@ -1447,6 +1552,23 @@ class JobManager:
         else:
             self._update(job, "writing", 0.99, t("Writing files"), force=True)
         self._finishing.put((job, warnings))
+
+    SLIDES_WAIT_S = 900
+
+    def _wait_slides(self, job: Job) -> None:
+        """The slide capture still going on once the lecture is transcribed: how far it is through the screen recording
+        is said each second ("Finishing slides: 40% of the screen recording read"), never a step that just sits."""
+        end = time.monotonic() + self.SLIDES_WAIT_S
+        while True:
+            try:
+                job.slides.result(timeout=min(1.0, max(0.01, end - time.monotonic())))
+                return
+            except FutureTimeout:
+                if time.monotonic() >= end:
+                    raise
+                if job.slides_read > 0:
+                    self._update(job, "writing", 0.97, t("Finishing slides: {pct} of the screen recording read",
+                                                         pct=pct(job.slides_read)), step="slides")
 
     def _finish_loop(self) -> None:
         """Finishes transcribed lectures one after the other: waits for their slides, writes their files."""
@@ -1463,7 +1585,7 @@ class JobManager:
         if job.slides is not None:
             self._update(job, "writing", 0.97, t("Finishing slides"), force=True, step="slides")
             try:
-                job.slides.result(timeout=900)
+                self._wait_slides(job)
             except Exception as exc:  # noqa: BLE001 - slides are optional
                 self.log.warning("Slides for %s failed: %s", job.id, exc)
                 job.notes.append(t("The slides couldn't be captured; the transcript is complete."))

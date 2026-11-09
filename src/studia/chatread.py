@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from . import ai, aierrors
+from . import ai, aierrors, aiwait
 from .cancel import Cancelled
 
 log = logging.getLogger("studia")
@@ -398,6 +398,26 @@ def default_request(lim: Any, model: str) -> Request:
     return run
 
 
+class _PartWaits(aiwait.Wait):
+    """The reading's requests (made with its own stop event): a retry the AI's own tool makes by itself (Claude Code
+    when Anthropic is overloaded, the Codex CLI reconnecting) is said on the line of the part that waits, as the app's
+    own retries are (``on_wait``)."""
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.parts: dict[int, Callable[[dict[str, Any]], None]] = {}      # thread → its part's on_wait
+
+    def retry(self, why: str, wait: float = 0.0, attempt: int = 0, of: int = 0, status: int = 0) -> None:
+        tell = self.parts.get(threading.get_ident())
+        if tell is not None:
+            tell({"why": "dropped" if why == "dropped" else "service", "status": status or (529 if why == "overloaded"
+                                                                                           else 0), "wait": wait})
+
+    def end(self, ok: bool = True) -> None:          # (a reading's pace is not an answer's: no speeds kept from it)
+        with self._lock:
+            self._reqs.pop(threading.get_ident(), None)
+
+
 def _files(batch: list[Page]) -> list[dict[str, Any]]:
     """Which pages a part has, file by file in order (for the progress): {"name", "kind" (the pages' group), "pages"},
     and for a lecture's pieces "lecture" (its number) and "date" (its day): the page names it in its language (its
@@ -549,12 +569,15 @@ def read(pages: list[Page], question: str, lim: Any, request: Request,
 
         system = READ_SYSTEM.format(focus=FOCUS) + (
             "\n\n" + LECTURE_NOTE if any(p.group == "lecture" for p in batch) else "")
+        tools.parts[threading.get_ident()] = on_wait     # (the AI's own tool's retries: said on this part's line)
         try:
             r = request(system, _content(batch, pictures, question), halt, on_text, on_wait)
         except BaseException:
             take(seen["text"], False)              # what came whole is kept (the last page may have been cut off)
             flush(True)
             raise
+        finally:
+            tools.parts.pop(threading.get_ident(), None)
         info["retry"] = None
         with mu:
             for k in usage:
@@ -652,13 +675,15 @@ def read(pages: list[Page], question: str, lim: Any, request: Request,
                     mu.notify_all()
                 tell(True)
 
+    tools = _PartWaits()
     try:
-        others = [threading.Thread(target=reader, name=f"read-{i}", daemon=True) for i in range(1, n_readers)]
-        for th in others:
-            th.start()
-        reader()
-        for th in others:
-            th.join()
+        with aiwait.tracking(halt, tools):
+            others = [threading.Thread(target=reader, name=f"read-{i}", daemon=True) for i in range(1, n_readers)]
+            for th in others:
+                th.start()
+            reader()
+            for th in others:
+                th.join()
     finally:
         over.set()
     state.update(read=len(notes), unread=[p.label for p in unread], usage=usage, parts=[])

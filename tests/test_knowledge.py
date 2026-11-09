@@ -109,6 +109,50 @@ def test_weekly_digest(tmp_path):
     assert md.startswith("# Weekly digest") and "A calm week." in md and "## MATH 240" in md
 
 
+def test_the_digest_file_keeps_what_was_stressed_whole_and_tells_announcements_and_twin_courses_apart(tmp_path,
+                                                                                                     monkeypatch):
+    """Quotes were cut mid-word at 220 characters (the stressed words often after the cut), an announcement's line
+    breaks broke the list and it was labelled "Lecturer", six things said in class pushed it out, and the two FENG 495
+    courses had the same heading."""
+    from studia import alerts
+    from studia.digest import digest_markdown, digest_prompt, weekly_digest
+
+    lib, _ = _lib(tmp_path)
+    lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 P 1", code="MATH 240", name="Probability", instructor="Dr X"),
+                        Course(id="f1", title="2026-1 FENG 495 Ortak 1", code="FENG 495", name="Ortak Ders", section="1"),
+                        Course(id="f3", title="2026-1 FENG 495 Ortak 3", code="FENG 495", name="Ortak Ders", section="3")])
+    for cid in ("f1", "f3"):
+        lib.merge_announcements(cid, [Announcement(f"{cid}a", "Project groups", "TA", dt.datetime(2026, 9, 29, 9, 0),
+                                                   "Send your project groups.")], first_sync=False)
+    lead = "So, before we start, let me say a few words about the way we will go through the examples today. " * 3
+    _lecture(lib, "long", 1, [(0, 30, lead + "This is very important: mutually exclusive events never happen together.",
+                               "en")])
+    lib.set_status("long", "done")
+    said = [{"category": "quiz", "text": f"We have a quiz\non counting, part {n}.", "date": f"2026-10-01T09:{n:02d}",
+             "source": "lecture"} for n in reversed(range(6))]                  # newest first, as alerts gives them
+    said.append({"category": "schedule", "text": "Dear students,\nThe class on 28 Oct moves to Saturday 24 Oct, 12:00.\n"
+                 "Best regards", "date": "2026-09-29T10:00", "source": "announcement", "title": "Class rescheduling"})
+    real = alerts.course_alerts
+    monkeypatch.setattr(alerts, "course_alerts", lambda lib_, cid, recs: {**real(lib_, cid, recs), "items": said}
+                        if cid == "c" else real(lib_, cid, recs))
+    d = weekly_digest(lib, Settings(), today=dt.date(2026, 10, 1))
+    math = next(c for c in d["courses"] if c["code"] == "MATH 240")
+    (stressed,) = next(x for x in math["lectures"] if x["date"] == "2026-10-01")["stressed"]
+    assert "mutually exclusive events never happen together." in stressed and stressed.startswith("…")
+    assert len(math["said"]) == 6 and math["said"][-1]["source"] == "announcement"      # kept among six
+    md = digest_markdown(d)
+    assert ("- Announcement (schedule, “Class rescheduling”): Dear students, The class on 28 Oct moves to Saturday "
+            "24 Oct, 12:00. Best regards\n") in md
+    assert "- Lecturer (quiz): We have a quiz on counting, part 5.\n" in md and "Lecturer (schedule)" not in md
+    assert "part 0" not in md                                                           # the oldest made room for it
+    assert "## FENG 495 · Ortak Ders (section 1)" in md and "## FENG 495 · Ortak Ders (section 3)" in md
+    assert "## MATH 240 · Probability\n" in md and "- Announcements: Project groups" in md
+    assert "—" not in md                                         # (an em dash reads as AI writing)
+    prompt = digest_prompt(d)
+    assert "announced (schedule, 2026-09-29, “Class rescheduling”): Dear students, The class" in prompt
+    assert "COURSE FENG 495: Ortak Ders (section 3)" in prompt
+
+
 def test_the_digest_leaves_out_other_sections_and_parts_too_short_to_count(tmp_path):
     from studia.config import CoursePrefs
     from studia.digest import digest_prompt, weekly_digest
