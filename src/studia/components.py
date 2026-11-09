@@ -224,15 +224,36 @@ def llm_ready(key: str) -> bool:
     return (d / ".complete").is_file() and (d / "model.bin").is_file() and (d / "tokenizer.json").is_file()
 
 
+def hf_files(info: requests.Response, repo: str, patterns: list[str]) -> list[tuple[str, int]]:
+    """The files of a Hugging Face repo matching ``patterns`` (name, size), from its API answer. An answer without
+    its file list, or one the files can't be read from, is Hugging Face's API changing: raised as
+    health.ServiceChanged (the files already on this PC stay)."""
+    from . import health
+
+    status = getattr(info, "status_code", 200)
+    if status in (404, 410, 401):
+        health.changed("huggingface", "models", f"the model's page answered HTTP {status}")
+    info.raise_for_status()
+    try:
+        siblings = info.json().get("siblings")
+        if not isinstance(siblings, list):
+            raise KeyError("siblings")
+        files = [(str(s["rfilename"]), int(s.get("size") or 0)) for s in siblings
+                 if any(fnmatch.fnmatch(str(s["rfilename"]), p) for p in patterns)]
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise health.changed("huggingface", "models", f"the model's page has no file list IEUStudia reads "
+                                                      f"({exc.__class__.__name__}: {exc})") from exc
+    health.ok("huggingface", "models")
+    return files
+
+
 def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress,
                 cancel: Optional[threading.Event] = None, fallback_mb: int = 0) -> Path:
     """The files of a Hugging Face repo matching ``patterns`` into ``target`` (resumable)."""
     session = _session()
     target.mkdir(parents=True, exist_ok=True)
     info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
-    info.raise_for_status()
-    files = [(s["rfilename"], int(s.get("size") or 0)) for s in info.json().get("siblings", [])
-             if any(fnmatch.fnmatch(s["rfilename"], p) for p in patterns)]
+    files = hf_files(info, repo, patterns)
     if not any(name == "model.bin" for name, _ in files):
         raise RuntimeError(t("The model files of {repo} were not found on Hugging Face.", repo=repo))
     total = sum(size for _, size in files) or fallback_mb * MB

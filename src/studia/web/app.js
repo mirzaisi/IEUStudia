@@ -24,17 +24,21 @@
     view: { name: "new" }, selected: new Set(), expanded: new Set(),
     sync: { running: false, message: "", error: "" }, engine: null,
     day: null, dayFind: "", ai: { running: false, text: "", dayKey: null },
-    lib: null, search: { q: "", results: null }, signin: { busy: false, error: "" }, exporting: null,
+    lib: null, search: { q: "", res: null, course: "", kind: "", busy: false, items: [] }, signin: { busy: false, error: "" }, exporting: null,
     chat: { list: null, id: null, data: null, draft: null, input: "", sending: false, scroll: null }, limits: {},
     update: {},      // a new version: updates.status(), plus state/done/total/error while it downloads
   };
   let REAL = false;
   // Extension points: views/events/actions from the other UI files (course.js, plans.js) plug in here.
-  const Studia = window.Studia = { views: {}, onEvents: {}, mocks: {}, after: {}, onGo: {}, crumbs: {} };
+  const Studia = window.Studia = { views: {}, onEvents: {}, mocks: {}, after: {}, onGo: {}, crumbs: {}, inputs: {} };
 
   // ------------------------------------------------------------------ API bridge
   function call(name, ...args) {
-    if (REAL) return window.pywebview.api[name](...args).catch((e) => ({ ok: false, error: String(e) }));
+    if (REAL) {
+      const fn = window.pywebview.api[name];
+      if (typeof fn !== "function") return Promise.resolve({ ok: false, error: `no ${name}` });
+      return fn(...args).catch((e) => ({ ok: false, error: String(e) }));
+    }
     const fn = Mock[name] || Studia.mocks[name];
     return Promise.resolve(fn ? fn(...args) : { ok: false, error: "not in mock" });
   }
@@ -135,12 +139,14 @@
     if (e.phase === "start") { S.sync = { running: true, message: e.message, error: "" }; }
     else if (e.phase === "progress") { S.sync.message = e.message; S.sync.offline = !!e.offline; S.sync.why = e.why || ""; homeWaitChanged(was); }
     else if (e.phase === "done") {
-      // what it couldn't check (Panopto down, a course's recordings): the top bar and Home keep saying so, calmly
-      const errs = (e.errors || []).join(" ");
-      S.sync = { running: false, message: e.message, error: errs, partial: !!errs }; S.lastSync = e.last_sync || new Date().toISOString();
+      // what it couldn't check (Panopto down, a course's recordings): the top bar and Home keep saying so, calmly; a
+      // service that changed on its side: the top bar (Home warns once: services.js)
+      const errs = (e.errors || []).join(" "), changed = (Studia.svcLines ? Studia.svcLines(e.changed) : []).join(" ");
+      S.sync = { running: false, message: e.message, error: errs, partial: !!(errs || changed), changed }; S.lastSync = e.last_sync || new Date().toISOString();
       if (e.profile) S.profile = e.profile;
       if (e.new_count) toast(t.n(e.new_count, "{n} new recording found", "{n} new recordings found"), "success");
       if (!e.quiet) (e.errors || []).forEach((m) => toast(m, "warning"));   // the app's own half-hourly sync: nothing pops up
+      if (!e.quiet && Studia.svcToast) Studia.svcToast(e.changed);           // (a change: once in this window)
       renderSidebar();
       if (S.view.name === "home") renderView();          // its greeting line said "Syncing…"
     } else if (e.phase === "error") {
@@ -272,9 +278,12 @@
       <div class="app">
         <aside class="sidebar">
           <button class="brand" data-act="go" data-view="home" title="${t("Home")}"><img class="logo-img" src="../assets/logo.svg" alt="">IEUStudia</button>
+          ${quickBoxHTML()}
           <nav class="nav" id="nav"></nav>
           <div class="sidebar-footer" id="sfoot"></div>
+          ${Studia.contact ? Studia.contact.side() : ""}
         </aside>
+        <div class="qs-pop hidden" id="qs-pop" role="listbox" aria-label="${t("Search results")}"></div>
         <main class="main">
           <header class="topbar" id="top"></header>
           <section class="view" id="view"></section>
@@ -311,9 +320,11 @@
     };
     h += S.courses.map((c) => item(c, false)).join("");
     if ((S.earlier || []).length) h += `<div class="nav-section" title="${t("No longer on your IEULearn dashboard. What you saved from them stays here.")}">${t("Earlier courses")}</div>` + S.earlier.map((c) => item(c, true)).join("");
-    // the Study group stays in view at the bottom when many courses make the list scroll
+    // the Study group stays in view at the bottom when many courses make the list scroll; "Ask ChatGPT" once the AI is
+    // known (the start-up snapshot names the one chosen now), a quiet bar until then, never a name that then changes
+    const askLabel = aiKnown() ? t.html("Ask {ai}", { ai: aiName() }) : `<span class="skel ai-skel" aria-hidden="true"></span>`;
     h += `<div class="nav-study"><div class="nav-section">${t("Study")}</div>
-      <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">${t.html("Ask {ai}", { ai: aiName() })}</span></span></button>
+      <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">${askLabel}</span></span></button>
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
       <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">${t("Search")}</span></span></button></div>`;
     nav.innerHTML = h;
@@ -357,7 +368,8 @@
     const syncLabel = waiting ? `${I("wifi-off", "sm")} ${step.why === "internet" ? t("IEULearn doesn't answer…") : t("Waiting for the internet…")}`
       : S.sync.running ? `${SPIN()} ${esc(S.sync.message || t("Syncing…"))}`
       : S.content && S.content.message ? `${SPIN()} ${esc(S.content.message)}`
-      : S.sync.error ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
+      : S.sync.error || S.sync.changed ? `${I("alert-circle", "sm")} ${S.sync.partial ? t("Synced with problems") : t("Sync failed — retry")}` : `${I("refresh", "sm")} ${S.lastSync ? t("Synced {when}", { when: rel(S.lastSync) }) : t("Not synced yet")}`;
+    const problems = [S.sync.error, S.sync.changed].filter(Boolean).join(" ");
     const stopWaiting = !waiting ? "" : S.stopping ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Stopping…")}</button>`
       : `<button class="btn ghost sm" data-act="sync-stop" title="${esc(step.message || "")}">${I("stop", "sm")} ${t("Stop waiting")}</button>`;
     const up = S.update || {};
@@ -368,7 +380,7 @@
       ${Studia.downloadChip ? Studia.downloadChip() : ""}
       ${up.available ? `<button class="btn sm update-btn" data-act="update-open" title="${t.html("IEUStudia {version} is available: see what's new and update", { version: up.version })}">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>` : ""}
       ${bgOff}
-      <button class="btn ghost sm ${S.sync.error && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running || waiting ? "disabled" : ""} title="${waiting ? esc(step.message || "") : S.sync.error && !S.sync.running ? t.html("{error} Click to try again.", { error: S.sync.error }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>${stopWaiting}
+      <button class="btn ghost sm ${problems && !S.sync.running ? "warn" : ""}" data-act="sync" ${S.sync.running || waiting ? "disabled" : ""} title="${waiting ? esc(step.message || "") : problems && !S.sync.running ? t.html("{error} Click to try again.", { error: problems }) : t("Check IEULearn now for new lectures, files and announcements (F5)")}">${syncLabel}</button>${stopWaiting}
       <button class="btn ghost sm" data-act="full-sync" ${S.catchup && S.catchup.running ? "disabled" : ""} title="${t("Sync every course, then transcribe all your untranscribed lectures and download the materials (asks first)")}">${S.catchup && S.catchup.running ? SPIN() : I("zap", "sm")} ${t("Full sync")}</button>
       ${gpu}
       <button class="btn ghost icon sm" data-act="menu-more" title="${t("More")}">${I("more")}</button>`;
@@ -403,6 +415,7 @@
     else if (v.name === "settings") el.innerHTML = settingsHTML();
     else if (v.name === "chat") el.innerHTML = chatHTML();
     el.classList.toggle("chat-mode", v.name === "chat");
+    el.classList.toggle("find-on", v.name === "day" && !!dayFinder());       // finding in a transcript: its text only
     syncChecks();
     if (Studia.after[v.name]) Studia.after[v.name](v);
     if (Studia.views[v.name] && Studia.renderMath) Studia.renderMath(el);   // formulas in plans, review sheets, study packs, course pages
@@ -636,11 +649,14 @@
   }
 
   // ---- day / transcript view
-  async function openDay(dayKey, refresh = false) {
+  // to: from a search, the words to find in it (as the search found them) and where to go (the moment: its time and
+  // recording; or notes: the AI notes of a kind)
+  async function openDay(dayKey, refresh = false, to = null) {
     if (!refresh) {
       if (S.qpOpen) closePane();
       saveChatScroll();
-      S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view, scroll: $("#view").scrollTop } }; S.day = null; S.dayFind = "";
+      S.view = { name: "day", dayKey, from: S.view.name === "day" ? S.view.from : { ...S.view, scroll: $("#view").scrollTop } }; S.day = null; S.dayFind = (to && to.find) || "";
+      S.dayFindSome = !!(to && to.some);         // (a result with some of the words: the passages with some of them)
       renderTop(); renderSidebar(); $("#view").classList.remove("chat-mode"); $("#view").innerHTML = `<div class="view-inner">${skeleton()}</div>`;
     }
     const res = await call("get_day", dayKey);
@@ -652,10 +668,12 @@
     if (S.view.name !== "day" || S.view.dayKey !== dayKey) return;
     const keep = $("#view").scrollTop;
     S.day = res.day;
-    if (!refresh) S.notesKind = null;
+    if (!refresh) S.notesKind = (to && to.notes) || null;
     if (S.ai.dayKey !== dayKey && !S.ai.running) S.ai = { running: false, text: "", dayKey: null };
     renderTop(); renderView();
     $("#view").scrollTo({ top: refresh ? keep : 0, behavior: "instant" });
+    if (to && to.t != null) setTimeout(() => jumpTo(null, +to.t, to.id), 60);
+    else if (to && to.notes) { const n = $("#notes-slot"); if (n) n.scrollIntoView({ block: "start", behavior: "instant" }); }
   }
   function skeleton() {
     return `<div class="skel" style="height:34px;width:45%;margin-bottom:10px"></div><div class="skel" style="height:16px;width:30%;margin-bottom:24px"></div>` +
@@ -671,7 +689,8 @@
         <div class="langs" style="margin-top:8px">${(en || tr) ? `<span class="langbar"><i class="en" style="width:${en * 100}%"></i><i class="tr" style="width:${tr * 100}%"></i></span>
           ${t("English {pct}", { pct: pctText(en) })}${tr ? ` · <span style="color:var(--teal)">${t("Turkish {pct}", { pct: t.pct(Math.max(1, Math.round(tr * 100)) / 100) })}</span>` : ""}` : ""}
           · ${t.n(d.parts.length, "{n} part", "{n} parts")}</div></div>
-        <input class="input find" placeholder="${t("Find in transcript  (Ctrl+F)")}" data-act="find" value="${esc(S.dayFind)}"></div>
+        <div class="find-box"><input class="input find" type="search" placeholder="${t("Find in transcript  (Ctrl+F)")}" data-act="find" value="${esc(S.dayFind)}" aria-label="${t("Find in transcript")}" autocomplete="off" spellcheck="false">
+          <span class="find-count" id="find-count" aria-live="polite">${findCountHTML()}</span></div></div>
       <div class="toolbar" id="day-actions">${dayActionsHTML()}</div>`;
     if (warns.length) h += `<div class="callout warning">${I("alert")}<div><b>${warns.some((w) => w.code === "not_written") ? t("Notes") : t("Transcript quality")}</b><ul>${warns.map((w) => `<li>${t("Part {n}", { n: w.part })}: ${esc(w.message)}</li>`).join("")}</ul></div></div>`;
     const odd = new Map();          // each note once, with the parts it is about
@@ -680,11 +699,7 @@
       : ns.every((n, i) => !i || n === ns[i - 1] + 1) ? t("Parts {a}–{b}", { a: ns[0], b: ns[ns.length - 1] }) : t("Parts {list}", { list: t.list(ns) });
     if (odd.size) h += `<div class="callout warning">${I("alert-circle")}<div><b>${t("Worth checking")}</b><ul>${[...odd].map(([text, ns]) => `<li>${partsLabel(ns)}: ${esc(text)}</li>`).join("")}</ul></div></div>`;
     h += `<div id="notes-slot">${notesHTML()}</div><div id="marks-slot">${marksHTML()}</div>`;
-    if (d.highlights.length) {
-      h += `<div class="card hl-card"><h3>${I("star")} ${t("Highlights")} <span class="count">${d.highlights.length}</span></h3>` +
-        d.highlights.map((x) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button"><span class="when">${t("Part {n}", { n: x.part })} · ${esc(x.ts)}</span>
-          <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text">${esc(x.text)}</span></div>`).join("") + `</div>`;
-    }
+    h += `<div id="hl-slot">${highlightsHTML()}</div>`;
     for (const p of d.parts) {
       h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
         <span style="flex:1"></span><button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I("play", "sm")} ${t("Watch")}</button></div>`;
@@ -701,6 +716,14 @@
     }
     return h + dayNavHTML() + `<div style="height:45vh"></div></div>`;   // room to centre the last paragraphs on a jump
   }
+  function highlightsHTML() {   // what the lecturer stressed; while finding, only those with the words (marked)
+    const d = S.day, m = dayFinder();
+    const shown = (d.highlights || []).map((x) => [x, m && m.match(x.text)]).filter(([, hit]) => !m || findShows(hit));
+    if (!shown.length) return "";
+    return `<div class="card hl-card"><h3>${I("star")} ${t("Highlights")} <span class="count">${shown.length}</span></h3>` +
+      shown.map(([x, hit]) => `<div class="hl-item" data-act="jump" data-part="${x.part}" data-t="${x.t}" tabindex="0" role="button"><span class="when">${t("Part {n}", { n: x.part })} · ${esc(x.ts)}</span>
+        <span class="tags">${esc(x.tags.join(", "))}</span><span class="para-text">${hit && hit.marks.length ? Match.html(x.text, hit.marks) : esc(x.text)}</span></div>`).join("") + `</div>`;
+  }
   function dayNavHTML() {   // the course's lectures before and after this one (your section's)
     const d = S.day, c = d && findCourse(d.course.id);
     if (!c) return "";
@@ -713,18 +736,33 @@
       : `<button class="btn ghost" data-act="tx-day" data-day="${esc(x.day_key)}" title="${t("Not transcribed yet")}">${I("wave", "sm")} ${x.kind === "lab" ? t("Transcribe the {date} lab", { date: shortDate(x.date) }) : t("Transcribe the {date} lecture", { date: shortDate(x.date) })}</button>`;
     return `<div class="day-nav">${btn(days[i - 1], true)}${btn(days[i + 1], false)}</div>`;
   }
-  // lower case for finding, with the Turkish i's as one letter ("İşte" = "işte", "SINAV" = "sınav"); same length
-  const fold = (s) => s.replace(/[İIı]/g, "i").toLowerCase();
-  function markFind(text, q) {
-    const f = fold(text), k = fold(q);
-    let out = "", i = 0, j;
-    while ((j = f.indexOf(k, i)) >= 0) { out += esc(text.slice(i, j)) + `<mark>${esc(text.slice(j, j + k.length))}</mark>`; i = j + k.length; }
-    return out + esc(text.slice(i));
+  // Find in the transcript, matched as the search matches (match.js): whole words in their forms, numbers however
+  // written, words of the same meaning, the last word as a prefix while typed. Paragraphs without every word hide;
+  // when no paragraph has them all (or a search result with some of the words opened it), those with some show:
+  // else every paragraph hid, and the moment opened from the search with them
+  function dayFinder() {
+    const q = S.dayFind.trim(), d = S.day;
+    if (q.length < 2 || !d) return null;
+    if (!S.finder || S.finder.q !== q || S.finder.day !== d || S.finder.asked !== !!S.dayFindSome) {
+      const texts = d.parts.flatMap((p) => p.paragraphs.map((x) => x.text)), m = Match.query(q, texts);
+      S.finder = { q, day: d, m, asked: !!S.dayFindSome, some: !!S.dayFindSome || !texts.some((x) => m.match(x).every) };
+    }
+    return S.finder.m;
+  }
+  const findShows = (hit) => !!hit && (S.finder && S.finder.some ? hit.some : hit.every);
+  function findCountHTML() {
+    const m = dayFinder();
+    if (!m) return "";
+    const n = S.day.parts.reduce((k, p) => k + p.paragraphs.filter((x) => findShows(m.match(x.text))).length, 0);
+    if (n && S.finder.some) return esc(t.n(n, "{n} passage with some of the words", "{n} passages with some of the words"));
+    if (n) return esc(t.n(n, "{n} passage", "{n} passages"));
+    return m.fixed ? `${esc(t("No match."))} <button class="link" data-act="find-fix" data-q="${esc(m.fixed)}">${t.html("Did you mean {q}?", { q: m.fixed })}</button>`
+      : esc(t("No match."));
   }
   function paraHTML(para, p) {
-    const q = S.dayFind.trim();
-    const text = q.length > 1 ? markFind(para.text, q) : esc(para.text);
-    const hidden = q.length > 1 && !fold(para.text).includes(fold(q));
+    const m = dayFinder(), hit = m && m.match(para.text);
+    const text = hit && hit.marks.length ? Match.html(para.text, hit.marks) : esc(para.text);
+    const hidden = !!m && !findShows(hit);
     const marks = [para.tag ? `<span class="pill tr">${esc(para.tag)}</span>` : "", para.star ? `<span class="pill processing" title="${esc((para.tags || []).join(", "))}">${I("star")}</span>` : "",
       para.uncertain ? `<span class="pill" title="${t("Unclear audio — check the recording")}">${I("alert")}${t("unclear")}</span>` : ""].join("");
     const mk = para.mark;
@@ -949,20 +987,82 @@
   // ---- library
   async function loadLibrary() {
     const res = await call("library");
-    if (res.ok) { S.lib = res.courses; if (S.view.name === "library") renderView(); }
+    if (!res.ok) return;
+    S.lib = res.courses;
+    const b = S.view.name === "library" && $("#search-browse");      // (only the list: the search box keeps what is typed)
+    if (b) b.innerHTML = browseHTML();
   }
-  let searchTimer = null;
-  function runSearch(q) {
-    S.search.q = q; clearTimeout(searchTimer);
-    if (q.trim().length < 2) { S.search.results = null; renderSearchResults(); return; }
+  Studia.after.library = () => { const b = $("#search-q"); if (b && document.activeElement !== b) { b.focus(); b.setSelectionRange(b.value.length, b.value.length); } };
+  // ---- search: the page (Search, in the sidebar) and the quick box at the top of the sidebar (Ctrl+K). Python finds
+  // (search.py); a result opens where it is: the transcript at the moment (its words marked), the file, the
+  // announcement, the week, the notes or the chat
+  const KINDS = () => [["lecture", t("Lectures"), "wave"], ["file", t("Files"), "layers"], ["announcement", t("Announcements"), "megaphone"],
+    ["week", t("Weekly plan"), "calendar"], ["note", t("AI notes"), "ai"], ["chat", t("Chats"), "chat"]];
+  const kindOf = (k) => KINDS().find((x) => x[0] === k) || [k, k, "search"];
+  const recentKey = () => `studia-recent-search:${S.profileId}`;
+  function recentSearches() {
+    try { const v = JSON.parse(localStorage.getItem(recentKey()) || "[]"); return Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 8) : []; } catch (e) { return []; }
+  }
+  function keepRecent(list) { try { localStorage.setItem(recentKey(), JSON.stringify(list)); } catch (e) { /* private mode */ } }
+  function rememberSearch(q) {
+    q = (q || "").trim();
+    if (q.length >= 2) keepRecent([q, ...recentSearches().filter((x) => x.toLocaleLowerCase() !== q.toLocaleLowerCase())].slice(0, 8));
+  }
+  let searchTimer = null, searchSeq = 0;
+  const PAGE = 40;                   // the items of one kind asked for at a time (Show more asks for the next ones)
+  // the Search page's first result (never a row the quick box drew earlier: its list stays in the page, hidden, and
+  // comes first, so Enter opened what was searched there before)
+  const firstHit = () => $("#search-results .sr-hit");
+  function runSearch(q, now) {
+    const s = S.search;
+    if (q !== s.q) s.limit = PAGE;                              // (a new query starts again at the first ones)
+    s.q = q; clearTimeout(searchTimer);
+    if (s.openFirst && s.openFirst !== q) s.openFirst = "";     // typed on after Enter: not opened
+    if (q.trim().length < 2) { s.res = null; s.busy = false; renderSearchResults(); return; }
+    s.busy = true; renderSearchStatus();
     searchTimer = setTimeout(async () => {
-      const res = await call("search", q);
-      if (res.ok && S.search.q === q) { S.search.results = res.results; S.search.materials = res.materials || []; renderSearchResults(); }
-    }, 220);
+      const n = ++searchSeq;
+      const res = await call("search", q, { course: s.course || "", kind: s.kind || "", limit: s.kind ? (s.limit || PAGE) : 6 });
+      if (n !== searchSeq || s.q !== q) return;                 // a newer key press asked meanwhile
+      s.busy = false;
+      s.res = res.ok ? res : { error: res.error || t("The search failed. Try again.") };
+      renderSearchResults();
+      if (s.openFirst === q) { s.openFirst = ""; const first = firstHit(); if (first) first.click(); }   // (Enter)
+    }, now ? 0 : 120);
+  }
+  // Enter in the search box: the first result of what is typed now. Results still of the letters before (the search
+  // runs 120 ms after a key) are not opened: the search runs at once, and its first result opens when it comes
+  const searchCurrent = (s, q) => !!s.res && !s.busy && !s.res.error && s.res.query === q;
+  function searchEnter(q) {
+    const s = S.search;
+    if (searchCurrent(s, q)) { const first = firstHit(); if (first) first.click(); return true; }
+    s.openFirst = q; runSearch(q, true);
+    return false;
+  }
+  Studia.searchEnter = searchEnter;
+  function renderSearchStatus() {
+    const b = $("#search-busy"); if (b) b.innerHTML = S.search.busy ? SPIN() : "";
+    const c = $(".search-clear"); if (c) c.classList.toggle("hidden", !S.search.q);
   }
   function libraryHTML() {
-    let h = `<div class="view-inner"><div class="search-big">${I("search")}<input class="input" placeholder="${t("Search your lectures and course files… (English or Turkish)")}" data-act="search" value="${esc(S.search.q)}"></div>
-      <div id="search-results"></div>`;
+    const s = S.search, typed = s.q.trim().length >= 2;
+    return `<div class="view-inner search-page">
+      <div class="search-big" role="search">${I("search")}
+        <input class="input" id="search-q" type="search" data-act="search" value="${esc(s.q)}" placeholder="${t("Search lectures, files, announcements, notes and chats…")}"
+          aria-label="${t("Search")}" aria-controls="search-results" autocomplete="off" spellcheck="false">
+        <span class="search-busy" id="search-busy" aria-hidden="true"></span>
+        <button class="btn ghost icon sm search-clear ${s.q ? "" : "hidden"}" data-act="search-clear" title="${t("Clear (Esc)")}" aria-label="${t("Clear")}">${I("x", "sm")}</button></div>
+      <div id="search-results" class="search-results" aria-live="polite"></div>
+      <div id="search-browse" class="${typed ? "hidden" : ""}">${browseHTML()}</div></div>`;
+  }
+  function browseHTML() {          // before anything is typed: recent searches, what you can type, your lectures
+    const recent = recentSearches();
+    const chips = (list, recentOnes) => `<div class="sr-chips">${list.map((q) => `<span class="sr-chip"><button class="sr-chip-q" data-act="search-again" data-q="${esc(q)}">${recentOnes ? I("clock", "xs") : I("search", "xs")}${esc(q)}</button>${recentOnes
+      ? `<button class="sr-chip-x" data-act="search-forget" data-q="${esc(q)}" title="${t("Remove")}" aria-label="${t.html("Remove {q}", { q })}">${I("x", "xs")}</button>` : ""}</span>`).join("")}</div>`;
+    let h = recent.length ? `<div class="sr-box"><div class="sr-label">${t("Recent searches")}<span class="spacer"></span><button class="btn ghost sm" data-act="search-forget" data-q="">${t("Clear")}</button></div>${chips(recent, true)}</div>` : "";
+    h += `<div class="sr-box"><div class="sr-label">${t("Try")}</div>${chips(["quiz 1", "ara sınav", "ödev 2", "\"final exam\""], false)}
+      <p class="sr-help">${t("Every form of a word is found, in English and Turkish (exam: exams, sınav, sınavda), and numbers however they are written (quiz one: Quiz 1, 1. quiz, first quiz). Put words in quotes to find them together.")}</p></div>`;
+    h += `<div class="section-title">${I("library")} ${t("Your transcribed lectures")}</div>`;
     if (S.lib == null) h += skeleton();
     else if (!S.lib.length) h += emptyHTML("library", t("No transcripts yet"), t("Transcribed lectures appear here, grouped by course."));
     else for (const c of S.lib) {
@@ -971,21 +1071,170 @@
         c.days.map((d) => `<div class="card lib-day" data-act="open-day" data-day="${esc(d.day_key)}" tabindex="0" role="button"><div class="t">${esc(d.label)}</div>
           <div class="s">${esc(d.kind_label)} · ${t.n(d.parts, "{n} part", "{n} parts")} · ${fmtDur(d.duration_s)} ${d.transcribed ? "" : `· ${t("partly")}`}</div></div>`).join("") + `</div>`;
     }
-    return h + `</div>`;
+    return h;
   }
   function renderSearchResults() {
     const el = $("#search-results"); if (!el) return;
-    const r = S.search.results, m = S.search.materials || [];
-    if (r == null) { el.innerHTML = ""; return; }
-    if (!r.length && !m.length) { el.innerHTML = `<div class="card" style="padding:16px;margin-bottom:16px;color:var(--text-2)">${t.html("No matches for “{q}”.", { q: S.search.q })}</div>`; return; }
-    const snip = (s) => esc(s).replace(/\u0002([^\u0003]*)\u0003/g, "<em>$1</em>");     // the words found
-    el.innerHTML = (r.length ? `<div class="section-title">${I("wave")} ${t("In your lectures")} <span class="dim sm">${r.length}</span></div><div class="card" style="margin-bottom:18px">` + r.map((x) => `<button class="result" data-act="open-hit" data-day="${esc(x.day_key)}" data-id="${esc(x.delivery_id)}" data-t="${x.t}">
-      <span class="where"><b>${esc(x.course_code)}</b> ${esc(shortDate(x.date))} · ${esc(x.time)} · ${t.html("at {ts}", { ts: x.ts })}</span>
-      <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "") +
-      (m.length ? `<div class="section-title">${I("layers")} ${t("In your course files")} <span class="dim sm">${m.length}</span></div><div class="card" style="margin-bottom:18px">` + m.map((x) => `<button class="result" data-act="open-mat-hit" data-id="${esc(x.resource_id)}" title="${t("Open the file")}">
-      <span class="where"><b>${esc(x.course_code)}</b> ${esc(x.title)} · ${t("page {n}", { n: x.page })}</span>
-      <span class="snippet">${snip(x.snippet)}</span></button>`).join("") + `</div>` : "");
-    if (Studia.renderMath) Studia.renderMath(el);                       // formulas in course files' text
+    const s = S.search, res = s.res, typed = s.q.trim().length >= 2;
+    const browse = $("#search-browse"); if (browse) browse.classList.toggle("hidden", typed);
+    renderSearchStatus();
+    s.items = [];
+    if (!typed) { el.innerHTML = ""; return; }
+    if (!res) { el.innerHTML = s.busy ? `<div class="sr-wait">${SPIN()} ${t("Searching…")}</div>` : ""; return; }
+    if (res.error) { el.innerHTML = `<div class="callout error">${I("alert-circle")}<div>${esc(res.error)}</div></div>`; return; }
+    let h = res.total || s.kind || s.course ? filtersHTML(res) : "";
+    if (res.fixed) h += `<div class="sr-fix">${I("sparkle", "sm")}<span>${t.html("Did you mean <b>{q}</b>?", { q: res.fixed })}</span><button class="btn sm" data-act="search-again" data-q="${esc(res.fixed)}">${t.html("Search for {q}", { q: res.fixed })}</button></div>`;
+    h += res.total ? res.groups.map(groupHTML).join("") : noneHTML();
+    el.innerHTML = h;
+    if (Studia.renderMath) Studia.renderMath(el);                       // formulas in the files' text and the chats
+  }
+  function filtersHTML(res) {
+    const s = S.search, counts = res.counts || {};
+    const all = Object.values(counts).reduce((a, b) => a + b, 0);
+    const chip = (k, label, icon, n) => `<button class="sr-kind ${(s.kind || "") === k ? "on" : ""}" data-act="search-kind" data-kind="${k}" aria-pressed="${(s.kind || "") === k}">${icon ? I(icon, "sm") : ""}<span>${label}</span><span class="n">${t.num(n)}</span></button>`;
+    const kinds = KINDS().filter(([k]) => counts[k] || s.kind === k);
+    const courses = (res.courses || []).slice();
+    if (s.course && !courses.some((c) => c.id === s.course)) courses.push({ id: s.course, code: (findCourse(s.course) || {}).code || "", n: 0 });
+    const sel = courses.length > 1 || s.course ? `<select class="input sm sr-course" data-act="search-course" aria-label="${t("Course")}"><option value="">${t("All courses")}</option>${courses.map((c) => `<option value="${esc(c.id)}" ${s.course === c.id ? "selected" : ""}>${esc(c.code)} (${t.num(c.n)})</option>`).join("")}</select>` : "";
+    return `<div class="sr-filters" role="toolbar" aria-label="${t("Show")}">${chip("", t("All"), "", all)}${kinds.map(([k, label, icon]) => chip(k, label, icon, counts[k] || 0)).join("")}<span class="spacer"></span>${sel}</div>`;
+  }
+  function groupHTML(g) {
+    const [k, label, icon] = kindOf(g.kind), more = !S.search.kind && g.count > g.items.length;
+    const next = S.search.kind && g.count > g.items.length;       // one kind shown: the next ones, PAGE at a time
+    return `<section class="sr-group sr-${esc(k)}"><div class="sr-head">${I(icon)}<h3>${label}</h3><span class="count">${t.num(g.count)}</span><span class="spacer"></span>
+      ${more ? `<button class="btn ghost sm" data-act="search-kind" data-kind="${esc(k)}">${t.html("Show all {n}", { n: t.num(g.count) })} ${I("chevron-right", "sm")}</button>` : ""}</div>
+      <div class="sr-list">${g.items.map((it) => itemHTML(it, S.search.items)).join("")}</div>
+      ${next ? `<div class="sr-next"><button class="btn sm" data-act="search-more">${t("Show more ({shown} of {n})", { shown: t.num(g.items.length), n: t.num(g.count) })}</button></div>` : ""}</section>`;
+  }
+  const marked = (sn) => (sn ? Match.html(sn.text, sn.marks) : "");
+  // one result: its first row says what and where (course, date, title), each row opens one hit (a moment, a page)
+  function itemHTML(it, into, quick) {
+    const i = into.push(it) - 1, c = findCourse(it.course_id);
+    const code = it.course_code ? `<span class="sr-code" ${c && Studia.hue ? `style="--h:${Studia.hue(c)}"` : ""}>${esc(it.course_code)}</span>` : "";
+    const some = it.every ? "" : `<span class="sr-some" title="${t("Has some of the words, not all")}">${t("some of the words")}</span>`;
+    const day = (iso) => (iso ? t.date(iso.slice(0, 10), "dmw") : "");
+    let title = "", meta = "", rows = [], more = "";
+    if (it.kind === "lecture") {
+      title = esc([day(it.date), it.kind_label, it.time].filter(Boolean).join(" · "));
+      rows = it.moments.map((m) => [`<span class="sr-at">${esc(m.ts)}${it.parts > 1 ? `<small>${esc(t("part {n}", { n: m.part }))}</small>` : ""}</span>`, marked(m.snippet), t("Open the transcript at {ts}", { ts: m.ts })]);
+      if (it.more) more = t.n(it.more, "+{n} more moment in this lecture", "+{n} more moments in this lecture");
+    } else if (it.kind === "file") {
+      title = marked(it.title);
+      meta = `<span class="sr-ext ext-${esc(it.ext)}">${esc((it.ext || "").toUpperCase())}</span>${it.downloaded ? "" : `<span class="sr-tag">${t("not downloaded")}</span>`}`;
+      rows = it.pages.length ? it.pages.map((p) => [`<span class="sr-at">${esc(t("p. {n}", { n: p.page }))}</span>`, marked(p.snippet), it.downloaded ? t("Open the file (page {n})", { n: p.page }) : t("Download the file")])
+        : [["", "", it.downloaded ? t("Open the file") : t("Download the file")]];
+      if (it.more) more = t.n(it.more, "+{n} more page", "+{n} more pages");
+    } else if (it.kind === "announcement") {
+      title = marked(it.title);
+      meta = `<span class="sr-when">${esc([day(it.posted_at), it.author].filter(Boolean).join(" · "))}</span>`;
+      rows = [["", marked(it.snippet), t("Open the announcement")]];
+    } else if (it.kind === "week") {
+      title = esc(t("Week {n}", { n: it.week }));
+      meta = `<span class="sr-when">${esc(day(it.date))}</span>`;
+      rows = [["", marked(it.snippet), t("Open this week of the course")]];
+    } else if (it.kind === "note") {
+      title = esc(it.label);
+      meta = `<span class="sr-when">${esc(day(it.day_key.split("|")[1]))}</span>`;
+      rows = [["", marked(it.snippet), t("Open the notes")]];
+    } else {
+      title = marked(it.title);
+      meta = `<span class="sr-when">${esc(day(it.date))}</span>`;
+      rows = [[it.role ? `<span class="sr-who">${esc(it.role === "user" ? t("You") : t("AI"))}</span>` : "", marked(it.snippet), t("Open the chat")]];
+    }
+    if (quick) rows = rows.slice(0, 1);
+    const icon = quick ? `<span class="sr-ico">${I(kindOf(it.kind)[2], "sm")}</span>` : "";
+    const head = `<span class="sr-top">${icon}${code}<span class="sr-title">${title}</span>${meta}${some}</span>`;
+    return `<div class="sr-item">${rows.map(([lead, text, tip], k) => `<button class="sr-hit ${k ? "sub" : ""}" data-act="${quick ? "qs-open" : "sr-open"}" data-i="${i}" data-m="${k}" title="${esc(tip)}">${k ? "" : head}${text || lead ? `<span class="sr-line">${lead}<span class="snippet">${text}</span></span>` : ""}</button>`).join("")}
+      ${more && !quick ? `<div class="sr-more">${esc(more)}</div>` : ""}</div>`;
+  }
+  function noneHTML() {
+    const s = S.search;
+    return `<div class="sr-none">${I("search")}<h3>${t.html("Nothing found for “{q}”", { q: s.q.trim() })}</h3>
+      <p>${s.course || s.kind ? t("Nothing in what you picked. Look everywhere?") : t("Check the spelling, try fewer words, or try the word in the other language (sınav for exam).")}</p>
+      ${s.course || s.kind ? `<button class="btn" data-act="search-widen">${I("search", "sm")} ${t("Search everything")}</button>` : ""}</div>`;
+  }
+  // a result opens where it is
+  async function openHit(it, k, q) {
+    if (!it) return;
+    rememberSearch(q);
+    if (it.kind === "lecture") { const m = it.moments[k] || it.moments[0]; openDay(it.day_key, false, { find: q, some: !it.every, t: m.t, id: m.delivery_id }); }
+    else if (it.kind === "note") openDay(it.day_key, false, { find: q, some: !it.every, notes: it.note_kind });
+    else if (it.kind === "announcement") go({ name: "course", courseId: it.course_id, tab: "announcements", annFocus: it.id });
+    else if (it.kind === "week") go({ name: "course", courseId: it.course_id, tab: "weeks", jumpWeek: it.week });
+    else if (it.kind === "chat") go({ name: "chat", chatId: it.chat_id });          // (go opens it)
+    else if (it.kind === "file") {
+      if (it.downloaded) { Studia.said(call("material_open", it.resource_id)); return; }
+      const r = await call("materials_download", [it.resource_id]);      // on its course's Files, where it shows coming in
+      if (!r.ok) { toast(r.error, "error"); return; }
+      S.matFilter = { ...(S.matFilter || {}), [it.course_id]: it.title.text };
+      go({ name: "course", courseId: it.course_id, tab: "materials" });
+      toast(t("Downloading {name}. Click it once it is in.", { name: it.title.text }), "info");
+    }
+  }
+  // the results' rows with the arrow keys (the search box, then each row; Esc back to the box)
+  function moveInResults(e, list, box) {
+    const rows = $$(list), at = rows.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); (rows[at + 1] || rows[at] || box).focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); (at > 0 ? rows[at - 1] : box).focus(); }
+    else if (e.key === "Escape" && at >= 0) { e.preventDefault(); e.stopPropagation(); box.focus(); }
+    if (document.activeElement !== box && rows.includes(document.activeElement)) document.activeElement.scrollIntoView({ block: "nearest" });
+  }
+
+  // ---- the quick box: the best few results while you type, Enter for all of them on the Search page
+  const QS = { q: "", res: null, sel: -1, items: [], seq: 0, timer: 0 };
+  const quickBoxHTML = () => `<div class="qs" id="qs"><label class="qs-box">${I("search", "sm")}<input id="qs-input" type="search" data-act="qs" value="${esc(QS.q)}" placeholder="${t("Search")}" aria-label="${t("Search everything")}" aria-controls="qs-pop" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"><kbd>Ctrl K</kbd></label></div>`;
+  function runQuick(q) {
+    QS.q = q; clearTimeout(QS.timer);
+    if (q.trim().length < 2) { QS.res = null; renderQuick(); return; }
+    renderQuick();
+    QS.timer = setTimeout(async () => {
+      const n = ++QS.seq;
+      const res = await call("search", q, { quick: true });
+      if (n !== QS.seq || QS.q !== q) return;
+      QS.res = res.ok ? res : { top: [], error: res.error }; QS.sel = -1; renderQuick();
+    }, 110);
+  }
+  function renderQuick() {
+    const pop = $("#qs-pop"), inp = $("#qs-input"); if (!pop || !inp) return;
+    const open = document.activeElement === inp && QS.q.trim().length >= 2;
+    pop.classList.toggle("hidden", !open); inp.setAttribute("aria-expanded", String(open));
+    if (!open) return;
+    const r = inp.closest(".qs-box").getBoundingClientRect();
+    pop.style.left = `${Math.round(r.left)}px`; pop.style.top = `${Math.round(r.bottom + 6)}px`;
+    const res = QS.res;
+    QS.items = [];
+    const rows = res ? (res.top || []).map((it) => itemHTML(it, QS.items, true)).join("") : "";
+    pop.innerHTML = (!res ? `<div class="qs-wait">${SPIN()} ${t("Searching…")}</div>`
+      : rows || `<div class="qs-none">${t.html("Nothing found for “{q}”", { q: QS.q.trim() })}${res.fixed ? ` <button class="link" data-act="qs-fix" data-q="${esc(res.fixed)}">${t.html("Did you mean {q}?", { q: res.fixed })}</button>` : ""}</div>`)
+      + `<button class="qs-all" data-act="qs-all">${I("search", "sm")}<span>${t.html("All results for “{q}”", { q: QS.q.trim() })}</span><span class="spacer"></span><kbd>Enter</kbd></button>`;
+    const rowsNow = $$("#qs-pop .sr-hit, #qs-pop .qs-all");
+    rowsNow.forEach((b, k) => b.classList.toggle("on", k === QS.sel));
+  }
+  function quickAllClear() { QS.q = ""; QS.res = null; QS.sel = -1; const inp = $("#qs-input"); if (inp) { inp.value = ""; inp.blur(); } renderQuick(); }
+  function quickAll(q) {        // the Search page with this query
+    const v = (q || QS.q).trim();
+    rememberSearch(v);
+    quickAllClear();
+    S.search = { ...S.search, q: v, course: "", kind: "" };
+    if (S.view.name === "library") renderView(); else go({ name: "library" });
+    runSearch(v, true);
+    const box = $("#search-q"); if (box) { box.focus(); box.setSelectionRange(v.length, v.length); }
+  }
+  function quickKey(e) {
+    const rows = $$("#qs-pop .sr-hit, #qs-pop .qs-all");
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!rows.length) return;
+      QS.sel = e.key === "ArrowDown" ? Math.min(rows.length - 1, QS.sel + 1) : Math.max(-1, QS.sel - 1);
+      rows.forEach((b, k) => b.classList.toggle("on", k === QS.sel));
+      if (rows[QS.sel]) rows[QS.sel].scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (rows[QS.sel]) rows[QS.sel].click(); else if (QS.q.trim().length >= 2) quickAll();
+    } else if (e.key === "Escape") {
+      e.preventDefault(); e.stopPropagation();
+      if (QS.q) { e.target.value = ""; runQuick(""); } else e.target.blur();
+    }
   }
 
   // ---- settings
@@ -1001,7 +1250,7 @@
     const sw = (key) => `<input type="checkbox" class="switch" data-act="set-bool" data-key="${key}" ${s[key] ? "checked" : ""}>`;
     const profs = S.profiles.length ? S.profiles : [{ id: "main", main: true, active: true, has_login: true, ...p }];
     const sections = [["set-profiles", t("Profiles")], ["set-tx", t("Transcription")], ["set-files", t("Files")], ["set-ai", t("AI")], ...(Studia.yt ? [["set-yt", "YouTube"]] : []),
-      ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ["set-look", t("Appearance")]];
+      ["set-bg", t("Notifications")], ["set-storage", t("Storage")], ["set-about", t("About")], ...(Studia.services ? [["set-services", t("Services")]] : []), ["set-look", t("Appearance")]];
     return `<div class="view-inner" style="max-width:820px">
       <nav class="set-nav">${sections.map(([id, l]) => `<button class="btn ghost sm" data-act="set-jump" data-id="${id}">${l}</button>`).join("")}</nav>
       <div class="card set-card" id="set-profiles"><h3>${t("Profiles")} <span class="dim sm">${t("one per IEULearn account")}</span></h3>
@@ -1071,6 +1320,7 @@
   ];
   const MODELS = () => [["haiku", "Haiku", t("lightest")], ["sonnet", "Sonnet", t("recommended")], ["opus", "Opus", t("best, uses the most")]];
   const aiName = () => ((S.system.ai || {}).label || t("AI"));          // ChatGPT, Claude or Offline model
+  const aiKnown = () => !!(S.system.ai || {}).provider;                // (not before the first snapshot or look)
   // a noun phrase that sentences take as {plan} (the Turkish ones keep it in the nominative)
   const aiPlan = () => ({ chatgpt: t("your own ChatGPT plan"), claude: t("your own Claude plan"), codex: t("your own ChatGPT plan"), local: t("the offline model on this PC") }[(S.system.ai || {}).provider] || t("the AI you chose"));
   const aiHint = () => { const ai = S.system.ai || {};   // why an AI button is greyed out
@@ -1114,18 +1364,27 @@
     return cached ? t("{k} read ({pct} from cache) · {out} written", p) : t("{k} read · {out} written", p);
   }
 
+  const chatFilterHTML = () => ((S.chat.list || []).length >= 6 || S.chat.filter
+    ? `<label class="list-filter">${I("search", "sm")}<input class="input sm" type="search" data-act="chat-filter" value="${esc(S.chat.filter || "")}" placeholder="${t("Find a chat")}" aria-label="${t("Find a chat")}" autocomplete="off" spellcheck="false"></label>` : "");
   function chatHTML() {
     return `<div class="chat-layout"><aside class="chat-list">
         <button class="btn grad sm block" data-act="chat-new" ${(S.system.ai || {}).available ? "" : "disabled"}>${I("plus", "sm")} ${t("New chat")}</button>
+        <div id="chat-filter-slot">${chatFilterHTML()}</div>
         <div class="chat-items" id="chat-items">${chatItemsHTML()}</div></aside>
       <section class="chat-main" id="chat-main">${chatMainHTML()}</section>${Studia.chatSideHTML ? Studia.chatSideHTML() : ""}</div>`;
   }
+  // the chats, or those whose title, course or first question has the words of the filter (as the search matches)
   function chatItemsHTML() {
-    const l = S.chat.list;
-    if (l == null) return `<div class="skel" style="height:46px;margin:8px 2px"></div><div class="skel" style="height:46px;margin:8px 2px"></div>`;
-    if (!l.length) return `<div class="chat-none">${t("Your chats appear here.")}</div>`;
+    const all = S.chat.list, f = (S.chat.filter || "").trim();
+    if (all == null) return `<div class="skel" style="height:46px;margin:8px 2px"></div><div class="skel" style="height:46px;margin:8px 2px"></div>`;
+    if (!all.length) return `<div class="chat-none">${t("Your chats appear here.")}</div>`;
+    const about = (c) => [c.title, c.course_code, c.scope_label, c.first_question].filter(Boolean).join(" · ");
+    const q = f.length >= 2 ? Match.query(f, all.map(about)) : null;
+    const l = q ? all.filter((c) => q.match(about(c)).every) : all;
+    if (!l.length) return `<div class="chat-none">${t.html("No chat has “{q}”.", { q: f })}</div>`;
+    const title = (c) => { const m = q && q.match(c.title || ""); return m && m.marks.length ? Match.html(c.title, m.marks) : esc(c.title || t("New chat")); };
     return l.map((c) => `<button class="chat-item ${S.chat.id === c.id && !S.chat.draft ? "on" : ""}" data-act="chat-open" data-id="${esc(c.id)}">
-      <span class="t">${c.running ? SPIN() : ""}${esc(c.title || t("New chat"))}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
+      <span class="t">${c.running ? SPIN() : ""}${title(c)}</span><span class="s"><b>${esc(c.course_code)}</b> · ${esc(c.scope_label)}</span>
       <span class="s">${esc(rel(c.updated_at))} · ${esc((S.system.ai || {}).provider === "local" ? aiName() : isChatGPT() && Studia.effortName ? Studia.effortName(c.effort) : levelLabel(c.model))}</span></button>`).join("");
   }
   function chatMainHTML() {
@@ -1238,7 +1497,9 @@
     S.chat.list = r.chats || [];
     if (r.limits && Object.keys(r.limits).length) S.limits = r.limits;
     const el = $("#chat-items"); if (el) el.innerHTML = chatItemsHTML();
+    const slot = $("#chat-filter-slot"); if (slot && !slot.querySelector("input")) slot.innerHTML = chatFilterHTML();   // (many chats now)
   }
+  Studia.inputs["chat-filter"] = (el) => { S.chat.filter = el.value; const it = $("#chat-items"); if (it) it.innerHTML = chatItemsHTML(); };
   async function openChat(id) {
     if (S.qpOpen) closePane();     // a chat in the sidebar
     if (id !== S.chat.id) S.chat.scroll = null;
@@ -1336,9 +1597,9 @@
       model: (preset && preset.model) || S.settings.ai_model || "sonnet", keep: !!preset,
       read: preset && preset.read_all != null ? preset.read_all : null };          // "Read everything": null = as the chat's size says
     const daysOf = () => (st.scope ? st.scope.days : []);
-    const whole = () => st.focus === "course";              // every lecture's highlights + the course files, searched per question
+    const whole = () => st.focus === "course";              // every lecture's full transcript + the course files (what doesn't fit whole is read in parts first)
     const chosen = () => daysOf().filter((d) => whole() || st.sel.has(d.day_key));
-    const tokOf = (d) => (st.focus === "full" ? d.tokens : d.hl_tokens);
+    const tokOf = (d) => (st.focus === "highlights" ? d.hl_tokens : d.tokens);
     const slideCount = () => chosen().reduce((n, d) => n + d.slides, 0);
     const maxSlides = () => (st.scope && st.scope.max_slides) || 60;          // what the chosen AI takes in one request
     const maxTokens = () => (st.scope && ((st.scope.limits || {})[st.model] || st.scope.max_tokens)) || 150000;
@@ -1352,11 +1613,11 @@
       const old = $(".cp-days"), keepScroll = old ? old.scrollTop : 0;
       const oldBody = $(".cp-scroll"), keepBody = oldBody ? oldBody.scrollTop : 0;
       const ai = S.system.ai || {}, who = aiName();
-      const max = maxTokens(), tot = total(), over = tot > max, sc = slideCount(), ms = maxSlides();
+      const max = maxTokens(), tot = total(), over = tot > max && !whole(), sc = slideCount(), ms = maxSlides();   // (the whole course: read in parts)
       const images = ai.can_images !== false && ai.provider !== "local";
       const modes = [["full", "file-text", t("Chosen class days"), t("Full transcripts of the days you pick. Best for questions about specific lectures.")],
         ["highlights", "star", t("Highlights only"), t("Only what the lecturer stressed, from the days you pick. Lightest.")],
-        ["course", "library", t("Whole course"), t("Every lecture's highlights, plus matching pages of your slides and PDFs for each question.")]];
+        ["course", "library", t("Whole course"), t("Every lecture's full transcript, plus your slides and files. What doesn't fit in one request is read in parts first.")]];
       const days = daysOf(), code = (cr.courses.find((c) => c.id === st.course) || {}).code;
       const list = st.scope == null ? `<div class="skel" style="height:120px;margin:6px"></div>`
         : !days.length ? `<div class="chat-none">${t("No transcribed class days in this course yet.")}</div>`
@@ -1820,7 +2081,11 @@
     if (!x || x.active) return false;
     const r = await call("profile_switch", x.id, force);
     if (!r.ok) {
-      if (r.busy) { if (confirm(r.ask || t("A transcription is still running. Cancel it and switch profiles?"))) return switchProfile(x, true); return false; }
+      if (r.busy) {          // a transcription (or the setup's download) still runs: switching stops it
+        const yes = await Studia.ask({ title: t("Switch profiles anyway?"), danger: true, ok: t("Switch anyway"),
+          text: r.ask || t("A transcription is still running. Switching stops it; when you open this profile again, IEUStudia offers to go on where it stopped.") });
+        return yes ? switchProfile(x, true) : false;
+      }
       toast(r.error || t("Could not switch profiles"), "error");
       return false;
     }
@@ -1864,6 +2129,58 @@
     modalFrom = null;
     const hook = Studia.onModalClose; Studia.onModalClose = null;   // a dialog waiting for an answer: closed = "no"
     if (hook) hook();
+  }
+  // A question in IEUStudia's own dialog, instead of the window's confirm() and prompt() boxes ("file:// says…", in
+  // the browser's style): a title, plain text, Cancel and a clear main button (red for what can't be undone). Enter
+  // answers with the main button, Escape or a click beside the dialog with Cancel, and the focus goes back where it
+  // was. It opens over a dialog that is already open and leaves that one as it is. Resolves true or false; asked for a
+  // line of text (``value``: what the box starts with), what was typed, or null.
+  // {title, text, ok, cancel, danger, value, placeholder}. Called as Studia.ask (the page tests answer it)
+  let asking = null;               // the question open now: {box, answer}
+  function ask(o) {
+    if (asking) asking.answer(false);            // one at a time: a new one answers the one left open with Cancel
+    const typing = o.value != null;
+    return new Promise((resolve) => {
+      const from = document.activeElement;
+      const box = document.createElement("div");
+      box.className = "backdrop ask-back"; box.id = "ask";
+      box.innerHTML = `<div class="modal ask" role="alertdialog" aria-modal="true" aria-labelledby="ask-title"${o.text ? ' aria-describedby="ask-text"' : ""} tabindex="-1">
+        <h2 id="ask-title">${esc(o.title)}</h2>${o.text ? `<p class="lead" id="ask-text">${esc(o.text)}</p>` : ""}
+        ${typing ? `<input class="input" id="ask-value" autocomplete="off" spellcheck="false" value="${esc(o.value)}"${o.placeholder ? ` placeholder="${esc(o.placeholder)}"` : ""}>` : ""}
+        <div class="actions"><button class="btn" data-ask="no">${esc(o.cancel || t("Cancel"))}</button>
+          <button class="btn primary${o.danger ? " danger" : ""}" data-ask="yes">${esc(o.ok || t("OK"))}</button></div></div>`;
+      document.body.appendChild(box);
+      const me = asking = {
+        box,
+        answer(yes) {
+          if (asking !== me) return;                 // (answered already: Enter, then the click it makes)
+          asking = null;
+          const input = typing ? box.querySelector("#ask-value") : null, typed = input ? input.value : "";
+          box.remove();
+          const back = from && from.isConnected && from !== document.body ? from : $("#overlay .modal");   // or the dialog under it
+          if (back && back.focus) back.focus({ preventScroll: true });
+          resolve(typing ? (yes ? typed : null) : !!yes);
+        },
+      };
+      box.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-ask]");
+        if (b) me.answer(b.dataset.ask === "yes");
+        else if (e.target === box) me.answer(false);
+      });
+      const first = box.querySelector(typing ? "#ask-value" : "[data-ask='yes']");
+      if (first) { first.focus({ preventScroll: true }); if (typing) first.select(); }
+    });
+  }
+  // the keys while a question is open: Enter and Escape answer it, Tab stays in it (true: the key was its own)
+  function askKey(e) {
+    if (!asking) return false;
+    if (e.key === "Escape") { e.preventDefault(); asking.answer(false); return true; }
+    // (Enter on one of its buttons presses that button, as usual)
+    if (e.key === "Enter" && !e.isComposing && !(e.target && e.target.closest && e.target.closest("#ask button"))) {
+      e.preventDefault(); asking.answer(true); return true;
+    }
+    if (e.key === "Tab") { trapTab(e, asking.box.querySelector(".modal")); return true; }
+    return false;
   }
 
   // ---- a new version (the top bar's button, Settings → About, or the tray helper's notification)
@@ -2035,9 +2352,10 @@
     },
     retry: (el) => call("transcribe", [el.dataset.id]),
     cancel: (el) => call("cancel", el.dataset.id),
-    "cancel-all": () => {
+    "cancel-all": async () => {
       const n = new Set((S.queue || []).map((j) => j.day || j.id)).size;          // lectures, not their parts
-      if (n > 1 && !confirm(t("Cancel all {n} lectures in the queue? To stop for a while instead, use Pause.", { n }))) return;
+      if (n > 1 && !(await Studia.ask({ title: t("Cancel all {n} lectures in the queue?", { n }), text: t("To stop for a while instead, use Pause."),
+        ok: t("Cancel all"), cancel: t("Keep them"), danger: true }))) return;
       call("cancel", null);
     },
     "queue-pause": async () => { const r = await call("queue_pause", !S.paused); if (r.ok) { S.paused = r.paused; renderQueue(); } },
@@ -2055,8 +2373,21 @@
       c.scrollIntoView({ block: "start" });
     },
     "open-day": (el) => openDay(el.dataset.day),
-    "open-hit": async (el) => { await openDay(el.dataset.day); setTimeout(() => jumpTo(null, +el.dataset.t, el.dataset.id), 60); },
-    "open-mat-hit": (el) => call("material_open", el.dataset.id).then((r) => { if (!r.ok) toast(r.error, "error"); }),
+    "sr-open": (el) => openHit(S.search.items[+el.dataset.i], +el.dataset.m, S.search.q),
+    "qs-open": (el) => { const q = QS.q; const it = QS.items[+el.dataset.i]; quickAllClear(); openHit(it, +el.dataset.m, q); },
+    "qs-all": () => quickAll(),
+    "qs-fix": (el) => { const inp = $("#qs-input"); if (inp) { inp.value = el.dataset.q; inp.focus(); } runQuick(el.dataset.q); },
+    "search-again": (el) => { const box = $("#search-q"); if (box) box.value = el.dataset.q; rememberSearch(el.dataset.q); runSearch(el.dataset.q, true); if (box) box.focus(); },
+    "search-forget": (el) => {
+      keepRecent(el.dataset.q ? recentSearches().filter((x) => x !== el.dataset.q) : []);
+      const b = $("#search-browse"); if (b) b.innerHTML = browseHTML();
+    },
+    "search-kind": (el) => { S.search.kind = el.dataset.kind || ""; S.search.limit = PAGE; runSearch(S.search.q, true); $("#view").scrollTo({ top: 0, behavior: "instant" }); },
+    "search-more": () => { S.search.limit = (S.search.limit || PAGE) + 2 * PAGE; runSearch(S.search.q, true); },
+    "search-course": (el) => { S.search.course = el.value || ""; runSearch(S.search.q, true); },
+    "search-widen": () => { S.search.kind = ""; S.search.course = ""; runSearch(S.search.q, true); },
+    "search-clear": () => { const box = $("#search-q"); if (box) { box.value = ""; box.focus(); } runSearch(""); },
+    "find-fix": (el) => { const f = $("[data-act='find']"); if (f) { f.value = el.dataset.q; f.focus(); } S.dayFind = el.dataset.q; S.dayFindSome = false; refreshFind(); },
     url: async (el) => {                       // no browser could be started: said, and the link is copied
       const r = await call("open_url", el.dataset.url);
       if (!r.ok && r.error) toast(r.error, r.copied ? "info" : "error");
@@ -2089,8 +2420,8 @@
       const p = d.parts.find((x) => x.index === +el.dataset.part) || {};
       const sec = Math.floor(+el.dataset.t), ts = `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
       const iso = d.day_key.split("|")[1] || "";
-      const r = await call("copy_text", `${d.course.code} · ${/^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label}${d.parts.length > 1 ? ` · ${t("Part {n}", { n: p.index })}` : ""}, ${ts}: ${p.viewer_url}&start=${sec}`);
-      toast(r.ok ? t("Link copied. Classmates open it on Panopto with their own IEU login.") : r.error || t("Copy failed"), r.ok ? "success" : "error");
+      const text = `${d.course.code} · ${/^\d{4}-\d{2}-\d{2}$/.test(iso) ? shortDate(iso) : d.date_label}${d.parts.length > 1 ? ` · ${t("Part {n}", { n: p.index })}` : ""}, ${ts}: ${p.viewer_url}&start=${sec}`;
+      copied(await call("copy_text", text), text, t("Link copied. Classmates open it on Panopto with their own IEU login."));
     },
     jump: (el) => jumpTo(+el.dataset.part, +el.dataset.t),
     zoom: (el) => { $("#overlay").innerHTML = `<div class="lightbox" data-act="modal-close"><img src="${esc(el.dataset.src)}"></div>`; },
@@ -2120,10 +2451,10 @@
       const saved = await setMark(+el.dataset.part, +el.dataset.t, on);      // "Marked." only once it is saved
       if (saved && on && first) toast(t("Marked. Your marks are listed at the top of this page."), "success");
     },
-    "mark-note": (el) => {
+    "mark-note": async (el) => {
       const m = ((S.day || {}).marks || []).find((x) => x.id === el.dataset.id && Math.abs(x.t - +el.dataset.t) < 0.05);
       if (!m) return;
-      const note = prompt(t("A note for this passage (for yourself)"), m.note || "");
+      const note = await Studia.ask({ title: t("A note for this passage"), text: t("Only for you: it's shown with your mark."), value: m.note || "", ok: t("Save") });
       if (note != null) setMark(m.part, m.t, true, note.trim());
     },
     "mark-del": (el) => {
@@ -2156,8 +2487,7 @@
     "chat-day": (el) => { if (el.classList.contains("gone")) toast(t("That class day is no longer in your library."), "warning"); else openDay(el.dataset.key); },
     "chat-copy": async (el) => {
       const m = S.chat.data && S.chat.data.messages.find((x) => x.seq === +el.dataset.seq); if (!m) return;
-      const r = await call("copy_text", m.text);
-      toast(r.ok ? t("Answer copied (as Markdown).") : r.error || t("Copy failed"), r.ok ? "success" : "error");
+      copied(await call("copy_text", m.text), m.text, t("Answer copied (as Markdown)."));
     },
     "chat-retry": async (el) => {      // replaces the failed answer instead of asking the question twice
       const c = S.chat.data; if (!c || c.running) return;
@@ -2173,7 +2503,7 @@
     },
     "chat-rename": async () => {
       const c = S.chat.data; if (!c) return;
-      const name = prompt(t("Name this chat"), c.title); if (name == null) return;
+      const name = await Studia.ask({ title: t("Name this chat"), value: c.title || "", ok: t("Rename") }); if (name == null) return;
       const r = await call("chat_update", c.id, { title: name });
       if (!r.ok) { toast(r.error, "error"); return; }
       c.title = r.chat.title; renderChatHead(); loadChats();
@@ -2194,7 +2524,7 @@
         run: async () => { const r = await call("chat_export", S.chat.data.id); toast(r.ok ? t("Chat saved — shown in Explorer.") : r.error, r.ok ? "success" : "error"); } },
       "-",
       { id: "delete", icon: "x", label: t("Delete chat"), run: async () => {
-        if (!confirm(t("Delete this chat? This cannot be undone."))) return;
+        if (!(await Studia.ask({ title: t("Delete this chat?"), text: t("This cannot be undone."), ok: t("Delete"), danger: true }))) return;
         const r = await call("chat_delete", S.chat.data.id);
         if (!r.ok) { toast(r.error, "error"); return; }
         S.chat.id = null; S.chat.data = null; S.view = { name: "chat" }; renderChatMain(); loadChats();
@@ -2248,7 +2578,8 @@
     "my-section": async (el) => { const r = await call("set_course_prefs", el.dataset.id, { my_section: el.value, show_mode: "mine" }); if (r.ok) { setCourses(r.courses); renderView(); } },
     "pick-folder": async () => { const r = await call("pick_folder"); if (r.ok && r.path) { await saveSetting({ output_dir: r.path }); if (S.mode === "setup") render(); } },
     signout: async () => {
-      if (!confirm(t("Sign out and remove the stored password from this PC? Your courses and transcripts stay here."))) return;
+      if (!(await Studia.ask({ title: t("Sign out?"), text: t("The stored password is removed from this PC. Your courses and transcripts stay here."),
+        ok: t("Sign out"), danger: true }))) return;
       const r = await call("sign_out");
       if (r.profiles) S.profiles = r.profiles;
       S.mode = "signin"; S.signin = { busy: false, error: "" }; render();
@@ -2266,8 +2597,9 @@
     "profile-remove": async (el) => {
       const x = S.profiles.find((p) => p.id === el.dataset.id); if (!x) return;
       const who = x.name || x.username;
-      if (!confirm(who ? t("Remove {name} from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay.", { name: who })
-        : t("Remove this profile from this PC?\n\nIts library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay."))) return;
+      if (!(await Studia.ask({ title: who ? t("Remove the profile of {name} from this PC?", { name: who }) : t("Remove this profile from this PC?"),
+        text: t("Its library, transcripts, chats and stored password on this PC are deleted. Files already saved in its IEUStudia folder stay."),
+        ok: t("Remove"), danger: true }))) return;
       const r = await call("profile_remove", x.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       S.profiles = r.profiles; toast(t("Profile removed"), "success");
@@ -2281,11 +2613,11 @@
     "modal-bg": (el, e) => { if (e.target === el) closeModal(); },
   };
   // what the other UI files may use (their actions go into A, their views into Studia.views)
-  Object.assign(Studia, { S, call, esc, I, SPIN, fmtDur, rel, pct, toast, modal, closeModal, menu, go, render,
+  Object.assign(Studia, { S, call, esc, I, SPIN, fmtDur, rel, pct, toast, modal, closeModal, ask, menu, go, render,
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
-    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub,
-    otherSection, oddMark, renderChatHead });
+    aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
+    otherSection, oddMark, renderChatHead, trapTab });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2293,9 +2625,14 @@
     if (S.view.name === "settings") renderView();
   }
   async function copyAI(template, scope) {
-    const r = await call("copy_for_ai", scope || S.day.day_key, template);
-    if (r.ok) toast(t("Copied {chars} characters (~{k}k tokens). Paste it into ChatGPT or Claude.", { chars: t.num(r.chars), k: dec(r.tokens / 1000, 1) }), "success");
-    else toast(r.error || t("Copy failed"), "error");
+    const r = await call("copy_for_ai", scope || S.day.day_key, template);   // (refused: its text comes back to copy by hand)
+    copied(r, r.text || "", t("Copied {chars} characters (~{k}k tokens). Paste it into ChatGPT or Claude.", { chars: t.num(r.chars || 0), k: dec((r.tokens || 0) / 1000, 1) }));
+  }
+  // a copy: said done, or, when the clipboard refused it, the Copy failed dialog with the text to copy by hand
+  // (setup.js, as the connection steps have it); without the text, its error
+  function copied(r, text, done) {
+    if (Studia.copied) { Studia.copied(r, text, done); return; }
+    toast(r.ok ? done : r.error || t("Copy failed"), r.ok ? "success" : "error");
   }
   function jumpTo(part, sec, deliveryId) {
     let paras = $$(".para");
@@ -2337,11 +2674,33 @@
   document.addEventListener("input", (e) => {
     const el = e.target;
     if (el.dataset && el.dataset.act === "search") runSearch(el.value);
-    if (el.dataset && el.dataset.act === "find") { S.dayFind = el.value; $$(".para").forEach((p) => { /* cheap re-render of paragraphs */ }); refreshFind(); }
+    if (el.dataset && el.dataset.act === "qs") runQuick(el.value);
+    if (el.dataset && el.dataset.act === "find") { S.dayFind = el.value; S.dayFindSome = false; refreshFind(); }
+    if (el.dataset && Studia.inputs[el.dataset.act]) Studia.inputs[el.dataset.act](el, e);   // (the other UI files' filters)
     if (el.id === "chat-input") { S.chat.input = el.value; autosize(el); }
   });
+  // the quick box's results show while it has the focus (a click on one keeps it: mousedown doesn't take it away)
+  document.addEventListener("focusin", (e) => { if (e.target && e.target.id === "qs-input") renderQuick(); });
+  document.addEventListener("focusout", (e) => { if (e.target && e.target.id === "qs-input") setTimeout(renderQuick, 0); });
+  document.addEventListener("mousedown", (e) => { if (e.target.closest && e.target.closest("#qs-pop")) e.preventDefault(); });
+  window.addEventListener("resize", () => renderQuick());
+  function findStep(back) {      // Enter in the transcript's find box: on to the next passage with the words
+    const shown = $$(".para").filter((p) => p.style.display !== "none");
+    if (!shown.length) return;
+    const mid = $("#view").getBoundingClientRect().top + 120;
+    const at = shown.findIndex((p) => p.getBoundingClientRect().top > mid + 4);
+    const cur = shown.findIndex((p) => p.classList.contains("flash"));
+    let k = back ? (cur > 0 ? cur - 1 : at > 0 ? at - 2 : shown.length - 1) : (cur >= 0 ? cur + 1 : at >= 0 ? at : 0);
+    k = ((k % shown.length) + shown.length) % shown.length;
+    shown.forEach((p) => p.classList.remove("flash"));
+    const p = shown[k];
+    p.scrollIntoView({ block: "center", behavior: "instant" }); void p.offsetWidth; p.classList.add("flash");
+  }
   function refreshFind() {
     if (!S.day) return;
+    const c = $("#find-count"); if (c) c.innerHTML = findCountHTML();
+    const hl = $("#hl-slot"); if (hl) hl.innerHTML = highlightsHTML();
+    $("#view").classList.toggle("find-on", !!dayFinder());
     const parts = S.day.parts;
     $$(".para").forEach((node) => {
       const p = parts.find((x) => x.index === +node.dataset.part);
@@ -2418,6 +2777,7 @@
   };
   document.addEventListener("keyup", capsLock);
   document.addEventListener("keydown", (e) => {
+    if (askKey(e)) { e.stopImmediatePropagation(); return; }     // a question is open: Enter, Escape and Tab are its own
     capsLock(e);
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.id === "chat-input") { e.preventDefault(); sendChat(); return; }
     if (e.key === "Enter" && e.target && ["si-user", "aa-user"].includes(e.target.id)) {    // on to the password first
@@ -2430,6 +2790,23 @@
     }
     if (e.key === "Tab") { const m = $("#overlay .modal"); if (m) trapTab(e, m); }
     if (e.ctrlKey && !e.altKey && S.mode === "app" && ["+", "=", "-", "0"].includes(e.key)) { e.preventDefault(); textSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return; }
+    const tgt = e.target || {}, typingIn = tgt.matches && tgt.matches("input, textarea, select, [contenteditable]");
+    if (S.mode === "app" && !$("#overlay").innerHTML && ((e.ctrlKey && !e.altKey && e.key.toLowerCase() === "k") || (e.key === "/" && !typingIn && !e.ctrlKey))) {
+      const q = $("#qs-input"); if (q) { e.preventDefault(); q.focus(); q.select(); return; }          // the quick box, anywhere
+    }
+    if (tgt.id === "qs-input") { quickKey(e); return; }
+    if (tgt.id === "search-q") {
+      if (e.key === "ArrowDown") { const first = firstHit(); if (first) { e.preventDefault(); first.focus(); } return; }
+      if (e.key === "Enter") { e.preventDefault(); rememberSearch(tgt.value); searchEnter(tgt.value); return; }
+      if (e.key === "Escape" && tgt.value) { e.preventDefault(); e.stopPropagation(); tgt.value = ""; runSearch(""); return; }
+    }
+    if (tgt.classList && tgt.classList.contains("sr-hit") && tgt.closest("#search-results") && ["ArrowDown", "ArrowUp", "Escape"].includes(e.key)) {
+      moveInResults(e, "#search-results .sr-hit", $("#search-q")); return;
+    }
+    if (tgt.dataset && tgt.dataset.act === "find") {
+      if (e.key === "Enter") { e.preventDefault(); findStep(e.shiftKey); return; }
+      if (e.key === "Escape" && tgt.value) { e.preventDefault(); e.stopPropagation(); tgt.value = ""; S.dayFind = ""; S.dayFindSome = false; refreshFind(); return; }
+    }
     if (e.key === "Escape") {
       const menuOpen = !!$("#menu"); closeMenu();
       if ($("#overlay").innerHTML) closeModal(); else if (S.qpOpen && !menuOpen) closePane();   // the jobs pane, after a dialog
@@ -2441,6 +2818,7 @@
   // ------------------------------------------------------------------ boot
   async function boot() {
     t.load(await call("i18n"));
+    call("search_rules").then((r) => { if (r && r.ok) Match.load(r.rules); });    // finding on the page as the search does
     setSplash(t("Opening your library…"));
     const slow = setTimeout(() => setSplash(window.LS_LINUX ? t("Still starting… the first start after the PC boots can take a little longer.") : t("Still starting… the first start after Windows boots can take a little longer.")), 9000);
     const b = await call("get_bootstrap");
@@ -2644,8 +3022,20 @@
       cancel: () => ({ ok: true }), get_day: () => ({ ok: true, day: JSON.parse(JSON.stringify(detail)) }),
       mark_set: () => ({ ok: true }), mark_delete: () => ({ ok: true }), course_marks: () => ({ ok: true, marks: [] }),
       library: () => ({ ok: true, courses: courses.map((c) => ({ course_id: c.id, code: c.code, name: c.display_name, days: c.days.filter((d) => d.any_done) })).filter((c) => c.days.length) }),
-      search: (q) => ({ ok: true, results: [{ day_key: "17933|x|lecture", delivery_id: "a", t: 1121, ts: "18:41", snippet: `…the kind of question I will ask in the \u0002${q}\u0003, so please be careful…`, course_code: "MATH 240", date: "2026-10-14", time: "08:28" }],
-        materials: [{ resource_id: "m1793302", title: "Week03_Student", page: 12, snippet: `Bayes' rule [Eq. 2.9] … \u0002${q}\u0003 with the total probability`, course_id: "17933", course_code: "MATH 240" }] }),
+      search: (q, o = {}) => {        // (the preview: a few made-up results with the words marked as the page would)
+        const mk = (text) => ({ text, marks: Match.query(q, [text], { typing: false }).match(text).marks });
+        const base = { course_id: "17933", course_code: "MATH 240", every: true, score: 1 };
+        const groups = [
+          { kind: "announcement", count: 1, items: [{ ...base, kind: "announcement", key: "a1", id: "a1", title: mk(`About ${q}`), author: "Dr. Yılmaz", posted_at: "2026-10-09T09:00", date: "2026-10-09", snippet: mk(`Dear students, the ${q} is next week in class. It covers LO1 and LO2.`) }] },
+          { kind: "lecture", count: 2, items: [{ ...base, kind: "lecture", key: "17933|2026-10-14|lecture", day_key: "17933|2026-10-14|lecture", date: "2026-10-14", time: "08:30", kind_label: t("Lecture"), parts: 2, more: 2,
+            moments: [{ delivery_id: "a", t: 1121, ts: "18:41", part: 1, snippet: mk(`…the kind of question I will ask in the ${q}, so please be careful with the conditions…`) }] }] },
+          { kind: "file", count: 1, items: [{ ...base, kind: "file", key: "m1793302", resource_id: "m1793302", title: { text: "Week03_Student", marks: [] }, ext: "pdf", downloaded: true, more: 1,
+            pages: [{ page: 12, snippet: mk(`Bayes' rule [Eq. 2.9] and the ${q} with the total probability`) }] }] }];
+        const shown = groups.filter((g) => !o.kind || g.kind === o.kind);
+        return { ok: true, query: q, fixed: "", total: shown.length, counts: { announcement: 1, lecture: 2, file: 1 }, courses: [{ id: "17933", code: "MATH 240", n: 4 }],
+          groups: shown, top: shown.map((g) => g.items[0]), words: Match.words(q), took_ms: 3 };
+      },
+      search_rules: () => ({ ok: false }),
       queue_pause: (on) => { paused = !!on; emit({ type: "queue", jobs: S.queue, batch: S.batch, paused }); return { ok: true, paused }; },
       queue_first: () => ({ ok: true }), queue_resume: () => ({ ok: true, queued: 3 }), queue_forget: () => ({ ok: true }),
       copy_text: () => ({ ok: true }),
@@ -2726,7 +3116,13 @@
         if (!parts) stream();
         else {
           const tick = () => {
-            m.usage = { reading: { done: part, total: parts, pages: rd.pages, read: Math.round((rd.pages * part) / parts), cached: 0, kind: "study" } };
+            // two parts at once, each with its pages, its clock and the notes so far (chatread.py's news)
+            const at = Date.now() / 1000, per = Math.ceil(rd.pages / Math.max(1, parts));
+            const live = (k) => ({ n: k + 1, from: k * per + 1, to: Math.min(rd.pages, (k + 1) * per), size: per, try: 1, started: at - 12 - 9 * (k - part),
+              files: [{ name: k % 2 ? "Bayes examples.pptx" : "Week04_Student.pdf", kind: "course", pages: Array.from({ length: per }, (_, j) => k * per + j + 1) }],
+              noted: k === part ? Math.min(per, 4) : 0, words: k === part ? 380 : 0 });
+            m.usage = { reading: { done: part, total: parts, pages: rd.pages, read: Math.round((rd.pages * part) / parts), cached: 0, kind: "study",
+              eta: Math.max(0, (parts - part) * 45), at, parts: [part, part + 1].filter((k) => k < parts).map(live) } };
             emit({ type: "chat", chat_id: id, seq, state: "streaming", text: "", usage: m.usage, limits });
             if (part === parts) { clearInterval(timers[id]); c.readDone = true; read = { ...m.usage.reading, unread: [], relevant: 0 }; m.usage = {}; stream(); }
             part += 1;

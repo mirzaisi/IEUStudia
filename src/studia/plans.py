@@ -8,15 +8,21 @@ Stages (each one's output is saved, so an interrupted plan resumes where it stop
   concepts - every topic of the weeks as one concept each, with the skills it takes (including the cases the
              material practises), whether the focus (a quiz's outcomes) needs it, YouTube queries, caption terms
              and practice from the material (AI)
-  search   - YouTube search per concept (yt-dlp; nothing is downloaded)
+  search   - YouTube search per concept (yt-dlp)
   inspect  - captions and chapters of the best candidates (yt-dlp)
+  listen   - the candidates whose captions can't show what they teach (none, another language, automatic ones far
+             too short or garbled) are listened to: their sound only is downloaded, transcribed on this PC and
+             deleted (listen.py); the transcript is then read like captions
   verify   - which videos really teach each concept and which of its skills, where, with quotes from the captions
              and the mistakes they show (AI, light model)
+  more     - every concept and skill no checked video teaches yet gets more searches (other words, Turkish, the
+             missing skills themselves), more candidates and another check, until it is covered or nothing new is
+             found; what stays without a good video is said, with why
   assemble - the plan within the time budget (AI); titles, channels and links come from the real data
 
-The AI's answers are checked in code: quotes must be found in the captions, "full" coverage needs every skill,
-topics the focus does not ask for are never required, and the coverage and completeness statements are computed
-from the verified skills - not taken from the AI.
+The AI's answers are checked in code: quotes must be found in the captions, a skill counts for a video only with a
+quote of it teaching that skill, "full" coverage needs every skill, topics the focus does not ask for are never
+required, and the coverage and completeness statements are computed from the verified skills - not taken from the AI.
 """
 
 from __future__ import annotations
@@ -33,7 +39,8 @@ import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Callable, Optional
+from types import SimpleNamespace
+from typing import Any, Callable, Iterable, Optional
 
 from . import store, ytprefs
 from .cancel import Cancelled
@@ -47,7 +54,9 @@ STAGES = [                                           # labels in English: t() to
     ("concepts", N_("Working out what you need to learn")),
     ("search", N_("Searching YouTube")),
     ("inspect", N_("Reading the videos' captions")),
+    ("listen", N_("Listening to videos without captions")),
     ("verify", N_("Checking which videos really teach each concept")),
+    ("more", N_("Looking for videos for what isn't covered yet")),
     ("assemble", N_("Building your plan")),
 ]
 STAGE_NAMES = [s for s, _ in STAGES]
@@ -70,6 +79,16 @@ VERIFY_PARALLEL = 3           # verification requests at once (each one waits ~1
 EXCERPT_CHARS = 2_000         # caption text per part sent for verification (~2 minutes of speech)
 MAX_CONCEPTS = 28
 VERIFY_MODEL = "haiku"
+PROOF_WORDS = 5               # a skill's quote shorter than this proves little
+# more: what no checked video teaches yet gets more searches and candidates, round after round, until it is covered or
+# a round finds nothing new to check
+MORE_ROUNDS = 3
+MORE_QUERIES = 4              # new searches the AI writes per concept (two a round, plus a Turkish one with both)
+MORE_PER_CONCEPT = 3          # new candidates inspected per concept and round
+MORE_CROSS = 2                # videos already read for other concepts, also checked for one when they talk about it
+MORE_VIDEOS = 36              # inspected in all the rounds together
+MORE_PAIRS = 12               # (concept, video) pairs per verification request (about a first check's size)
+MORE_REQUESTS = 6             # verification requests in all the rounds together
 
 SYSTEM = ("You are an expert university tutor who builds video study plans for an engineering student. You work only "
           "from the material you are given, you never invent facts about videos, and you answer with one JSON object "
@@ -589,32 +608,46 @@ def verify_prompt(batch: list[dict[str, Any]], videos: dict[str, dict[str, Any]]
         for vid, wins in (excerpts.get(c["id"]) or {}).items():
             v = videos.get(vid) or {}
             chapters = " · ".join(f"{fmt_ts(ch['start'])} {ch['title']}" for ch in v.get("chapters", [])[:12])
+            kind = ("transcribed from its sound by IEUStudia" if v.get("caption_kind") == "speech"
+                    else v.get("caption_kind") or "none")
             lines.append(f"  VIDEO {vid} — \"{v.get('title', '')}\" by {v.get('channel', '')} · {fmt_ts(v.get('duration_s', 0))}"
-                         f" · captions: {v.get('caption_kind') or 'none'} {v.get('caption_lang', '')}")
+                         f" · captions: {kind} {v.get('caption_lang', '')}")
             if chapters:
                 lines.append(f"    chapters: {chapters}")
             for w in wins:
                 lines.append(f"    caption excerpt {fmt_ts(w['start'])}–{fmt_ts(w['end'])}: \"{w['text']}\"")
         blocks.append("\n".join(lines))
-    return f"""TASK: For each concept, judge each candidate YouTube video ONLY from the evidence given: its chapters and caption excerpts ("[m:ss]" marks the time; automatic captions can contain recognition errors). Does the video actually TEACH the concept and its skills the way the course needs them?
+    return f"""TASK: For each concept, judge each candidate YouTube video ONLY from the evidence given: its chapters and caption excerpts ("[m:ss]" marks the time; automatic captions and transcripts can contain recognition errors). Does the video actually TEACH the concept and its skills the way the course needs them?
 For every (concept, video) pair return:
-- coverage: "full" (teaches the concept and every listed skill), "partial" (teaches some of the skills, or only mentions the concept), "none" (does not teach it).
-- skills: the numbers of the listed skills the excerpts show it teaching or working through (not ones it only names).
+- coverage: "full" (teaches the concept and every listed skill), "partial" (teaches some of the skills, or only part of the concept), "none" (does not teach it, or only names it).
+- skills: every listed skill the excerpts show it TEACHING or working through (not one it only names), each as its number n, the time t in seconds and a quote of 8–25 words copied word for word from the excerpt where it does that, e.g. {{"n": 2, "t": 312, "quote": "so to standardize it we subtract the mean and then divide by the standard deviation"}}. A skill without such a quote does not count.
 - start, end: seconds of the part that teaches it (from the [m:ss] marks and the chapters).
 - level ("intro", "course" or "advanced"); examples (true if it works through an example or problem); quality (1–5: clarity and correctness as far as the captions show).
-- quotes: 1–2 short quotes copied word for word from the excerpts (at most 20 words each) that show the teaching, each with t, its time in seconds.
-- errors: mistakes of the presenter that the captions show (a wrong sign, rule or definition, an arithmetic slip), each with t and what is wrong and the correct version, e.g. {{"t": 754, "text": "says det = ad + bc; it is ad − bc"}}. Recognition errors of automatic captions are NOT mistakes. Usually [].
+- quotes: 1–2 short quotes copied word for word from the excerpts (at most 20 words each) that show the teaching of the concept, each with t, its time in seconds.
+- errors: mistakes of the presenter that the captions show (a wrong sign, rule or definition, an arithmetic slip), each with t and what is wrong and the correct version, e.g. {{"t": 754, "text": "says det = ad + bc; it is ad − bc"}}. Recognition errors are NOT mistakes. Usually [].
 - note: at most 8 words, e.g. "different notation", "square matrices only", "very fast"; usually "".
-Reply with the JSON on a single line (no indentation, no code fence, nothing else): {{"verdicts": [{{"concept": "c1", "video": "VIDEO_ID", "coverage": "partial", "skills": [1, 3], "start": 0, "end": 0, "level": "course", "examples": true, "quality": 4, "quotes": [{{"t": 0, "text": ""}}], "errors": [], "note": ""}}]}}
+Reply with the JSON on a single line (no indentation, no code fence, nothing else): {{"verdicts": [{{"concept": "c1", "video": "VIDEO_ID", "coverage": "partial", "skills": [{{"n": 1, "t": 0, "quote": ""}}], "start": 0, "end": 0, "level": "course", "examples": true, "quality": 4, "quotes": [{{"t": 0, "text": ""}}], "errors": [], "note": ""}}]}}
 
 """ + "\n\n".join(blocks)
+
+
+def _skill_number(value: Any, count: int) -> int:
+    """A skill's number in a verdict (1-based), or 0 when it isn't one of the ``count`` listed."""
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return n if 1 <= n <= count else 0
 
 
 def clean_verdicts(raw: Any, asked: dict[str, set[str]], videos: dict[str, dict[str, Any]],
                    concepts: Optional[list[dict[str, Any]]] = None,
                    excerpts: Optional[dict[str, dict[str, list]]] = None) -> dict[str, dict[str, dict]]:
-    """The verdicts, checked: only the pairs asked about, parts within the video, the skills as their text, "full"
-    only with every skill, and only the quotes that really are in the captions shown (with their time from there)."""
+    """The verdicts, checked: only the pairs asked about, parts within the video, "full" only with every skill, and
+    only the quotes that really are in the captions shown (with their time from there). A skill counts as taught only
+    with its own quote of the video teaching it (``proofs``: {skill: {"t", "text"}}, the captions' words); the skills
+    the AI named without one are kept apart (``claimed``: all it named). A video the AI says teaches the concept but
+    no quote of which is found in the captions doesn't count (coverage "none", ``unproven``)."""
     skills_of = {c["id"]: c.get("skills") or [] for c in concepts or []}
     out: dict[str, dict[str, dict]] = {}
     for v in (raw.get("verdicts") if isinstance(raw, dict) else None) or []:
@@ -634,25 +667,37 @@ def clean_verdicts(raw: Any, asked: dict[str, set[str]], videos: dict[str, dict[
             quality = max(1, min(5, int(v.get("quality") or 3)))
         except (TypeError, ValueError):
             quality = 3
-        coverage = v.get("coverage") if v.get("coverage") in ("full", "partial", "none") else "none"
+        said = v.get("coverage") if v.get("coverage") in ("full", "partial", "none") else "none"
+        coverage = said
         skills = skills_of.get(cid, [])
-        nums = v.get("skills")
-        if isinstance(nums, list):
-            got = sorted({int(n) for n in nums if str(n).strip().isdigit() and 1 <= int(n) <= len(skills)})
-            taught = [skills[n - 1] for n in got]
-        else:
-            taught = list(skills) if coverage == "full" else []
-        if coverage == "none":
-            taught = []
-        elif coverage == "full" and len(taught) < len(skills):
-            coverage = "partial"                                  # "full" means every skill
         parts = (excerpts or {}).get(cid, {}).get(vid) or []
+        claimed: list[str] = []
+        proofs: dict[str, dict[str, Any]] = {}
+        nums = v.get("skills")
+        for s in (nums if isinstance(nums, list) else list(range(1, len(skills) + 1)) if said == "full" else []):
+            n = _skill_number(s.get("n") if isinstance(s, dict) else s, len(skills))
+            if not n:
+                continue
+            skill = skills[n - 1]
+            claimed += [skill] if skill not in claimed else []
+            text = str((s.get("quote") or s.get("text") or "") if isinstance(s, dict) else "").strip().strip("\"“”'")
+            hit = match_quote(text, parts) if len(_words(text)) >= PROOF_WORDS else None
+            if hit and skill not in proofs:
+                proofs[skill] = {"t": round(hit[0]), "text": hit[1][:240]}         # the captions' words
+        taught = [s for s in skills if s in proofs]
         quotes = []
         for q in v.get("quotes") or []:
             text = str((q.get("text") if isinstance(q, dict) else q) or "").strip().strip("\"“”'")
             hit = match_quote(text, parts) if text else None
             if hit and all(abs(hit[0] - x["t"]) > 5 for x in quotes):
                 quotes.append({"t": round(hit[0]), "text": hit[1][:240]})      # the captions' words, not the AI's
+        unproven = said != "none" and not quotes and not proofs
+        if said == "none" or unproven:
+            coverage, taught = "none", []
+        elif said == "full" and len(taught) < len(skills):
+            coverage = "partial"                                  # "full" means every skill, each with its quote
+        elif said == "partial" and skills and len(taught) == len(skills):
+            coverage = "full"
         errors = []
         for e in v.get("errors") or []:
             text = str((e.get("text") if isinstance(e, dict) else e) or "").strip()
@@ -663,21 +708,28 @@ def clean_verdicts(raw: Any, asked: dict[str, set[str]], videos: dict[str, dict[
             except (TypeError, ValueError):
                 at = start
             errors.append({"t": round(min(at, dur) if dur else at), "text": text[:240]})
+        proofs = {s: p for s, p in proofs.items() if s in taught}
+        evidence = quotes[0]["text"] if quotes else next(iter(proofs.values()), {}).get("text", "")
         out.setdefault(cid, {})[vid] = {
-            "coverage": coverage, "skills": taught,
+            "coverage": coverage, "skills": taught, "proofs": proofs, "claimed": claimed if said != "none" else [],
+            "said": said, "unproven": unproven,
             "start": round(start), "end": round(end), "level": str(v.get("level") or "course"),
             "examples": bool(v.get("examples")), "quality": quality, "quotes": quotes[:2], "errors": errors[:3],
-            "evidence": quotes[0]["text"] if quotes else "", "note": str(v.get("note") or "")[:120]}
+            "evidence": evidence, "note": str(v.get("note") or "")[:120]}
     return out
 
 
 # ------------------------------------------------------------------ assemble (Claude)
 def assemble_prompt(scope: Scope, facts: dict[str, Any], concepts: list[dict], candidates: dict[str, list[dict]],
-                    previous: Optional[dict[str, Any]], today: dt.date) -> str:
+                    previous: Optional[dict[str, Any]], today: dt.date, gaps: Optional[dict[str, list[str]]] = None,
+                    why: Optional[dict[str, dict[str, str]]] = None) -> str:
+    """``gaps``: what no checked video teaches, per concept (with ``why`` the search found none): the plan says so and
+    covers it in a supplement."""
     from .videos import fmt_ts
 
     what = target(scope, [w["no"] for w in facts["weeks"]])
     lines, skipped = [], []
+    gaps, why = gaps or {}, why or {}
     for c in concepts:
         if not searched(c, scope):
             skipped.append(c["name"])
@@ -702,6 +754,12 @@ def assemble_prompt(scope: Scope, facts: dict[str, Any], concepts: list[dict], c
                          f"{taught}, level {cand['level']}, quality {cand['quality']}/5{', worked examples' if cand['examples'] else ''}"
                          + "".join(f"; MISTAKE at {fmt_ts(e['t'])}: {e['text']}" for e in cand.get("errors") or [])
                          + (f"; {cand['note']}" if cand["note"] else ""))
+        if c["id"] in gaps:
+            missing = gaps[c["id"]]
+            lines.append("   NO CHECKED VIDEO teaches " + (f"skills {', '.join(str(skills.index(s) + 1) for s in missing if s in skills)}"
+                                                           if missing else "this concept")
+                         + (f" ({why[c['id']]['en']})" if (why.get(c["id"]) or {}).get("en") else "")
+                         + ": say so in the summary and cover it in a supplement.")
     if skipped:
         lines.append(f"(Also in these weeks but not on {what}, so no videos were searched: {'; '.join(skipped)}.)")
     prev = ""
@@ -812,15 +870,53 @@ def _listed(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def listened_summary(vids: dict[str, dict], used: dict[str, Any]) -> dict[str, Any]:
+    """What the plan listened to: {"heard": how many videos, "silent": how many more it listened to and heard no
+    speech in, "seconds": how long it took, "skipped": [{"n", "why", "why_en"}] - the videos without usable captions
+    it didn't listen to, by reason}."""
+    from .listen import reason_text
+
+    skipped: dict[str, int] = {}
+    for v in vids.values():
+        code = (v.get("listen") or {}).get("skipped")
+        if code and code != "no_speech":
+            skipped[code] = skipped.get(code, 0) + 1
+    return {"heard": sum(1 for v in vids.values() if v.get("caption_kind") == "speech"),
+            "silent": sum(1 for v in vids.values() if (v.get("listen") or {}).get("skipped") == "no_speech"),
+            "seconds": round(float(used.get("wall_s") or 0)),
+            "skipped": [{"n": n, "why": reason_text(code), "why_en": reason_text(code, True)}
+                        for code, n in sorted(skipped.items(), key=lambda x: -x[1])]}
+
+
+def unheard_text(v: dict[str, Any], english: bool = False) -> str:
+    """How a video without usable captions was judged - by its title, description and chapters only -, with why
+    IEUStudia didn't listen to it when it tried (``v``: the plan's row of the video, or an item's ``not_heard``)."""
+    from .listen import reason_text
+
+    code = str(v.get("not_heard") or (v.get("listen") or {}).get("skipped") or "")
+    if not code:
+        say = N_("title, description and chapters only (no captions available)")
+        return say if english else t(say)
+    if code == "no_speech":                  # (listened to: there was nothing to hear)
+        say = N_("title, description and chapters only: it has no usable captions, and IEUStudia heard no speech in "
+                 "it when it listened")
+        return say if english else t(say)
+    say = N_("title, description and chapters only: it has no usable captions, and IEUStudia didn't listen to it "
+             "because {why}")
+    return say.format(why=reason_text(code, True)) if english else t(say, why=reason_text(code))
+
+
 def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], videos: dict[str, dict],
              practice: list[dict], gaps: str, *, verdicts: Optional[dict[str, dict[str, dict]]] = None,
              excerpts: Optional[dict[str, dict[str, list]]] = None, scope: Optional[Scope] = None,
              goal: str = "", goal_en: str = "",
-             blocked: Optional[Callable[[str, str], bool]] = None) -> dict[str, Any]:
+             blocked: Optional[Callable[[str, str], bool]] = None,
+             why: Optional[dict[str, dict[str, str]]] = None) -> dict[str, Any]:
     """The AI's plan, checked against the real data: only known videos (none of a ``blocked`` channel), parts within
     the video, exact titles, channels, views, likes and links, the viewing time recomputed - and what each item
     teaches, the coverage of every concept and skill and how complete the plan is, all from the verdicts (the AI's own
-    claims about coverage are not used). A video whose captions weren't checked opens at the chapter about it."""
+    claims about coverage are not used). A video whose captions weren't checked opens at the chapter about it.
+    ``why``: for the concepts the search found no good video for, why ({concept: {"text", "en"}}, see why_no_video)."""
     from .videos import fmt_ts, watch_url
 
     raw = raw if isinstance(raw, dict) else {}
@@ -854,13 +950,23 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
                 if not _overlaps(segs, vd["start"], vd["end"]):              # the teaching part must be in the plan
                     segs = _segments({"segments": [*segs, [vd["start"], vd["end"]]]}, dur)
                 got = [s for s in vd.get("skills") or [] if s in skills]
+                proofs = vd.get("proofs") or {}
                 teaches.append({"concept": c, "state": vd["coverage"], "skills": got,
-                                "missing": [s for s in skills if s not in got]})
+                                "missing": [s for s in skills if s not in got],
+                                "proofs": [{"skill": s, "t": proofs[s]["t"], "text": proofs[s]["text"],
+                                            "url": watch_url(vid, proofs[s]["t"])} for s in got if s in proofs]})
             else:
                 teaches.append({"concept": c, "state": "unchecked", "skills": [], "missing": list(skills)})
         found = [vd for c in concepts_of if (vd := verdict.get((vid, c)))]
-        quotes = sorted({q["t"]: {**q, "url": watch_url(vid, q["t"])} for vd in found for q in vd.get("quotes") or []}.values(),
-                        key=lambda q: q["t"])
+        said = [*(q for vd in found for q in vd.get("quotes") or []),
+                *({"t": p["t"], "text": p["text"], "skill": s} for vd in found for s, p in (vd.get("proofs") or {}).items())]
+        quotes: list[dict[str, Any]] = []
+        for q in sorted(said, key=lambda q: q["t"]):                 # each moment once (a skill's quote names it)
+            same = next((x for x in quotes if abs(x["t"] - q["t"]) <= 5), None)
+            if same is None:
+                quotes.append({**q, "url": watch_url(vid, q["t"])})
+            elif q.get("skill") and not same.get("skill"):
+                same["skill"] = q["skill"]
         errors = sorted({e["t"]: {**e, "url": watch_url(vid, e["t"])} for vd in found for e in vd.get("errors") or []}.values(),
                         key=lambda e: e["t"])
         parts = sorted({(round(p["start"]), round(p["end"])): {"start": round(p["start"]), "end": round(p["end"]), "text": p["text"]}
@@ -891,13 +997,20 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
             "minutes": max(1, round(secs / 60)) if secs > 0 else max(1, round(dur / 60)),
             "role": role, "alternative_to": it.get("alternative_to"), "concepts": concepts_of, "extra": extra,
             "why": str(it.get("why") or "").strip(), "limits": str(it.get("limits") or "").strip(),
-            "teaches": teaches, "state": state, "quotes": quotes[:4], "errors": errors[:3], "excerpts": parts[:6],
+            "teaches": teaches, "state": state, "quotes": quotes[:6], "errors": errors[:3], "excerpts": parts[:6],
             "captions": f"{v.get('caption_kind')}, {v.get('caption_lang')}" if v.get("has_captions") else "",
+            "heard": ({k: (v.get("heard") or {}).get(k) for k in ("model", "device", "why", "upto")}
+                      if v.get("caption_kind") == "speech" else None),
+            "not_heard": str((v.get("listen") or {}).get("skipped") or ""),
             # with captions this goes only into the exported plan (English); the page shows the other one
-            "inspected": (f"captions ({v.get('caption_kind')}, {v.get('caption_lang')}): {len(parts)} part{'s' if len(parts) != 1 else ''} read"
+            "inspected": ((f"what it says, transcribed from its sound on this PC ({(v.get('heard') or {}).get('model') or 'speech model'})"
+                           + (f" in its first {round((v.get('heard') or {})['upto'] / 60)} minutes"
+                              if (v.get("heard") or {}).get("upto") else "")
+                           if v.get("caption_kind") == "speech" else f"captions ({v.get('caption_kind')}, {v.get('caption_lang')})")
+                          + f": {len(parts)} part{'s' if len(parts) != 1 else ''} read"
                           + (f" ({', '.join(f'{fmt_ts(p['start'])}–{fmt_ts(p['end'])}' for p in parts[:4])})" if parts else "")
                           + (f" + {len(v.get('chapters') or [])} chapters" if v.get("chapters") else ""))
-                         if v.get("has_captions") else t("title, description and chapters only (no captions available)"),
+                         if v.get("has_captions") else unheard_text(v),
             "evidence": quotes[0]["text"] if quotes else "",
         })
     for it in items:
@@ -911,7 +1024,8 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
     for x in [*_listed(raw.get("notes")), *_listed(raw.get("coverage"))]:
         if isinstance(x, dict) and x.get("concept") and str(x.get("note") or "").strip():
             notes.setdefault(str(x["concept"]), str(x["note"]).strip())
-    coverage = _coverage(concepts, items, supplements, notes, scope)
+    why = _left_out(concepts, items, verdict, videos, why, blocked)
+    coverage = _coverage(concepts, items, supplements, notes, scope, why)
     checklist = [{"concept": str(x.get("concept") or ""), "name": names.get(str(x.get("concept")), ""),
                   "explain": str(x.get("explain") or "").strip(), "recognize": [str(r) for r in x.get("recognize") or [] if str(r).strip()][:4]}
                  for x in raw.get("checklist") or [] if isinstance(x, dict) and str(x.get("concept")) in by_id]
@@ -940,12 +1054,60 @@ def finalize(raw: Any, concepts: list[dict], candidates: dict[str, list[dict]], 
     }
 
 
+def _left_out(concepts: list[dict], items: list[dict], verdict: dict[tuple[str, str], dict], videos: dict[str, dict],
+              why: Optional[dict[str, dict[str, str]]], blocked: Optional[Callable[[str, str], bool]] = None
+              ) -> dict[str, dict[str, str]]:
+    """``why`` with, for each in-scope concept, the skills a checked video teaches that no item of the plan does: the
+    plan left those videos out - because of their mistakes or a poor explanation (as the check found), or it didn't use
+    them - and says so."""
+    out = {cid: dict(x) for cid, x in (why or {}).items()}
+    for c in concepts:
+        if not c.get("in_scope", True):
+            continue
+        on_plan = {s for it in items for x in it.get("teaches") or []
+                   if x["concept"] == c["id"] and x["state"] in ("full", "partial") for s in x["skills"]}
+        off = {s for s in c.get("skills") or [] if s not in on_plan}
+        teachers = [vd for (vid, cid), vd in verdict.items() if cid == c["id"] and off & set(vd.get("skills") or [])
+                    and vd.get("coverage") in ("full", "partial")
+                    and not (blocked is not None and blocked((videos.get(vid) or {}).get("channel_id", ""),
+                                                             (videos.get(vid) or {}).get("channel", "")))]
+        if not teachers:
+            continue
+        poor = all(vd.get("errors") or int(vd.get("quality") or 3) <= 2 for vd in teachers)
+        old = out.get(c["id"]) or {}
+        named = bool(old.get("text"))        # with why no checked video teaches its other skills: which ones are these
+        if poor and named:
+            one = N_("The checked video that teaches {what} has mistakes or explains it poorly, so the plan leaves it "
+                     "out.")
+            many = N_("The {n} checked videos that teach {what} have mistakes or explain it poorly, so the plan leaves "
+                      "them out.")
+        elif poor:
+            one = N_("The checked video that teaches this has mistakes or explains it poorly, so the plan leaves it out.")
+            many = N_("The {n} checked videos that teach this have mistakes or explain it poorly, so the plan leaves them "
+                      "out.")
+        elif named:
+            one = N_("A checked video teaches {what}, but the plan doesn't use it.")
+            many = N_("{n} checked videos teach {what}, but the plan doesn't use them.")
+        else:
+            one = N_("A checked video teaches this, but the plan doesn't use it.")
+            many = N_("{n} checked videos teach this, but the plan doesn't use them.")
+        n = len(teachers)
+        skills = [s for s in c.get("skills") or [] if s in off and any(s in (vd.get("skills") or []) for vd in teachers)]
+        say = one if n == 1 else many
+        shown, en = t(say, n=n, what=_named(skills, False)), say.format(n=n, what=_named(skills, True))
+        out[c["id"]] = {"text": " ".join(x for x in (old.get("text"), shown) if x),
+                        "en": " ".join(x for x in (old.get("en"), en) if x)}
+    return out
+
+
 def _coverage(concepts: list[dict], items: list[dict], supplements: list[dict], notes: dict[str, str],
-              scope: Scope) -> list[dict[str, Any]]:
+              scope: Scope, why: Optional[dict[str, dict[str, str]]] = None) -> list[dict[str, Any]]:
     """Per concept and skill, how the plan covers it - from the verdicts of the items it uses:
-    each skill by "video" (a required item teaches it), "optional" (only optional items do), "supplement" or
-    "missing"; the concept "verified" (every skill in a checked video), "partial", "supplement", "unverified"
-    (only videos whose captions could not be checked), "missing" - or "skipped": an extra the plan leaves out."""
+    each skill by "video" (a required item teaches it, with a quote of it doing so), "optional" (only optional items
+    do), "supplement" or "missing"; the concept "verified" (every skill in a checked video), "partial", "supplement",
+    "unverified" (only videos whose captions could not be checked), "missing" - or "skipped": an extra the plan leaves
+    out. A concept with a skill no chosen video teaches says why no good video was found for it (``why``), when the
+    search said."""
     with_sup = {s["concept"] for s in supplements}
     out = []
     for c in concepts:
@@ -956,7 +1118,9 @@ def _coverage(concepts: list[dict], items: list[dict], supplements: list[dict], 
         for s in skills:
             ns = [it["n"] for it, x in taught if s in x["skills"]]
             core = any(it["role"] in ("required", "prerequisite") for it, x in taught if s in x["skills"])
-            rows.append({"text": s, "items": ns,
+            proof = next(({"item": it["n"], "t": p["t"], "text": p["text"], "url": p.get("url", "")}
+                          for it, x in taught for p in x.get("proofs") or [] if p["skill"] == s), None)
+            rows.append({"text": s, "items": ns, "quote": proof,
                          "how": "video" if core else "optional" if ns else "supplement" if cid in with_sup else "missing"})
         if skills:
             on_video = sum(r["how"] in ("video", "optional") for r in rows)
@@ -967,9 +1131,13 @@ def _coverage(concepts: list[dict], items: list[dict], supplements: list[dict], 
             state = ("unverified" if its else "supplement" if cid in with_sup else "missing")
         if not c.get("in_scope", True) and state == "missing":
             state = "skipped"
+        reason = (why or {}).get(cid) or {}
+        lacking = state != "verified" and state != "skipped" and searched(c, scope)
         out.append({"concept": cid, "name": c["name"], "in_scope": c.get("in_scope", True), "state": state,
                     "items": [it["n"] for it in its], "skills": rows, "supplement": cid in with_sup,
-                    "searched": searched(c, scope), "note": notes.get(cid, "")})
+                    "searched": searched(c, scope), "note": notes.get(cid, ""),
+                    "why": str(reason.get("text") or "") if lacking else "",
+                    "why_en": str(reason.get("en") or "") if lacking else ""})
     return out
 
 
@@ -1014,8 +1182,16 @@ def completeness(coverage: list[dict], scope: Scope, goal: str, required_minutes
     headline = _capital(t(say, goal=goal, how=how, missing=count["missing"], n=n))   # Turkish may begin with the goal
     headline_en = say.format(goal=goal_en, how=how_en, missing=count["missing"], n=n)
     extras = [cv for cv in coverage if not cv["in_scope"]]
+    # the concepts the focus needs with something no checked video teaches, and why the search found none
+    no_video = []
+    for cv in coverage:
+        off = [r["text"] for r in cv["skills"] if r["how"] in ("supplement", "missing")]
+        if cv["in_scope"] and (off or (not cv["skills"] and cv["state"] not in ("verified", "partial"))):
+            no_video.append({"concept": cv.get("concept", ""), "name": cv["name"], "skills": off,
+                             "missing": [r["text"] for r in cv["skills"] if r["how"] == "missing"],
+                             "why": cv.get("why", ""), "why_en": cv.get("why_en", "")})
     return {"goal": goal, "goal_en": goal_en, "complete": bool(n) and not count["missing"], "level": level,
-            "headline": headline, "headline_en": headline_en, "skills": n, **count,
+            "headline": headline, "headline_en": headline_en, "skills": n, **count, "no_video": no_video,
             "missing_list": [f"{s} ({name})" if s else name for name, s, how in units if how == "missing"][:15],
             "supplement_list": [f"{s} ({name})" if s else name for name, s, how in units if how == "supplement"][:15],
             "extras": [{"name": cv["name"], "items": cv["items"], "state": cv["state"]} for cv in extras],
@@ -1040,6 +1216,19 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
             out.append(f"> Not covered: {'; '.join(cp['missing_list'])}.")
         if cp.get("supplement_list"):
             out.append(f"> In the written supplements: {'; '.join(cp['supplement_list'])}.")
+        for x in cp.get("no_video") or []:
+            out.append(f"> No good video for {x['name']}" + (f" ({'; '.join(x['skills'])})" if x.get("skills") else "")
+                       + (f": {x['why_en']}" if x.get("why_en") else "."))
+        heard = result.get("listened") or {}
+        if heard.get("heard") or heard.get("skipped") or heard.get("silent"):
+            silent = int(heard.get("silent") or 0)
+            out.append("> " + " ".join(x for x in [
+                f"Listened to {heard['heard']} video{'s' if heard['heard'] != 1 else ''} without usable captions "
+                f"(transcribed on this PC)." if heard.get("heard") else "",
+                f"Listened to {silent} more without usable captions and heard no speech in "
+                f"{'it' if silent == 1 else 'them'}." if silent else "",
+                *(f"{x['n']} more {'was' if x['n'] == 1 else 'were'} not listened to: {x['why_en']}."
+                  for x in heard.get("skipped") or [])] if x))
         if cp.get("extras"):
             out.append(f"> {extras_line(cp)}")
         out.append("")
@@ -1080,10 +1269,10 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
             out.append(f"   - Limits: {it['limits']}")
         for e in it.get("errors") or []:
             out.append(f"   - ⚠ Possible mistake at [{fmt_ts(e['t'])}]({e['url']}): {e['text']}")
-        inspected = it["inspected"] if it.get("captions") else "title, description and chapters only (no captions available)"
+        inspected = it["inspected"] if it.get("captions") else unheard_text(it, english=True)
         out.append(f"   - Checked: {inspected}" + (f" — “{it['evidence']}”" if it.get("evidence") and not it.get("quotes") else ""))
         for q in it.get("quotes") or []:
-            out.append(f"     - [{fmt_ts(q['t'])}]({q['url']}) “{q['text']}”")
+            out.append(f"     - [{fmt_ts(q['t'])}]({q['url']}) “{q['text']}”" + (f" *({q['skill']})*" if q.get("skill") else ""))
     if result.get("schedule"):
         out += ["", "## Schedule", ""]
         out += [f"- **{s['day']}**: items {', '.join(map(str, s['items']))} ({s['minutes']} min)" for s in result["schedule"]]
@@ -1098,7 +1287,8 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
         skills = "; ".join(f"{mark.get(r['how'], '')} {r['text']}" + (f" (#{', #'.join(map(str, r['items']))})" if r["items"] else "")
                            for r in cv.get("skills") or [])
         out.append(f"| {names.get(cv['concept'], cv['concept'])} | {'yes' if cv.get('in_scope', True) else 'extra'} | "
-                   f"{cv['state']} | {skills or '—'} | {', '.join(map(str, cv['items'])) or '—'} | {cv['note']} |")
+                   f"{cv['state']} | {skills or '—'} | {', '.join(map(str, cv['items'])) or '—'} | "
+                   f"{' '.join(x for x in (cv['note'], cv.get('why_en') or '') if x)} |")
     if result.get("supplements"):
         out += ["", "## Written supplements", ""]
         for s in result["supplements"]:
@@ -1110,8 +1300,9 @@ def plan_markdown(result: dict[str, Any], course: dict[str, Any], scope: Scope) 
                     f"> {p['answer']}".replace("\n", "\n> "), ""]
     if result.get("gaps"):
         out += ["", f"*Not in the material: {result['gaps']}*"]
-    out += ["", "*The videos were checked by AI through their captions, and AI can make mistakes: the quotes above let "
-                "you check what each video says.*"]
+    out += ["", "*The videos were checked by AI through their captions (a video without usable captions through what "
+                "IEUStudia heard in it, transcribed on this PC), and AI can make mistakes: the quotes above let you check "
+                "what each video says.*"]
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -1165,6 +1356,211 @@ The traps students fall into on these topics.
 {facts['pack']}"""
 
 
+# ------------------------------------------------------------------ the stages' pieces
+def find_terms(c: dict[str, Any], missing: Optional[list[str]] = None) -> list[str]:
+    """What to look for in a video's captions for a concept: its terms, its skills (``missing``: only those no checked
+    video teaches yet) and its name."""
+    return [*c.get("terms", []), *(c.get("skills", []) if missing is None else missing), c["name"]]
+
+
+def video_row(info: Any, langs: tuple[str, ...]) -> dict[str, Any]:
+    """What a plan keeps of an inspected video - or of why YouTube refused it -, with whether it is in the plan's
+    languages and, when it is, what is wrong with its captions (videos.caption_problem; "" when nothing)."""
+    from . import videos
+
+    if isinstance(info, Exception):
+        return {"error": str(info), "error_kind": str(getattr(info, "kind", "error"))}
+    row = {"title": info.title, "channel": info.channel, "duration_s": info.duration_s,
+           "caption_kind": info.caption_kind, "caption_lang": info.caption_lang,
+           "has_captions": info.has_captions, "upload_date": info.upload_date,
+           "view_count": info.view_count, "like_count": getattr(info, "like_count", None),
+           "channel_id": getattr(info, "channel_id", ""), "language": getattr(info, "language", ""),
+           "chapters": [{"start": ch.start, "end": ch.end, "title": ch.title} for ch in info.chapters],
+           "caption_problem": "", "heard": dict(getattr(info, "heard", None) or {})}
+    if not videos.in_languages(info, langs):
+        row["wrong_lang"] = True                              # spoken in another language: not a candidate
+    else:
+        row["caption_problem"] = videos.caption_problem(info, langs)
+    return row
+
+
+def excerpt_parts(info: Any, terms: list[str], top: int) -> list[dict[str, Any]]:
+    """The parts of a video's captions that talk most about ``terms``, as timed text for the verification - the
+    opening when no term is found (it still tells a lot)."""
+    from . import videos
+
+    wins = videos.windows(info, terms, top=top)
+    if not wins and info.cues:
+        wins = [{"start": 0.0, "end": min(info.duration_s or 180, 180), "score": 0}]
+    return [videos.stamped_part(info, w["start"], w["end"], limit=EXCERPT_CHARS) for w in wins]
+
+
+def best_rows(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    """The candidates the plan-writing request gets for a concept: the ``n`` best (``rows`` best first), and after
+    them the best one for each skill none of those teaches. The more searches find videos for the missing skills
+    only, and those rank last: cut to ``n``, the plan never saw them and said it didn't use them."""
+    def teaches(r: dict[str, Any]) -> set[str]:
+        good = r.get("state") == "verified" and r.get("coverage") in ("full", "partial")
+        return set(r.get("skills") or []) if good else set()
+
+    chosen = list(rows[:n])
+    taught = {s for r in chosen for s in teaches(r)}
+    for r in rows[n:]:
+        new = teaches(r) - taught
+        if new:
+            chosen.append(r)
+            taught |= new
+    return chosen
+
+
+def gaps_of(concepts: list[dict[str, Any]], verdicts: dict[str, dict[str, dict]]) -> dict[str, list[str]]:
+    """What no checked video teaches yet: {concept id: its skills without a video quoted teaching them} - a concept
+    without skills is there (with []) when no checked video teaches it at all."""
+    out: dict[str, list[str]] = {}
+    for c in concepts:
+        good = [vd for vd in (verdicts.get(c["id"]) or {}).values() if vd.get("coverage") in ("full", "partial")]
+        skills = c.get("skills") or []
+        if skills:
+            have = {s for vd in good for s in vd.get("skills") or []}
+            if any(s not in have for s in skills):
+                out[c["id"]] = [s for s in skills if s not in have]
+        elif not good:
+            out[c["id"]] = []
+    return out
+
+
+def more_queries_prompt(scope: Scope, facts: dict[str, Any], concepts: list[dict[str, Any]],
+                        gaps: dict[str, list[str]], tried: dict[str, list[str]]) -> str:
+    """For the concepts with gaps: new YouTube searches, aimed at what no checked video teaches yet."""
+    lang = {"en": "in English", "tr": "in Turkish, with the words Turkish teachers use",
+            "both": "in English, and the last one in Turkish with the words Turkish teachers use (e.g. \"özdeğer\")"}
+    lines = []
+    for c in concepts:
+        if c["id"] not in gaps:
+            continue
+        missing = gaps[c["id"]]
+        lines.append(f"{c['id']} — {c['name']}: {c['summary']}")
+        lines.append("   not taught by any video checked so far: " + ("; ".join(missing) if missing else "the concept itself"))
+        lines.append("   already searched: " + "; ".join(f"\"{q}\"" for q in tried.get(c["id"], [])))
+    return f"""TASK: YouTube searches for what the videos checked so far do not teach. For each concept below write {MORE_QUERIES} new YouTube searches, best first, {lang[scope.video_lang]}, that would find a video teaching exactly what is still missing: first a narrow one for the missing skills themselves (e.g. "normal approximation binomial continuity correction"), then ones that say it differently from the searches already made (other words a teacher would use, "example", "exam problem", the name of the method). 3–8 words each, naming the subject; never one already searched.
+Reply with the JSON on a single line: {{"searches": [{{"concept": "c1", "queries": ["", ""]}}]}}
+
+Course: {facts['course']['code']} — {facts['course']['name']}
+""" + "\n".join(lines)
+
+
+def clean_more_queries(raw: Any, gaps: dict[str, list[str]], tried: dict[str, list[str]]) -> dict[str, list[str]]:
+    """The AI's new searches: only for concepts with gaps, none already made, at most MORE_QUERIES each (and one more
+    in Turkish with both languages)."""
+    out: dict[str, list[str]] = {}
+    for x in (raw.get("searches") if isinstance(raw, dict) else None) or []:
+        if not isinstance(x, dict) or str(x.get("concept") or "") not in gaps:
+            continue
+        cid = str(x["concept"])
+        done = {" ".join(q.casefold().split()) for q in tried.get(cid, [])}
+        qs = []
+        for q in x.get("queries") or []:
+            q = " ".join(str(q or "").split())[:120]
+            if q and " ".join(q.casefold().split()) not in done and q not in qs:
+                qs.append(q)
+        out[cid] = qs[:MORE_QUERIES + 1]
+    return out
+
+
+def fallback_queries(c: dict[str, Any], missing: list[str]) -> list[str]:
+    """Searches made in code when the AI wrote none: the concept with each missing skill, then with an example."""
+    name = c["name"]
+    qs = [" ".join(f"{name} {s}".split()[:9]) for s in missing[:2]]
+    return qs + [f"{name} example problem", f"{name} explained"]
+
+
+def _named(skills: Iterable[str], english: bool) -> str:
+    """Skills in quotes, joined as the language joins them: “A”, “B” and “C”."""
+    from .i18n import join
+
+    items = [f"“{s}”" for s in skills]
+    if not english:
+        return join(items)
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}" if items else ""
+
+
+def why_no_video(searches: int, found: int, checked: int, unheard: dict[str, str], other_lang: int,
+                 refused: int, blocked: bool, capped: bool = False, stopped: bool = False, silent: int = 0,
+                 what: Optional[list[str]] = None) -> tuple[str, str]:
+    """Why the search found no good video for a concept (or some of its skills), in plain words: (shown, English).
+    ``found``: the candidates it found, ``checked``: those the AI judged, ``unheard``: {video: why it wasn't listened
+    to} for those without usable captions, ``blocked``: YouTube refused the connection (a bot check), ``capped``: the
+    plan's limit of more checks was reached before its new candidates were checked, ``stopped``: the plan's limits
+    were used up before more could be searched for it (not the search being exhausted), ``silent``: videos without
+    usable captions it listened to and heard no speech in, ``what``: the skills this is about, when the concept has
+    others that a checked video does teach (they are named: its other reasons are about those)."""
+    from .listen import reason_text
+
+    def say(english: bool) -> str:
+        def count(one: str, many: str, n: int, **kw: Any) -> str:
+            return (one if n == 1 else many).format(n=n, **kw) if english else tn(n, one, many, **kw)
+
+        def text(s: str) -> str:
+            return s if english else t(s)
+
+        out = []
+        if blocked and not checked:
+            out.append(text(N_("YouTube stopped answering IEUStudia for now (it asked to confirm it isn't a bot), so "
+                               "no video could be checked.")))
+        elif not found:
+            out.append(count(N_("No video in the plan's language came up in {n} YouTube search."),
+                             N_("No video in the plan's language came up in {n} YouTube searches."), searches))
+        elif not checked and other_lang and not unheard:
+            out.append(text(N_("The videos found are in another language.")))
+        elif checked and what:
+            out.append(count(N_("{n} video from {searches} was checked, and it doesn't teach {what}."),
+                             N_("{n} videos from {searches} were checked, and none of them teaches {what}."), checked,
+                             searches=count(N_("{n} YouTube search"), N_("{n} YouTube searches"), searches),
+                             what=_named(what, english)))
+        elif checked:
+            out.append(count(N_("{n} video from {searches} was checked, and it doesn't teach this."),
+                             N_("{n} videos from {searches} were checked, and none of them teaches this."), checked,
+                             searches=count(N_("{n} YouTube search"), N_("{n} YouTube searches"), searches)))
+        if unheard:
+            why = reason_text(next(iter(unheard.values())), english)
+            if checked:
+                out.append(count(N_("{n} more video had no usable captions, and IEUStudia didn't listen to it because "
+                                    "{why}."),
+                                 N_("{n} more videos had no usable captions, and IEUStudia didn't listen to them "
+                                    "because {why}."), len(unheard), why=why))
+            elif len(unheard) == 1:                  # (two texts, not one with a count: the Turkish differs more)
+                say1 = N_("The video found has no usable captions, and IEUStudia didn't listen to it because {why}.")
+                out.append(say1.format(why=why) if english else t(say1, why=why))
+            else:
+                say2 = N_("The {n} videos found have no usable captions, and IEUStudia didn't listen to them because "
+                          "{why}.")
+                out.append(say2.format(n=len(unheard), why=why) if english else t(say2, n=len(unheard), why=why))
+        if silent:
+            out.append(count(N_("IEUStudia listened to {n} video without usable captions and heard no speech in it."),
+                             N_("IEUStudia listened to {n} videos without usable captions and heard no speech in them."),
+                             silent))
+        if refused and not (blocked and not checked):
+            out.append(count(N_("YouTube refused {n} video."), N_("YouTube refused {n} videos."), refused))
+        if capped:
+            out.append(text(N_("More videos were found for it, but the plan's limit of extra checks was reached first.")))
+        elif stopped:
+            out.append(text(N_("The plan's limit of extra videos and checks was reached before IEUStudia could look "
+                               "further for it.")))
+        return " ".join(out)
+
+    return say(False), say(True)
+
+
+def _hit(h: dict[str, Any]) -> Any:
+    """A search hit kept in a plan (a dict) as the object videos.rank takes."""
+    return SimpleNamespace(**{"description": "", "channel_id": "", "like_count": None, "view_count": None,
+                              "duration_s": 0.0, "channel": "", "title": "", **h})
+
+
+def _hit_json(h: Any) -> dict[str, Any]:
+    return h.to_json() if hasattr(h, "to_json") else dict(vars(h))
+
+
 # ------------------------------------------------------------------ the runner
 class PlanRunner:
     """Builds plans one at a time on a background thread; progress goes out as ``{"type": "plan", ...}`` events."""
@@ -1206,8 +1602,9 @@ class PlanRunner:
             data = plan["data"]
             for st in STAGE_NAMES[STAGE_NAMES.index(from_stage):]:
                 data.pop(st, None)
-                if st == "verify":
-                    data.pop("verify_parts", None)       # its finished requests too
+                for extra in {"verify": ("verify_parts",), "more": ("more_parts",), "listen": ("listened",),
+                              "search": ("search_failed",)}.get(st, ()):
+                    data.pop(extra, None)                # its finished requests (what it listened to) too
             self._s.lib.update_plan(plan_id, data=data)
         with self._lock:
             if plan_id in self._queue or plan_id in self._cancel:
@@ -1384,6 +1781,7 @@ class PlanRunner:
                 err = next((r for r in found.values() if isinstance(r, Exception)), None)
                 raise RuntimeError(t("YouTube search failed: {error}", error=err) if err else t("YouTube search failed."))
             data["search"] = cands
+            data["search_failed"] = {q: r.kind for q, r in found.items() if isinstance(r, videos.VideoError)}
             save()
         cands = data["search"]
         check()
@@ -1398,7 +1796,7 @@ class PlanRunner:
                         ids.append(h["id"])
 
             def on_inspect(n: int, total: int, label: str) -> None:
-                self._stage(plan_id, "inspect", 0.40 + 0.2 * n / max(1, total),
+                self._stage(plan_id, "inspect", 0.40 + 0.13 * n / max(1, total),
                             t("Reading captions: {title} ({n}/{total})", title=label[:60], n=n, total=total))
 
             self._stage(plan_id, "inspect", 0.40, t("Reading the captions of {n} videos…", n=len(ids)))
@@ -1410,52 +1808,41 @@ class PlanRunner:
                 return info is not None and not isinstance(info, Exception) and videos.in_languages(info, langs)
 
             # a video in another language (or one YouTube refused) leaves its concept short: its next candidates
-            more: list[str] = []
+            next_ids: list[str] = []
             for c in order:
                 hs = [h["id"] for h in cands.get(c["id"], [])]
                 need = per[c["id"]] - sum(1 for v in hs if v in infos and usable(v))
                 for v in hs:
-                    if need <= 0 or len(ids) + len(more) >= MAX_VIDEOS:
+                    if need <= 0 or len(ids) + len(next_ids) >= MAX_VIDEOS:
                         break
                     if v not in infos:
-                        more += [v] if v not in more else []
+                        next_ids += [v] if v not in next_ids else []
                         need -= 1
-            if more:
-                self._stage(plan_id, "inspect", 0.58, t("Reading the captions of {n} videos…", n=len(more)))
-                infos.update(videos.inspect_many(more, langs=langs, cancel=cancel))
+            if next_ids:
+                self._stage(plan_id, "inspect", 0.53, t("Reading the captions of {n} videos…", n=len(next_ids)))
+                infos.update(videos.inspect_many(next_ids, langs=langs, cancel=cancel))
                 check()
             chosen = {c["id"]: [h["id"] for h in cands.get(c["id"], []) if h["id"] in infos and usable(h["id"])][:per[c["id"]]]
                       for c in todo_c}
             vids: dict[str, dict] = {}
             excerpts: dict[str, dict[str, list]] = {}
-
-            def parts(info: Any, wins: list[dict]) -> list[dict]:
-                return [videos.stamped_part(info, w["start"], w["end"], limit=EXCERPT_CHARS) for w in wins]
-
-            def find_terms(c: dict) -> list[str]:
-                return c["terms"] + c.get("skills", []) + [c["name"]]
-
+            hear: dict[str, dict[str, Any]] = {}            # chosen videos whose captions can't show what they teach
             for vid, info in infos.items():
-                if isinstance(info, Exception):
-                    vids[vid] = {"error": str(info)}
-                    continue
-                vids[vid] = {"title": info.title, "channel": info.channel, "duration_s": info.duration_s,
-                             "caption_kind": info.caption_kind, "caption_lang": info.caption_lang,
-                             "has_captions": info.has_captions, "upload_date": info.upload_date,
-                             "view_count": info.view_count, "like_count": getattr(info, "like_count", None),
-                             "channel_id": getattr(info, "channel_id", ""), "language": getattr(info, "language", ""),
-                             "chapters": [{"start": ch.start, "end": ch.end, "title": ch.title} for ch in info.chapters]}
-                if not videos.in_languages(info, langs):
-                    vids[vid]["wrong_lang"] = True            # spoken in another language: not a candidate
-                    continue
-                for c in todo_c:
-                    if vid in chosen[c["id"]] and info.has_captions:
-                        wins = videos.windows(info, find_terms(c), top=3 if c.get("in_scope", True) else 2)
-                        if not wins and info.cues:                      # no term found: the opening still tells a lot
-                            wins = [{"start": 0.0, "end": min(info.duration_s or 180, 180), "score": 0}]
-                        excerpts.setdefault(c["id"], {})[vid] = parts(info, wins)
+                vids[vid] = video_row(info, langs)
+                if vids[vid].get("error") or vids[vid].get("wrong_lang"):
+                    continue                                 # refused, or spoken in another language: not a candidate
+                for c in order:
+                    if vid not in chosen[c["id"]]:
+                        continue
+                    if vids[vid]["caption_problem"]:
+                        hear.setdefault(vid, {"video": vid, "problem": vids[vid]["caption_problem"], "concepts": []})
+                        hear[vid]["concepts"].append(c["id"])
+                    if info.has_captions:                    # (poor captions too: they are all there is if not heard)
+                        excerpts.setdefault(c["id"], {})[vid] = excerpt_parts(info, find_terms(c),
+                                                                              3 if c.get("in_scope", True) else 2)
             lectures = [(vid, info) for vid, info in infos.items() if not isinstance(info, Exception)
-                        and info.has_captions and (info.duration_s or 0) >= CROSS_MIN_S and not vids[vid].get("wrong_lang")]
+                        and info.has_captions and (info.duration_s or 0) >= CROSS_MIN_S
+                        and not vids[vid].get("wrong_lang") and not vids[vid].get("caption_problem")]
             for c in todo_c:                       # long lectures found for one concept often teach the next ones too
                 if not c.get("in_scope", True):
                     continue
@@ -1467,67 +1854,62 @@ class PlanRunner:
                     if wins and wins[0]["score"] >= CROSS_SCORE:
                         scored.append((wins[0]["score"], vid, info, wins))
                 for _, vid, info, wins in sorted(scored, key=lambda s: -s[0])[:CROSS]:
-                    excerpts.setdefault(c["id"], {})[vid] = parts(info, wins)
+                    excerpts.setdefault(c["id"], {})[vid] = [videos.stamped_part(info, w["start"], w["end"],
+                                                                                 limit=EXCERPT_CHARS) for w in wins]
             for c in todo_c:                                           # search-only metadata for uninspected candidates
                 for h in cands.get(c["id"], []):
                     vids.setdefault(h["id"], {"title": h["title"], "channel": h["channel"], "duration_s": h["duration_s"],
                                               "caption_kind": "", "caption_lang": "", "has_captions": False,
                                               "view_count": h.get("view_count"), "channel_id": h.get("channel_id", ""),
                                               "chapters": [], "uninspected": True})
-            data["inspect"] = {"videos": vids, "excerpts": excerpts}
+            data["inspect"] = {"videos": vids, "excerpts": excerpts, "listen": list(hear.values())}
             save()
         vids = data["inspect"]["videos"]
         excerpts = data["inspect"]["excerpts"]
+        check()
+        by_id = {c["id"]: c for c in todo_c}
+        # listen: the chosen videos whose captions can't show what they teach
+        if "listen" not in data:
+            todo = [x for x in data["inspect"].get("listen") or [] if x.get("video") in vids]
+            data["listen"] = self._listen(plan_id, "listen", todo, vids, excerpts, by_id, langs, data, cancel, save)
+            save()
         check()
         # verify
         if "verify" not in data:
             todo = [c for c in todo_c if excerpts.get(c["id"])]
             batches = [todo[i:i + VERIFY_BATCH] for i in range(0, len(todo), VERIFY_BATCH)]
             finished: dict[str, dict] = data.setdefault("verify_parts", {})   # kept when the plan stops before the end
-
-            def key(batch: list[dict]) -> str:
-                return " ".join(c["id"] for c in batch)
-
-            def judge(batch: list[dict]) -> tuple[dict, dict]:
-                asked = {c["id"]: set(excerpts.get(c["id"], {})) for c in batch}
-                raw, res = self._ask_json(verify_prompt(batch, vids, excerpts), verify_with, cancel, verify_level)
-                return clean_verdicts(raw, asked, vids, batch, excerpts), res
-
-            left = [b for b in batches if key(b) not in finished]
-            self._stage(plan_id, "verify", 0.62 + 0.18 * (len(batches) - len(left)) / max(1, len(batches)),
-                        tn(len(left), "Checking the captions against the course ({n} request, {model})…",
-                           "Checking the captions against the course ({n} requests, {model})…", model=verify_shown))
-            with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
-                futures = {pool.submit(judge, b): b for b in left}
-                try:
-                    for f in as_completed(futures):
-                        per_concept, res = f.result()
-                        add_usage("verify", res)
-                        finished[key(futures[f])] = per_concept
-                        save()
-                        n = sum(key(b) in finished for b in batches)
-                        self._stage(plan_id, "verify", 0.62 + 0.18 * n / len(batches),
-                                    t("Checking the captions against the course ({n}/{total}, {model})…", n=n,
-                                      total=len(batches), model=verify_shown))
-                except BaseException:
-                    for f in futures:              # one failed: don't start the ones still waiting
-                        f.cancel()
-                    raise
+            work = [(" ".join(c["id"] for c in b), b, {c["id"]: excerpts[c["id"]] for c in b}) for b in batches]
+            self._judge(plan_id, "verify", work, vids, finished, (verify_with, verify_level, verify_shown), cancel,
+                        save, add_usage, (0.62, 0.74))
             check()
             verdicts: dict[str, dict] = {}
-            for b in batches:
-                for cid, per in finished.get(key(b), {}).items():
+            for k, _, _ in work:
+                for cid, per in finished.get(k, {}).items():
                     verdicts.setdefault(cid, {}).update(per)
             data["verify"] = verdicts
             data.pop("verify_parts", None)
             save()
-        verdicts = data["verify"]
+        check()
+        # more: what no checked video teaches yet
+        if "more" not in data:
+            data["more"] = self._more(plan_id, scope, facts, todo_c, cands, qs_of, vids, excerpts, data["verify"], prefs,
+                                      langs, data, cancel, save, add_usage, (verify_with, verify_level, verify_shown))
+            data.pop("more_parts", None)
+            save()
+        more = data["more"]
+        vids = {**vids, **(more.get("videos") or {})}
+        excerpts = {cid: {**(excerpts.get(cid) or {}), **((more.get("excerpts") or {}).get(cid) or {})}
+                    for cid in {*excerpts, *(more.get("excerpts") or {})}}
+        verdicts = {cid: {**(data["verify"].get(cid) or {}), **((more.get("verdicts") or {}).get(cid) or {})}
+                    for cid in {*data["verify"], *(more.get("verdicts") or {})}}
+        why = self._why(todo_c, cands, qs_of, vids, verdicts, more, data.get("search_failed") or {})
         check()
         # assemble
         candidates: dict[str, list[dict]] = {}
         for c in todo_c:
             rows = []
-            hits = {h["id"]: h for h in cands.get(c["id"], [])}
+            hits = {h["id"]: h for h in [*cands.get(c["id"], []), *((more.get("hits") or {}).get(c["id"]) or [])]}
             for vid in [*hits, *(v for v in excerpts.get(c["id"], {}) if v not in hits)]:   # + lectures checked for it
                 v = vids.get(vid) or {}
                 if not v or v.get("error") or v.get("wrong_lang"):
@@ -1551,19 +1933,19 @@ class PlanRunner:
                                      bool(r.get("errors")), -(r.get("quality") or 0), not r["preferred"], -r["received"]))
             if any(r["state"] == "verified" for r in rows):
                 rows = [r for r in rows if r["state"] == "verified"]       # unchecked ones only when nothing was verified
-            candidates[c["id"]] = rows[:5] if c.get("in_scope", True) else rows[:2]
+            candidates[c["id"]] = best_rows(rows, 5 if c.get("in_scope", True) else 2)
         previous = None
         if plan.get("parent_id"):
             parent = self._s.lib.plan(plan["parent_id"])
             previous = (parent or {}).get("result") or None
-        self._stage(plan_id, "assemble", 0.82, t("Building your plan ({model})…", model=model_shown(model, level)))
-        raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today()), model,
-                                  cancel, level)
+        self._stage(plan_id, "assemble", 0.88, t("Building your plan ({model})…", model=model_shown(model, level)))
+        raw, res = self._ask_json(assemble_prompt(scope, facts, concepts, candidates, previous, dt.date.today(),
+                                                  gaps_of(todo_c, verdicts), why), model, cancel, level)
         add_usage("assemble", res)
         result = finalize(raw, concepts, candidates, vids, data["concepts"]["practice"], data["concepts"]["gaps"],
                           verdicts=verdicts, excerpts=excerpts, scope=scope,
                           goal=target(scope, [w["no"] for w in facts["weeks"]], shown=True),
-                          goal_en=target(scope, [w["no"] for w in facts["weeks"]]), blocked=prefs.is_blocked)
+                          goal_en=target(scope, [w["no"] for w in facts["weeks"]]), blocked=prefs.is_blocked, why=why)
         try:                                     # the channels' pictures for the plan's cards (cached for a month)
             pics = videos.channels([it["channel_id"] for it in result["items"] if it.get("channel_id")], cancel=cancel)
         except Exception as exc:  # noqa: BLE001 - a missing picture never fails a plan
@@ -1572,6 +1954,7 @@ class PlanRunner:
         for it in result["items"]:
             ch = pics.get(it.get("channel_id") or "")
             it["channel_avatar"] = ch.avatar if ch else ""
+        result["listened"] = listened_summary(vids, data.get("listened") or {})
         result["materials_missing"] = facts.get("materials_missing", [])
         result["days_missing"] = len(facts.get("days_missing", []))
         result["days_used"] = len(facts.get("days_used", []))
@@ -1583,6 +1966,350 @@ class PlanRunner:
             log.warning("Could not write the plan file", exc_info=True)
         save(result=result, title=result["title"], status="done", stage="done", progress=1.0,
              message=t("{n} videos · {minutes} min", n=len(result["items"]), minutes=result["total_minutes"]))
+
+    def _judge(self, plan_id: str, stage: str, work: list[tuple[str, list[dict], dict[str, dict[str, list]]]],
+               vids: dict[str, dict], finished: dict[str, dict], who: tuple[str, str, str], cancel: threading.Event,
+               save: Callable[..., None], add_usage: Callable[[str, dict], None], span: tuple[float, float]) -> None:
+        """The verification requests of ``work`` - (key, concepts, their caption parts per video) - VERIFY_PARALLEL at
+        a time; each one's checked verdicts go into ``finished`` under its key (saved at once: a plan stopped meanwhile
+        keeps them). ``who``: the model, its reasoning level and how the progress names them."""
+        model, level, shown = who
+        lo, hi = span
+        left = [w for w in work if w[0] not in finished]
+
+        def judge(w: tuple[str, list[dict], dict[str, dict[str, list]]]) -> tuple[dict, dict]:
+            _, batch, parts = w
+            asked = {c["id"]: set(parts.get(c["id"], {})) for c in batch}
+            raw, res = self._ask_json(verify_prompt(batch, vids, parts), model, cancel, level)
+            return clean_verdicts(raw, asked, vids, batch, parts), res
+
+        say = (lambda n, total: t("Checking the captions against the course ({n}/{total}, {model})…", n=n, total=total,
+                                  model=shown)) if stage == "verify" else \
+            (lambda n, total: t("Checking more videos against the course ({n}/{total}, {model})…", n=n, total=total,
+                                model=shown))
+        if stage == "verify":
+            first = tn(len(left), "Checking the captions against the course ({n} request, {model})…",
+                       "Checking the captions against the course ({n} requests, {model})…", model=shown)
+        else:
+            first = say(len(work) - len(left), len(work))
+        self._stage(plan_id, stage, lo + (hi - lo) * (len(work) - len(left)) / max(1, len(work)), first)
+        with ThreadPoolExecutor(max_workers=VERIFY_PARALLEL, thread_name_prefix="plan-verify") as pool:
+            futures = {pool.submit(judge, w): w for w in left}
+            try:
+                for f in as_completed(futures):
+                    per_concept, res = f.result()
+                    add_usage(stage, res)
+                    finished[futures[f][0]] = per_concept
+                    save()
+                    n = sum(w[0] in finished for w in work)
+                    self._stage(plan_id, stage, lo + (hi - lo) * n / len(work), say(n, len(work)))
+            except BaseException:
+                for f in futures:              # one failed: don't start the ones still waiting
+                    f.cancel()
+                raise
+
+    def _more(self, plan_id: str, scope: Scope, facts: dict[str, Any], todo_c: list[dict], cands: dict[str, list[dict]],
+              qs_of: dict[str, list[str]], base_vids: dict[str, dict], base_excerpts: dict[str, dict[str, list]],
+              base_verdicts: dict[str, dict[str, dict]], prefs: Any, langs: tuple[str, ...], data: dict[str, Any],
+              cancel: threading.Event, save: Callable[..., None], add_usage: Callable[[str, dict], None],
+              who: tuple[str, str, str]) -> dict[str, Any]:
+        """More searches, candidates and checks for what no checked video teaches yet: round after round (at most
+        MORE_ROUNDS), each concept with a gap gets new searches (the AI's, aimed at the missing skills: other words,
+        Turkish, the skills themselves; made in code when the AI wrote none), its best new candidates - also the ones
+        the first search found but didn't read, and videos read for other concepts that talk about it -, listening
+        where their captions can't be used, and a check; until nothing is missing or a round finds nothing new to
+        check (the search is exhausted). Returns what was found: {"videos", "excerpts", "verdicts", "hits", "queries",
+        "rounds", "failed"}. The rounds' finished requests are kept in data["more_parts"] (a plan stopped meanwhile
+        goes on from them: the searches and videos come from the cache)."""
+        from . import videos
+
+        parts = data.setdefault("more_parts", {})
+        by_id = {c["id"]: c for c in todo_c}
+        mv: dict[str, dict] = {}                                      # the videos read in these rounds
+        mx: dict[str, dict[str, list]] = {}                           # their caption parts, per concept
+        mvd: dict[str, dict[str, dict]] = {}                          # their verdicts
+        hits_of: dict[str, list[dict]] = {}                           # the new candidates, per concept
+        tried = {cid: list(qs) for cid, qs in qs_of.items()}
+        rounds: list[dict[str, Any]] = []
+        failed: dict[str, str] = {}
+        capped: dict[str, int] = {}                                   # concepts the plan's limits left candidates
+        checked: dict[str, int] = {}                                  # unchecked for, and got checks for: the round
+        stopped: set[str] = set()                                     # concepts the limits stopped looking for
+        requests = inspected = 0
+        lang = "" if scope.video_lang == "both" else scope.video_lang
+
+        def norm(q: str) -> str:
+            return " ".join(q.casefold().split())
+
+        def row(vid: str) -> dict[str, Any]:
+            return {**(base_vids.get(vid) or {}), **(mv.get(vid) or {})}
+
+        def asked(cid: str) -> set[str]:
+            return {*(base_verdicts.get(cid) or {}), *(mvd.get(cid) or {}), *(base_excerpts.get(cid) or {}),
+                    *(mx.get(cid) or {})}
+
+        def verdicts_now() -> dict[str, dict[str, dict]]:
+            return {cid: {**(base_verdicts.get(cid) or {}), **(mvd.get(cid) or {})} for cid in {*base_verdicts, *mvd}}
+
+        for r in range(1, MORE_ROUNDS + 1):
+            if cancel.is_set():
+                raise Cancelled()
+            gaps = gaps_of(todo_c, verdicts_now())
+            if not gaps:
+                break
+            if r > 1 and requests >= MORE_REQUESTS:      # nothing more can be checked: no more searches either (they
+                stopped.update(gaps)                     # would find only what nobody reads)
+                break
+            searching = r == 1 or inspected < MORE_VIDEOS     # no new video can be read: only the ones read, again
+            # what matters most first (the plan's limits may not reach the last ones): what the focus needs, the core
+            # concepts, then the ones missing the most
+            rank = {"core": 0, "supporting": 1, "prerequisite": 2}
+            gaps = dict(sorted(gaps.items(), key=lambda g: (not by_id[g[0]].get("in_scope", True), not by_id[g[0]].get("focus"),
+                                                            rank.get(by_id[g[0]].get("importance"), 1),
+                                                            -max(1, len(g[1])))))
+            lo, hi = 0.74 + 0.04 * (r - 1), 0.74 + 0.04 * r
+            self._stage(plan_id, "more", lo, tn(len(gaps), "More searches for {n} concept no checked video covers yet…",
+                                                "More searches for {n} concepts no checked video covers yet…"))
+            if "queries" not in parts:                                # the AI's searches, once for all the rounds
+                try:
+                    raw, res = self._ask_json(more_queries_prompt(scope, facts, todo_c, gaps, tried), who[0], cancel,
+                                              who[1])
+                    add_usage("more", res)
+                    parts["queries"] = clean_more_queries(raw, gaps, tried)
+                except Cancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - the searches are made in code then
+                    if cancel.is_set():
+                        raise Cancelled() from exc
+                    log.warning("The AI wrote no more searches (%s): made in code", exc)
+                    parts["queries"] = {}
+                save()
+            new_q: dict[str, list[str]] = {}
+            for cid, missing in gaps.items():
+                ai = list(parts["queries"].get(cid) or [])
+                if scope.video_lang == "both" and len(ai) > 1:
+                    ai = [ai[0], ai[-1], *ai[1:-1]]                    # (its Turkish one, the last, comes early)
+                done = {norm(q) for q in tried.get(cid, [])}
+                fresh = [q for q in dict.fromkeys([*ai, *fallback_queries(by_id[cid], missing)]) if norm(q) not in done]
+                new_q[cid] = fresh[:2] if searching else []
+                tried.setdefault(cid, []).extend(new_q[cid])
+            queries = sorted({q for qs in new_q.values() for q in qs})
+
+            def on_search(n: int, total: int, label: str) -> None:
+                self._stage(plan_id, "more", lo + (hi - lo) * 0.25 * n / max(1, total),
+                            t("Searching YouTube for what isn't covered yet: “{query}” ({n}/{total})", query=label,
+                              n=n, total=total))
+
+            found = videos.search_many(queries, limit=8, cancel=cancel, progress=on_search) if queries else {}
+            failed.update({q: res.kind for q, res in found.items() if isinstance(res, videos.VideoError)})
+            mine = [(ch["id"], new_q[cid][0]) for cid in gaps if new_q.get(cid) and by_id[cid].get("in_scope", True)
+                    for ch in prefs.allow[:PREFERRED_SEARCHED]]
+            own = videos.channel_search_many(mine, cancel=cancel) if mine else {}
+            if cancel.is_set():
+                raise Cancelled()
+            pairs: dict[str, list[str]] = {}
+            for cid, missing in gaps.items():
+                c = by_id[cid]
+                pool: list[Any] = []
+                for q in new_q.get(cid, []):
+                    got = found.get(q)
+                    pool += [] if got is None or isinstance(got, Exception) else list(got)
+                for key, got in own.items():
+                    if new_q.get(cid) and key[1] == new_q[cid][0] and not isinstance(got, Exception):
+                        pool += list(got)
+                pool += [_hit(h) for h in cands.get(cid, []) if (base_vids.get(h["id"]) or {}).get("uninspected")]
+                skip, uniq = asked(cid), {}
+                for h in pool:
+                    bad = row(h.id).get("error") or row(h.id).get("wrong_lang")
+                    if h.id not in skip and not bad and h.id not in uniq:
+                        uniq[h.id] = h
+                pick = videos.rank(list(uniq.values()), find_terms(c, missing), allow=prefs.is_allowed,
+                                   block=prefs.is_blocked, lang=lang)[:MORE_PER_CONCEPT]
+                known = {h["id"] for h in hits_of.get(cid, [])}
+                hits_of.setdefault(cid, []).extend(_hit_json(h) for h in pick if h.id not in known)
+                pairs[cid] = [h.id for h in pick]
+            ids = [vid for vid in dict.fromkeys(v for vs in pairs.values() for v in vs)
+                   if vid not in mv and (vid not in base_vids or base_vids[vid].get("uninspected"))]
+            cut = set(ids[max(0, MORE_VIDEOS - inspected):])               # beyond the plan's limit of videos read
+            ids = ids[:max(0, MORE_VIDEOS - inspected)]
+            capped.update({cid: r for cid, vs in pairs.items() if set(vs) & cut})
+
+            def on_inspect(n: int, total: int, label: str) -> None:
+                self._stage(plan_id, "more", lo + (hi - lo) * (0.25 + 0.2 * n / max(1, total)),
+                            t("Reading captions: {title} ({n}/{total})", title=label[:60], n=n, total=total))
+
+            infos = videos.inspect_many(ids, langs=langs, cancel=cancel, progress=on_inspect) if ids else {}
+            inspected += len(ids)
+            for vid, info in infos.items():
+                mv[vid] = video_row(info, langs)
+            if cancel.is_set():
+                raise Cancelled()
+            # videos read before (for another concept) that talk about what is missing, and the new ones
+            readable = [vid for vid in dict.fromkeys([*base_vids, *mv]) if row(vid).get("has_captions")
+                        and not row(vid).get("wrong_lang") and not row(vid).get("error")
+                        and not row(vid).get("caption_problem")]
+            known_infos = videos.inspect_many([v for v in readable if v not in infos], langs=langs, cancel=cancel)
+            known_infos.update(infos)
+            for cid, missing in gaps.items():
+                pairs[cid] = [v for v in pairs[cid] if v in known_infos or v in mv]
+                scored = []
+                for vid in readable:
+                    info = known_infos.get(vid)
+                    if vid in asked(cid) or vid in pairs[cid] or info is None or isinstance(info, Exception):
+                        continue
+                    wins = videos.windows(info, find_terms(by_id[cid], missing), top=1)
+                    if wins and wins[0]["score"] >= CROSS_SCORE:
+                        scored.append((wins[0]["score"], vid))
+                pairs[cid] += [vid for _, vid in sorted(scored, key=lambda x: -x[0])[:MORE_CROSS]]
+            hear: dict[str, dict[str, Any]] = {}
+            for cid, missing in gaps.items():
+                for vid in pairs[cid]:
+                    rw = row(vid)
+                    if rw.get("error") or rw.get("wrong_lang"):
+                        continue
+                    info = known_infos.get(vid)
+                    if rw.get("caption_problem") and vid in mv:
+                        hear.setdefault(vid, {"video": vid, "problem": rw["caption_problem"], "concepts": []})
+                        hear[vid]["concepts"].append(cid)
+                    if info is not None and not isinstance(info, Exception) and info.has_captions:
+                        mx.setdefault(cid, {})[vid] = excerpt_parts(info, find_terms(by_id[cid], missing), 3)
+            listened = self._listen(plan_id, "more", list(hear.values()), mv, mx, by_id, langs, data, cancel, save,
+                                    missing=gaps, span=(lo + (hi - lo) * 0.45, lo + (hi - lo) * 0.65))
+            work: list[tuple[str, list[dict], dict[str, dict[str, list]]]] = []
+            batch: list[dict] = []
+            part: dict[str, dict[str, list]] = {}
+            for cid in gaps:
+                new = {vid: x for vid, x in (mx.get(cid) or {}).items() if vid not in (mvd.get(cid) or {})}
+                if not new:
+                    continue
+                if batch and sum(len(x) for x in part.values()) + len(new) > MORE_PAIRS:
+                    work.append((f"r{r} " + " ".join(f"{k}:{','.join(sorted(v))}" for k, v in part.items()), batch, part))
+                    batch, part = [], {}
+                batch.append(by_id[cid])
+                part[cid] = new
+            if batch:
+                work.append((f"r{r} " + " ".join(f"{k}:{','.join(sorted(v))}" for k, v in part.items()), batch, part))
+            left_out = work[max(0, MORE_REQUESTS - requests):]
+            work = work[:max(0, MORE_REQUESTS - requests)]
+            capped.update({cid: r for _, b, _ in left_out for cid in (c["id"] for c in b)})
+            if not searching:                           # (nothing read for it again either: the limits stopped it)
+                stopped.update(cid for cid in gaps if not any(cid in part_ for _, _, part_ in work))
+            rounds.append({"round": r, "gaps": {cid: len(m) for cid, m in gaps.items()}, "queries": new_q,
+                           "inspected": len(ids), "heard": len(listened["heard"]),
+                           "pairs": sum(len(x) for _, _, ps in work for x in ps.values()), "requests": len(work)})
+            if not work:
+                break                                                  # nothing new to check: the search is exhausted
+            finished = parts.setdefault("verdicts", {})
+            self._judge(plan_id, "more", work, {**base_vids, **mv}, finished, who, cancel, save, add_usage,
+                        (lo + (hi - lo) * 0.65, hi))
+            requests += len(work)
+            for k, _, _ in work:
+                for cid, per in finished.get(k, {}).items():
+                    mvd.setdefault(cid, {}).update(per)
+                    if per:
+                        checked[cid] = r
+            save()
+        left = gaps_of(todo_c, verdicts_now())
+        # left unchecked by the limits after its last check (a concept checked in a later round was looked at again)
+        cut_off = sorted(cid for cid, at in capped.items() if cid in left and at >= checked.get(cid, 0))
+        return {"videos": mv, "excerpts": mx, "verdicts": mvd, "hits": hits_of, "rounds": rounds, "failed": failed,
+                "capped": cut_off, "stopped": sorted(cid for cid in stopped if cid in left and cid not in cut_off),
+                "queries": {cid: qs[len(qs_of.get(cid, [])):] for cid, qs in tried.items() if qs[len(qs_of.get(cid, [])):]}}
+
+    def _why(self, todo_c: list[dict], cands: dict[str, list[dict]], qs_of: dict[str, list[str]], vids: dict[str, dict],
+             verdicts: dict[str, dict[str, dict]], more: dict[str, Any],
+             search_failed: dict[str, str]) -> dict[str, dict[str, str]]:
+        """For each concept with something no checked video teaches: why the search found no good video for it, from
+        what was searched, found, checked, listened to and refused."""
+        from .videos import BLOCKING_KINDS
+
+        failed = {**search_failed, **(more.get("failed") or {})}
+        out: dict[str, dict[str, str]] = {}
+        skills_of = {c["id"]: list(c.get("skills") or []) for c in todo_c}
+        for cid, missing in gaps_of(todo_c, verdicts).items():
+            queries = {*qs_of.get(cid, []), *((more.get("queries") or {}).get(cid) or [])}
+            found = {h["id"] for h in cands.get(cid, [])} | {h["id"] for h in (more.get("hits") or {}).get(cid) or []}
+            checked = set(verdicts.get(cid) or {})
+            unheard: dict[str, str] = {}
+            other = refused = silent = 0
+            for vid in found:
+                rw = vids.get(vid) or {}
+                if rw.get("wrong_lang"):
+                    other += 1
+                elif rw.get("error"):
+                    refused += 1
+                elif vid not in checked and (rw.get("listen") or {}).get("skipped") == "no_speech":
+                    silent += 1                   # listened to: nothing to hear
+                elif vid not in checked and (rw.get("listen") or {}).get("skipped"):
+                    unheard[vid] = rw["listen"]["skipped"]
+            blocked = (any(failed.get(q) in BLOCKING_KINDS for q in queries)
+                       or any((vids.get(v) or {}).get("error_kind") in BLOCKING_KINDS for v in found))
+            some = missing and len(missing) < len(skills_of.get(cid) or [])   # (its other skills: a video teaches them)
+            text, en = why_no_video(len(queries), len(found), len(checked), unheard, other, refused, blocked,
+                                    capped=cid in set(more.get("capped") or []),
+                                    stopped=cid in set(more.get("stopped") or []), silent=silent,
+                                    what=list(missing) if some else None)
+            out[cid] = {"text": text, "en": en}
+        return out
+
+    def _listen(self, plan_id: str, stage: str, todo: list[dict[str, Any]], vids: dict[str, dict],
+                excerpts: dict[str, dict[str, list]], by_id: dict[str, dict], langs: tuple[str, ...],
+                data: dict[str, Any], cancel: threading.Event, save: Callable[..., None],
+                missing: Optional[dict[str, list[str]]] = None, span: tuple[float, float] = (0.55, 0.62)) -> dict:
+        """Listens to the videos of ``todo`` ([{"video", "problem", "concepts"}], most important first) as far as the
+        plan's limits allow (listen.py), and reads what was heard like captions: the videos' rows in ``vids`` and their
+        parts in ``excerpts`` (for each concept that chose them) are made from it. ``missing``: per concept, only the
+        skills to look for (a round of more searches). Returns {"heard": [ids], "skipped": {id: why}}."""
+        from . import listen as hearing, videos
+
+        out: dict[str, Any] = {"heard": [], "skipped": {}}
+        if not todo:
+            return out
+        used = data.setdefault("listened", {})
+        lo, hi = span
+        steps = {"download": N_("downloading its sound"), "model": N_("loading the speech model"),
+                 "transcribe": N_("transcribing it")}
+        shown = [0.0, ""]                      # when the progress was last saved, and of what (a download's every chunk
+                                               # calls it: twice a second is plenty)
+
+        def progress(i: int, n: int, step: str, frac: float) -> None:
+            now, what = time.monotonic(), f"{i} {step}"
+            if what == shown[1] and now - shown[0] < 0.5:
+                return
+            shown[0], shown[1] = now, what
+            head = tn(n, "Listening to {n} video without captions: {i} of {n}",
+                      "Listening to {n} videos without captions: {i} of {n}", i=i)
+            self._stage(plan_id, stage, lo + (hi - lo) * (i - 1 + max(0.0, min(1.0, frac))) / max(1, n),
+                        f"{head} · {t(steps.get(step, steps['transcribe']))}")
+
+        rows = {x["video"]: x for x in todo}
+        heard = hearing.listen(getattr(self._s, "jobs", None), self._s.settings,
+                               [(vid, SimpleNamespace(duration_s=(vids.get(vid) or {}).get("duration_s") or 0,
+                                                     language=(vids.get(vid) or {}).get("language") or ""),
+                                 x.get("problem", "")) for vid, x in rows.items()],
+                               used, langs, cancel, progress)
+        save()
+        for vid, res in heard.items():
+            x = rows[vid]
+            if not res.get("heard"):
+                vids[vid]["listen"] = {"skipped": res.get("skipped") or "failed"}
+                out["skipped"][vid] = vids[vid]["listen"]["skipped"]
+                continue
+            try:
+                info = videos.inspect(vid, langs=langs, cancel=cancel)        # (from the cache: with what was heard)
+            except videos.VideoError as exc:
+                log.info("Couldn't read %s again after listening: %s", vid, exc)
+                vids[vid]["listen"] = {"skipped": "failed"}
+                out["skipped"][vid] = "failed"
+                continue
+            vids[vid] = {**vids[vid], **video_row(info, langs), "listen": {"heard": True}}
+            for cid in x.get("concepts") or []:
+                c = by_id.get(cid)
+                if c is not None and info.has_captions:
+                    excerpts.setdefault(cid, {})[vid] = excerpt_parts(
+                        info, find_terms(c, (missing or {}).get(cid)), 3 if c.get("in_scope", True) else 2)
+            out["heard"].append(vid)
+        return out
 
     def _reusable(self, parent_id: str, scope: Scope, facts: dict[str, Any]) -> dict[str, Any]:
         """The finished stages of the plan being updated, when only the viewing time or the deadline changed and the
@@ -1598,12 +2325,16 @@ class PlanRunner:
         if not same or rest(Scope.from_json(parent.get("scope") or {})) != rest(scope):
             return {}
         out: dict[str, Any] = {}
-        for st in STAGE_NAMES[1:-1]:                    # concepts … verify
+        for st in STAGE_NAMES[1:-1]:                    # concepts … more (a plan from before listening: up to inspect)
             if st not in old:
-                if st == "verify" and "verify_parts" in old:
-                    out["verify_parts"] = old["verify_parts"]
+                partial = {"verify": "verify_parts", "more": "more_parts"}.get(st, "")
+                if partial in old:
+                    out[partial] = old[partial]
                 break
             out[st] = old[st]
+            extra = {"search": "search_failed", "listen": "listened"}.get(st, "")
+            if extra in old:
+                out[extra] = old[extra]
         return out
 
     def _write_prep(self, plan: dict[str, Any], scope: Scope, facts: dict[str, Any], model: str,
@@ -1696,13 +2427,20 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
     batches = -(-m // VERIFY_BATCH)
     excerpts_in = int((INSPECT + 1) * 2.5 * EXCERPT_CHARS / per)   # per concept: ~4 videos, 2–3 parts each
     verify_in = batches * (PROMPT_OVERHEAD + 900 + VERIFY_BATCH * excerpts_in)
+    # the more searches: about half the concepts still miss a skill after the first check; for them the searches'
+    # request, then their new candidates checked MORE_PAIRS at a time
+    pairs = (m + 1) // 2 * (MORE_PER_CONCEPT + 1)
+    more = min(MORE_REQUESTS, -(-pairs // MORE_PAIRS))
+    more_in = PROMPT_OVERHEAD + 300 * m + more * (PROMPT_OVERHEAD + 900 + int(MORE_PAIRS * 2.5 * EXCERPT_CHARS / per))
     assemble_in = PROMPT_OVERHEAD + 1800 + m * 380
     effort, verify_effort = levels(s, settings)
     return {"main_model": main_model(s, settings), "verify_model": getattr(settings, "verify_model", "") or VERIFY_MODEL,
-            "effort": effort, "verify_effort": verify_effort, "verify_requests": batches,
-            "main_input": pack + assemble_in, "main_output": n * 220 + 1500 + 5000, "verify_input": verify_in,
-            "verify_output": batches * VERIFY_BATCH * 4 * 130, "concepts": n,
+            "effort": effort, "verify_effort": verify_effort, "verify_requests": batches + 1 + more,
+            "main_input": pack + assemble_in, "main_output": n * 220 + 1500 + 5000, "verify_input": verify_in + more_in,
+            "verify_output": (batches * VERIFY_BATCH * 4 + pairs) * 220 + 60 * m, "concepts": n,
             "weeks": facts["weeks"], "materials_used": facts["materials_used"],
             "materials_missing": facts["materials_missing"], "days_used": facts["days_used"],
             "days_left_out": facts["days_left_out"],
-            "minutes": t("about 3–8 minutes")}
+            # measured on three weeks of 20 concepts each (ChatGPT, medium): 12–19 minutes, of which listening and the
+            # more searches 4–9
+            "minutes": t("about 10–20 minutes")}

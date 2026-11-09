@@ -145,6 +145,7 @@ class Services:
                                 "your sections and your IEUStudia folder in Settings. The old file is kept in {folder}.",
                                 folder=str(settings_path().parent)))
         self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
+        self.lib.index.notes, self.lib.index.note_days = self.notes_for_search, self.days_for_search
         # a command-line run while the app is open (it holds its single-instance lock): the lectures, chats and plans
         # the app is working on, and its files, are its own; nothing of theirs is reset, moved or swept from here
         self.beside_app = not migrate_output and _app_open()
@@ -443,6 +444,8 @@ class Services:
                 courses.add(rec.course_id)
                 moved += 1
                 log.info("%s moved from %s to %s", did, old_key, rec.day_key)
+                for day in (old_key, rec.day_key):          # its AI notes went with it: searched under the new day
+                    self.lib.index.day_notes(day)
         finally:
             self.lib.drop_day_moves(settled)
         for cid in courses:
@@ -590,4 +593,26 @@ class Services:
                   f"{tokens_in:,} input / {usage.get('output_tokens', 0):,} output tokens.*\n")
         # never half a file (the app closed, a power cut)
         atomic_write(path, dollar_math(res["text"].rstrip()) + footer)
+        self.lib.index.day_notes(day_key)                  # found by the search from now on
         return path
+
+    def notes_for_search(self, day_key: str) -> list[tuple[str, str, str, str]]:
+        """A class day's AI notes for the search index: [(kind, label, Markdown, when written)]."""
+        try:
+            files = self.day_files(day_key)
+        except (KeyError, OSError):
+            return []
+        out = []
+        for kind in files.get("notes_kinds", []):
+            p = Path(files[f"notes:{kind}"])
+            try:
+                out.append((kind, NOTE_KINDS.get(kind, NOTE_KINDS["notes"]), p.read_text(encoding="utf-8"),
+                            dt.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")))
+            except OSError:
+                continue
+        return out
+
+    def days_for_search(self) -> list[str]:
+        """The class days that may have AI notes (those with a transcribed lecture)."""
+        done = self.lib.transcribed_ids()
+        return sorted({r.day_key for r in self.lib.recordings(include_gone=True) if r.delivery_id in done})

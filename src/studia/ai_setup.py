@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from .cancel import Cancelled
-from .i18n import num, t
+from .i18n import Retold, num, retell, t
 
 log = logging.getLogger("studia")
 
@@ -122,13 +122,14 @@ def claude_env() -> dict[str, str]:
 
 # ----------------------------------------------------------------------------- jobs (installs) and their progress
 def job(which: str) -> dict[str, Any]:
+    """The install under way, or how the last one ended (why it failed in the language of now)."""
     with _lock:
-        return dict(_jobs.get(which) or {})
+        return {k: retell(v) for k, v in (_jobs.get(which) or {}).items()}
 
 
 def last_test(which: str) -> dict[str, Any]:
     with _lock:
-        return dict(_tests.get(which) or {})
+        return {k: retell(v) for k, v in (_tests.get(which) or {}).items()}
 
 
 def _update(which: str, emit: Emit, **change: Any) -> None:
@@ -258,13 +259,13 @@ def start_install(which: str, emit: Emit) -> dict[str, Any]:
             ai._failed.clear()                     # a copy that didn't start before is asked again: it may be new now
             if not _installed(which):
                 ai._failed.clear()                 # (the next look asks again, not only in 5 minutes)
-                raise Plain(t("Claude Code was installed, but it doesn't start yet: your antivirus may still be "
-                              "checking it (or put it in quarantine). Wait a minute: this list looks again by itself. "
-                              "If it stays like this, restore Claude Code in your antivirus, or restart the PC.")
-                            if which == "claude" else
-                            t("The Codex CLI was installed, but it doesn't start yet: your antivirus may still be "
-                              "checking it (or put it in quarantine). Wait a minute: this list looks again by itself. "
-                              "If it stays like this, restore the Codex CLI in your antivirus, or restart the PC."))
+                raise Plain(Retold(lambda: t(
+                    "Claude Code was installed, but it doesn't start yet: your antivirus may still be checking it (or "
+                    "put it in quarantine). Wait a minute: this list looks again by itself. If it stays like this, "
+                    "restore Claude Code in your antivirus, or restart the PC.") if which == "claude" else t(
+                    "The Codex CLI was installed, but it doesn't start yet: your antivirus may still be checking it "
+                    "(or put it in quarantine). Wait a minute: this list looks again by itself. If it stays like this, "
+                    "restore the Codex CLI in your antivirus, or restart the PC.")))
             log.info("Installed %s", which)
             _update(which, emit, state="done", line=t("Installed"), error="", stopping=False)
         except Exception as exc:  # noqa: BLE001 - shown in the set-up
@@ -273,7 +274,8 @@ def start_install(which: str, emit: Emit) -> dict[str, Any]:
                 _update(which, emit, state="cancelled", line="", error="", stopping=False)
                 return
             log.warning("Installing %s failed: %r", which, exc)
-            _update(which, emit, state="error", error=_install_error(which, exc), stopping=False)
+            # (kept for the page: said again in the language of the moment, also after a language switch)
+            _update(which, emit, state="error", error=Retold(lambda e=exc: _install_error(which, e)), stopping=False)
 
     threading.Thread(target=run, name=f"install-{which}", daemon=True).start()
     return job(which)
@@ -312,8 +314,8 @@ def _install_error(which: str, exc: BaseException) -> str:
     message = str(exc) or exc.__class__.__name__
     low = message.lower()
     winerror = getattr(exc, "winerror", None)
-    if isinstance(exc, Plain):
-        return message[:500]
+    if isinstance(exc, Plain):                      # (its words in the language of now, when it can say them again)
+        return str(retell(exc.args[0]) if exc.args else message)[:500]
     if isinstance(exc, TookTooLong):
         return (t("Setting up Claude Code took too long and was stopped. Click Try again; if it stops again, use Rather "
                   "do it yourself? below.") if claude else
@@ -766,7 +768,8 @@ def test(which: str) -> dict[str, Any]:
         out = {"ok": ok, "error": "" if ok else t("No answer came back."), "code": ""}
     except Exception as exc:  # noqa: BLE001 - shown in the set-up
         msg = str(exc) or exc.__class__.__name__
-        error = (ai.friendly_error(msg) if which == "claude" else msg)[:400]
+        # (Claude Code's own words, said plainly in the language of the moment: also after a language switch)
+        error = Retold(lambda: (ai.friendly_error(msg) if which == "claude" else msg)[:400])
         # "signed_out": the program's own status still says signed in, but the service no longer takes that sign-in
         # (it ended after a password change, a sign-out everywhere, a refused renewal): the page offers to sign in again
         signed_out = which != "chatgpt" and error in (t("Claude Code is not signed in. Settings → AI → Sign in with Claude."),

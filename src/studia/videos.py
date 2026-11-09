@@ -1,17 +1,20 @@
 """YouTube videos for video study plans: search, metadata, chapters and captions through yt-dlp (no API key).
 
-A video is verified by what is *said* in it - its captions - not by its title. Only text is fetched, never
-video or audio: a search is one results page; an inspection is the watch page and player response plus one
-caption file (json3, else vtt / srv1 / ttml). The captions are a human track in a preferred language, else the
-video's original automatic track; YouTube's machine translations (~150 languages) are never used.
+A video is verified by what is *said* in it - its captions - not by its title. A search is one results page; an
+inspection is the watch page and player response plus one caption file (json3, else vtt / srv1 / ttml). The captions
+are a human track in a preferred language, else the video's original automatic track; YouTube's machine translations
+(~150 languages) are never used. A video whose captions can't show what it teaches (:func:`caption_problem`: none,
+only in another language, automatic ones far too short or garbled) can be listened to instead: :func:`download_audio`
+fetches its original sound track only (the smallest format), listen.py transcribes it on this PC and
+:func:`remember_heard` keeps the transcript, which :func:`inspect` then gives as the video's captions (kind "speech").
 
 What a candidate is judged by: on the results page its title, channel, duration, views and description snippet
 (:func:`rank`); once inspected also its description, chapters, tags, likes, subscribers, spoken language and captions
 (:func:`windows` finds the parts that talk about a concept; plans.py has the AI check them).
 
 Everything is cached under ``<app>/cache/videos``: searches for 7 days, inspections for 30 (3 when a video has
-no captions yet: YouTube may still generate them), channels for 30. ``yt_dlp`` is imported lazily - it takes
-~0.5 s to import and only study plans need it.
+no captions yet: YouTube may still generate them), channels for 30, what was heard in a video for 180. ``yt_dlp`` is
+imported lazily - it takes ~0.5 s to import and only study plans need it.
 """
 
 from __future__ import annotations
@@ -72,6 +75,17 @@ CHANNEL_TTL_S = 30 * 86400
 COVERAGE_BONUS, CHAPTER_BONUS, MERGE_FRACTION, MAX_REGION_WINDOWS = 1.0, 2.0, 0.5, 2.0
 # cues: fragments shorter than TINY_CUE_CHARS join a neighbour less than MERGE_GAP_S away
 MERGE_GAP_S, TINY_CUE_CHARS, MAX_CUE_CHARS = 1.0, 20, 200
+# listening (a video whose captions can't be used): what IEUStudia heard in it is kept like captions, of this kind
+SPEECH = "speech"
+HEARD_TTL_S = 180 * 86400              # a video's sound doesn't change
+AUDIO_TIMEOUT_S = 180                  # downloading a video's sound: given up after this long
+AUDIO_MAX_BYTES = 80 * 1024 * 1024     # (~3.5 hours at the smallest format's ~50 kbit/s)
+# caption_problem(): automatic captions below these say too little to judge a video by. A teacher says about 100-160
+# words a minute (fewer while writing on the board); YouTube's speech recognition misses little in clear speech.
+POOR_WORDS_PER_MIN = 30
+POOR_REACH = 0.5                       # captions that stop before half of the video
+POOR_TAGS = 0.3                        # lines that are only "[Music]", "[Applause]"…
+POOR_DISTINCT = 0.12                   # different words in a stretch of 200: fewer is a recognition loop
 
 
 @dc.dataclass
@@ -148,12 +162,15 @@ class VideoInfo:
     chapters: list[Chapter] = dc.field(default_factory=list)
     cues: list[Cue] = dc.field(default_factory=list)
     caption_lang: str = ""                 # language of the cues, e.g. "en"
-    caption_kind: str = ""                 # "manual" | "auto" | "" (no usable captions)
+    caption_kind: str = ""                 # "manual" | "auto" | "speech" (heard by IEUStudia) | "" (no captions)
     fetched_at: str = ""                   # when it was inspected (ISO)
     like_count: Optional[int] = None       # None: hidden or unknown
     channel_followers: Optional[int] = None
     tags: list[str] = dc.field(default_factory=list)          # the creator's keywords (at most 20)
     categories: list[str] = dc.field(default_factory=list)    # e.g. ["Education"]
+    # caption kind "speech": how it was heard - {"model", "device", "why" (its own captions' problem), "at", "seconds",
+    # "upto": the seconds heard of a long video (0: all of it)}
+    heard: dict[str, Any] = dc.field(default_factory=dict)
 
     @property
     def has_captions(self) -> bool:
@@ -281,7 +298,9 @@ def _ydl(**extra: Any) -> Any:
     })
 
 
-# (kind, pattern in yt-dlp's error text, message for the user, in English: t() when raised): the first match wins
+# (kind, pattern in yt-dlp's error text, message for the user, in English: t() when raised): the first match wins.
+# "changed": yt-dlp no longer understands YouTube's pages (YouTube changed them): a newer yt-dlp, which comes with a
+# new IEUStudia, is needed; trying again won't help (noted in health)
 _ERRORS = (
     ("bot", r"not a bot|captcha|unusual traffic", N_("YouTube asked to confirm you're not a bot. Try again later.")),
     ("private", r"private video|video is private", N_("This video is private.")),
@@ -296,6 +315,10 @@ _ERRORS = (
     ("network", r"getaddrinfo|name resolution|resolve host|nodename|connection (?:refused|reset|aborted|error)|"
                 r"network is unreachable|no route to host|remote end closed|failed to establish|\bssl\b|"
                 r"certificate|errno 1100\d", N_("Can't reach YouTube. Check your internet connection.")),
+    ("changed", r"unable to extract|failed to extract|nsig extraction|signature extraction|please report this issue|"
+                r"confirm you are on the latest version|yt-dlp -U|failed to parse json",
+     N_("YouTube changed something, so IEUStudia can't read it right now: the part of IEUStudia that reads YouTube "
+        "needs an update. Check for an IEUStudia update in Settings → About.")),
     ("unavailable", r"unavailable|not available|no longer|removed|terminated|deleted|does not exist|"
                     r"incomplete youtube id|unsupported url|not a valid url", N_("This video is unavailable.")),
 )
@@ -311,8 +334,23 @@ def _video_error(exc: BaseException, default: str) -> VideoError:
         text += f" ({inner})"
     text = _line(re.sub(r"\x1b\[[\d;]*m", "", text))
     kind, message = next(((k, msg) for k, rx, msg in _ERRORS if re.search(rx, text, re.I)), ("error", default))
-    (log.warning if kind in BLOCKING_KINDS else log.info)("YouTube: %s (%s)", message, text[:300])
+    # (one video yt-dlp can't read is said for that video; health notes YouTube as changed only when a whole batch
+    # fails alike, _all_failed: one odd video among the ones that read fine would make the warning come and go)
+    (log.warning if kind in BLOCKING_KINDS or kind == "changed" else log.info)("YouTube: %s (%s)", message, text[:300])
+    if kind in ("network", "timeout"):              # (Settings → Services: it didn't answer)
+        from . import health
+
+        health.down("youtube", "videos", kind)
     return VideoError(t(message), kind)
+
+
+def _ytdlp_version() -> str:
+    try:
+        from yt_dlp.version import __version__ as version
+
+        return str(version)
+    except Exception:  # noqa: BLE001 - only for the developer's details
+        return "?"
 
 
 # ------------------------------------------------------------------ search
@@ -350,6 +388,9 @@ def search(query: str, limit: int = 8, *, cancel: Optional[threading.Event] = No
             hits.append(hit)
     log.info("YouTube search %r: %d videos (%.1f s)", q, len(hits), time.monotonic() - t0)
     if hits:                          # an empty page may be a hiccup: don't remember it for a week
+        from . import health
+
+        health.ok("youtube", "videos")
         _write_json(path, {"query": q, "limit": limit, "saved_at": _now(), "hits": [h.to_json() for h in hits]})
     return hits
 
@@ -383,12 +424,13 @@ def inspect(video_id: str, *, langs: tuple[str, ...] = ("en",), cancel: Optional
     ``langs`` are the preferred caption languages, best first. Raises :class:`VideoError` when YouTube refuses
     (private, unavailable, age-restricted, members-only, bot check, rate limit) or can't be reached, and
     ``VideoError("Cancelled")`` when ``cancel`` is set. No usable captions is not an error: then
-    ``caption_kind`` is "" and ``has_captions`` False."""
+    ``caption_kind`` is "" and ``has_captions`` False. A video IEUStudia listened to (:func:`remember_heard`) has
+    what it heard as its captions (see :func:`with_heard`)."""
     vid = _video_id(video_id)
     langs = tuple(str(lang).strip() for lang in langs if str(lang).strip()) or ("en",)
     cached = _cached_info(vid, langs)
     if cached is not None:
-        return cached
+        return with_heard(cached, langs)
     _check(cancel)
     t0 = time.monotonic()
     with _ydl() as ydl:
@@ -413,7 +455,10 @@ def inspect(video_id: str, *, langs: tuple[str, ...] = ("en",), cancel: Optional
     log.info("Video %s: %s captions (%s, %d cues), %d chapters (%.1f s)", vid, info.caption_kind or "no",
              info.caption_lang or "-", len(info.cues), len(info.chapters), time.monotonic() - t0)
     _write_json(_info_path(vid), {**info.to_json(), "langs": list(langs)})
-    return info
+    from . import health
+
+    health.ok("youtube", "videos")
+    return with_heard(info, langs)
 
 
 def _video_info(vid: str, raw: dict[str, Any]) -> VideoInfo:
@@ -715,6 +760,141 @@ def _tidy(cues: list[Cue]) -> list[Cue]:
     return out
 
 
+# ------------------------------------------------------------------ captions that can't be used: listening instead
+_SOUND_TAG = re.compile(r"[\[(][^\])]{1,30}[\])]|[♪♫♬\s]+")       # "[Music]", "[Müzik]", "(applause)", "♪♪"
+
+
+def caption_problem(info: VideoInfo, langs: tuple[str, ...] = ("en",)) -> str:
+    """Why a video's captions can't show what it teaches, "" when they can: "none" (it has none), "language" (they are
+    in a language the plan doesn't want), "short" (automatic captions with far fewer words than the video's length
+    needs - fewer than POOR_WORDS_PER_MIN a minute -, or that stop before half of it) or "garbled" (most lines only
+    "[Music]", or a recognition loop: the same few words over and over). A creator's own captions are trusted, and
+    so is what IEUStudia heard in a video."""
+    if not info.cues:
+        return "none"
+    if info.caption_kind == SPEECH:
+        return ""
+    if info.caption_lang and _base(info.caption_lang) not in {_base(lang) for lang in langs}:
+        return "language"
+    if info.caption_kind == "manual":
+        return ""
+    words = [w for c in info.cues for w in c.text.split()]
+    reach = max(c.end for c in info.cues)
+    duration = info.duration_s or reach
+    if duration >= 120 and (len(words) < POOR_WORDS_PER_MIN * duration / 60 or reach < POOR_REACH * duration):
+        return "short"
+    if sum(1 for c in info.cues if _SOUND_TAG.fullmatch(c.text)) >= POOR_TAGS * len(info.cues):
+        return "garbled"
+    # a loop, stretch by stretch: over a whole lecture fewer words are new (0.08 in a real 30-minute one), while in any
+    # 200 of them a teacher uses 25-60 % different ones - a loop ("the the the…") 1-10 %
+    folded = [w.casefold() for w in words]
+    stretches = [folded[i:i + 200] for i in range(0, len(folded) - 199, 200)]
+    if stretches and sum(len(set(s)) < POOR_DISTINCT * len(s) for s in stretches) * 3 >= len(stretches):
+        return "garbled"
+    return ""
+
+
+def _heard_path(vid: str) -> Path:
+    return _cache_dir() / "heard" / f"{vid}.json"
+
+
+def remember_heard(video_id: str, cues: list[Cue], lang: str, **how: Any) -> None:
+    """Keeps what IEUStudia heard in a video (listen.py) like its captions: :func:`inspect` gives it as the video's
+    captions from now on (for HEARD_TTL_S). ``how``: model, device, why (its own captions' problem), seconds."""
+    vid = _video_id(video_id)
+    _write_json(_heard_path(vid), {"id": vid, "lang": lang, "at": _now(), **how,
+                                   "cues": [{"start": c.start, "end": c.end, "text": c.text} for c in cues]})
+
+
+def heard(video_id: str) -> Optional[dict[str, Any]]:
+    """What IEUStudia heard in a video it listened to: {"cues": [Cue], "lang", "model", "device", "why", "at",
+    "seconds"} - None if it never did (or it was long ago)."""
+    try:
+        path = _heard_path(_video_id(video_id))
+    except VideoError:
+        return None
+    data = _read_json(path) if _fresh(path, HEARD_TTL_S) else None
+    if not isinstance(data, dict) or not isinstance(data.get("cues"), list):
+        return None
+    try:
+        cues = [Cue(float(c["start"]), float(c["end"]), str(c["text"])) for c in data["cues"] if str(c.get("text") or "")]
+    except (TypeError, ValueError, KeyError):
+        return None
+    return {**data, "cues": cues} if cues else None
+
+
+def with_heard(info: VideoInfo, langs: tuple[str, ...] = ("en",)) -> VideoInfo:
+    """``info`` with what IEUStudia heard in the video as its captions (kind SPEECH), when it listened to it - unless
+    the video has a creator's captions that can be used (they may have been added since)."""
+    got = heard(info.id) if info.id else None
+    if got is None or (info.caption_kind == "manual" and not caption_problem(info, langs)):
+        return info
+    return dc.replace(info, cues=got["cues"], caption_kind=SPEECH, caption_lang=str(got.get("lang") or ""),
+                      heard={k: got[k] for k in ("model", "device", "why", "at", "seconds", "upto") if k in got})
+
+
+def _original_audio(ctx: dict[str, Any]) -> Any:
+    """yt-dlp's format choice for listening: the original sound track - many videos also carry YouTube's automatic
+    dubs into other languages now, and "worstaudio" picked an Arabic dub of an English lesson -, its smallest direct
+    download (HLS playlists left out)."""
+    formats = [f for f in ctx.get("formats") or [] if isinstance(f, dict) and f.get("acodec") not in (None, "none")
+               and f.get("vcodec") in (None, "none") and str(f.get("protocol") or "https").startswith("http")]
+
+    def order(f: dict[str, Any]) -> tuple:
+        pref = f.get("language_preference")
+        pref = pref if isinstance(pref, (int, float)) and not isinstance(pref, bool) else 0
+        note = str(f.get("format_note") or "").lower()
+        size = _num(f.get("filesize")) or _num(f.get("filesize_approx")) or (_num(f.get("abr")) or 1000) * 1e5
+        return (pref < 10 and "original" not in note, "dubbed" in note, pref < 5, "drc" in str(f.get("format_id")),
+                size)
+
+    if formats:
+        yield min(formats, key=order)
+
+
+def download_audio(video_id: str, folder: Path, *, cancel: Optional[threading.Event] = None,
+                   progress: Optional[Callable[[int, int], None]] = None) -> Path:
+    """A video's sound only - its original track, the smallest file of it (~30-50 kbit/s: plenty for speech) - saved
+    in ``folder``: the file. ``progress(done, total)`` in bytes. Raises :class:`VideoError` when YouTube refuses or
+    can't be reached, after AUDIO_TIMEOUT_S ("timeout"), for a file over AUDIO_MAX_BYTES ("too_big"), when the video
+    has no sound track to download ("unavailable") and when ``cancel`` is set ("cancelled")."""
+    vid = _video_id(video_id)
+    _check(cancel)
+    folder.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+
+    def hook(d: dict[str, Any]) -> None:
+        _check(cancel)
+        if time.monotonic() - t0 > AUDIO_TIMEOUT_S:
+            raise VideoError(t("Downloading the video's sound took too long."), "timeout")
+        if progress is not None and d.get("status") == "downloading":
+            progress(int(d.get("downloaded_bytes") or 0), int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0))
+
+    with _ydl(skip_download=False, format=_original_audio, outtmpl={"default": str(folder / f"{vid}.%(ext)s")},
+              progress_hooks=[hook], noplaylist=True, max_filesize=AUDIO_MAX_BYTES, overwrites=True,
+              continuedl=False, noprogress=True) as ydl:
+        try:
+            raw = ydl.extract_info(watch_url(vid), download=True)
+        except Exception as exc:  # noqa: BLE001 - yt-dlp wraps every failure (also a hook's) in DownloadError
+            inner = (getattr(exc, "exc_info", None) or (None, None))[1]
+            if isinstance(inner, VideoError):
+                raise inner from exc
+            if "requested format is not available" in str(exc).lower():
+                raise VideoError(t("YouTube offers no sound to download for this video."), "unavailable") from exc
+            raise _video_error(exc, N_("Couldn't download this video's sound from YouTube.")) from exc
+    files = [Path(str(d.get("filepath") or "")) for d in (raw or {}).get("requested_downloads") or []
+             if isinstance(d, dict) and d.get("filepath")]
+    files = [f for f in files if f.is_file()] or [f for f in folder.glob(f"{vid}.*") if f.suffix not in (".part", ".ytdl")]
+    if not files:
+        size = _num((raw or {}).get("filesize") or (raw or {}).get("filesize_approx"))
+        if size > AUDIO_MAX_BYTES:
+            raise VideoError(t("This video's sound is too big to download."), "too_big")
+        raise VideoError(t("YouTube offers no sound to download for this video."), "unavailable")
+    log.info("Video %s: sound downloaded (%s, %.1f MB, %.1f s)", vid, files[0].suffix,
+             files[0].stat().st_size / 1e6, time.monotonic() - t0)
+    return files[0]
+
+
 # ------------------------------------------------------------------ many at once
 Progress = Callable[[int, int, str], None]
 
@@ -722,7 +902,8 @@ Progress = Callable[[int, int, str], None]
 def search_many(queries: list[str], limit: int = 8, *, workers: int = 4, cancel: Optional[threading.Event] = None,
                 progress: Optional[Progress] = None) -> dict[str, list[VideoHit] | VideoError]:
     """:func:`search` for several queries in parallel: {query: hits, or the VideoError}."""
-    return _run_many(queries, lambda q: search(q, limit, cancel=cancel), workers, cancel, progress, lambda q, r: q)
+    return _run_many(queries, lambda q: search(q, limit, cancel=cancel), workers, cancel, progress, lambda q, r: q,
+                     empty_changed=True)
 
 
 def inspect_many(ids: list[str], *, workers: int = 4, langs: tuple[str, ...] = ("en",),
@@ -734,7 +915,8 @@ def inspect_many(ids: list[str], *, workers: int = 4, langs: tuple[str, ...] = (
 
 
 def _run_many(keys: list[str], fn: Callable[[str], Any], workers: int, cancel: Optional[threading.Event],
-              progress: Optional[Progress], label: Callable[[str, Any], str]) -> dict[str, Any]:
+              progress: Optional[Progress], label: Callable[[str, Any], str],
+              empty_changed: bool = False) -> dict[str, Any]:
     """``fn`` for every key in a thread pool; ``progress(done, total, label)`` after each. A failure is that
     key's result and never stops the others - except a bot check or rate limit: YouTube then refuses the whole
     connection, so the keys not started yet get the same error without asking it again."""
@@ -772,7 +954,29 @@ def _run_many(keys: list[str], fn: Callable[[str], Any], workers: int, cancel: O
                     progress(done, len(keys), label(key, results[key]))
                 except Exception as exc:  # noqa: BLE001 - a broken progress callback must not lose results
                     log.debug("Progress callback failed: %s", exc)
+    _all_failed(results, empty_changed)
     return {key: results[key] for key in keys}
+
+
+EVERY_OF = 3            # this many searches or videos at least, all failing alike: YouTube changed, not one video
+
+
+def _all_failed(results: dict[str, Any], empty_changed: bool = False) -> None:
+    """yt-dlp failing on every video and search of a batch for no reason it knows (not a bot check, a rate limit, the
+    network or a private video), or (``empty_changed``: YouTube's own searches) every search coming back without a
+    single video: YouTube changed, and yt-dlp needs an update. Noted in health (Home and Settings say it), once a
+    batch is big enough to tell. A search in a channel finds nothing for a topic the channel has no video on: never
+    taken for a change."""
+    from . import health
+
+    got = list(results.values())
+    if len(got) < EVERY_OF or any(isinstance(r, VideoError) and r.kind == "cancelled" for r in got):
+        return
+    if all(isinstance(r, VideoError) and r.kind in ("error", "changed") for r in got):
+        health.changed("youtube", "videos", f"yt-dlp {_ytdlp_version()} failed on all {len(got)} "
+                                            f"({', '.join(sorted({r.kind for r in got}))})")
+    elif empty_changed and all(isinstance(r, list) and not r for r in got):
+        health.changed("youtube", "videos", f"yt-dlp {_ytdlp_version()}: all {len(got)} searches came back empty")
 
 
 # ------------------------------------------------------------------ what is said: text, windows, ranking

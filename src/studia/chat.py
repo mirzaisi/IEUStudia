@@ -28,8 +28,8 @@ from .catchup import no_sound
 from .domain import Course, Recording
 from .i18n import date_long, date_short, t, tn
 from .knowledge import course_brief, retrieve
-from .outputs.ai_copy import compact_day
-from .outputs.common import course_display, kind_label, long_date
+from .outputs.ai_copy import compact_day, part_lines
+from .outputs.common import course_display, kind_label, long_date, time_range
 from .outputs.markdown import part_views
 from .outputs.mathmd import dollar_math
 from .outputs.writer import atomic_write, course_dir, safe_name
@@ -47,9 +47,11 @@ IDLE_CLOSE_S = 3300               # Claude Code keeps a subscription's prompt ca
                                   # break still reads the slides and the conversation from it in the same process
 MAX_LIVE = 2                      # Claude Code processes kept open at once (~160 MB of memory each while idle)
 MODELS = ("haiku", "sonnet", "opus")
-FOCUS = ("full", "highlights", "course")      # course: every lecture's highlights + search per question
+FOCUS = ("full", "highlights", "course")      # course: every lecture's full transcript (read in parts first when it
+                                              # doesn't fit whole) + the chosen files + search per question
 EMIT_EVERY_S = 0.08
 SAVE_EVERY_S = 3.0
+READING_SAVE_S = 5.0              # how far "Read everything" got, kept with the answer (said after a restart)
 
 
 LEVEL_NAMES = (*effort.LEVELS, *effort.LOCAL_LEVELS)
@@ -80,7 +82,7 @@ def system_prompt(n_days: int, focus: str, slides: bool) -> str:
         "",
         fmt,
     ]
-    if focus in ("highlights", "course"):
+    if focus == "highlights":
         lines += ["", "Only the moments the lecturer emphasised (⭐) are included, not the full lectures; say so "
                       "when a question needs more than that."]
     lines += [
@@ -133,6 +135,78 @@ def replay_text(history: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+PIECE_CHARS = 4000            # a lecture read in parts: its transcript in pieces of about this much (the notes of each:
+                              # up to chatread.NOTE_CHARS, about a third of it)
+
+
+def lecture_pieces(course: Course, recs: list[Recording], trans: dict, slides: Any, n: int,
+                   key: str) -> list[chatread.Page]:
+    """A class day's transcript in pieces, for a whole-course chat whose lectures don't all fit whole: read in parts
+    like the slides (chatread), each piece labelled "[L2 P1 00:00–09:40]" (the lecture, its part, the times it covers)
+    and its notes kept with the transcript's, by the piece's text."""
+    start = min(r.start for r in recs)
+    name = (f"L{n} · " if n else "") + long_date(start.date())
+    out: list[chatread.Page] = []
+    for p in part_views(recs, trans, slides):
+        if not p.transcript:
+            continue
+        chunks: list[list[str]] = []
+        cur: list[str] = []
+        size = 0
+        for line in part_lines(p):
+            line = line[:PIECE_CHARS]
+            if cur and size + len(line) + 1 > PIECE_CHARS:
+                chunks.append(cur)
+                cur, size = [], 0
+            cur.append(line)
+            size += len(line) + 1
+        if cur:
+            chunks.append(cur)
+        for chunk in chunks:
+            first, last = (x[1:x.index("]")] if "]" in x else "" for x in (chunk[0], chunk[-1]))
+            label = f"[{f'L{n} ' if n else ''}P{p.index} {first}–{last}]"
+            out.append(chatread.Page(label=label, group="lecture", file=key, name=name, page=len(out) + 1,
+                                     text=f"Part {p.index} ({time_range(p.rec)})\n" + "\n".join(chunk),
+                                     source=str(store.transcript_path(p.rec.delivery_id))))
+    return out
+
+
+AS_SAID = {"full": "the full transcript",
+           "notes": "notes read for you from its full transcript, piece by piece (with each question, under NOTES ON "
+                    "THE PAGES YOU DON'T SEE IN FULL, labelled like [L2 P1 00:00–09:40])",
+           "highlights": "only the moments the lecturer emphasised (⭐): the full transcript did not fit, and Read "
+                         "everything is off"}
+
+
+def lectures_manifest(days: list[dict[str, Any]], untranscribed: list[Recording], focus: str) -> str:
+    """What the AI got of each lecture (the whole course: full transcripts, notes of the ones read in parts, or
+    highlights), so it never says it has less, or more, than it got."""
+    if not days:
+        return ""
+    lines: list[str] = []
+    forms = {d["as"] for d in days}
+    n = len(days)
+    ns = [int(d.get("n") or 0) for d in days]          # their numbers: a day that is gone keeps its own (L1, L3)
+    if n > 1 and all(ns):
+        span = f"L{ns[0]}–L{ns[-1]}" if ns == list(range(ns[0], ns[0] + n)) else ", ".join(f"L{x}" for x in ns)
+    else:
+        span = f"L1–L{n}"
+    every = f"All {n} lectures ({span})" if n > 1 else "The lecture"
+    if forms == {"full"}:
+        lines.append(f"- {every}: the full transcript{'s' if n > 1 else ''} of every part that was transcribed.")
+    elif forms == {"highlights"} and focus == "highlights":
+        lines.append(f"- {every}: only the moments the lecturer emphasised (⭐), as the student chose.")
+    else:
+        lines += [f"- {d['ref']}: {AS_SAID[d['as']]}" for d in days]
+    if untranscribed:
+        dates = ", ".join(sorted({r.start.date().isoformat() for r in untranscribed}))
+        lines.append(f"- Not transcribed, so you have nothing of them: {len(untranscribed)} recording"
+                     f"{'s' if len(untranscribed) != 1 else ''} ({dates}).")
+    return ("=== WHAT YOU GOT OF THE LECTURES ===\n" + "\n".join(lines)
+            + "\nWhen a question needs more of a lecture than you got, say so plainly (a [!NOTE] block); never say you "
+              "have less than this.")
+
+
 def text_only_note(pages: list[Any], later: bool) -> str:
     """For the AI: the pages whose pictures its first message couldn't carry after all, although its list of what it
     got (WHAT YOU GOT OF THE CHOSEN FILES) says pictures; ``later``: they are read for it as notes instead."""
@@ -148,6 +222,11 @@ def text_only_note(pages: list[Any], later: bool) -> str:
             + "; ".join(named) + ", so you have only their text"
             + (". They are read for you as notes (they come with each question)." if later else
                ". If a question needs what only their pictures show, say so plainly (a [!NOTE] block)."))
+
+
+def kept(reading: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """How far a reading got, as kept with the answer (not what only the live progress needs)."""
+    return {k: v for k, v in (reading or {}).items() if k not in ("parts", "eta", "at", "started")}
 
 
 def _clean_stale_workdirs(max_age_s: float = 12 * 3600) -> None:
@@ -220,10 +299,9 @@ class ChatService:
         pictures as many as the AI takes, the rest read in batches first when "Read everything" is on (``read``).
         ``parts``: what each piece adds, for "What this chat sees"."""
         multi = len(day_keys) > 1
-        texts: list[str] = []
+        loaded: list[tuple[int, str, Course, list[Recording], dict, dict, str]] = []   # each day with its text
         images: list[tuple[str, Path]] = []        # every slide image available, whether attached or not
         gone, untranscribed = 0, []                # for the student's notices (notices.py), never for the AI
-        day_parts: list[dict[str, Any]] = []
         per = ai.chars_per_token()
         for n, d in enumerate(self._load_days(course_id, day_keys), start=1):
             if d is None:
@@ -235,16 +313,13 @@ class ChatService:
                               and not (r.hidden or r.duplicate_of or r.live) and not self._skipped(r)]
             label = f"L{n}" if multi else ""
             sl = {r.delivery_id: store.load_slides(r.delivery_id) for r in recs}
+            # the whole course: every lecture's full transcript (the ones that don't fit are read in parts below);
+            # only the moments the lecturer stressed when the student chose "Highlights only"
             text = compact_day(course, recs, trans, sl if slides else None, label=label,
-                               only_starred=focus in ("highlights", "course"))
+                               only_starred=focus == "highlights")
             if not text:
                 continue
-            texts.append(text)
-            start = min(r.start for r in recs)
-            day_parts.append({"key": key, "n": n if multi else 0, "label": date_short(start.date()),
-                              "long": date_long(start.date()), "kind": t(kind_label(recs[0].kind)),
-                              "parts": text.count("\n## Part "), "chars": len(text), "tokens": ai.text_tokens(text, per),
-                              "seconds": sum(r.duration_s or 0 for r in recs if r.delivery_id in trans)})
+            loaded.append((n, key, course, recs, trans, sl, text))
             for p in part_views(recs, trans, sl):
                 seen: set[int] = set()
                 for s in p.slides if p.transcript else []:
@@ -257,7 +332,7 @@ class ChatService:
         limit = min(MAX_CONTEXT_TOKENS, lim.context)
         local = p == "local"
         can_pics = lim.pictures > 0
-        said = "\n".join(texts)                   # the lecture's slides are checked against what was taught
+        said = "\n".join(x[6] for x in loaded)    # the lecture's slides are checked against what was taught
         send_n = chatslides.normalize(send)
         cs = chatslides.collect(self.lib, course_id, day_keys, send_n, can_pics, said) if send_n["mode"] != "none" else None
         cf = chatfiles.collect(uploads, can_images=can_pics, local=local) if uploads else None
@@ -271,14 +346,47 @@ class ChatService:
         brief = course_brief(self.lib, self._s.settings, course_id)
         n_files = (len(cs["files"]) if cs else 0) + (len(cf["files"]) if cf else 0)
         read_on = chatread.default_on(read_all, focus, n_files, p)
+        everything = (cs["pages"] if cs else []) + shots + (cf["pages"] if cf else [])
+        # the whole course: every lecture goes whole when it all fits next to the rest at its smallest (the files'
+        # pages as notes); else the latest lectures whole and the earlier ones read in parts like the slides (their
+        # notes, with every question), or their highlights when the student turned Read everything off
+        fixed = (ai.text_tokens(system_prompt(len(day_keys), focus, True) + brief, per) + ai.PROMPT_OVERHEAD
+                 + INSTRUCTION_TOKENS + 60 * n_files + 40 * len(loaded))
+        files_least = chatread.notes_cost([x for x in everything if x.text or x.picture is not None], per) \
+            if read_on and not local else 0
+        forms = self._lecture_forms(loaded, focus, limit - fixed - files_least, read_on and not local, per)
+        texts: list[str] = []
+        lecture_pages: list[Any] = []               # the lectures read in parts (chatread), with the slides' pages
+        day_parts: list[dict[str, Any]] = []
+        for n, key, course, recs, trans, sl, text in loaded:
+            how = forms[key]
+            pieces: list[Any] = []
+            if how == "notes":
+                pieces = lecture_pieces(course, recs, trans, sl if slides else None, n if multi else 0, key)
+                lecture_pages += pieces
+            elif how == "highlights":
+                text = compact_day(course, recs, trans, sl if slides else None, label=f"L{n}" if multi else "",
+                                   only_starred=True)
+            if how != "notes":
+                texts.append(text)
+            start = min(r.start for r in recs)
+            day_parts.append({"key": key, "n": n if multi else 0, "label": date_short(start.date()),
+                              "long": date_long(start.date()), "kind": t(kind_label(recs[0].kind)), "as": how,
+                              "parts": sum(1 for x in part_views(recs, trans) if x.transcript) if how == "notes"
+                              else text.count("\n## Part "), "chars": len(text),
+                              "tokens": chatread.notes_cost(pieces, per) if how == "notes" else ai.text_tokens(text, per),
+                              "pieces": len(pieces),
+                              "ref": (f"L{n} · " if multi else "") + f"{long_date(start.date())} ({kind_label(recs[0].kind).lower()})",
+                              "seconds": sum(r.duration_s or 0 for r in recs if r.delivery_id in trans)})
+        told = lectures_manifest(day_parts, untranscribed, focus) if multi or focus == "course" else ""
         # what must go whole (the lectures, the course's info, the instructions), then all the files' text that fits
         # (the student's own first), then as many pictures as the AI takes and the room left holds
-        base = (ai.text_tokens(system_prompt(len(day_keys), focus, True) + brief + "\n\n".join(texts), per)
+        base = (ai.text_tokens(system_prompt(len(day_keys), focus, True) + brief + "\n\n".join(texts) + told, per)
                 + ai.PROMPT_OVERHEAD + INSTRUCTION_TOKENS + 60 * n_files)   # with the notes and the list of files
         room = max(0, limit - base)
         # what one request may weigh (Claude: the whole conversation): the instructions and all the text count, and room
         # is kept for the notes and for the questions and answers that follow; the pictures get the rest
-        base_bytes = (chatlimits.text_bytes(system_prompt(len(day_keys), focus, True) + brief + "\n\n".join(texts))
+        base_bytes = (chatlimits.text_bytes(system_prompt(len(day_keys), focus, True) + brief + "\n\n".join(texts) + told)
                       + 4000 + 300 * n_files + chatlimits.CONVERSATION_BYTES)      # the files' notes and list
 
         def bytes_room(files: Any, up: Any, notes_tokens: int) -> Optional[int]:
@@ -291,7 +399,6 @@ class ChatService:
             return int(notes_tokens * per * 1.3)          # UTF-8 (Turkish, ⭐) and LaTeX: more than a byte a character
         candidates = ([x for x in cs["pages"] if x.picture is not None] if cs and not local else []) + shots \
             + ([x for x in cf["pages"] if x.picture is not None] if cf else [])
-        everything = (cs["pages"] if cs else []) + shots + (cf["pages"] if cf else [])
 
         def texts_for(chosen: list[Any], troom: int, native: tuple = (), native_up: tuple = ()) -> tuple[Any, Any]:
             u = chatfiles.assemble(cf, chosen, max_text_tokens=troom, native=native_up) if cf else None
@@ -301,12 +408,13 @@ class ChatService:
             return f, u
 
         def unread(files: Any, up: Any, pictured: set[str]) -> tuple[set[str], list[Any]]:
-            """The pages whose text was cut, and the pages to read in batches (not seen whole)."""
+            """The pages whose text was cut, and the pages to read in parts (not seen whole): the lectures that don't
+            fit whole first."""
             cut = {x.key for x in (files["cut_pages"] if files else []) + (up["cut_pages"] if up else [])}
             if local:    # the offline model never reads the course's files whole: their pages are read for it
                 return cut, [x for x in everything if x.text and (x.group == "course" or x.key in cut)]
-            return cut, [x for x in everything if x.key not in pictured
-                         and ((can_pics and x.picture is not None) or (x.key in cut and x.text))]
+            return cut, lecture_pages + [x for x in everything if x.key not in pictured
+                                         and ((can_pics and x.picture is not None) or (x.key in cut and x.text))]
 
         squeeze, shaped = 0, None
         for _ in range(6):        # the files' text, the pictures and the notes of the rest, within what the chat holds
@@ -334,10 +442,12 @@ class ChatService:
                                       local, read_on)
             note = "\n\n".join(x for x in (chatslides.prompt_note(files["summary"]) if files else "",
                                            chatfiles.prompt_note(up) if up and not up["local"] else "",
-                                           chatread.prompt_note(read_on and bool(leftover))) if x)
+                                           chatread.prompt_note(read_on and bool(leftover),
+                                                                lectures=bool(lecture_pages))) if x)
             mine = up["text"] if up and not up["local"] else ""   # the offline model gets them with each question
             prompt = (system_prompt(len(day_keys), focus, bool(attached)) + (f"\n\n{note}" if note else "")
                       + (f"\n\n{manifest}" if manifest and not local else "")
+                      + (f"\n\n{told}" if told and not local else "")
                       + (f"\n\n=== COURSE ===\n\n{brief}" if brief else "")
                       + (f"\n\n=== COURSE SLIDES ===\n\n{files['text']}" if files and files["text"] else "")
                       + (f"\n\n=== STUDENT'S FILES ===\n\n{mine}" if mine else "")
@@ -357,7 +467,9 @@ class ChatService:
         if squeezed:          # all the files' text is cut and their notes still don't fit whole: they are shortened
             less = min(notes_tokens, tokens - limit)            # to the room left (fit_notes); what is over without
             notes_tokens, tokens = notes_tokens - less, tokens - less     # them still is (the chat is too big)
-        read = {"on": read_on, "auto": read_all is None, "pages": len(leftover), "total": len(everything),
+        read = {"on": read_on, "auto": read_all is None, "pages": len(leftover),
+                "total": len(everything) + len(lecture_pages), "lectures": len(lecture_pages),
+                "lecture_days": sum(1 for d in day_parts if d["as"] == "notes"),
                 "local": local, **(chatread.estimate(leftover, lim, per=per) if leftover else {}),
                 **({"short": True} if squeezed else {})}
         if files is not None:
@@ -376,13 +488,15 @@ class ChatService:
                 pdf = os.path.normcase(os.path.normpath(pic.pdf))
                 return [x for x in everything if x.source and os.path.normcase(os.path.normpath(str(x.source))) == pdf]
             return by_picture.get(id(pic), [])
-        known = (sum(d["tokens"] for d in day_parts) + ai.text_tokens(brief, per) + course_pics + len(video) * ai.IMAGE_TOKENS
+        known = (sum(d["tokens"] for d in day_parts if d["as"] != "notes")      # (their notes: in notes_tokens)
+                 + ai.text_tokens(brief, per) + course_pics + len(video) * ai.IMAGE_TOKENS
                  + mine_pics + notes_tokens + (files["summary"]["text_tokens"] if files else 0)
                  + (up["text_tokens"] if up else 0))
         parts = {"days": day_parts, "focus": focus, "brief_tokens": ai.text_tokens(brief, per),
                  "instructions_tokens": max(0, tokens - known), "video": [label for label, _ in video],
                  "uploads": up, "provider": p, "notes_tokens": notes_tokens}
-        return {"system": prompt, "images": pictures, "slides_total": len(images), "n_days": len(texts),
+        return {"system": prompt, "images": pictures, "slides_total": len(images), "n_days": len(day_parts),
+                "full_days": [d["key"] for d in day_parts if d["as"] == "full"],
                 "video_images": len(video), "video": video, "files": files["summary"] if files else None,
                 "said": said, "tokens": tokens, "parts": parts, "limit": limit, "lim": lim, "read": read,
                 "read_pages": leftover if read_on else [], "base_tokens": base,
@@ -393,9 +507,36 @@ class ChatService:
                 "room": max(notes_tokens, limit - (tokens - notes_tokens)),
                 "first_bytes": max(0, lim.request_bytes - chatlimits.CONVERSATION_BYTES - notes_bytes(notes_tokens)),
                 "notices": self._notices(gone, untranscribed, files, send, captured, len(video), lim, read_on,
-                                         len([x for x in leftover if x.group != "video"]), up),
+                                         len([x for x in leftover if x.group not in ("video", "lecture")]), up)
+                + ([notices.notice("lectures_highlights", n=sum(1 for d in day_parts if d["as"] == "highlights"))]
+                   if focus == "course" and not local and any(d["as"] == "highlights" for d in day_parts) else []),
                 "upload_text": chatfiles.local_text(up) if up and up["local"] else "",
                 "upload_passages": up["passages"] if up and up["local"] else []}
+
+    @staticmethod
+    def _lecture_forms(loaded: list[tuple], focus: str, room: int, reading: bool, per: float) -> dict[str, str]:
+        """How each class day goes: "full" (its whole transcript); for the whole course, when the full transcripts
+        don't all fit ``room`` (what the window leaves next to the instructions, the course's info and the chosen
+        files at their smallest), the latest lectures whole and the earlier ones read in parts ("notes", ``reading``)
+        or, with Read everything off, only what the lecturer stressed ("highlights")."""
+        forms = {x[1]: "highlights" if focus == "highlights" else "full" for x in loaded}
+        if focus != "course" or not loaded:
+            return forms
+        full = {x[1]: ai.text_tokens(x[6], per) for x in loaded}
+        if sum(full.values()) <= room:
+            return forms
+        small: dict[str, int] = {}
+        for n, key, course, recs, trans, _sl, _text in loaded:
+            small[key] = (chatread.notes_cost(lecture_pieces(course, recs, trans, None, n, key), per) if reading
+                          else ai.text_tokens(compact_day(course, recs, trans, label=f"L{n}", only_starred=True), per))
+        used = sum(small.values())
+        forms = {key: "notes" if reading else "highlights" for key in forms}
+        for x in reversed(loaded):             # the latest lectures whole first: what is asked about now
+            extra = full[x[1]] - small[x[1]]
+            if used + extra <= room:
+                forms[x[1]] = "full"
+                used += extra
+        return forms
 
     @staticmethod
     def _pictures(lim: Any, cs: Optional[dict[str, Any]], cf: Optional[dict[str, Any]], candidates: list[Any],
@@ -647,7 +788,7 @@ class ChatService:
         else:
             label = tn(0, "{n} class day", "{n} class days")
         if (chat.get("scope") or {}).get("focus") == "course":
-            return t("Whole course · {n} lectures' highlights + course files", n=len(days))
+            return t("Whole course · {n} lectures + course files", n=len(days))
         if (chat.get("scope") or {}).get("focus") == "highlights":
             label = t("{label} · highlights only", label=label)
         return label
@@ -849,6 +990,7 @@ class ChatService:
         session.notices = ctx["notices"]                # shown with the answer it starts with (not sent to the AI)
         session.upload_passages = ctx["upload_passages"]   # the offline model: the student's files, matched per question
         # "Read everything": the pages read in batches before a question, and what this process has had of them
+        session.full_days = ctx["full_days"]           # (the matching passages of other lectures leave them out)
         session.reading = {"pages": ctx["read_pages"], "lim": ctx["lim"], "model": chat.get("model") or "sonnet",
                            "room": ctx["room"], "first_bytes": ctx["first_bytes"], "on": ctx["read"]["on"],
                            "picture_pages": ctx["picture_pages"]}
@@ -978,7 +1120,7 @@ class ChatService:
             scope = chat.get("scope") or {}
             try:                                            # course files and other lectures that match the question
                 found, sources = retrieve(self.lib, chat["course_id"], question,
-                                          skip_days=self._scope_days(chat) if scope.get("focus", "full") == "full" else ())
+                                          skip_days=self._skip_days(chat, session))
             except Exception:  # noqa: BLE001 - the answer works without it
                 log.debug("retrieval failed", exc_info=True)
                 found, sources = "", []
@@ -1011,7 +1153,7 @@ class ChatService:
                 self._drop(cid)
             self._emit(cid, seq, state, text, usage=usage, limits=ai.usage_limits())
         except Cancelled:                           # stopped while the pages were read: what was read is kept
-            reading = dict(self._reading.pop(cid, None) or {})
+            reading = kept(self._reading.pop(cid, None))
             shown += self._refused(reading, history, shown)
             usage = {"read": {**reading, "stopped": True},**({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, "stopped", usage)
@@ -1020,9 +1162,10 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - reported in the chat
             log.warning("Chat %s failed: %s", cid, exc)
             msg = str(exc) or t("{ai} could not answer.", ai=ai.ai_name())
-            reading = self._reading.get(cid)             # failed while the pages were read: Try again goes on from there
+            # failed while the pages were read (Try again goes on from there), or after (none is read again): said
+            reading = kept(self._reading.get(cid))
             shown += self._refused(reading, history, shown)
-            extra ={"read": {**reading, "failed": True}} if reading and reading.get("done", 0) < reading.get("total", 0) else {}
+            extra = {"read": {**reading, "failed": True}} if reading and reading.get("pages") else {}
             self.lib.update_chat_message(cid, seq, text, "error", {"error": msg, "notices_ai": made_by, **extra,
                                                                    **({"notices": shown} if shown else {})})
             self._drop(cid)
@@ -1037,6 +1180,14 @@ class ChatService:
             lim = ai.usage_limits()
             if lim:
                 self.lib.set_meta("claude_limits", json.dumps(lim))
+
+    def _skip_days(self, chat: dict[str, Any], session: Any) -> list[str]:
+        """The class days whose whole transcript the AI has: no passages of them are searched for a question (the
+        chosen days; for the whole course, the lectures that went whole)."""
+        focus = (chat.get("scope") or {}).get("focus", "full")
+        if focus == "full":
+            return self._scope_days(chat)
+        return list(getattr(session, "full_days", None) or []) if focus == "course" else []
 
     @staticmethod
     def _text_only(session: Any, dropped: list[Any]) -> bool:
@@ -1104,11 +1255,16 @@ class ChatService:
         size = lim.request_bytes - weight if lim.request_bytes else None
         used = 0                                            # tokens this question adds
 
+        saved = [0.0]
+
         def progress(st: dict[str, Any]) -> None:
             info = {k: v for k, v in st.items() if k != "notes"}
             self._reading[cid] = info
             if info.get("total"):                          # nothing to read: no progress to show
                 self._emit(cid, seq, "streaming", "", usage={"reading": info, **({"notices": shown} if shown else {})})
+                if time.monotonic() - saved[0] >= READING_SAVE_S:   # if the app closes now, the answer says what
+                    saved[0] = time.monotonic()                     # was kept (its notes are on disk already)
+                    self.lib.update_chat_message(cid, seq, "", "streaming", {"reading_kept": kept(info)})
 
         if getattr(session, "notes_given", False) and not stateless:
             notes = chatread.cached(pages, lim)             # already in the conversation

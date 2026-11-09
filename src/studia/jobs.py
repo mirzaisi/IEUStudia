@@ -11,6 +11,7 @@ overtake the batch lectures that are already downloaded and waiting for their tu
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 import datetime as dt
 import errno
@@ -27,7 +28,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
 import requests
 
@@ -97,6 +98,15 @@ def _no_sound_error() -> Exception:
 
 class ModelFailed(RuntimeError):
     """The speech model couldn't be downloaded or loaded for a lecture; the message says why and what to do."""
+
+
+class EngineBusy(RuntimeError):
+    """The speech model can't be lent now: lectures are transcribing or waiting (they go first: ``why`` "lectures"), or
+    the setup is still downloading (``why`` "setup")."""
+
+    def __init__(self, message: str, why: str = "lectures") -> None:
+        super().__init__(message)
+        self.why = why
 
 
 def model_failure(phase: str, exc: BaseException) -> str:
@@ -627,15 +637,47 @@ class JobManager:
         return self._engine is not None and getattr(self._engine, "loaded", False)
 
     def unload_engine(self) -> bool:
-        """Free the speech model unless a lecture is transcribing or waiting. True if it was loaded."""
+        """Free the speech model unless a lecture is transcribing or waiting, or a study plan has it (lend_engine).
+        True if it was loaded."""
         with self._lock:
-            if self._engine is None or self._jobs:
+            if self._engine is None or self._jobs or self._engine_users:
                 return False
             was = self.engine_loaded()
             engine, self._engine, self._engine_key = self._engine, None, None
         engine.unload()          # (not under the lock: a model loading ahead finishes first, and the page must not wait)
         self.log.info("Speech model unloaded (idle) to free GPU memory")
         return was
+
+    @contextlib.contextmanager
+    def lend_engine(self, model: str, device: str) -> Iterator[Any]:
+        """The speech model for something other than a lecture - a study plan listening to YouTube videos - while no
+        lecture is transcribing or waiting (raises EngineBusy otherwise; the borrower watches busy() and stops when
+        one is queued meanwhile). It is the lectures' own engine when ``model`` and ``device`` are those of Settings
+        (loaded once, kept for the lectures and freed when idle, as after a lecture), else one of its own, freed
+        afterwards (the small model on the processor while Settings has a bigger one)."""
+        settings = self.settings()
+        want = dc.replace(settings, model=model, device=device)
+        with self._lock:
+            if self._jobs:
+                raise EngineBusy(t("Your lectures are being transcribed."))
+            if self.setup_busy():
+                raise EngineBusy(t("The setup is still downloading."), "setup")
+        if self._key(want) != self._key(settings):
+            engine = self.engine_factory(want)
+            try:
+                yield engine
+            finally:
+                engine.unload()
+            return
+        engine = self._use_engine(settings)
+        try:
+            yield engine
+        finally:
+            self._done_with_engine()
+            with self._lock:
+                idle = not self._jobs and self._engine is not None
+            if idle:
+                self._schedule_idle_unload()
 
     def _schedule_idle_unload(self) -> None:
         with self._lock:

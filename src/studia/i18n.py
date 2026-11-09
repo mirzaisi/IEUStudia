@@ -9,6 +9,8 @@ translation may move them. Helpers:
 - ``tc("state", "Open")``: one English word that needs two translations (key ``"state|Open"``).
 - ``N_("Study notes")``: marks text kept in a constant (evaluated before the language is known); translate it where it
   is shown, ``t(label)``.
+- ``Retold(lambda: t(...))``: a message kept to be shown again later (a failed sign-in's reason); ``retell(msg)``
+  writes it in the language of that moment, so a language switch doesn't leave it in the old one.
 - ``date_long``, ``date_short``, ``day_month``, ``duration``, ``num``, ``pct``, ``join``: dates and numbers the way the
   language writes them (Turkish: ``14 Ekim 2026 Çarşamba``, ``1 sa 5 dk``, ``31.200``, ``%45``, ``A, B ve C``).
 
@@ -25,7 +27,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 LANGS = ("en", "tr")
 NAMES = {"en": "English", "tr": "Türkçe"}          # each in its own language: never translated
@@ -127,6 +129,30 @@ def tc(context: str, text: str, /, **params: Any) -> str:
 
 def N_(text: str) -> str:  # noqa: N802 - the usual name for "mark for translation"
     return text
+
+
+class Retold(str):
+    """A message kept to be shown again later (why a sign-in or an install failed, in Settings → AI): the text it was
+    made with, and how to make it (``make``, a function of t() calls), so that after a language switch it is shown in
+    the new language (:func:`retell`) instead of the old one until the next try. Anything else uses it as the str it
+    was made with: ``Retold(lambda: _failure(which, code))``."""
+
+    make: Callable[[], str]
+
+    def __new__(cls, make: Callable[[], str]) -> "Retold":
+        self = super().__new__(cls, make())
+        self.make = make
+        return self
+
+
+def retell(text: Any) -> Any:
+    """``text`` in the language of the moment: a :class:`Retold` message made again; anything else as it is."""
+    if not isinstance(text, Retold):
+        return text
+    try:
+        return str(text.make())
+    except Exception:  # noqa: BLE001 - what it needs is gone: the words it was made with
+        return str(text)
 
 
 _PSEUDO = str.maketrans("aceinorsuyACEINORSUY", "àçéîñøřšüýÀÇÉÎÑØŘŠÜÝ")

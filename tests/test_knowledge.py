@@ -6,7 +6,7 @@ from studia import store
 from studia.config import Settings
 from studia.coursesite import Announcement, Resource, Unit
 from studia.domain import Course, Recording, Segment, Transcript
-from studia.knowledge import _search_words, course_brief, retrieve
+from studia.knowledge import course_brief, retrieve
 from studia.library import Library
 
 
@@ -82,9 +82,13 @@ def test_retrieve_finds_turkish_words_with_other_endings(tmp_path):
     _lecture(lib, "t1", 8, [(0, 5, "Sınava girmeden önce determinant konusunu tekrar edin.", "tr")])
     text, sources = retrieve(lib, "c", "Sınavda ne çıkar?")                  # "sınavda" finds "sınava"
     assert "Sınava girmeden önce determinant" in text and sources[0]["delivery_id"] == "t1"
-    assert _search_words(lib, "Determinantın özellikleri nelerdir?") == ["deter", "özell"]
-    assert _search_words(lib, "Nasil hesaplanir?") == ["hesap"]                 # also typed without Turkish letters
-    assert _search_words(lib, "What are the properties of determinants?") == ["properties", "determinants"]
+    text, sources = retrieve(lib, "c", "Determinantın özellikleri nelerdir?")  # "determinantın": "determinant"
+    assert sources[0]["delivery_id"] == "t1"
+    text, sources = retrieve(lib, "c", "sinavda ne cikar")                    # also typed without Turkish letters
+    assert sources[0]["delivery_id"] == "t1"
+    text, _ = retrieve(lib, "c", "What do I need for the exam?")              # exam is sınav in Turkish
+    assert "Sınava girmeden önce" in text
+    assert retrieve(lib, "c", "example") == ("", [])                           # a whole word: "exam..." is no hit
 
 
 def test_weekly_digest(tmp_path):

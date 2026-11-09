@@ -28,7 +28,7 @@ class StubEngine:
     def device_info(self) -> dict[str, Any]:
         return {"device": "cpu", "compute_type": "none", "gpu": "", "warning": ""}
 
-    def transcribe(self, audio: np.ndarray, progress, cancel=None, meta: Optional[dict] = None) -> Transcript:
+    def transcribe(self, audio: np.ndarray, progress, cancel=None, meta: Optional[dict] = None, **kw: Any) -> Transcript:
         dur = len(audio) / SR
         segs = []
         t = 0.0

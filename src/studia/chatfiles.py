@@ -648,12 +648,11 @@ def build(target: str, can_images: bool, local: bool = False) -> dict[str, Any]:
 def local_pick(passages: list[str], question: str, max_chars: int = LOCAL_CHARS) -> str:
     """The offline model's share of the uploads with one question: the passages that match it (and the follow-up it
     is part of) best, best first, in at most ``max_chars``; the files' beginning when nothing matches."""
-    from .local_llm import _keywords
+    from .search import overlap
 
     if not passages:
         return ""
-    want = _keywords(question)
-    scores = [len(want & _keywords(p)) for p in passages]
+    scores = overlap(question, passages)
     ranked = sorted(range(len(passages)), key=lambda i: (-scores[i], i)) if max(scores) else range(len(passages))
     out, used = [], 0
     for i in ranked:

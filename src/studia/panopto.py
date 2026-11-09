@@ -17,7 +17,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
-from . import hls, httpdl
+from . import health, hls, httpdl
 from .cancel import check
 from .domain import Recording
 from .i18n import t
@@ -34,6 +34,28 @@ class NeedPanoptoAuth(Exception):
 
 class NotReady(Exception):
     """Panopto is still processing this recording."""
+
+
+class Listing(list):
+    """A course's recordings as Panopto listed them. ``complete`` False: fewer rows came than Panopto counted, or some
+    couldn't be read, so one missing from it may still be there (nothing is marked gone)."""
+
+    complete = True
+
+
+def _keys(d: Any) -> str:
+    """The keys of an answer, for the developer (what came instead of what IEUStudia reads)."""
+    return ", ".join(sorted(str(k) for k in d)[:12]) if isinstance(d, dict) else type(d).__name__
+
+
+def _sign_in_page(r: Any) -> bool:
+    """An answer that is Panopto's sign-in page (the session ran out), not JSON."""
+    return bool(re.search(r"/(?:Auth|Login)", urlsplit(str(getattr(r, "url", "") or "")).path, re.I))
+
+
+def _type(r: Any) -> str:
+    headers = getattr(r, "headers", None) or {}
+    return str(headers.get("content-type") or "an answer of no type")
 
 
 @dc.dataclass
@@ -123,28 +145,54 @@ def name_start(name: str) -> Optional[dt.datetime]:
     return None
 
 
-def parse_sessions(d: dict[str, Any], course_id: str, folder_path: str) -> list[Recording]:
+def parse_sessions(d: dict[str, Any], course_id: str, folder_path: str,
+                   unread: Optional[list[str]] = None) -> list[Recording]:
     """A page of GetSessions. A recording uploaded later (one recorded on the lecturer's own PC) has the upload time
     as its StartTime: the date and time in its name are when it was recorded. "Status" 4 is a finished recording; one
-    still being recorded has 2 (and no podcast yet, a growing Duration)."""
+    still being recorded has 2 (and no podcast yet, a growing Duration). A row without a delivery (a playlist) is
+    passed over, as always. ``unread`` gets what was wrong with each recording that couldn't be read; rows of which
+    none can be read (their fields renamed, a date written another way: Panopto's answer changed) raise
+    health.ServiceChanged, never "no recordings"."""
     out = []
-    for row in d.get("Results") or []:
-        did = (row.get("DeliveryID") or "").lower()
-        start = parse_dotnet_date(row.get("StartTime") or "")
-        if not did or start is None:
-            continue
-        name = (row.get("SessionName") or "").strip() or "Untitled recording"
-        named, uploaded = name_start(name), ""
-        if uploaded_later(start, named):
-            start, uploaded = named, start.replace(microsecond=0).isoformat()
-        out.append(Recording(
-            delivery_id=did, course_id=str(course_id), folder_id=(row.get("FolderID") or "").lower(),
-            folder_path=folder_path, name=name, start=start.replace(microsecond=0),
-            duration_s=float(row.get("Duration") or 0.0),
-            viewer_url=row.get("ViewerUrl") or f"{BASE}/Panopto/Pages/Viewer.aspx?id={did}",
-            session_id=(row.get("SessionID") or "").lower(), kind=_kind(name, folder_path),
-            section_tag=parse_section_tag(name), live=row.get("Status") not in (None, 4), uploaded=uploaded,
-        ))
+    rows = d.get("Results") or []
+    bad: list[str] = []
+    if rows and not any(isinstance(r, dict) and ("DeliveryID" in r and "StartTime" in r) for r in rows):
+        raise health.changed("panopto", "sessions", f"{len(rows)} rows without DeliveryID or StartTime: "
+                                                    f"{_keys(rows[0])}", where=str(course_id))
+    for row in rows:
+        try:
+            if not isinstance(row, dict):
+                raise TypeError(f"a row that is a {type(row).__name__}")
+            did = row.get("DeliveryID")
+            if did is None:
+                continue                  # not a recording (a playlist): passed over, as before
+            did = did.lower() if isinstance(did, str) else ""
+            start = parse_dotnet_date(row.get("StartTime") if isinstance(row.get("StartTime"), str) else "")
+            if not did:
+                raise TypeError(f"a DeliveryID that is a {type(row.get('DeliveryID')).__name__}")
+            if start is None:
+                raise TypeError(f"a StartTime IEUStudia can't read ({type(row.get('StartTime')).__name__})")
+            name = (row.get("SessionName") or "").strip() or "Untitled recording"
+            named, uploaded = name_start(name), ""
+            if uploaded_later(start, named):
+                start, uploaded = named, start.replace(microsecond=0).isoformat()
+            out.append(Recording(
+                delivery_id=did, course_id=str(course_id), folder_id=(row.get("FolderID") or "").lower(),
+                folder_path=folder_path, name=name, start=start.replace(microsecond=0),
+                duration_s=float(row.get("Duration") or 0.0),
+                viewer_url=row.get("ViewerUrl") or f"{BASE}/Panopto/Pages/Viewer.aspx?id={did}",
+                session_id=(row.get("SessionID") or "").lower(), kind=_kind(name, folder_path),
+                section_tag=parse_section_tag(name), live=row.get("Status") not in (None, 4), uploaded=uploaded,
+            ))
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:   # a row that isn't what it was
+            bad.append(str(exc) if isinstance(exc, TypeError) and str(exc).startswith("a ") else
+                       f"{exc.__class__.__name__} in a row ({_keys(row)})")
+    if bad and unread is not None:
+        unread.extend(bad)
+    if bad and not out:               # not one recording IEUStudia can read: Panopto's answer changed
+        raise health.changed("panopto", "sessions", f"{len(bad)} rows, none read: {bad[0]}", where=str(course_id))
+    if out:                           # (this course's rows read again: its change, if it had one, is over)
+        health.ok("panopto", "sessions", where=str(course_id))
     return out
 
 
@@ -159,8 +207,10 @@ def _query(folder_id: str, page: int, rows: int = 250) -> dict[str, Any]:
 def _head(d: dict[str, Any]) -> list[Any]:
     """A folder's recording count, its newest recording (the list is newest first) and that one's status (4 when
     finished, so one still being recorded is noticed when it finishes): [35, "c0e6fe5f-…", 4]."""
-    first = (d.get("Results") or [{}])[0]
-    return [int(d.get("TotalNumber") or 0), (first.get("DeliveryID") or "").lower(), first.get("Status")]
+    rows = d.get("Results") or [{}]
+    first = rows[0] if isinstance(rows[0], dict) else {}
+    did = first.get("DeliveryID")
+    return [int(d.get("TotalNumber") or 0), did.lower() if isinstance(did, str) else "", first.get("Status")]
 
 
 def _mp4_header(session: requests.Session, url: str, limit: int = 64 << 20) -> Optional[bytes]:
@@ -205,19 +255,45 @@ class Panopto:
                 "referer": f"{BASE}/Panopto/Pages/Sessions/List.aspx"}
 
     def is_authenticated(self) -> bool:
-        try:
-            r = self.s.get(f"{BASE}/Panopto/Api/v1/auth/legacyLogin", allow_redirects=False,
-                           headers={"x-requested-with": "XMLHttpRequest"})
-        except requests.RequestException:
-            raise
+        """Is this session signed in to Panopto? (401 when not.) An answer of 404 or 410: the address it is asked at
+        is gone (Panopto changed), raised as health.ServiceChanged."""
+        r = self.s.get(f"{BASE}/Panopto/Api/v1/auth/legacyLogin", allow_redirects=False,
+                       headers={"x-requested-with": "XMLHttpRequest"})
+        if r.status_code in (404, 410):
+            raise health.changed("panopto", "signin", f"legacyLogin answered HTTP {r.status_code}")
+        if r.status_code == 200:
+            health.ok("panopto", "signin")
         return r.status_code == 200
 
     # ------------------------------------------------------------------ listing
     def _sessions(self, folder_id: str, page: int, rows: int) -> dict[str, Any]:
+        """One page of a folder's recordings (Data.svc/GetSessions). An answer without the parts IEUStudia reads (its
+        "d", its Results list and their count) is Panopto's answer changing: raised as health.ServiceChanged, never
+        taken for an empty folder. (Without a sign-in Panopto answers the same form, with no rows.)"""
         r = self.s.post(f"{BASE}/Panopto/Services/Data.svc/GetSessions", json=_query(folder_id, page, rows),
                         headers=self._headers())
+        status = getattr(r, "status_code", 200)
+        if status in (404, 410):
+            raise health.changed("panopto", "sessions", f"GetSessions answered HTTP {status}")
+        if status >= 500:
+            health.down("panopto", "sessions", f"HTTP {status}")
         r.raise_for_status()
-        return (r.json() or {}).get("d") or {}
+        try:
+            body = r.json()
+        except ValueError:
+            if _sign_in_page(r):
+                raise NeedPanoptoAuth(t("Panopto session expired.")) from None
+            raise health.changed("panopto", "sessions", f"GetSessions answered {_type(r)} instead of JSON") from None
+        d = body.get("d") if isinstance(body, dict) else None
+        total = d.get("TotalNumber") if isinstance(d, dict) else None
+        if not isinstance(d, dict) or not isinstance(d.get("Results"), list) or isinstance(total, bool) or \
+                not isinstance(total, int):
+            raise health.changed("panopto", "sessions", f"GetSessions answered without d.Results and d.TotalNumber "
+                                                        f"({_keys(body)} / {_keys(d)})")
+        if not isinstance(d.get("Subfolders") or [], list):
+            raise health.changed("panopto", "sessions", f"GetSessions' Subfolders is a {type(d['Subfolders']).__name__}")
+        health.ok("panopto", "sessions")
+        return d
 
     def _folders(self, folder_id: str, rows: int) -> Iterator[tuple[str, str, dict[str, Any]]]:
         """A folder and its subfolders: id, path and the first page (``rows`` long) of each."""
@@ -230,26 +306,35 @@ class Panopto:
             seen.add(fid)
             d = self._sessions(fid, 0, rows)
             for sub in d.get("Subfolders") or []:
-                if sub.get("ID"):
-                    todo.append((sub["ID"].lower(), f"{path}{sub.get('Name', '').strip()}/".lstrip("/")))
+                if isinstance(sub, dict) and isinstance(sub.get("ID"), str) and sub["ID"]:
+                    todo.append((sub["ID"].lower(), f"{path}{str(sub.get('Name') or '').strip()}/".lstrip("/")))
             yield fid, path, d
 
     def list_recordings(self, course_id: str, folder_id: str,
                         heads: Optional[dict[str, list[Any]]] = None) -> list[Recording]:
-        """Every recording in a course's folder and its subfolders. ``heads`` gets what :meth:`probe` would say."""
-        recs: list[Recording] = []
+        """Every recording in a course's folder and its subfolders (a Listing: ``complete`` False when fewer came
+        than Panopto counted, or some couldn't be read). ``heads`` gets what :meth:`probe` would say."""
+        recs = Listing()
+        unread: list[str] = []
         for fid, path, d in self._folders(folder_id, 250):
             if heads is not None:
                 heads[fid] = _head(d)
-            page = 0
+            page, rows = 0, 0
+            total = int(d.get("TotalNumber") or 0)
             while True:
-                batch = parse_sessions(d, course_id, path)
+                batch = parse_sessions(d, course_id, path, unread)
                 recs.extend(batch)
-                total = int(d.get("TotalNumber") or 0)
+                rows += len(d.get("Results") or [])
                 page += 1
                 if not batch or page * 250 >= total or page > 20:
                     break
                 d = self._sessions(fid, page, 250)
+            if rows < total:              # (a page that came back empty halfway: the rest may be there)
+                recs.complete = False
+        if unread:
+            log.warning("Panopto listed %d recordings of %s IEUStudia can't read: %s", len(unread), course_id,
+                        "; ".join(dict.fromkeys(unread))[:300])
+            recs.complete = False
         for r_ in recs:
             r_.folder_path = r_.folder_path.rstrip("/")
         return recs
@@ -266,12 +351,31 @@ class Panopto:
             "deliveryId": delivery_id, "isLiveNotes": "false", "refreshAuthCookie": "true",
             "isActiveBroadcast": "false", "isEditing": "false", "isKollectiveAgentInstalled": "false",
             "isEmbed": "false", "responseType": "json"}, headers=self._headers())
+        status = getattr(r, "status_code", 200)
+        if status in (404, 410):
+            raise health.changed("panopto", "delivery", f"DeliveryInfo answered HTTP {status}")
         r.raise_for_status()
-        data = r.json()
+        try:
+            data = r.json()
+        except ValueError:
+            if _sign_in_page(r):
+                raise NeedPanoptoAuth(t("Panopto session expired.")) from None
+            raise health.changed("panopto", "delivery", f"DeliveryInfo answered {_type(r)} instead of JSON") from None
+        if not isinstance(data, dict):
+            raise health.changed("panopto", "delivery", f"DeliveryInfo answered a {type(data).__name__}")
         if "Delivery" not in data:
             if data.get("ErrorCode") == 2 or data.get("LoginRedirect"):
                 raise NeedPanoptoAuth(t("Panopto session expired."))
-            raise RuntimeError(re.sub(r"<[^>]+>", "", data.get("ErrorMessage") or t("Panopto refused the request.")))
+            if "ErrorCode" in data or "ErrorMessage" in data:      # Panopto's own words about this recording (its
+                said = str(data.get("ErrorMessage") or "")          # "See other videos" link left out)
+                said = " ".join(re.sub(r"<a\b.*?</a>|<[^>]+>", " ", said, flags=re.S | re.I).split())
+                raise RuntimeError(said or t("Panopto refused the request."))
+            raise health.changed("panopto", "delivery", f"DeliveryInfo answered without Delivery ({_keys(data)})")
+        d = data["Delivery"]
+        if not isinstance(d, dict) or not any(k in d for k in ("Streams", "PodcastStreams", "IsAudioPodcastEncodeComplete")) \
+                or not isinstance(d.get("Streams") or [], list) or not isinstance(d.get("PodcastStreams") or [], list):
+            raise health.changed("panopto", "delivery", f"Delivery without its streams ({_keys(d)})")
+        health.ok("panopto", "delivery")
         return data
 
     def media_sources(self, delivery_id: str, info: Optional[dict[str, Any]] = None) -> list[MediaSource]:
@@ -283,10 +387,11 @@ class Panopto:
             out.append(MediaSource("audio_podcast",
                                    f"{BASE}/Panopto/Podcast/Stream/{delivery_id}.mp4?mediaTargetType=audioPodcast"))
         for ps in d.get("PodcastStreams") or []:
-            if ps.get("StreamUrl"):
+            if isinstance(ps, dict) and isinstance(ps.get("StreamUrl"), str) and ps["StreamUrl"]:
                 out.append(MediaSource("video_podcast", ps["StreamUrl"]))
         for st in d.get("Streams") or []:
-            if st.get("StreamUrl") and (st.get("Tag") or "").upper() != "SCREEN" and ".m3u8" in st["StreamUrl"]:
+            if isinstance(st, dict) and isinstance(st.get("StreamUrl"), str) and \
+                    str(st.get("Tag") or "").upper() != "SCREEN" and ".m3u8" in st["StreamUrl"]:
                 out.append(MediaSource("hls", st["StreamUrl"]))
         if not out:
             raise NotReady(t("Panopto is still processing this recording. Try again later."))
@@ -297,7 +402,8 @@ class Panopto:
         stretch of screen sharing: a lecturer who stops and starts sharing again gives several."""
         out = [(MediaSource("hls", st["StreamUrl"]), float(st.get("RelativeStart") or 0.0))
                for st in info["Delivery"].get("Streams") or []
-               if (st.get("Tag") or "").upper() == "SCREEN" and st.get("StreamUrl")]
+               if isinstance(st, dict) and str(st.get("Tag") or "").upper() == "SCREEN"
+               and isinstance(st.get("StreamUrl"), str) and st["StreamUrl"]]
         return sorted(out, key=lambda x: x[1])
 
     def has_sound(self, src: MediaSource) -> Optional[bool]:
@@ -334,6 +440,8 @@ class Panopto:
         uris = [urljoin(base, ln.strip()) for ln in playlist.splitlines() if ln.strip() and not ln.startswith("#")]
         map_m = re.search(r'#EXT-X-MAP:URI="([^"]+)"', playlist)
         files = list(dict.fromkeys(([urljoin(base, map_m.group(1))] if map_m else []) + uris))
+        if not files:        # a playlist with nothing in it to fetch: never an empty file taken for the lecture
+            raise health.changed("panopto", "stream", "a media playlist without segments")
         if len(files) == 1:  # single fragmented MP4 addressed with byte ranges: just fetch the file
             return httpdl.download(files[0], dest, session=self.s, progress=progress, cancel=cancel, parts=6)
         tmp = dest.with_name(dest.name + ".part")

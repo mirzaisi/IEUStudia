@@ -10,12 +10,14 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
+from . import health
 from .domain import Course, Profile
 from .i18n import t
 from .net import Form, NetworkError, parse_forms, parse_iframes
 
 log = logging.getLogger("studia")
 BASE = "https://learn.ieu.edu.tr"
+PANOPTO_HOST = "panopto.ieu.edu.tr"
 _MOVED = (301, 302, 303, 307, 308)
 
 
@@ -45,6 +47,42 @@ class Busy(NetworkError):
 class SiteChanged(RuntimeError):
     """IEULearn answered with a page IEUStudia doesn't know where it expects your courses: maintenance, or a site
     that changed (then IEUStudia needs an update)."""
+
+
+class PageChanged(SiteChanged, health.ServiceChanged):
+    """IEULearn answered, but its page doesn't have what IEUStudia reads from it: IEULearn changed (noted in health),
+    as opposed to being busy or under maintenance. What IEUStudia had from it stays as it was."""
+
+    def __init__(self, service: str, part: str, message: str = "") -> None:
+        health.ServiceChanged.__init__(self, service, part, message)
+
+
+def changed(part: str, detail: str, message: str = "", where: str = "") -> PageChanged:
+    """``part`` of IEULearn ("signin", "courses", "course_page", "unit_plan", "announcements") changed: noted, and
+    the error to raise (``message``: the student's words, when the place has better ones than health.said; ``where``:
+    the course whose page it is, for the parts read per course)."""
+    return health.changed("ieulearn", part, detail, message, cls=PageChanged, where=where)
+
+
+# a page that says IEULearn is under maintenance or out of service for a while: busy, not a page that changed
+_MAINTENANCE = re.compile(r"bak[ıi]m|maint[ae]nance|unavailable|temporarily|ge[çc]ici olarak|hizmet d[ıi][şs][ıi]",
+                          re.I)
+
+
+def under_maintenance(page: str) -> bool:
+    return bool(_MAINTENANCE.search(re.sub(r"<[^>]+>", " ", (page or "")[:60000])))
+
+
+def page_shape(page: str) -> str:
+    """What a page is made of, for the developer (nothing personal: its size, its forms' ids and field names, and the
+    markers IEUStudia looks for)."""
+    forms = parse_forms(page or "")
+    marks = [m for m in ("loginForm", "ov-user-name", "dash-course", "coursesRoot", "dashCourseGrid", "ovup-syl",
+                         "curriculum-item", "ov-ann", "ov-intro", "ov-ects", "st-pano", "lti/course-launch")
+             if m in (page or "")]
+    shown = "; ".join(f"form {f.id or '-'}: {', '.join(sorted(f.fields)[:8]) or 'no fields'}" for f in forms[:3])
+    return f"{len(page or '') // 1024} KB, {len(forms)} forms{f' ({shown})' if shown else ''}, markers: " \
+           f"{', '.join(marks) or 'none'}"
 
 
 class NeedLogin(Exception):
@@ -211,6 +249,23 @@ def parse_dashboard(page: str) -> tuple[Profile, list[Course]]:
     return profile, courses
 
 
+def dashboard_problem(page: str, courses: list[Course]) -> str:
+    """What doesn't add up on the courses page ("" when its course cards read as IEUStudia knows them): a card
+    without its number, cards without their titles, course numbers on the page but no card read, or no course grid
+    at all. An empty course grid is no courses on the dashboard: not a page that changed."""
+    blank = sum(1 for m in re.finditer(r'<article class="dash-course"[^>]*>', page) if not _attr(m.group(0),
+                                                                                             "data-course-id"))
+    if blank:
+        return f"{blank} course cards without their number"
+    if courses and all(not c.title for c in courses):
+        return f"{len(courses)} course cards without their titles"
+    if not courses and re.search(r'data-course-id="[^"]+"', page):
+        return "course numbers on the page, but no course card IEUStudia knows"
+    if not courses and 'id="dashCourseGrid"' not in page:
+        return "no course grid on the courses page"
+    return ""
+
+
 def parse_course_list(page: str) -> Optional[list[Course]]:
     """The "My courses" list the dashboard loads when its courses tab opens (~2 KB on the wire instead of the
     dashboard's ~80 KB): the same course cards, without the term and the progress, and no name or student number.
@@ -246,8 +301,10 @@ def extract_folder_id(urls: list[str]) -> Optional[str]:
 
 
 def _not_down(r: requests.Response, signing_in: bool = False) -> None:
-    """IEULearn answering with a server error (maintenance, overload) is not a wrong password."""
+    """IEULearn answering with a server error (maintenance, overload) is not a wrong password (and Settings → Services
+    says it didn't answer)."""
     if r.status_code >= 500:
+        health.down("ieulearn", "signin" if signing_in else "courses", f"HTTP {r.status_code}")
         raise Busy(t("IEULearn isn't responding right now (it may be down for maintenance). Your password was "
                      "not rejected: try again later.") if signing_in else
                    t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
@@ -261,9 +318,19 @@ def _elsewhere(r: requests.Response) -> Optional[Exception]:
         return None
     log.warning("Signing in to IEULearn ended on %s", host)
     if re.search(r"login|sso|auth|account|cas\.", host):
-        return SiteChanged(t("IEULearn now signs you in on another site ({host}), which IEUStudia can't do yet. Check "
-                             "for an IEUStudia update in Settings → About.", host=host))
+        return changed("signin", f"the sign-in ends on {host}",
+                       t("IEULearn now signs you in on another site ({host}), which IEUStudia can't do yet. Check "
+                         "for an IEUStudia update in Settings → About.", host=host))
     return _foreign()
+
+
+def _form_changed(page: str) -> Busy:
+    """IEULearn's sign-in page without the form IEUStudia knows (a page that changed): noted, and said as IEULearn
+    not signing you in (your password was not rejected, so it is kept)."""
+    health.changed("ieulearn", "signin", f"no sign-in form IEUStudia knows ({page_shape(page)})")
+    return Busy(t("IEULearn didn't show its sign-in page as IEUStudia knows it (it may be under maintenance, or the "
+                  "page changed). Your password was not rejected: try again later. If it's still like this tomorrow, "
+                  "check for an IEUStudia update in Settings → About."))
 
 
 class IEULearn:
@@ -286,6 +353,12 @@ class IEULearn:
         if away is not None:
             raise away
         form = _sign_in_form(page.text)
+        if form is not None and not {"email", "password"} <= set(form.fields):
+            # IEULearn's sign-in form, but without the fields IEUStudia fills in (one was renamed): what is posted
+            # would come back as a refused password, and the saved one would be thrown away. IEULearn changed
+            raise changed("signin", f"its sign-in form has other fields ({page_shape(page.text)})",
+                          t("IEULearn's sign-in page changed, so IEUStudia can't sign you in right now. Your password "
+                            "was not rejected and stays saved. Check for an IEUStudia update in Settings → About."))
         token = form.fields.get("csrf_token", "") if form else ""
         if not token:
             m = re.search(r'name="csrf_token"\s+value="([^"]+)"', page.text)
@@ -293,14 +366,25 @@ class IEULearn:
         if form is None and not token:      # a throttle, a firewall or a maintenance page instead of the sign-in page
             log.warning("IEULearn's sign-in page has no sign-in form (HTTP %d, %d bytes)", page.status_code,
                         len(page.text or ""))
-            if page.status_code == 200:     # (or a page that changed: then it stays like this)
-                raise Busy(t("IEULearn didn't show its sign-in page as IEUStudia knows it (it may be under maintenance, "
-                             "or the page changed). Your password was not rejected: try again later. If it's still "
-                             "like this tomorrow, check for an IEUStudia update in Settings → About."))
+            if page.status_code == 200 and not under_maintenance(page.text):     # a page that changed stays like this
+                raise _form_changed(page.text)
             raise Busy(t("IEULearn didn't show its sign-in page right now (it may be busy or under maintenance). Your "
                          "password was not rejected: try again later."))
-        r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),
-                                               "password": password, "remember": "1"})
+        unknown = form is None              # its token, but no form IEUStudia knows: signed in as before, and if that
+        r = self.s.post(f"{BASE}/login", data={"csrf_token": token, "email": username.strip(),   # doesn't take, the
+                                               "password": password, "remember": "1"})            # page changed
+        try:
+            self._signed_in(r, username, password)
+        except Busy:                        # (not a server error, a throttle, a filter's page or maintenance)
+            here = (urlparse(r.url or "").hostname or "").lower() == urlparse(BASE).hostname
+            if unknown and r.ok and here and not under_maintenance(page.text + (r.text or "")):
+                raise _form_changed(page.text) from None
+            raise
+        health.ok("ieulearn", "signin")
+
+    def _signed_in(self, r: requests.Response, username: str, password: str) -> None:
+        """What IEULearn's answer to the sign-in means: signed in (returns), a refused password (AuthError), a page to
+        finish on IEULearn (AccountAction), or IEULearn not signing you in (Busy)."""
         if r.ok and "/student" in r.url and "loginForm" not in r.text and not _password_change(r.text):
             return
         if _password_change(r.text):       # an expired password: a new one is set on IEULearn itself
@@ -310,6 +394,8 @@ class IEULearn:
         if not msg:                 # after a server error, only IEULearn's own words on its sign-in form are shown
             _not_down(r, signing_in=True)
         if form_again:
+            if r.status_code < 500:  # its own refusal on its own form: the sign-in works as IEUStudia knows it
+                health.ok("ieulearn", "signin")
             raise AuthError(_hints(msg or t("Sign-in failed. Check your EkoID username and password."), username,
                                    password), server_error=r.status_code >= 500)
         away = _elsewhere(r)
@@ -371,9 +457,10 @@ class IEULearn:
             raise Busy(t("IEULearn is busy right now (too many requests). Try again in a few minutes."))
         if r.status_code in (404, 410):          # (its raw "404 Client Error: … for url" reached the student)
             log.warning("IEULearn's /student answered %d", r.status_code)
-            raise SiteChanged(t("IEULearn's page with your courses isn't where it was (error {code}): its pages may "
-                                "have changed. Your courses on this PC stay as they are. Check for an IEUStudia "
-                                "update in Settings → About.", code=r.status_code))
+            raise changed("courses", f"/student answered HTTP {r.status_code}",
+                          t("IEULearn's page with your courses isn't where it was (error {code}): its pages may "
+                            "have changed. Your courses on this PC stay as they are. Check for an IEUStudia "
+                            "update in Settings → About.", code=r.status_code))
         if r.status_code in (401, 403):
             log.warning("IEULearn's /student answered %d", r.status_code)
             raise Busy(t("IEULearn refused to show your courses (error {code}). Your password was not rejected. If "
@@ -389,10 +476,20 @@ class IEULearn:
             if _sign_in_form(r.text) is not None:
                 raise NeedLogin(t("Your IEULearn session has expired."))
             log.warning("IEULearn's /student isn't the courses page (%d bytes)", len(r.text or ""))
-            raise SiteChanged(t("IEULearn showed a page IEUStudia doesn't recognise instead of your courses: it may be "
-                                "under maintenance, or its pages changed. Your courses on this PC stay as they are. If "
-                                "it's still like this tomorrow, check for an IEUStudia update in Settings → About."))
-        return parse_dashboard(r.text)
+            if under_maintenance(r.text):
+                raise Busy(t("IEULearn isn't showing your courses right now (it may be under maintenance). Your "
+                             "password was not rejected: try again later."))
+            raise changed("courses", f"/student is not the courses page ({page_shape(r.text)})",
+                          t("IEULearn showed a page IEUStudia doesn't recognise instead of your courses: it may be "
+                            "under maintenance, or its pages changed. Your courses on this PC stay as they are. If "
+                            "it's still like this tomorrow, check for an IEUStudia update in Settings → About."))
+        profile, courses = parse_dashboard(r.text)
+        problem = dashboard_problem(r.text, courses)
+        if problem:                              # cards IEUStudia can't read: never taken for "no courses"
+            log.warning("IEULearn's courses page: %s", problem)
+            raise changed("courses", problem)
+        health.ok("ieulearn", "courses")
+        return profile, courses
 
     def course_list(self) -> Optional[list[Course]]:
         """The courses from the "My courses" list (parse_course_list); like dashboard(), it checks the sign-in."""
@@ -424,17 +521,40 @@ class IEULearn:
             raise RuntimeError(t("Panopto did not open the folder of course {course}.", course=course_id))
         frames = [f for f in parse_iframes(r.text) if "lti/course-launch" in f]
         if not frames:
+            # a page that still links IEULearn's launch (or Panopto itself), but not in the frame IEUStudia opens: the
+            # page changed (not "no Panopto"; the page of a course without Panopto links neither)
+            if r.status_code == 200 and re.search(r"/lti/|<iframe[^>]+panopto", r.text or "", re.I):
+                raise health.changed("panopto", "lti", f"the course's Panopto page has no course-launch frame "
+                                                        f"({page_shape(r.text)})", where=course_id)
             return None  # this course has no Panopto tool
         r = self.s.get(urljoin(BASE, frames[0]))
         urls: list[str] = []
+        steps = 0
         for _ in range(3):  # course-launch form -> /lti/auth form -> Panopto LTI.aspx
             form = next((f for f in parse_forms(r.text)
                          if f.id == "ltiAutoForm" or "/lti" in f.action.lower()), None)
             if form is None:
                 break
+            steps += 1
             r = self.s.post(urljoin(r.url, form.action), data=form.fields)
             urls += [h.headers.get("Location", "") for h in r.history] + [h.url for h in r.history] + [r.url]
         folder = extract_folder_id(urls)
         if folder is None:
+            host = (urlparse(r.url or "").hostname or "").lower()
+            if r.status_code == 200 and not under_maintenance(r.text):
+                if not steps and host == urlparse(BASE).hostname:
+                    if _sign_in_form(r.text) is not None:
+                        raise NeedLogin(t("Your IEULearn session has expired."))
+                    said = re.sub(r"<[^>]+>", " ", r.text or "")
+                    if not re.search(r"hata|error|bulunamad|not found|yetki|izin|denied|forbidden", said, re.I):
+                        # (an error IEULearn shows there is tried again; a launch page without its form changed)
+                        raise health.changed("panopto", "lti", f"IEULearn's course launch has no launch form "
+                                                                f"({page_shape(r.text)})", where=course_id)
+                path = urlparse(r.url or "").path
+                if host == PANOPTO_HOST and not re.search(r"error|auth|login", path, re.I):
+                    # Panopto opened (not its error or sign-in page), but its address doesn't say the folder any more
+                    raise health.changed("panopto", "lti", f"Panopto opened {path} without a folder after {steps} "
+                                                            f"launch steps", where=course_id)
             raise RuntimeError(t("Panopto did not open the folder of course {course}.", course=course_id))
+        health.ok("panopto", "lti", where=course_id)
         return folder

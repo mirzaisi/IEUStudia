@@ -72,8 +72,9 @@ exact moment they come from), write study notes or flashcards (and practise them
 review sheet, have a study pack written (a PDF that teaches everything in the files and lectures you pick, with worked
 examples, diagrams and your slides), make a cheatsheet (every formula, definition and method of what you pick, compact:
 a few weeks fit on one or two A4 pages, a whole term on a few more), or make a video study plan: YouTube videos for your
-weeks, each one checked through its captions against what your course actually covers. All of this is optional, see
-[AI features](#ai-features).
+weeks, each one checked through what it says (its captions, or its sound transcribed on your PC when it has no usable
+captions) against what your course actually covers, with more searches for anything no video teaches yet. All of this
+is optional, see [AI features](#ai-features).
 
 <table>
   <tr>
@@ -216,17 +217,21 @@ quotes behind every video they recommend.
 
 - Your EkoID password is sent only to learn.ieu.edu.tr. On your PC it's stored encrypted with Windows DPAPI, so only
   your Windows account can read it.
-- There's no IEUStudia server, no account, no analytics and no tracking.
+- There's no IEUStudia server, no account and no tracking. The one number IEUStudia adds to is an anonymous count of
+  how many copies of each version are in use (see below).
 - IEUStudia connects to IEULearn and Panopto (your courses and recordings), the public İEÜ syllabus pages, Hugging Face
   (to download the speech model and the offline AI model, once), PyPI (NVIDIA's GPU libraries, once, only if you have
-  an NVIDIA card), YouTube (search, captions and channel pictures, only for video study plans and the channel lists in
-  Settings), and Anthropic or OpenAI (only when you use an AI feature; the lecture text you chose is sent to them under
+  an NVIDIA card), YouTube (search, captions and channel pictures, and the sound of a video without usable captions,
+  which is transcribed on your PC and then deleted; only for video study plans and the channel lists in Settings), and
+  Anthropic or OpenAI (only when you use an AI feature; the lecture text you chose is sent to them under
   your account), and GitHub (see below). Setting up Claude downloads Claude Code from claude.ai; signing in with ChatGPT
   happens on auth.openai.com.
 - An installed copy looks at IEUStudia's newest release on GitHub about once a day, so it can tell you about a new
-  version. The request says which IEUStudia version is asking and nothing about you or your courses. You can turn it
-  off in *Settings → About*. When you choose to update, the installer is downloaded from GitHub and checked against
-  the release's SHA-256 checksums before it runs.
+  version. With that look it also downloads a tiny file, `active.txt`, from its own version's release, at most once a
+  day: GitHub counts the downloads of each file, so that number shows how many copies of each version are in use.
+  Nothing about you or your courses is sent: no ID and no cookie, only which IEUStudia version is asking. You can turn
+  both off in *Settings → About* (*Look for new versions by itself*). When you choose to update, the installer is
+  downloaded from GitHub and checked against the release's SHA-256 checksums before it runs.
 - The ChatGPT sign-in is kept on your PC encrypted with DPAPI, like your EkoID password. It only allows requests on
   your plan, not access to your ChatGPT conversations.
 - App data (settings, the encrypted login, your library, models, logs) is kept in `%LOCALAPPDATA%\IEUStudia`.
@@ -271,6 +276,19 @@ On Linux, yes, from the source: see [On Linux](#on-linux). Not on a Mac yet.
 That can happen. Please [open an issue](https://github.com/mirzaisi/IEUStudia/issues) and describe what you were
 doing. Leave out your name, student number and course content, also in screenshots.
 
+## Contact
+
+Questions, ideas, or something not working? Message me, I'd like to hear about it.
+
+<p>
+  <a href="https://www.instagram.com/mirzaisi"><img src="docs/contact/instagram.svg" width="16" height="16" alt=""> Instagram</a>
+  &nbsp;·&nbsp;
+  <a href="https://www.linkedin.com/in/mirzaisi/"><img src="docs/contact/linkedin.svg" width="16" height="16" alt=""> LinkedIn</a>
+</p>
+
+The same two links are in the app, at the bottom of the sidebar and in *Settings → About*. Something others may run
+into too is best as an [issue](https://github.com/mirzaisi/IEUStudia/issues), so the answer helps everyone.
+
 ## Building it yourself
 
 You need Windows and [uv](https://docs.astral.sh/uv/).
@@ -289,7 +307,8 @@ points the update check at another release feed (a URL answering like GitHub's l
 development build for your Windows account.
 
 Releases are built by GitHub Actions: pushing a version tag such as `v2.1.0` builds the installer and the zip and
-attaches them to a draft release.
+attaches them to a draft release, with `active.txt` for the count of copies in use. `python scripts/usage.py` prints
+each release's downloads (installer, portable zip, `active.txt`), read from GitHub without a token.
 
 <details>
 <summary>Where things are in the code</summary>

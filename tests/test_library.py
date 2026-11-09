@@ -55,8 +55,11 @@ def test_status_and_fts_search(tmp_path):
     lib.save_transcript(t, tmp_path / "a.json")
     lib.set_status("a", "done")
     assert lib.get_recording("a").status == "done" and not lib.get_recording("a").is_new
-    assert lib.search("theven")[0]["delivery_id"] == "a"
-    assert lib.search("sınavda")[0]["t"] == 6
+    from studia.search import results
+
+    lecture = lambda q: next(g["items"] for g in results(lib, q)["groups"] if g["kind"] == "lecture")[0]["moments"][0]
+    assert lecture("theven")["delivery_id"] == "a"
+    assert lecture("sınavda")["t"] == 6
     lib.set_status("a", "transcribing")
     lib.reset_interrupted()
     assert lib.get_recording("a").status == "done"   # transcript exists -> back to done

@@ -24,6 +24,7 @@ The Codex CLI's own sign-in with a code (ai.py, Codex's client) is another sign-
 from __future__ import annotations
 
 import base64
+import collections
 import email.utils
 import hashlib
 import hmac
@@ -45,9 +46,9 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import aierrors
+from . import aierrors, health
 from .cancel import Cancelled
-from .i18n import t, tn
+from .i18n import Retold, retell, t, tn
 
 log = logging.getLogger("studia")
 
@@ -225,8 +226,8 @@ def status() -> dict[str, Any]:
     ``unreadable``: one is kept aside that this PC can't decrypt; ``clock``: minutes this PC's clock is off OpenAI's
     (0 within CLOCK_SLACK_S), with ``clock_text`` saying how to fix it."""
     rec = _load()
-    with _lock:
-        attempt = {k: v for k, v in _attempt.items() if k in _SHOWN}
+    with _lock:            # (why it failed: in the language of now, also when it was said before a language switch)
+        attempt = {k: retell(v) for k, v in _attempt.items() if k in _SHOWN}
         if attempt.get("state") != "waiting":
             attempt.pop("link", None)
             attempt.pop("page", None)
@@ -529,6 +530,9 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
     rec = {} if fresh else _load()
     client_id = rec.get("client_id") or FIRST_CLIENT
     state, nonce, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(48)
+    with _lock:
+        _started.append(_digest(state))            # an address of it pasted later is an earlier sign-in's
+
     challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
     result: dict[str, Any] = {}                    # {"state": "done"|"error", "error", "email", "code"} once back
     claim = threading.Lock()                       # one answer is taken (they come on threads of their own)
@@ -596,22 +600,24 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
             track("https", "a TLS handshake reached the plain listener", moves=False, note="https")
 
     def complete(q: dict[str, str]) -> dict[str, Any]:
-        """What came back from OpenAI: the sign-in kept, or why not."""
+        """What came back from OpenAI: the sign-in kept, or why not (said again in the language of the moment when
+        the page asks after a language switch: Retold)."""
         if q.get("error") in _CLIENT_REFUSED:      # kept the first time, registered anew after a second refusal
             return _client_refused(client_id)
         if q.get("error"):
-            return _callback_error(q["error"], q.get("error_description", ""))
+            why = (q["error"], q.get("error_description", ""))
+            return {**_callback_error(*why), "error": Retold(lambda: _callback_error(*why)["error"])}
         if not q.get("code"):
-            return {"state": "error", "code": "no_code", "error": t(
-                "OpenAI sent your browser back without the sign-in code. Click Continue with ChatGPT to try again.")}
+            return {"state": "error", "code": "no_code", "error": Retold(lambda: t(
+                "OpenAI sent your browser back without the sign-in code. Click Continue with ChatGPT to try again."))}
         if client_id != FIRST_CLIENT and q.get("client_id") and q["client_id"] != client_id:
             _forget()                              # so the next try registers IEUStudia anew instead of failing again
-            return {"state": "error", "code": "client", "error": t(
-                "OpenAI asked to register IEUStudia for your account again. Click Continue with ChatGPT once more.")}
+            return {"state": "error", "code": "client", "error": Retold(lambda: t(
+                "OpenAI asked to register IEUStudia for your account again. Click Continue with ChatGPT once more."))}
         issued = q.get("client_id") or (client_id if client_id != FIRST_CLIENT else "")
         if not issued:
-            return {"state": "error", "code": "client", "error": t(
-                "OpenAI did not finish registering IEUStudia for your account. Try again.")}
+            return {"state": "error", "code": "client", "error": Retold(lambda: t(
+                "OpenAI did not finish registering IEUStudia for your account. Try again."))}
         import requests
 
         try:
@@ -624,12 +630,12 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
             return {"state": "error", "code": exc.code, "error": str(exc)}
         except requests.RequestException as exc:
             log.warning("ChatGPT sign-in: OpenAI could not be reached: %s", exc)
-            return {"state": "error", "code": "network", "error": _net_message(exc)}
+            return {"state": "error", "code": "network", "error": Retold(lambda e=exc: _net_message(e))}
         except Exception as exc:  # noqa: BLE001 - shown in the set-up and in the browser
             log.exception("ChatGPT sign-in failed")
-            return {"state": "error", "code": "other", "error": t(
+            return {"state": "error", "code": "other", "error": Retold(lambda kind=exc.__class__.__name__: t(
                 "Something went wrong while finishing the sign-in ({kind}). Try again; if it happens again, click Copy "
-                "details and send them when you ask for help.", kind=exc.__class__.__name__)}
+                "details and send them when you ask for help.", kind=kind))}
         return {"state": "done", "code": "", "error": "", "email": new.get("email", "")}
 
     def deliver(q: dict[str, str], how: str) -> dict[str, Any]:
@@ -755,34 +761,35 @@ def start_sign_in(emit: Callable[[dict[str, Any]], None] = lambda e: None, *, co
                             "opened in a browser" if seen else "never opened in a browser")
                 # (the error shows only the step's button, Continue with ChatGPT: the other ways come with a new try,
                 # and an old address can't finish a sign-in that ended)
-                if note == "https":
-                    text = t("The sign-in didn't come back to IEUStudia: your browser tried https://, which IEUStudia "
-                             "doesn't use. Click Continue with ChatGPT to start again; while it waits, use Paste the "
-                             "address from your browser (the address of the error page it shows after you allow "
-                             "IEUStudia).")
-                elif note == "listen":
-                    text = t("The sign-in didn't come back in time: IEUStudia can't listen for your browser on this "
-                             "PC. Click Continue with ChatGPT to start again; while it waits, use Paste the address "
-                             "from your browser (the address of the error page it shows).")
-                elif seen:
-                    text = t("The sign-in page was not completed in time. Click Continue with ChatGPT to start again. "
-                             "If your browser shows an error page after you allow IEUStudia, copy its address and use "
-                             "Paste the address from your browser (under Trouble?).")
-                else:
+                def timed_out() -> str:            # (said again in the language of the moment: Retold)
+                    if note == "https":
+                        return t("The sign-in didn't come back to IEUStudia: your browser tried https://, which "
+                                 "IEUStudia doesn't use. Click Continue with ChatGPT to start again; while it waits, use "
+                                 "Paste the address from your browser (the address of the error page it shows after "
+                                 "you allow IEUStudia).")
+                    if note == "listen":
+                        return t("The sign-in didn't come back in time: IEUStudia can't listen for your browser on this "
+                                 "PC. Click Continue with ChatGPT to start again; while it waits, use Paste the address "
+                                 "from your browser (the address of the error page it shows).")
+                    if seen:
+                        return t("The sign-in page was not completed in time. Click Continue with ChatGPT to start "
+                                 "again. If your browser shows an error page after you allow IEUStudia, copy its address "
+                                 "and use Paste the address from your browser (under Trouble?).")
                     text = (t("The sign-in page never opened in a browser. Click Continue with ChatGPT to start again; "
                               "if nothing opens, click Open in Microsoft Edge, or Copy link and paste it into your "
                               "browser's address bar.") if edge else
                             t("The sign-in page never opened in a browser. Click Continue with ChatGPT to start again; "
                               "if nothing opens, click Copy link and paste it into your browser's address bar."))
-                    if elevated:                   # (said only then: a browser started from it may not show up)
-                        text = f"{text} {admin_note()}"
-                finish("error", text, code="timeout")
+                    # (the administrator note said only then: a browser started from it may not show up)
+                    return f"{text} {admin_note()}" if elevated else text
+
+                finish("error", Retold(timed_out), code="timeout")
                 return
             finish(result["state"], result.get("error", ""), result.get("email", ""), result.get("code", ""))
         except Exception as exc:  # noqa: BLE001 - shown in the set-up
             log.exception("ChatGPT sign-in failed")
-            finish("error", t("Something went wrong while waiting for the sign-in ({kind}). Try again.",
-                              kind=exc.__class__.__name__), code="other")
+            finish("error", Retold(lambda kind=exc.__class__.__name__: t(
+                "Something went wrong while waiting for the sign-in ({kind}). Try again.", kind=kind)), code="other")
         finally:
             if server is not None:
                 server.server_close()
@@ -884,6 +891,13 @@ def cancel_sign_in() -> None:
 
 
 _PASTE_EDGES = "<>\"'`“”‘’«».,;"        # around a pasted address: quotes, brackets, the end of a sentence
+# the sign-ins this run started (a digest of each one's state): a pasted address of one of them that isn't the one
+# waiting is "an earlier sign-in's"; any other is none of IEUStudia's
+_started: "collections.deque[bytes]" = collections.deque(maxlen=50)
+
+
+def _digest(state: str) -> bytes:
+    return hashlib.sha256(str(state or "").encode("utf-8")).digest()
 
 
 def paste_address(text: str) -> dict[str, Any]:
@@ -912,9 +926,15 @@ def paste_address(text: str) -> dict[str, Any]:
             "No sign-in is waiting for this address any more. Click Continue with ChatGPT and try again.")}
     out = deliver(q, "pasted address")
     if out["state"] == "mismatch":                 # (said while this sign-in waits: its row has Open the page again)
-        return {"state": "refused", "error": t(
-            "This address belongs to an earlier sign-in. Copy the address from the sign-in page that opened last, or "
-            "close this and click Open the page again.")}
+        with _lock:
+            earlier = any(hmac.compare_digest(_digest(q["state"]), d) for d in _started)
+        if earlier:
+            return {"state": "refused", "error": t(
+                "This address belongs to an earlier sign-in. Copy the address from the sign-in page that opened last, "
+                "or close this and click Open the page again.")}
+        return {"state": "refused", "error": t(       # made up, or from another app's sign-in
+            "This isn't an address from the sign-in IEUStudia started. Copy the address from the sign-in page that "
+            "opened last, or close this and click Open the page again.")}
     if out["state"] == "ended":
         return {"state": "refused", "error": t(
             "No sign-in is waiting for this address any more. Click Continue with ChatGPT and try again.")}
@@ -1036,9 +1056,18 @@ def exchange_code(code: str, client_id: str, verifier: str, redirect_uri: str, n
                                      "code_verifier": verifier, "redirect_uri": redirect_uri, "resource": API})
     except _FormError as exc:
         log.warning("ChatGPT sign-in: the token endpoint said HTTP %s %s: %s", exc.status, exc.code, exc.description)
+        if exc.status in (404, 410):              # its address moved: a new IEUStudia knows the new one
+            raise SignInError(str(health.changed("openai", "signin", f"the code exchange answered HTTP {exc.status}")),
+                              "service") from exc
         raise _token_failure(exc) from exc
+    if tok and not all(isinstance(tok.get(k), str) and tok[k] for k in ("id_token", "access_token", "refresh_token")):
+        # OpenAI answered, but its tokens aren't where IEUStudia reads them: nothing is kept, and it is said as that
+        # (an answer that isn't JSON at all, a Wi-Fi sign-in page, is "could not be read", as before)
+        raise SignInError(str(health.changed("openai", "signin", f"the code exchange answered without its tokens "
+                                                                  f"({_fields(tok)})")), "service")
     on_step("verifying")
     claims = validate_id_token(tok.get("id_token", ""), client_id, nonce)
+    health.ok("openai", "signin")
     previous = previous or {}
     if previous.get("subject") and previous.get("client_id") == client_id and previous["subject"] != claims["sub"]:
         raise SignInError(t("You signed in as {email}, but IEUStudia is connected to another ChatGPT account. To "
@@ -1091,12 +1120,19 @@ def _keys() -> list[dict[str, Any]]:
         try:
             if conf.status_code != 200:
                 raise ValueError(f"HTTP {conf.status_code}")
-            r = s.get(conf.json()["jwks_uri"], timeout=30)
+            uri = conf.json().get("jwks_uri")
+            if not isinstance(uri, str) or not uri:
+                raise KeyError("jwks_uri")
+            r = s.get(uri, timeout=30)
             if r.status_code != 200:
                 raise ValueError(f"HTTP {r.status_code}")
-            keys = r.json().get("keys") or []
+            keys = r.json().get("keys")
+            if not isinstance(keys, list) or not keys:
+                raise KeyError("keys")
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             log.warning("ChatGPT sign-in: OpenAI's signing keys could not be read: %s", exc)
+            if not isinstance(exc, ValueError):  # it answered, but its configuration or keys came in another form
+                health.changed("openai", "signin", f"OpenAI's signing keys: no {exc}")
             raise SignInError(t("OpenAI's sign-in could not be checked: its keys didn't load ({why}). Try again in a "
                                 "few minutes.", why=exc), "service") from exc
         _jwks.update(keys=keys, at=time.monotonic())
@@ -1173,6 +1209,8 @@ def _token(force: bool) -> str:
                                          "refresh_token": rec["refresh_token"], "resource": API})
         except _FormError as exc:
             log.warning("ChatGPT: renewing the sign-in: HTTP %s %s: %s", exc.status, exc.code, exc.description)
+            if exc.status in (404, 410):            # OpenAI's token address moved: nothing to do here but update
+                raise health.changed("openai", "signin", f"renewing answered HTTP {exc.status}") from exc
             if exc.code in _TERMINAL:
                 rec.update(access_token="", refresh_token="")
                 _save(rec)
@@ -1185,6 +1223,19 @@ def _token(force: bool) -> str:
                                      "{status}). Try again in a few minutes.", status=exc.status)) from exc
             raise RuntimeError(t("ChatGPT didn't renew your sign-in ({why}). If it keeps happening, sign in again: "
                                  "Settings → AI → Continue with ChatGPT.", why=exc.description or exc.code)) from exc
+        if not tok:                         # not OpenAI's JSON (a Wi-Fi sign-in page): nothing changed, nothing kept
+            raise RuntimeError(t("Can't reach ChatGPT. Check your internet connection and try again."))
+        if not isinstance(tok.get("access_token"), str) or not tok["access_token"]:
+            # renewed, but not in the form IEUStudia reads: the sign-in on this PC is never emptied (a new refresh
+            # token that did come is kept: the one before it may no longer work)
+            if isinstance(tok.get("refresh_token"), str) and tok["refresh_token"]:
+                rec["refresh_token"] = tok["refresh_token"]
+                try:
+                    _save(rec)
+                except OSError:
+                    log.warning("ChatGPT: the renewed refresh token could not be kept", exc_info=True)
+            raise health.changed("openai", "signin", f"the renewal came without an access token ({_fields(tok)})")
+        health.ok("openai", "signin")
         rec.update(access_token=tok.get("access_token", ""), refresh_token=tok.get("refresh_token") or rec["refresh_token"],
                    expires_at=time.time() + float(tok.get("expires_in") or 3600),
                    scopes=sorted(set(str(tok.get("scope") or " ".join(rec.get("scopes") or [])).split())),
@@ -1274,21 +1325,50 @@ def models(refresh: bool = False) -> list[dict[str, str]]:
             log.info("ChatGPT's model list could not be fetched (%s): the older list is used", exc)
             return stale
         raise
+    try:
+        raw = r.json()
+    except ValueError:                      # not JSON: a Wi-Fi sign-in page or a filter, not OpenAI's answer
+        raw = None
+    body = raw if isinstance(raw, dict) else {}
+    if r.status_code in (404, 410) or (r.status_code == 200 and raw is not None
+                                       and not isinstance(body.get("models"), list)):
+        # the list isn't where it was, or came in another form: OpenAI changed it (an older list, if any, is used)
+        exc = health.changed("openai", "models", f"/models answered HTTP {r.status_code} ({_fields(raw)})")
+        if stale and not refresh:
+            return stale
+        raise exc
+    if r.status_code == 200 and raw is None:
+        if stale and not refresh:
+            return stale
+        raise RuntimeError(t("Can't reach ChatGPT. Check your internet connection and try again."))
     if r.status_code != 200:
         log.warning("ChatGPT's model list: HTTP %s: %s", r.status_code, _logged_body(r))
         if aierrors.retryable(r.status_code) and r.status_code != 429:
             if stale and not refresh:
                 return stale
             raise aierrors.ServiceError(aierrors.explain("ChatGPT", r.status_code), r.status_code)
-        raise _api_failure(r.status_code, _json(r))
+        raise _api_failure(r.status_code, body)
     rows = [{"slug": m["slug"], "display_name": m.get("display_name") or m["slug"],
              "levels": [x.get("effort") for x in m.get("supported_reasoning_levels") or [] if isinstance(x, dict)],
              **{k: m[k] for k in ("context_window", "effective_context_window_percent") if isinstance(m.get(k), int)}}
-            for m in (_json(r).get("models") or []) if isinstance(m, dict) and m.get("slug")
+            for m in body["models"] if isinstance(m, dict) and isinstance(m.get("slug"), str) and m.get("slug")
             and m.get("visibility", "list") == "list"]           # levels: the reasoning efforts it takes (effort.py);
     # context_window: how much one request holds (chatlimits.py), when the list says
+    if body["models"] and not rows and not any(isinstance(m, dict) and m.get("visibility") not in (None, "list")
+                                               for m in body["models"]):
+        exc = health.changed("openai", "models", f"{len(body['models'])} models, none with a slug "
+                                                 f"({_fields(body['models'][0])})")
+        if stale and not refresh:
+            return stale
+        raise exc
+    health.ok("openai", "models")
     path.write_text(json.dumps({"at": time.time(), "models": rows}), encoding="utf-8")
     return rows
+
+
+def _fields(d: Any) -> str:
+    """An answer's keys, for the developer (what came instead of what IEUStudia reads; never their values)."""
+    return ", ".join(sorted(str(k) for k in d)[:12]) if isinstance(d, dict) else type(d).__name__
 
 
 def _json(r: Any) -> dict[str, Any]:
@@ -1373,12 +1453,15 @@ def prompt_cache_key(system_prompt: str, content: list[dict[str, Any]]) -> str:
 def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "",
              cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
              timeout_s: float = 900, history: Optional[list[tuple[str, str]]] = None,
-             cache_key: str = "") -> dict[str, Any]:
+             cache_key: str = "", drops: int = len(aierrors.DROP_DELAYS),
+             on_wait: Optional[Callable[[dict[str, Any]], None]] = None) -> dict[str, Any]:
     """One streamed request on the user's ChatGPT plan: {"text", "usage", "seconds", "model"}. ``effort``: the
     reasoning level (effort.py; "" = the one the app's old model level meant, "haiku" / "sonnet" / "opus" -> low /
     medium / high); the ChatGPT model is the one chosen in Settings,
     else the account's first listed one. ``cache_key``: OpenAI's prompt-cache key (default: from how the request
-    begins)."""
+    begins). ``drops``: how many times a connection that dropped before any of the answer came is asked again (a
+    reading in parts asks again itself: 0); ``on_wait``: told before each wait for another try ({"why": "dropped" or
+    "service", "status", "wait" seconds, "try": the next one's number}), so a page can say it."""
     import requests
 
     from . import appconfig
@@ -1410,16 +1493,31 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
                             "prompt_cache_key": cache_key or prompt_cache_key(system_prompt, content)}
     for name in _turned_down:
         body.pop(name, None)
-    adjusted = failed = 0                                   # requests changed after a refusal; failures on OpenAI's side
-    renew, renewed = False, False                           # a 401: the access token renewed once, then asked again
-    while True:
+    adjusted = failed = dropped = 0                         # requests changed after a refusal; failures on OpenAI's side;
+    renew, renewed = False, False                           # connections that dropped. A 401: the access token renewed
+    while True:                                             # once, then asked again
         try:
             if renew:
                 renew = False
                 _token(force=True)                          # its own failure ("ended", the network) is said as it is
-            text, usage = _stream(body, cancel, on_text, timeout_s)
+            try:
+                text, usage = _stream(body, cancel, on_text, timeout_s)
+            except requests.RequestException as exc:        # the request never got through: like a dropped stream
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled() from exc
+                raise _unreachable(exc, body_size(body)) from exc
             return {"text": text, "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
                     "model": slug}
+        except aierrors.Dropped as exc:                     # none of the answer came yet: asked again in a moment
+            if (exc.text or not exc.same or dropped >= min(drops, len(aierrors.DROP_DELAYS))
+                    or (cancel is not None and cancel.is_set())):
+                raise
+            wait = aierrors.DROP_DELAYS[dropped]
+            dropped += 1
+            log.info("ChatGPT: the connection dropped before the answer (%s); asking again in %.0f s", exc, wait)
+            if on_wait:
+                on_wait({"why": "dropped", "status": 0, "wait": wait, "try": dropped + failed + 1})
+            aierrors.wait(wait, cancel)
         except _Unauthorized as exc:
             if renewed:
                 raise RuntimeError(str(exc)) from exc
@@ -1443,6 +1541,8 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
             if wait is None:
                 raise exc.final(failed) from exc
             log.info("ChatGPT: HTTP %s; asking again in %.0f s (try %d)", exc.status, wait, failed + 1)
+            if on_wait:
+                on_wait({"why": "service", "status": exc.status, "wait": wait, "try": dropped + failed + 1})
             aierrors.wait(wait, cancel)
         except requests.RequestException as exc:            # the sign-in renewal or the request itself
             if cancel is not None and cancel.is_set():
@@ -1462,13 +1562,16 @@ def _unreachable(exc: Exception, size: int = 0) -> RuntimeError:
         return RuntimeError(t("A secure connection to ChatGPT was blocked or changed on the way. Antivirus HTTPS "
                               "scanning, a school or company network, or a Wi-Fi sign-in page can do this: open "
                               "chatgpt.com in your browser, then try again."))
+    # (Dropped: asked again by itself, as a connection that ended early is: one_shot, and the reading in parts)
     if size >= BIG_BODY and isinstance(exc, (requests.ConnectionError, requests.Timeout)):
         # most likely the upload: the pictures go up again with every question
-        return RuntimeError(t("Your question and its pictures (~{mb} MB) didn't finish uploading to ChatGPT: your "
-                              "connection may be slow for this much. Try again, or send fewer slides.",
-                              mb=max(1, round(size / 1024 / 1024))))
+        return aierrors.Dropped(t("Your question and its pictures (~{mb} MB) didn't finish uploading to ChatGPT: your "
+                                  "connection may be slow for this much. Try again, or send fewer slides.",
+                                  mb=max(1, round(size / 1024 / 1024))), same=False)
     if isinstance(exc, requests.Timeout):
-        return RuntimeError(t("ChatGPT did not answer in time. Check your internet connection and try again."))
+        return aierrors.Dropped(t("ChatGPT did not answer in time. Check your internet connection and try again."))
+    if isinstance(exc, requests.ConnectionError):
+        return aierrors.Dropped(t("Can't reach ChatGPT. Check your internet connection and try again."))
     return RuntimeError(t("Can't reach ChatGPT. Check your internet connection and try again."))
 
 
@@ -1523,6 +1626,19 @@ UPLOAD_BPS = 150_000          # bytes a second a request's body is given to go u
 BIG_BODY = 4 * 1024 * 1024    # a request this heavy that fails on the way is said to be too heavy, not "no internet"
 
 
+def _output_text(resp: dict[str, Any]) -> str:
+    """The answer's text in a completed response ({"output": [{"type": "message", "content": [{"type": "output_text",
+    "text": …}]}]}): for a stream that sent it only there."""
+    texts = [str(c.get("text") or "") for item in resp.get("output") or [] if isinstance(item, dict)
+             for c in item.get("content") or [] if isinstance(c, dict) and c.get("type") == "output_text"]
+    return "".join(texts)
+
+
+def _kinds(kinds: list[str]) -> str:
+    """The kinds of events a stream sent, each once, in order (for the developer)."""
+    return ", ".join(list(dict.fromkeys(kinds))[:12]) or "none"
+
+
 def body_size(body: dict[str, Any]) -> int:
     return len(json.dumps(body))
 
@@ -1550,6 +1666,7 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
 
     if cancel is not None:
         threading.Thread(target=stopper, daemon=True).start()
+    parts: list[str] = []
     try:
         if r.status_code != 200:
             logged = _logged_body(r)
@@ -1564,13 +1681,17 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
                 raise _Unsupported(err.get("message") or "unsupported", param)
             if r.status_code == 401 and _unauthorized(data):
                 raise _Unauthorized(_api_error(401, data))
+            if r.status_code in (404, 410) and not err.get("code"):     # (a model it doesn't have says so: its code)
+                raise health.changed("openai", "answers", f"/responses answered HTTP {r.status_code} ({_fields(data)})")
             if aierrors.retryable(r.status_code) and err.get("code") not in ("subscription_sharing_usage_limit_exceeded",
                                                                              "subscription_sharing_user_not_eligible"):
+                if r.status_code >= 500:            # (Settings → Services: it didn't answer, not changed)
+                    health.down("openai", "answers", f"HTTP {r.status_code}")
                 raise _Transient(r.status_code, data, aierrors.retry_after(headers))
             raise _api_failure(r.status_code, data)
-        parts: list[str] = []
         usage: dict[str, int] = {}
         done = False
+        kinds: list[str] = []                       # the events that came, for an answer IEUStudia can't read
         for raw in r.iter_lines():
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
@@ -1582,16 +1703,35 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
             try:
                 ev = json.loads(payload)
             except ValueError:
+                kinds.append("(not JSON)")
+                continue
+            if not isinstance(ev, dict):
+                kinds.append(f"({type(ev).__name__})")
                 continue
             kind = ev.get("type", "")
+            if len(kinds) < 400:
+                kinds.append(str(kind))
             if kind == "response.output_text.delta":
                 parts.append(ev.get("delta") or "")
                 if on_text:
                     on_text("".join(parts))
             elif kind == "response.completed":
-                u = (ev.get("response") or {}).get("usage") or {}
+                resp = ev.get("response") if isinstance(ev.get("response"), dict) else {}
+                u = resp.get("usage") or {}
                 usage = {"input_tokens": int(u.get("input_tokens") or 0), "output_tokens": int(u.get("output_tokens") or 0),
                          "cache_read_input_tokens": int((u.get("input_tokens_details") or {}).get("cached_tokens") or 0)}
+                if not parts:                       # no text deltas: the whole answer is in the completed response
+                    text = _output_text(resp)
+                    if text:
+                        log.warning("ChatGPT sent its answer without text deltas (events: %s)", _kinds(kinds))
+                        parts.append(text)
+                        if on_text:
+                            on_text(text)
+                    elif not any(k.startswith("response.output_text") or k == "response.output_item.added"
+                                 for k in kinds):
+                        raise health.changed("openai", "answers", f"an answer without text IEUStudia can read "
+                                                                  f"(events: {_kinds(kinds)}; output: "
+                                                                  f"{_fields(resp)})")
                 done = True
                 break
             elif kind == "response.failed":
@@ -1614,15 +1754,24 @@ def _stream(body: dict[str, Any], cancel: Optional[threading.Event], on_text: Op
         if not done:
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
-            raise RuntimeError(t("The connection to ChatGPT ended before the answer was complete. Try again."))
+            known = [k for k in kinds if k.startswith("response.") or k == "error"]
+            if kinds and not known:                 # events came, but none of the kinds IEUStudia reads
+                raise health.changed("openai", "answers", f"a stream of events IEUStudia doesn't know: {_kinds(kinds)}")
+            # OpenAI's stream just stopped (seen after 2 minutes of a 3-minute answer): asked again (one_shot, chatread)
+            log.warning("ChatGPT's answer stream ended before it was complete (%d characters had come, %d bytes sent)",
+                        sum(len(x) for x in parts), body_size(body))
+            raise aierrors.Dropped(t("The connection to ChatGPT ended before the answer was complete. Try again."),
+                                   text=bool(parts))
+        health.ok("openai", "answers")
         return "".join(parts), usage
     except (Cancelled, RuntimeError, _Transient):
         raise
     except Exception as exc:                        # the stream broke: closed by Stop, or the network
         if cancel is not None and cancel.is_set():
             raise Cancelled() from exc
-        raise RuntimeError(t("The connection to ChatGPT broke off ({error}). Try again.",
-                             error=exc.__class__.__name__)) from exc
+        log.warning("ChatGPT's answer stream broke off: %r", exc)
+        raise aierrors.Dropped(t("The connection to ChatGPT broke off ({error}). Try again.",
+                                 error=exc.__class__.__name__), text=bool(parts)) from exc
     finally:
         finished.set()
         r.close()

@@ -10,7 +10,8 @@
   const ts = (s) => { s = Math.max(0, Math.round(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`; };
   const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   // labels are made when drawn: the Turkish table arrives after this file has loaded
-  const STAGES = () => [["gather", t("Course material")], ["concepts", t("What to learn")], ["search", t("YouTube search")], ["inspect", t("Captions")], ["verify", t("Verification")], ["assemble", t("Your plan")]];
+  const STAGES = () => [["gather", t("Course material")], ["concepts", t("What to learn")], ["search", t("YouTube search")], ["inspect", t("Captions")],
+    ["listen", t("Listening")], ["verify", t("Verification")], ["more", t("More videos")], ["assemble", t("Your plan")]];
   const ROLE = () => ({ required: t("Required"), prerequisite: t("Prerequisite"), optional: t("Optional"), alternative: t("Alternative") });
   const STATE = () => ({ verified: t("Verified"), partial: t("Partly on video"), supplement: t("Written supplement"), unverified: t("Not checked"), missing: t("Missing"), skipped: t("Not in this plan") });
   const HOW = () => ({ video: ["check", t("Taught in a checked video part")], optional: ["check", t("Only in an optional video")], supplement: ["book", t("Explained in the written supplement")], missing: ["x", t("Not covered")] });
@@ -81,21 +82,36 @@
       return `<div class="view-inner">${head}${emptyHTML("youtube", t("No study plans yet"),
         t("Pick a course and the weeks (or an upcoming quiz). IEUStudia reads your slides and lectures, finds videos on YouTube, checks what they actually teach, and builds a plan with a checklist and practice."))}</div>`;
     }
+    const filter = list.length >= 6 || S.planFilter ? `<label class="list-filter pl-filter">${I("search", "sm")}<input class="input sm" type="search" data-act="plan-filter" value="${esc(S.planFilter || "")}" placeholder="${t("Find a plan")}" aria-label="${t("Find a plan")}" autocomplete="off" spellcheck="false"></label>` : "";
+    return `<div class="view-inner">${head}${filter}<div id="pl-lists">${planListHTML(list)}</div></div>`;
+  }
+  const kindName = (p) => ({ prep: t("Review sheet"), pack: t("Study pack"), sheet: t("Cheatsheet") })[(p.scope || {}).kind] || t("Videos");
+  // the plans by course, or those whose title, kind, course or focus has the words of the filter (as the search matches)
+  function planListHTML(list) {
+    const f = (S.planFilter || "").trim();
+    const about = (p) => [planTitle(p), kindName(p), courseOf(p.course_id).code, (p.scope || {}).focus].filter(Boolean).join(" · ");
+    const q = f.length >= 2 ? Match.query(f, list.map(about)) : null;
+    const shown = q ? list.filter((p) => q.match(about(p)).every) : list;
+    if (!shown.length) return `<div class="card pl-none">${I("search", "sm")} ${t.html("No plan has “{q}”.", { q: f })}</div>`;
     const groups = {};
-    list.forEach((p) => { (groups[p.course_id] = groups[p.course_id] || []).push(p); });
-    let h = `<div class="view-inner">${head}`;
+    shown.forEach((p) => { (groups[p.course_id] = groups[p.course_id] || []).push(p); });
+    let h = "";
     for (const cid of Object.keys(groups)) {
       const c = courseOf(cid);
       h += `<div class="section-title">${esc(c.code || t("Course"))} <span class="dim sm">${esc(c.display_name || "")}</span></div><div class="pl-list">`;
-      h += groups[cid].map((p) => `<div class="card pl-card ${p.status}" data-act="plan-open" data-id="${esc(p.id)}" tabindex="0" role="button">
-        <div class="pl-title">${I(p.status !== "done" ? "hourglass" : ({ prep: "cap", pack: "book", sheet: "sigma" })[(p.scope || {}).kind] || "youtube", "sm")}<b>${esc(planTitle(p) || (p.status === "done" ? t("Study plan") : t("New plan")))}</b>
-          <span class="pill">${({ prep: t("Review sheet"), pack: t("Study pack"), sheet: t("Cheatsheet") })[(p.scope || {}).kind] || t("Videos")}</span>${p.parent_id ? `<span class="pill">${t.c("noun", "Update")}</span>` : ""}</div>
+      h += groups[cid].map((p) => {
+        const name = planTitle(p) || (p.status === "done" ? t("Study plan") : t("New plan")), m = q && q.match(name);
+        return `<div class="card pl-card ${p.status}" data-act="plan-open" data-id="${esc(p.id)}" tabindex="0" role="button">
+        <div class="pl-title">${I(p.status !== "done" ? "hourglass" : ({ prep: "cap", pack: "book", sheet: "sigma" })[(p.scope || {}).kind] || "youtube", "sm")}<b>${m && m.marks.length ? Match.html(name, m.marks) : esc(name)}</b>
+          <span class="pill">${kindName(p)}</span>${p.parent_id ? `<span class="pill">${t.c("noun", "Update")}</span>` : ""}</div>
         <div class="pl-scope">${esc(weekSpan((p.scope || {}).weeks))}${(p.scope || {}).focus ? ` · ${t.html("for {focus}", { focus: p.scope.focus })}` : ""}${["prep", "pack", "sheet"].includes((p.scope || {}).kind) ? "" : ` · ${t("{h} h", { h: hours(Math.round(((p.scope || {}).minutes || 0) / 60 * 10) / 10) })}`} · ${esc(dmw(p.created_at))}</div>
-        <div class="pl-state">${stateLine(p)}</div></div>`).join("");
+        <div class="pl-state">${stateLine(p)}</div></div>`;
+      }).join("");
       h += `</div>`;
     }
-    return h + `</div>`;
+    return h;
   }
+  (St.inputs = St.inputs || {})["plan-filter"] = (el) => { S.planFilter = el.value; const box = document.getElementById("pl-lists"); if (box && S.plans) box.innerHTML = planListHTML(S.plans); };
 
   // ------------------------------------------------------------------ plan view
   function planView(v) {
@@ -149,12 +165,13 @@
       ${concepts ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).focus ? t.html("Concepts to cover for {focus} (hover for their skills)", { focus: p.scope.focus }) : t("Concepts to cover (hover for their skills)")}</div>${concepts}</div>` : ""}
       ${extras.length ? `<div class="pl-concepts"><div class="dim sm">${(p.scope || {}).extras ? t.html("Also in these weeks, not on {focus} — optional videos", { focus: (p.scope || {}).focus || t("the focus") })
         : t.html("Also in these weeks, not on {focus} — listed, no videos", { focus: (p.scope || {}).focus || t("the focus") })}</div>${extras.map(chip).join("")}</div>` : ""}
-      <div class="note-sm">${I("info", "sm")}<span>${t("Nothing is downloaded from YouTube — IEUStudia reads each candidate's captions and chapters to check what it really teaches. You can keep using the app meanwhile.")}</span></div></div>`;
+      <div class="note-sm">${I("info", "sm")}<span>${t("IEUStudia reads each candidate's captions and chapters to check what it really teaches. For a video without usable captions it downloads only the sound, transcribes it on this PC and deletes it (never while your lectures are being transcribed). You can keep using the app meanwhile.")}</span></div></div>`;
   }
   function teachHTML(teach, names) {
     const name = esc(names[teach.concept] || teach.concept);
     if (teach.state === "unchecked") return `<div class="pl-teach unchecked"><b>${name}</b> <span class="dim">— ${t("not checked in this video's captions")}</span></div>`;
-    const sk = [...(teach.skills || []).map((s) => `<span class="sk video">${I("check", "xs")}${esc(s)}</span>`),
+    const proof = (s) => (teach.proofs || []).find((p) => p.skill === s);      // the quote that shows it teaching the skill
+    const sk = [...(teach.skills || []).map((s) => { const p = proof(s); return `<span class="sk video" title="${p ? esc(t("At {time}: “{quote}”", { time: ts(p.t), quote: p.text })) : ""}">${I("check", "xs")}${esc(s)}</span>`; }),
       ...(teach.missing || []).map((s) => `<span class="sk missing" title="${t("Not taught in this video")}">${I("x", "xs")}${esc(s)}</span>`)].join("");
     return `<div class="pl-teach"><b>${name}</b>${teach.state === "partial" && !(teach.skills || []).length ? ` <span class="dim">— ${t("only partly")}</span>` : ""}${sk ? `<div class="sks">${sk}</div>` : ""}</div>`;
   }
@@ -164,12 +181,13 @@
     if (it.state === "unverified" || !it.captions && !parts.length) {
       return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>${it.evidence ? t.html("Checked: {what} — “{quote}”", { what: it.inspected, quote: it.evidence }) : t.html("Checked: {what}", { what: it.inspected })}</span></div>`;
     }
-    const kind = (it.captions || "").split(",")[0];     // whose captions: "auto" (YouTube's) or "manual" (the creator's)
+    // whose captions: "auto" (YouTube's), "manual" (the creator's) or "speech" (IEUStudia listened to it: no usable captions)
+    const kind = (it.captions || "").split(",")[0];
     const caps = it.state === "verified"
-      ? { auto: t("Checked in its automatic captions"), manual: t("Checked in its creator's captions") }[kind] || t("Checked in its captions")
-      : { auto: t("Its automatic captions"), manual: t("Its creator's captions") }[kind] || t("Its captions");
+      ? { auto: t("Checked in its automatic captions"), manual: t("Checked in its creator's captions"), speech: t("Checked in what it says: it has no usable captions, so IEUStudia listened to it") }[kind] || t("Checked in its captions")
+      : { auto: t("Its automatic captions"), manual: t("Its creator's captions"), speech: t("What IEUStudia heard in it (it has no usable captions)") }[kind] || t("Its captions");
     return `<div class="pl-checked ${it.state}">${I(it.state === "verified" ? "check-circle" : "alert", "xs")}<span>${caps}${q.length ? ` — ${t("what it says:")}` : it.evidence ? ` — “${esc(it.evidence)}”` : ""}</span></div>
-      ${q.map((x) => `<div class="pl-quote"><button class="pl-ts" data-act="url" data-url="${esc(x.url || ytAt(it.video, x.t))}" title="${t("Open at {time}", { time: ts(x.t) })}">${ts(x.t)}</button><q>${esc(x.text)}</q></div>`).join("")}
+      ${q.map((x) => `<div class="pl-quote"><button class="pl-ts" data-act="url" data-url="${esc(x.url || ytAt(it.video, x.t))}" title="${t("Open at {time}", { time: ts(x.t) })}">${ts(x.t)}</button><q>${esc(x.text)}</q>${x.skill ? ` <span class="dim sm">${t.html("(shows: {skill})", { skill: x.skill })}</span>` : ""}</div>`).join("")}
       ${parts.length ? `<details class="pl-parts"><summary>${parts.length === 1 ? t("Read the caption part the AI checked") : t("Read the caption parts ({n}) the AI checked", { n: parts.length })}</summary>
         ${parts.map((x) => `<div class="pl-part"><div class="pl-part-h">${ts(x.start)}–${ts(x.end)}</div><div class="pl-part-t">${stamped(it.video, x.text)}</div></div>`).join("")}</details>` : ""}`;
   }
@@ -199,8 +217,19 @@
     const ext = cp.extras || [];
     const withVid = ext.filter((x) => (x.items || []).length);
     const rows = [];
-    if ((cp.missing_list || []).length) rows.push(`<div class="pl-cp-row missing">${I("x", "xs")}<span><b>${t("Not covered:")}</b> ${esc(cp.missing_list.join("; "))}</span></div>`);
-    if ((cp.supplement_list || []).length) rows.push(`<div class="pl-cp-row supplement">${I("book", "xs")}<span><b>${t("Only in the written supplements:")}</b> ${esc(cp.supplement_list.join("; "))}</span></div>`);
+    // what no checked video teaches, concept by concept, and why the search found none (computed in plans.py). They
+    // are the same skills as "Not covered" and "Only in the written supplements": said once, each with its reason
+    // (the ones with neither a video nor a supplement marked), and folded away when they are many
+    const noVid = cp.no_video || [];
+    if (!noVid.length && (cp.missing_list || []).length) rows.push(`<div class="pl-cp-row missing">${I("x", "xs")}<span><b>${t("Not covered:")}</b> ${esc(cp.missing_list.join("; "))}</span></div>`);
+    if (!noVid.length && (cp.supplement_list || []).length) rows.push(`<div class="pl-cp-row supplement">${I("book", "xs")}<span><b>${t("Only in the written supplements:")}</b> ${esc(cp.supplement_list.join("; "))}</span></div>`);
+    const skillText = (x) => (x.skills || []).map((s) => esc(s) + ((x.missing || []).includes(s) ? ` <span class="pl-cp-miss">(${t("not covered")})</span>` : "")).join("; ");
+    const noRows = noVid.map((x) => `<div class="pl-cp-row novideo">${I("youtube", "xs")}<span><b>${t.html("No good video for {name}:", { name: x.name })}</b>
+      ${(x.skills || []).length ? `${skillText(x)}. ` : ""}${x.why ? `<span class="dim">${esc(x.why)}</span>` : ""}</span></div>`);
+    if (noRows.length > 3) {
+      rows.push(`<details class="pl-cp-fold"><summary class="pl-cp-row novideo">${I("youtube", "xs")}<span><b>${t.n(noVid.length, "No good video for {n} topic:", "No good video for {n} topics:")}</b>
+        <span class="dim">${t("click to see the skills and why")}</span></span></summary>${noRows.join("")}</details>`);
+    } else rows.push(...noRows);
     if (ext.length) {
       const rest = ext.length - withVid.length;
       const others = withVid.length;       // some extras have a video: the rest are "the others"
@@ -217,6 +246,15 @@
       rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${based} ${lost.length > 1 ? t("{a} and {b} — topics only there may be missing.", { a: lost[0], b: lost[1] }) : t("{a} — topics only there may be missing.", { a: lost[0] })}</span></div>`);
     }
     if (r.days_left_out) rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${leftOut(r.days_left_out)}</span></div>`);
+    const heard = r.listened || {};            // videos without usable captions: listened to on this PC, or not (and why)
+    if (heard.heard || heard.silent || (heard.skipped || []).length) {
+      const silent = heard.silent || 0;        // (listened to, and nothing was said in it)
+      const parts = [heard.heard ? t.n(heard.heard, "IEUStudia listened to {n} video that has no usable captions (on this PC).", "IEUStudia listened to {n} videos that have no usable captions (on this PC).") : "",
+        silent ? (heard.heard ? t.n(silent, "It also listened to {n} more, but heard no speech in it.", "It also listened to {n} more, but heard no speech in them.")
+          : t.n(silent, "IEUStudia listened to {n} video that has no usable captions, but heard no speech in it.", "IEUStudia listened to {n} videos that have no usable captions, but heard no speech in them.")) : "",
+        ...(heard.skipped || []).map((x) => t.n(x.n, "{n} more wasn't listened to: {why}.", "{n} more weren't listened to: {why}.", { why: x.why }))];
+      rows.push(`<div class="pl-cp-row src">${I("wave", "xs")}<span>${esc(parts.filter(Boolean).join(" "))}</span></div>`);
+    }
     if (cp.over_budget) rows.push(`<div class="pl-cp-row over">${I("clock", "xs")}<span>${t("The required videos take {time} — {n} min more than the {budget} you planned.", { time: fmtMin(cp.required_minutes), n: cp.over_budget, budget: fmtMin(cp.budget) })}</span></div>`);
     const good = cp.level ? ["full", "mostly"].includes(cp.level) : cp.complete;
     return `<div class="pl-complete ${good ? "ok" : "no"}"><div class="pl-cp-head">${I(good ? "check-circle" : "alert", "sm")}<b>${esc(cp.headline)}</b></div>${rows.join("")}</div>`;
@@ -226,9 +264,9 @@
     const goal = (r.completeness || {}).goal || t("the focus");
     const extras = cov.filter((c) => c.in_scope === false);
     const state = STATE(), how = HOW();
-    const row = (cv) => `<tr><td><b>${esc(cv.name || names[cv.concept] || cv.concept)}</b>${cv.note ? `<div class="dim sm">${esc(cv.note)}</div>` : ""}</td>
+    const row = (cv) => `<tr><td><b>${esc(cv.name || names[cv.concept] || cv.concept)}</b>${cv.note ? `<div class="dim sm">${esc(cv.note)}</div>` : ""}${cv.why ? `<div class="dim sm pl-why-none">${I("youtube", "xs")} ${esc(cv.why)}</div>` : ""}</td>
       <td><span class="st st-${cv.state}">${esc(state[cv.state] || cv.state)}</span></td>
-      <td>${(cv.skills || []).map((s) => `<div class="sk ${s.how}" title="${esc((how[s.how] || [])[1] || "")}">${I((how[s.how] || ["info"])[0], "xs")}<span>${esc(s.text)}${(s.items || []).length ? ` <span class="dim">#${s.items.join(", #")}</span>` : s.how === "supplement" ? ` <span class="dim">${t("supplement")}</span>` : ""}</span></div>`).join("") || `<span class="dim">—</span>`}</td>
+      <td>${(cv.skills || []).map((s) => `<div class="sk ${s.how}" title="${esc(s.quote ? t("At {time}: “{quote}”", { time: ts(s.quote.t), quote: s.quote.text }) : (how[s.how] || [])[1] || "")}">${I((how[s.how] || ["info"])[0], "xs")}<span>${esc(s.text)}${(s.items || []).length ? ` <span class="dim">#${s.items.join(", #")}</span>` : s.how === "supplement" ? ` <span class="dim">${t("supplement")}</span>` : ""}</span></div>`).join("") || `<span class="dim">—</span>`}</td>
       <td>${(cv.items || []).map((n) => `<span class="n">${n}</span>`).join(" ") || "—"}</td></tr>`;
     const table = (rows) => `<table><thead><tr><th>${t("Concept")}</th><th>${t("State")}</th><th>${t("Skills")}</th><th>${t("Videos")}</th></tr></thead><tbody>${rows.map(row).join("")}</tbody></table>`;
     return `<div class="card pl-coverage">
@@ -255,7 +293,7 @@
         <div><b>${watched}/${(r.items || []).length}</b>${t("watched")}</div><div><b>${ticked}/${(r.checklist || []).length}</b>${t("concepts ticked")}</div>
         ${cp ? `<div><b>${cp.video + cp.optional}/${cp.skills}</b>${t("skills on video")}</div>` : `<div><b>${(r.coverage || []).filter((c) => c.state === "verified").length}/${(r.coverage || []).length}</b>${t("verified")}</div>`}</div>
       ${!cp && miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks were not downloaded, so the plan could not read them.", "{n} files of these weeks were not downloaded, so the plan could not read them.")}</span></div>` : ""}
-      <div class="note-sm">${I("info", "sm")}<span>${t("The videos were checked by AI through their captions, and AI can make mistakes — the quotes under each video show what it actually says.")}</span></div>
+      <div class="note-sm">${I("info", "sm")}<span>${t("The videos were checked by AI through their captions (a video without usable captions through what IEUStudia heard in it), and AI can make mistakes — the quotes under each video show what it actually says.")}</span></div>
       ${changesHTML(r.changes)}</div>
       <div class="tabs" role="tablist">${tabs.map(([k, l, ic, n]) => `<button class="tab ${tab === k ? "on" : ""}" data-act="plan-tab" data-tab="${k}">${I(ic, "sm")}${l}${n ? `<span class="count">${n}</span>` : ""}</button>`).join("")}</div>`;
     if (tab === "checklist") {
@@ -454,7 +492,7 @@
     "plan-resume": async (el) => { const r = await call("plan_resume", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-file": async (el) => { const r = await call("plan_open_file", el.dataset.id); if (!r.ok) toast(r.error, "error"); },
     "plan-delete": async (el) => {
-      if (!confirm(t("Delete this study plan? (Its Markdown file in your IEUStudia folder stays.)"))) return;
+      if (!(await St.ask({ title: t("Delete this study plan?"), text: t("Its Markdown file in your IEUStudia folder stays."), ok: t("Delete"), danger: true }))) return;
       const r = await call("plan_delete", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }            // still there: not taken off the list
       delete S.planCache[el.dataset.id];
@@ -534,7 +572,9 @@
       total_minutes: 29, optional_minutes: 15, materials_missing: [{ id: "x", title: "Week05_Student", week: 5 }], materials_used: 4, days_used: 3, days_missing: 1,
       completeness: { goal: "Quiz 2 (LO3, LO4)", complete: true, headline: "Complete for Quiz 2 (LO3, LO4): all 8 skills found in your material are covered — 7 in checked video parts, 1 only in the written supplements.", level: "mostly",
         skills: 8, video: 7, optional: 0, supplement: 1, missing: 0, missing_list: [], supplement_list: ["read P(A|B) off a two-way table (Conditional probability)"],
-        extras: [{ name: "Independence", items: [], state: "skipped" }], extras_searched: false, focused: true, budget: 120, required_minutes: 29, over_budget: 0 },
+        extras: [{ name: "Independence", items: [], state: "skipped" }], extras_searched: false, focused: true, budget: 120, required_minutes: 29, over_budget: 0,
+        no_video: [{ concept: "c1", name: "Conditional probability", skills: ["read P(A|B) off a two-way table"], why: "6 videos from 5 YouTube searches were checked, and none of them teaches this." }] },
+      listened: { heard: 2, seconds: 74, skipped: [{ n: 1, why: "it is longer than 120 minutes" }] },
       items: [
         { n: 1, video: "ibINrxJLvlM", title: "Intro to Conditional Probability", channel: "Dr. Trefor Bazett", url: "https://www.youtube.com/watch?v=ibINrxJLvlM", start: 0, end: 374, whole: true, segments: [{ start: 0, end: 374 }], minutes: 6, role: "prerequisite", concepts: ["c1"], why: "Defines P(A|B) with the same Venn picture as your week 4 slides.", limits: "No two-way tables — see the supplement.",
           teaches: [{ concept: "c1", state: "partial", skills: ["define P(A|B) = P(A∩B)/P(B)", "use the multiplication rule"], missing: ["read P(A|B) off a two-way table"] }], state: "verified", captions: "manual, en",

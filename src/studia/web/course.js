@@ -70,7 +70,7 @@
 
   // ------------------------------------------------------------------ pieces
   const EXT_ICON = { pdf: "file", pptx: "presentation", ppt: "presentation", docx: "file-text", doc: "file-text" };
-  function matRowHTML(m) {
+  function matRowHTML(m, marks) {          // marks: the words of the files filter in its title
     const st = S.mat[m.id] || {};
     const busy = st.state === "queued" || st.state === "downloading";
     let status = "";
@@ -86,7 +86,7 @@
     const name = m.file_name || m.title;
     return `<div class="mat ${m.downloaded ? "have" : ""} ${m.gone ? "gone" : ""}" data-mid="${esc(m.id)}">
       <span class="mat-ico ext-${esc(m.ext)}">${I(EXT_ICON[m.ext] || "file", "sm")}</span>
-      <button class="mat-name" data-act="mat-open" data-id="${esc(m.id)}" title="${m.downloaded ? t.html("{name} — open", { name }) : t.html("{name} — download and open", { name })}">${esc(m.title)}</button>
+      <button class="mat-name" data-act="mat-open" data-id="${esc(m.id)}" title="${m.downloaded ? t.html("{name} — open", { name }) : t.html("{name} — download and open", { name })}">${marks && marks.length ? Match.html(m.title, marks) : esc(m.title)}</button>
       <span class="mat-ext">${esc((m.ext || "").toUpperCase())}</span><span class="mat-st">${status}</span><span class="mat-acts">${acts}</span></div>`;
   }
   function updateMatRow(id) {
@@ -294,7 +294,8 @@
     else body = weeksHTML(c, d);
     const gone = c.inactive ? `<div class="callout info">${I("info")}<div>${t("This course is no longer on your IEULearn dashboard (dropped, or from an earlier term). Its transcripts, files, chats and plans stay here.")}</div></div>` : "";
     const sq = d && (tab === "weeks" || tab === "overview") ? St.sq.card(c) : "";      // Solvequill, the maker's other app
-    return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${body}</div>${sq}</div>`;
+    const changed = St.svcNote ? St.svcNote(tab, c.id) : "";      // its part on IEULearn or Panopto changed (services.js)
+    return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${changed}${body}</div>${sq}</div>`;
   }
 
   function weeksHTML(c, d) {
@@ -365,18 +366,45 @@
       </div></div>`;
   }
 
-  function materialsHTML(c, d) {
-    const groups = [...(d.general.length ? [{ label: t("Course-wide"), mats: d.general.flatMap((u) => u.materials) }] : []),
+  function matGroups(d) {
+    return [...(d.general.length ? [{ label: t("Course-wide"), mats: d.general.flatMap((u) => u.materials) }] : []),
       ...d.weeks.filter((w) => w.units.some((u) => u.materials.length)).map((w) => ({ label: `${t("Week {n}", { n: w.no })} · ${w.topic_en || w.units.map((u) => u.title).join(" · ")}`, sub: range(w.start, w.end), mats: w.units.flatMap((u) => u.materials) }))];
+  }
+  function materialsHTML(c, d) {
+    const groups = matGroups(d);
     const all = eachOnce(groups.flatMap((g) => g.mats));
     const missing = all.filter((m) => !m.downloaded && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
-    let h = `<div class="toolbar"><span class="dim">${t.n(all.length, "{n} file on IEULearn · {local} on this PC", "{n} files on IEULearn · {local} on this PC", { local: all.filter((m) => m.downloaded).length })}</span><span class="spacer"></span>
+    const f = (S.matFilter || {})[c.id] || "";
+    let h = `<div class="toolbar"><span class="dim" id="mat-count">${t.n(all.length, "{n} file on IEULearn · {local} on this PC", "{n} files on IEULearn · {local} on this PC", { local: all.filter((m) => m.downloaded).length })}</span><span class="spacer"></span>
+      ${all.length > 3 ? `<label class="mat-filter">${I("search", "sm")}<input class="input sm" type="search" data-act="mat-filter" data-id="${esc(c.id)}" value="${esc(f)}" placeholder="${t("Filter files")}" aria-label="${t("Filter files by name")}" autocomplete="off" spellcheck="false"></label>` : ""}
       ${d.materials.new ? `<button class="btn ghost sm" data-act="course-seen" data-id="${c.id}" data-what="materials">${t("Mark as seen")}</button>` : ""}
       <button class="btn sm" data-act="mat-all" data-id="${c.id}" ${missing.length ? "" : "disabled"}>${I("download", "sm")} ${missing.length ? t("Download all {n}", { n: missing.length }) : t("Download all")}</button></div>`;
     if (!all.length) return h + emptyHTML("layers", t("No materials yet"), t("Slides and documents your lecturer posts on IEULearn appear here."));
-    for (const g of groups) h += `<div class="card mat-group"><div class="mg-head"><b>${esc(g.label)}</b>${g.sub ? `<span class="dim">${esc(g.sub)}</span>` : ""}</div>${g.mats.map(matRowHTML).join("")}</div>`;
-    return h;
+    return h + `<div id="mat-list">${matListHTML(c, d)}</div>`;
   }
+  // the files, or those whose name has the words typed in the filter (matched as the search does: match.js)
+  function matListHTML(c, d) {
+    const groups = matGroups(d), f = ((S.matFilter || {})[c.id] || "").trim();
+    const name = (m) => [m.title, m.file_name].filter(Boolean).join(" · ");
+    const q = f.length >= 2 ? Match.query(f, eachOnce(groups.flatMap((g) => g.mats)).map(name)) : null;
+    let h = "", shown = 0;
+    for (const g of groups) {
+      const rows = g.mats.map((m) => [m, q ? q.match(m.title) : null, q ? q.match(name(m)) : null]).filter(([, a, b]) => !q || (a && a.every) || (b && b.every));
+      if (!rows.length) continue;
+      shown += rows.length;
+      h += `<div class="card mat-group"><div class="mg-head"><b>${esc(g.label)}</b>${g.sub ? `<span class="dim">${esc(g.sub)}</span>` : ""}</div>${rows.map(([m, a]) => matRowHTML(m, a && a.marks)).join("")}</div>`;
+    }
+    if (q && !shown) {
+      return `<div class="card mat-none">${I("search", "sm")} ${t.html("No file's name has “{q}”.", { q: f })}
+        <button class="btn ghost sm" data-act="mat-search" data-id="${esc(c.id)}" data-q="${esc(f)}">${t("Search inside the files")} ${I("chevron-right", "sm")}</button></div>`;
+    }
+    return h + (q ? `<div class="mat-more"><button class="btn ghost sm" data-act="mat-search" data-id="${esc(c.id)}" data-q="${esc(f)}">${I("search", "sm")} ${t.html("Find “{q}” inside this course's files", { q: f })}</button></div>` : "");
+  }
+  (St.inputs = St.inputs || {})["mat-filter"] = (el) => {
+    S.matFilter = { ...(S.matFilter || {}), [el.dataset.id]: el.value };
+    const c = St.findCourse(el.dataset.id), d = S.cd[el.dataset.id], box = $("#mat-list");
+    if (c && d && box) box.innerHTML = matListHTML(c, d);
+  };
 
   function announcementsHTML(c, d) {
     if (!d.announcements.length) return emptyHTML("megaphone", t("No announcements"), t("Announcements your lecturer posts on IEULearn appear here."));
@@ -482,6 +510,7 @@
       h += `<div class="callout warning home-wait">${I("wifi-off")}<div><b>${esc(waitLabel)}</b> ${esc(wait.message || "")}
         <div style="margin-top:8px">${S.stopping ? `<button class="btn sm" disabled>${SPIN()} ${t("Stopping…")}</button>` : `<button class="btn sm" data-act="sync-stop">${I("stop", "sm")} ${t("Stop waiting")}</button>`}</div></div></div>`;
     }
+    if (St.svcBanner) h += St.svcBanner();                   // a service that changed on its side, once (services.js)
     if (S.sync.error && !S.sync.running) {
       h += `<div class="callout warning">${I("alert")}<div><b>${S.sync.partial ? t("Not everything could be checked.") : t("IEUStudia couldn't check IEULearn.")}</b> ${esc(S.sync.error)}
         ${t("Your courses and transcripts on this PC still work.")} <button class="link" data-act="sync">${t("Try again")}</button></div></div>`;
@@ -640,6 +669,7 @@
 
   // ------------------------------------------------------------------ wiring
   St.views.course = coursePage;
+  St.hue = hue;                      // (the search's results: a course's colour on its code)
   St.views.home = homeView;
   St.onGo.course = (v) => {
     if (!v.tab && v.jumpWeek === undefined) { v.jumpWeek = "now"; St.after.course(v); }   // this week, not week 1
@@ -740,6 +770,11 @@
       }
     },
     "resume-forget": async () => { await call("queue_forget"); S.resume = null; renderView(); },
+    "mat-search": (el) => {          // the files filter found no name: the words inside the course's files instead
+      S.search = { ...S.search, q: el.dataset.q, course: el.dataset.id, kind: "file" };
+      go({ name: "library" });
+      St.runSearch(el.dataset.q, true);
+    },
     "course-tab": (el) => {
       const v = S.view, scrolled = $("#view").scrollTop > 0;
       go({ name: "course", courseId: v.courseId, tab: el.dataset.tab });

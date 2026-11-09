@@ -187,3 +187,36 @@ def test_the_buttons_are_on_the_course_page_and_home():
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert page.index('src="app.js"') < page.index('src="course.js"') < page.index('src="export.js"')
     assert 'href="export.css"' in page
+
+
+COPY = """
+globalThis.window = globalThis;
+globalThis.location = { hash: "" };
+globalThis.document = { documentElement: {}, querySelector: () => null, querySelectorAll: () => [], addEventListener() {},
+  getElementById: () => null };
+require(%(i18n)s);
+const copies = [], toasts = [];
+window.Studia = { S: { courses: [] }, A: {}, I: (n) => `[${n}]`, SPIN: () => "", esc: (s) => String(s ?? ""), onEvents: {},
+  mocks: {}, toast: (m, kind) => toasts.push([m, kind]), modal() {}, closeModal() {},
+  copied: (r, text, done) => copies.push({ ok: r.ok, text, done }),          // setup.js's Copy failed dialog
+  call: (name) => Promise.resolve(name === "copy_text" ? { ok: false, error: "Copy failed" } : { ok: true }) };
+require(%(page)s);
+const St = window.Studia;
+(async () => {
+  St.S.cexp = { phase: "done", path: "C:/x/Exports/MATH 240.zip", first_message: "This zip holds my MATH 240 course…" };
+  await St.A["cx-copy-path"](); await St.A["cx-copy-msg"]();
+  process.stdout.write(JSON.stringify({ copies, toasts }), () => process.exit(0));
+})();
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_a_copy_the_clipboard_refuses_shows_the_text_to_copy_by_hand(tmp_path):
+    """Copy path and Copy the first message go through the Copy failed dialog (which shows the text), not a toast."""
+    script = tmp_path / "copy.js"
+    script.write_text(COPY % {"i18n": json.dumps(str(WEB / "i18n.js")), "page": json.dumps(str(WEB / "export.js"))},
+                      encoding="utf-8")
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8",
+                                    check=True, timeout=60).stdout)
+    assert [c["text"] for c in out["copies"]] == ["C:/x/Exports/MATH 240.zip", "This zip holds my MATH 240 course…"]
+    assert all(c["ok"] is False for c in out["copies"]) and out["toasts"] == []

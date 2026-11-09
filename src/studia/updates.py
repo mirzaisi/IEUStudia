@@ -3,11 +3,18 @@ turned off in Settings) and can update itself. The installer of that release is 
 release's SHA256SUMS.txt and run once the window has closed; it installs over this copy and opens IEUStudia again.
 
 Downloaded by the app rather than a browser, the installer carries no "came from the internet" mark, so Windows
-doesn't stop it with a SmartScreen warning. The checksum is what makes sure it is the file that was released."""
+doesn't stop it with a SmartScreen warning. The checksum is what makes sure it is the file that was released.
+
+With that daily look (and only while it is on) comes the one count IEUStudia takes part in, approved by its maker:
+an installed copy downloads the tiny active.txt of its own version's release at most once a calendar day (count_in),
+and only once the student has seen the notice that says so (the setup's first step), so GitHub's download counter of
+that file shows how many copies of each version are in use (scripts/usage.py prints it). Nothing else goes with it:
+no ID, no cookie, nothing about the student."""
 
 from __future__ import annotations
 
 import hashlib
+import http.cookiejar
 import json
 import logging
 import os
@@ -20,16 +27,18 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__
-from .i18n import t
+from .i18n import Retold, retell, t
 
 log = logging.getLogger("studia")
 REPO = "mirzaisi/IEUStudia"
 RELEASES = f"https://github.com/{REPO}/releases"
 CHECK_EVERY_S = 20 * 3600       # about once a day (a little less, so a daily start doesn't keep just missing it)
 RETRY_S = 3600                  # after a failed look (offline, or GitHub's hourly limit on a shared network)
+ACTIVE = "active.txt"           # on every release (.github/workflows/release.yml): the count of copies in use
 EARLY_EXIT_S = 6                # the installer runs for the whole install: one that ends sooner didn't run
 UPDATE_ROOM_MB = 700            # the installer, and the new version beside the old one until it takes its place
 _lock = threading.Lock()
+_failed_look: dict[str, Any] = {}   # the last look's failure, to say it again in the language of the moment (status)
 
 
 def _parse(version: str) -> tuple[int, ...]:
@@ -75,14 +84,21 @@ def _load() -> dict[str, Any]:
         return {}
 
 
-def _save(state: dict[str, Any]) -> None:
+def _save(state: dict[str, Any]) -> bool:
+    """True when it was kept (False: update.json is read-only, or another program holds it open)."""
     p = _state_file()
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
         os.replace(tmp, p)
+        return True
     except OSError:
         log.debug("Could not save %s", p, exc_info=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 def status() -> dict[str, Any]:
@@ -92,10 +108,13 @@ def status() -> dict[str, Any]:
     st = _load()
     latest = st.get("latest") if isinstance(st.get("latest"), dict) else {}
     version = str(latest.get("version") or "")
+    error, said = str(st.get("error") or ""), _failed_look.get("said")
+    if said is not None and error == str(said):           # said by this run: in the language of now (a switch)
+        error = retell(said)
     out = {"current": __version__, "available": newer(version), "version": version,
            "notes": str(latest.get("notes") or ""), "page": str(latest.get("page") or f"{RELEASES}/latest"),
            "can_install": installed() and bool(latest.get("installer")),
-           "checked_at": float(st.get("checked_at") or 0), "error": str(st.get("error") or "")}
+           "checked_at": float(st.get("checked_at") or 0), "error": error}
     tried = st.get("attempt") if isinstance(st.get("attempt"), dict) else {}
     if newer(str(tried.get("version") or ""), __version__):
         out.update(failed=str(tried["version"]), state="error", error=t(
@@ -103,6 +122,13 @@ def status() -> dict[str, Any]:
             "an antivirus may have stopped its installer. Try again; if it stops again, download the installer from "
             "the release page and run it yourself.", version=tried["version"], current=__version__))
     return out
+
+
+def _unreachable(exc: BaseException) -> bool:
+    import requests
+
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout)) or (
+        isinstance(exc, requests.HTTPError) and getattr(exc.response, "status_code", 0) >= 500)
 
 
 def due() -> bool:
@@ -134,15 +160,27 @@ def _latest(s: Any) -> dict[str, Any]:
                                             for a in d.get("assets") or [] if a.get("browser_download_url")}
         notes, page = str(d.get("body") or ""), str(d.get("html_url") or "")
     else:
+        # GitHub's own answer that has no release in it: its JSON without a tag, or the project not found there (a
+        # Wi-Fi sign-in page answers too, but not with GitHub's JSON)
+        api = r.status_code if isinstance(d, dict) or r.status_code in (404, 410) else 0
         r = s.get(f"{RELEASES}/latest", timeout=(10, 20), allow_redirects=False)
         m = re.search(r"/releases/tag/([^/?#]+)", r.headers.get("Location") or "")
         if not m:
+            if api and r.status_code in (200, 404, 410):
+                # GitHub answered both, but neither says the newest release: its pages (or the project's place) moved
+                from . import health
+
+                health.changed("github", "releases", f"the release API answered HTTP {api} without a tag, the "
+                                                     f"latest page HTTP {r.status_code} without a link")
             raise RuntimeError(t("GitHub didn't answer as expected (a Wi-Fi sign-in page or a network filter can do "
                                  "this). Try again later. (HTTP {code})", code=r.status_code))
         tag, assets, notes, page = m.group(1), None, "", ""
     version = tag.lstrip("v")
     if not _parse(version):
         raise RuntimeError(t("GitHub's newest release has no version number ({tag}).", tag=repr(tag)))
+    from . import health
+
+    health.ok("github", "releases")
     name, base = f"IEUStudia-Setup-{version}.exe", f"{RELEASES}/download/{tag}"
     if assets is None:                                  # not listed: the release build always uploads both
         installer, sums = f"{base}/{name}", f"{base}/SHA256SUMS.txt"
@@ -166,10 +204,82 @@ def check(force: bool = False, session: Any = None) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - offline, GitHub's limit, an odd answer: try again later
             from .net import plain_error
 
-            st["error"] = plain_error(exc)
+            said = _failed_look["said"] = Retold(lambda e=exc: plain_error(e))
+            st["error"] = str(said)
+            if _unreachable(exc):                   # (Settings → Services: GitHub didn't answer, not changed)
+                from . import health
+
+                health.down("github", "releases", exc.__class__.__name__)
             log.info("Could not look for a new version: %s", exc)
         _save(st)
         return status()
+
+
+class _NoCookies(http.cookiejar.CookiePolicy):
+    """No cookie is kept from an answer, so none is ever sent: the daily count carries nothing that tells copies or
+    people apart."""
+
+    netscape, rfc2965, hide_cookie2 = True, False, False
+
+    def set_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+    def return_ok(self, cookie: Any, request: Any) -> bool:
+        return False
+
+    def domain_return_ok(self, domain: str, request: Any) -> bool:
+        return False
+
+    def path_return_ok(self, path: str, request: Any) -> bool:
+        return False
+
+
+def _count_session() -> Any:
+    """For the count: IEUStudia's name and version (also in the file's address) and nothing else."""
+    s = _session()
+    s.cookies.set_policy(_NoCookies())
+    return s
+
+
+def _today() -> str:
+    """The day it is on this PC (the count is once a calendar day: the helper looks every half hour, the app every 3
+    hours, and a 20-hour gap counted twice on some days)."""
+    return time.strftime("%Y-%m-%d")
+
+
+def count_in(session: Any = None) -> bool:
+    """The anonymous count of copies in use: at most once a calendar day, with the update check and only while it is
+    on (the app's loop and the background helper call it then), and only once the student has seen the notice that
+    says so (the setup's first step: appconfig's terms_accepted), this version's tiny active.txt is downloaded from
+    its GitHub release, so the file's download counter there says how many copies of each version are in use. No ID,
+    no cookie, nothing about the student. Noted before it goes, so that a failure (offline, or a 404 from an older
+    release without the file) waits for the next day in silence: never retried, never in a loop; a note that can't
+    be kept (update.json read-only) sends nothing, or every look would count. True if it asked."""
+    from . import appconfig
+
+    if not appconfig.load().terms_accepted:
+        return False
+    with _lock:
+        st, today = _load(), _today()
+        if st.get("counted_on") == today:            # (another day noted, a clock set back too: counted again)
+            return False
+        st["counted_on"] = today
+        st.pop("counted_at", None)
+        if not _save(st):
+            return False
+    try:
+        r = (session or _count_session()).get(f"{RELEASES}/download/v{__version__}/{ACTIVE}", timeout=(10, 20))
+        code = getattr(r, "status_code", 0)
+        close = getattr(r, "close", None)
+        if close is not None:
+            close()
+        if code == 200:
+            log.info("Counted in as a copy of %s in use", __version__)
+        else:                                      # (404: a release from before the file was attached)
+            log.debug("The daily count of copies in use: HTTP %s for %s", code, ACTIVE)
+    except Exception as exc:  # noqa: BLE001 - offline, blocked: the count waits for the next day
+        log.debug("The daily count of copies in use didn't go through: %s", exc)
+    return True
 
 
 def note_version() -> str:

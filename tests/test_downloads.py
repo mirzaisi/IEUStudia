@@ -69,6 +69,14 @@ def test_decode_gives_the_same_samples_as_frame_by_frame(tmp_path, name, fmt):
     assert np.array_equal(audio, _reference(path))
 
 
+def test_decode_only_the_start_of_a_long_recording(tmp_path):
+    from studia.audio import decode_audio
+
+    path = _write(tmp_path / "a.m4a", "mp4", seconds=40)
+    start = decode_audio(path, max_s=7)                      # (a study plan listens to the start of a long video)
+    assert len(start) == 7 * SR and np.array_equal(start, _reference(path)[:7 * SR])
+
+
 def test_decode_goes_on_frame_by_frame_when_the_format_changes(tmp_path, monkeypatch):
     import av
 

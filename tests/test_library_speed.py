@@ -198,18 +198,22 @@ def test_search_while_typing_shows_the_newest_and_looks_courses_up_once(tmp_path
     lib.db.execute("INSERT INTO materials(resource_id, course_id, unit_id, title) VALUES('m2', 'c', 'u', 'Week 2')")
     lib.set_material_text("m1", ["Thevenin equivalent", "Theory of circuits"])
     lib.set_material_text("m2", ["Then Norton"])
-    assert [h["delivery_id"] for h in lib.search("th")] == ["new", "old"]            # newest first while typing
-    assert [(h["resource_id"], h["page"]) for h in lib.search_materials("th")] == [("m2", 1), ("m1", 2), ("m1", 1)]
-    ranked = lib.db.execute("SELECT delivery_id FROM transcript_fts WHERE transcript_fts MATCH 'the*' "
-                            "ORDER BY rank").fetchall()
-    assert [h["delivery_id"] for h in lib.search("the")] == [r[0] for r in ranked]    # 3 letters: best match first
+    from studia.search import results
+
+    def days(q):
+        return [it["day_key"] for g in results(lib, q)["groups"] if g["kind"] == "lecture" for it in g["items"]]
+
+    assert days("th") == [DAY2, DAY1]                                    # two letters: the newest first
+    assert days("the") == [DAY1, DAY2]                                   # a word: the best match first (twice)
+    lib.index.ensure()
     seen = []
     lib.db.set_trace_callback(seen.append)
     res = Api.search.__wrapped__(types.SimpleNamespace(_s=types.SimpleNamespace(lib=lib)), "th")
     lib.db.set_trace_callback(None)
-    assert [r["course_code"] for r in res["results"]] == ["EEE 215", "EEE 215"]
-    assert [(m["resource_id"], m["title"], m["course_code"]) for m in res["materials"]] == \
-        [("m2", "Week 2", "EEE 215"), ("m1", "Week 1", "EEE 215"), ("m1", "Week 1", "EEE 215")]
+    groups = {g["kind"]: g["items"] for g in res["groups"]}
+    assert [it["course_code"] for it in groups["lecture"]] == ["EEE 215", "EEE 215"]
+    assert sorted((it["resource_id"], it["title"]["text"], len(it["pages"]) + it["more"]) for it in groups["file"]) == \
+        [("m1", "Week 1", 2), ("m2", "Week 2", 1)]                      # (one page shown of each, the rest counted)
     assert sum("FROM courses" in s for s in seen) == 1 and sum("FROM materials WHERE" in s for s in seen) == 1
 
 

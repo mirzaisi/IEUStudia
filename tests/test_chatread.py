@@ -6,13 +6,15 @@ import dataclasses as dc
 import json
 import shutil
 import threading
+import time
 import types
 
 import pytest
 
-from studia import ai, appconfig, chatfiles, chatgpt, chatinputs, chatlimits, chatread, chatslides
+from studia import ai, aierrors, appconfig, chatfiles, chatgpt, chatinputs, chatlimits, chatread, chatslides
+from studia import chat as chat_mod
 from studia.cancel import Cancelled
-from test_chat import DAY1, ask, env, final, wait_for  # noqa: F401 - the chat fixture (fake Claude Code)
+from test_chat import DAY1, DAY2, ask, env, final, wait_for  # noqa: F401 - the chat fixture (fake Claude Code)
 from test_chatfiles import pdf, send
 
 
@@ -30,21 +32,39 @@ def lim(**kw):
     return dc.replace(base, **kw)
 
 
+DROPPED = "The connection to ChatGPT ended before the answer was complete. Try again."
+
+
 class Reader:
-    """A stand-in for the AI reading a batch: notes under every label it was given (or all but ``skip``)."""
+    """A stand-in for the AI reading a part: notes under every label it was given (or all but ``skip``), streamed page
+    by page to ``on_text`` as ChatGPT's answer comes. ``fail_at``: that call fails for good; ``stop_at``: that call
+    presses Stop (``on_stop``); ``drop``: {call: pages} - that call's connection drops after that many pages came
+    whole (the next page's label cut off half-way), as OpenAI's stream sometimes just stops."""
 
-    def __init__(self, skip=(), fail_at=0, stop_at=0, on_stop=None):
+    def __init__(self, skip=(), fail_at=0, stop_at=0, on_stop=None, drop=None):
         self.calls, self.skip, self.fail_at, self.stop_at, self.on_stop = [], set(skip), fail_at, stop_at, on_stop
+        self.drop = dict(drop or {})
+        self.lock = threading.Lock()
 
-    def __call__(self, system, content, cancel):
+    def __call__(self, system, content, cancel, on_text=None, on_wait=None):
         labels = content[-1]["text"].split("each to be noted under its label: ")[1].split(", ")
-        self.calls.append({"labels": labels, "images": sum(b["type"] == "image" for b in content), "system": system})
-        n = len(self.calls)
+        with self.lock:
+            self.calls.append({"labels": labels, "images": sum(b["type"] == "image" for b in content),
+                               "system": system})
+            n = len(self.calls)
         if n == self.fail_at:
             raise RuntimeError("ChatGPT had a problem on its side. Try again in a few minutes.")
         if n == self.stop_at and self.on_stop:
             self.on_stop()
-        text = "\n\n".join(f"### {x}\nNotes of {x}: $E = mc^2$, a capacitor diagram." for x in labels if x not in self.skip)
+        text = ""
+        for i, x in enumerate(x for x in labels if x not in self.skip):
+            if n in self.drop and i == self.drop[n]:
+                if on_text:
+                    on_text(text + f"\n\n### {x[:6]}")             # the next label had begun
+                raise aierrors.Dropped(DROPPED, text=bool(text))
+            text += ("\n\n" if text else "") + f"### {x}\nNotes of {x}: $E = mc^2$, a capacitor diagram."
+            if on_text:
+                on_text(text)
         return {"text": text, "usage": {"input_tokens": 1000, "output_tokens": 100}}
 
 
@@ -103,15 +123,28 @@ def test_notes_are_counted_at_their_real_size_and_shortened_to_the_room_left():
 
 
 # ---------------------------------------------------------------------------------------------------- reading
-def test_reading_keeps_one_set_of_notes_per_file_and_ai_and_goes_on_after_a_stop_or_an_error(notes_home, monkeypatch):
+def real_files(tmp_path, names, pages=10, pic=True):
+    """Pages of files that exist (their notes are kept by the file's content)."""
+    out = []
+    for name in names:
+        f = tmp_path / f"{name}.pdf"
+        if not f.exists():
+            f.write_bytes(f"%PDF-1.4 {name}".encode())
+        out += [dc.replace(page(i, name, text=f"page {i} text", pic=pic), source=str(f)) for i in range(1, pages + 1)]
+    return out
+
+
+def test_reading_keeps_one_set_of_notes_per_file_for_every_ai_and_goes_on_after_a_stop_or_an_error(notes_home, tmp_path,
+                                                                                                monkeypatch):
     monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": ""}})
     pages = [page(i, "w4", text=f"page {i} text") for i in range(1, 8)] + [page(i, "w5") for i in range(1, 4)]
     one = lim(batch_pictures=3)
     seen = []
     first_reader = Reader()
-    r = chatread.read(pages, "What is a capacitor?", one, first_reader, progress=seen.append)
+    r = chatread.read(pages, "What is a capacitor?", one, first_reader, progress=seen.append, readers=1)
     assert r["read"] == 10 and r["total"] == 4 and r["unread"] == [] and len(r["notes"]) == 10
-    assert [(s["done"], s["total"]) for s in seen] == [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)]
+    assert (seen[0]["done"], seen[0]["total"], seen[0]["read"]) == (0, 4, 0)
+    assert [s["done"] for s in seen] == sorted(s["done"] for s in seen) and (seen[-1]["done"], seen[-1]["read"]) == (4, 10)
     # one set of notes for every question: worked examples, formulas and what the page stresses for exams
     system = first_reader.calls[0]["system"]
     assert "every later question" in system and "worked example" in system and "⭐" in system
@@ -119,32 +152,204 @@ def test_reading_keeps_one_set_of_notes_per_file_and_ai_and_goes_on_after_a_stop
     for question in ("Another question", "Is it on the exam?", "Give an example of impedance", "Örneğin bir devre?"):
         again = Reader()
         assert chatread.read(pages, question, one, again)["cached"] == 10 and again.calls == []
-    # another AI reads them itself
-    other = Reader()
-    chatread.read(pages, "q", lim(provider="chatgpt", model=""), other)
-    assert sum(len(c["labels"]) for c in other.calls) == 10
-    # stopped after the first batch: what was read is kept, the next run reads only the rest
+    # every AI on the student's plan uses them (a chat changed from Sonnet to Opus, or to ChatGPT, reads nothing again);
+    # the offline model, which reads the text alone, reads its own
+    for other in (lim(model="opus"), lim(provider="chatgpt", model=""), lim(provider="codex", model="")):
+        nothing = Reader()
+        assert chatread.read(pages, "q", other, nothing)["cached"] == 10 and nothing.calls == []
+    offline = Reader()
+    chatread.read(pages, "q", lim(provider="local", model="qwen3-4b", pictures=0, batch_pictures=0), offline)
+    assert sum(len(c["labels"]) for c in offline.calls) == 10
+    # stopped after the first part: what was read is kept, the next run reads only the rest
+    fresh = real_files(tmp_path, ["w6"], pages=9)
     stop = threading.Event()
     first = Reader(stop_at=1, on_stop=stop.set)
-    sonnet = lim(model="opus", batch_pictures=3)
     with pytest.raises(Cancelled):
-        chatread.read(pages, "Solve it", sonnet, first, cancel=stop)
+        chatread.read(fresh, "Solve it", one, first, cancel=stop, readers=1)
     assert len(first.calls) == 1
     rest = Reader()
-    chatread.read(pages, "Solve it", sonnet, rest)
-    assert sorted(x for c in rest.calls for x in c["labels"]) == sorted(p.label for p in pages[3:])
+    chatread.read(fresh, "Solve it", lim(model="opus", batch_pictures=3), rest, readers=1)
+    assert sorted(x for c in rest.calls for x in c["labels"]) == sorted(p.label for p in fresh[3:])
     # an error on the AI's side: the same
+    other = real_files(tmp_path, ["w7"], pages=9)
     broken = Reader(fail_at=2)
     codex = lim(provider="codex", model="", batch_pictures=3)
     with pytest.raises(RuntimeError, match="on its side"):
-        chatread.read(pages, "q", codex, broken)
+        chatread.read(other, "q", codex, broken)
     after = Reader()
-    chatread.read(pages, "q", codex, after)
-    assert sum(len(c["labels"]) for c in after.calls) == 10 - len(broken.calls[0]["labels"])
+    chatread.read(other, "q", codex, after)
+    assert sum(len(c["labels"]) for c in after.calls) == 9 - len(broken.calls[0]["labels"])
     # the notes of a student's own file are kept with it (they go when it is removed)
     mine = [dc.replace(page(1, "hw"), group="upload", notes_dir=str(notes_home / "box" / "notes"))]
     chatread.read(mine, "q", one, Reader())
     assert list((notes_home / "box" / "notes").glob("*.json"))
+
+
+def test_notes_are_kept_as_they_stream_and_a_dropped_connection_is_asked_again_with_only_the_missing_pages(
+        notes_home, tmp_path, monkeypatch):
+    """The owner's chat: the connection to ChatGPT ended two minutes into a part. Every page whose notes had come whole
+    is kept; the part is asked again by itself after a short wait (said on screen) for the pages still missing; a part
+    that keeps failing without anything new is split in two; and after a stop or a failure for good, the next reading
+    (Try again, a new question, after a restart) reads only the pages without notes."""
+    monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": ""}})
+    pages = real_files(tmp_path, ["Week03", "Week04"], pages=10)
+    one = lim(batch_pictures=10)
+    seen = []
+    reader = Reader(drop={1: 6})                    # the first part's stream ends after 6 of its 10 pages
+    r = chatread.read(pages, "q", one, reader, progress=seen.append, waits=(0.01,), readers=1)
+    assert r["read"] == 20 and not r["unread"]
+    asked = [c["labels"] for c in reader.calls]
+    assert asked[0] == [p.label for p in pages[:10]] and asked[1] == [p.label for p in pages[6:10]]   # only the 4 left
+    assert sum(len(a) for a in asked) == 24
+    (retry,) = {(x["retry"]["why"], x["retry"]["wait"]) for s in seen for x in s["parts"] if x.get("retry")}
+    assert retry == ("dropped", 0.01)
+    # while a part streams, the page hears which pages, since when, how many came and about how long the rest takes
+    live = [x for s in seen for x in s["parts"] if x.get("noted")]
+    assert live and {x["from"] for x in live} >= {1} and all(x["to"] >= x["from"] and x["started"] for x in live)
+    assert all(isinstance(s["eta"], int) and s["at"] for s in seen) and seen[-1]["eta"] == 0
+    # a part that drops before anything comes, again and again: split in two, then given up with what came kept
+    more = real_files(tmp_path, ["Week05"], pages=8)
+    stubborn = Reader(drop={1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0})
+    with pytest.raises(aierrors.Dropped):
+        chatread.read(more, "q", lim(batch_pictures=8), stubborn, waits=(0.01,), readers=1)
+    sizes = [len(c["labels"]) for c in stubborn.calls]
+    assert sizes[:3] == [8, 4, 2] and len(sizes) == chatread.TRIES
+    # the reading stops for good after 3 pages came whole: Try again sends only the other 5
+    some = Reader(drop={1: 3, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0})
+    with pytest.raises(aierrors.Dropped):
+        chatread.read(more, "q", lim(batch_pictures=8), some, waits=(0.01,), readers=1)
+    again = Reader()
+    after = chatread.read(more, "q", lim(batch_pictures=8), again)
+    assert after["cached"] == 3 and sorted(x for c in again.calls for x in c["labels"]) == sorted(
+        p.label for p in more[3:])
+    # what was kept survives a restart: it is on disk, not in memory
+    chatread._ids.clear()
+    assert len(chatread.cached(more, lim())) == 8
+    # the service failing on its side (it was asked again inside already): once more, smaller, then said
+    calls = []
+
+    def failing(system, content, cancel, on_text=None, on_wait=None):
+        calls.append(content[-1]["text"].split("each to be noted under its label: ")[1].split(", "))
+        raise aierrors.ServiceError("ChatGPT had a problem on its side and did not answer (error 502).", 502, 4)
+    worse = real_files(tmp_path, ["Week06"], pages=6)
+    seen = []
+    with pytest.raises(aierrors.ServiceError):
+        chatread.read(worse, "q", lim(batch_pictures=6), failing, progress=seen.append, waits=(0.01,), readers=1)
+    assert [len(c) for c in calls] == [6, 3]
+    assert any(x["retry"] and (x["retry"]["why"], x["retry"]["status"], x["retry"]["split"]) == ("service", 502, True)
+               for s in seen for x in s["parts"])
+
+
+class Streams:
+    """OpenAI's Responses API as ChatGPT streams a reading (fake HTTP): each request's notes come page by page as text
+    deltas; ``cut``: {request number: pages}, that request's stream just ends after that many pages (no
+    response.completed, as the owner's did two minutes into a part)."""
+
+    def __init__(self, cut=None):
+        self.cut, self.bodies = dict(cut or {}), []
+
+    def post(self, url, json=None, **kw):
+        self.bodies.append(json)
+        n = len(self.bodies)
+        text = next(c["text"] for m in json["input"] for c in m["content"]
+                    if c.get("type") == "input_text" and "each to be noted under its label: " in c["text"])
+        labels = text.split("each to be noted under its label: ")[1].split(", ")
+        lines = []
+        for i, x in enumerate(labels):
+            if n in self.cut and i == self.cut[n]:
+                lines += self.event({"type": "response.output_text.delta", "delta": "\n\n### [Wee"})
+                break
+            for piece in (f"### {x}\n", f"Notes of {x}: ", "$V = IR$ and a circuit.\n\n"):
+                lines += self.event({"type": "response.output_text.delta", "delta": piece})
+        else:
+            lines += self.event({"type": "response.completed", "response": {"usage": {"input_tokens": 900,
+                                                                                      "output_tokens": 90}}})
+        return types.SimpleNamespace(status_code=200, headers={}, iter_lines=lambda: iter(lines), close=lambda: None)
+
+    @staticmethod
+    def event(ev):
+        return [f"event: {ev['type']}".encode(), b"data: " + json.dumps(ev).encode(), b""]
+
+    def labels(self, n):
+        text = next(c["text"] for m in self.bodies[n - 1]["input"] for c in m["content"]
+                    if c.get("type") == "input_text" and "each to be noted under its label: " in c["text"])
+        return text.split("each to be noted under its label: ")[1].split(", ")
+
+
+def test_a_chatgpt_stream_that_just_ends_keeps_its_whole_pages_and_only_the_rest_is_asked_again(notes_home, tmp_path,
+                                                                                              monkeypatch):
+    """The owner's failure, end to end through "Continue with ChatGPT"'s own code: the stream ends after 7 of a part's
+    10 pages. Those 7 are kept (the 8th, cut off, is not), the part is asked again by itself with the 3 still missing,
+    and a later reading (Try again, a new question, after a restart) sends none of them again."""
+    appconfig.update({"ai_provider": "chatgpt"})
+    monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"media_type": "image/jpeg",
+                                                                                  "data": "eA=="}})
+    monkeypatch.setattr(chatgpt, "access_token", lambda: "token")
+    monkeypatch.setattr(chatgpt, "models", lambda refresh=False: [{"slug": "gpt-6.1-sol"}])
+    monkeypatch.setattr(chatgpt, "_measure_clock", lambda r: None)
+    api = Streams(cut={1: 7})
+    monkeypatch.setattr(chatgpt, "_session", lambda: api)
+    pages = real_files(tmp_path, ["Week05"], pages=10)
+    gpt = lim(provider="chatgpt", model="", batch_pictures=10)
+    seen = []
+    r = chatread.read(pages, "q", gpt, chatread.default_request(gpt, ""), progress=seen.append, waits=(0.01,))
+    assert r["read"] == 10 and not r["unread"] and len(api.bodies) == 2
+    assert api.labels(1) == [p.label for p in pages] and api.labels(2) == [p.label for p in pages[7:]]
+    assert sum(1 for c in api.bodies[1]["input"][0]["content"] if c["type"] == "input_image") == 3   # 3 pictures only
+    assert any(x["retry"] and x["retry"]["why"] == "dropped" for s in seen for x in s["parts"])
+    assert chatread.cached(pages, gpt)[pages[6].key].startswith("Notes of [Week05.pdf p.7]")
+    # a later reading of the same pages sends nothing
+    again = Streams()
+    monkeypatch.setattr(chatgpt, "_session", lambda: again)
+    assert chatread.read(pages, "q2", gpt, chatread.default_request(gpt, ""))["cached"] == 10 and again.bodies == []
+
+
+def test_two_parts_are_read_at_once_and_a_failure_for_good_stops_the_other_keeping_what_came(notes_home, tmp_path,
+                                                                                             monkeypatch):
+    monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": ""}})
+    pages = real_files(tmp_path, ["A", "B", "C", "D"], pages=6)
+    at_once, most = [0], [0]
+    gate = threading.Lock()
+
+    def slow(system, content, cancel, on_text=None, on_wait=None):
+        with gate:
+            at_once[0] += 1
+            most[0] = max(most[0], at_once[0])
+        try:
+            time.sleep(0.15)
+            return Reader()(system, content, cancel, on_text, on_wait)
+        finally:
+            with gate:
+                at_once[0] -= 1
+    seen = []
+    r = chatread.read(pages, "q", lim(batch_pictures=6), slow, progress=seen.append)
+    assert r["read"] == 24 and r["done"] == r["total"] == 4 and most[0] == 2
+    assert max(len(s["parts"]) for s in seen) == 2                   # the page shows both parts being read
+    # the offline model and the Codex CLI: one part at a time
+    most[0] = 0
+    chatread.read(real_files(tmp_path, ["E", "F"], pages=6), "q", lim(provider="codex", model="", batch_pictures=6), slow)
+    assert most[0] == 1
+    # one part fails for good (the plan's limit): the other stops at once, keeping the pages that came whole
+    stop_seen = []
+
+    def limited(system, content, cancel, on_text=None, on_wait=None):
+        labels = content[-1]["text"].split("each to be noted under its label: ")[1].split(", ")
+        if labels[0].startswith("[G"):
+            time.sleep(0.25)
+            raise RuntimeError("You have reached your ChatGPT usage limit for apps.")
+        text = ""
+        for x in labels:
+            text += f"### {x}\nNotes of {x}.\n\n"
+            on_text(text)
+            if cancel.wait(0.1):
+                stop_seen.append(True)
+                raise Cancelled()
+        return {"text": text, "usage": {}}
+    pages = real_files(tmp_path, ["G", "H"], pages=6)
+    with pytest.raises(RuntimeError, match="usage limit"):
+        chatread.read(pages, "q", lim(batch_pictures=6), limited)
+    kept = chatread.cached(pages, lim())
+    assert stop_seen and 0 < len(kept) < 6 and all(k.startswith("course:H:") for k in kept)
 
 
 def test_pages_left_out_of_an_answer_are_asked_again_once_then_named(notes_home, monkeypatch):
@@ -186,6 +391,7 @@ def reading(env, notes_home, monkeypatch):
     monkeypatch.setattr(chatslides.PagePicture, "path", lambda self: env.tmp / f"page-{self.page}.jpg")
     reader = Reader()
     monkeypatch.setattr(chatread, "default_request", lambda lim, model: reader)
+    monkeypatch.setattr(chatread, "READERS", 1)             # one part at a time: the calls come in order
     # pages without text (figures) go as pictures first, then those with text in order: 4 of the 7
     ids = course_files(env, {"Week04": ["Bayes theorem posterior " * 20, "", "capacitor charging curve " * 15],
                              "Week05": ["random variables " * 20, "", "", "expected value " * 25]})
@@ -273,6 +479,127 @@ def test_stop_while_reading_keeps_what_was_read_and_the_next_question_goes_on(en
     done = final(env.events, chat["id"], res["seq"])
     assert done["state"] == "done" and done["usage"]["read"]["cached"] == 0, done
     assert len(reading.reader.calls) == 7                                        # the 3 pages read again, once
+
+
+def long_lectures(env, words=1800):
+    """Long transcripts for the test course's recordings (r0, r1: DAY1; r2: DAY2), with one moment the lecturer
+    stressed in each."""
+    from studia import store
+    from studia.domain import Segment, Transcript
+
+    for i in range(3):
+        segs = [Segment(s * 20, s * 20 + 18, f"Recording {i}, point {s}: the {'variance' if s % 2 else 'mean'} of a "
+                                              f"random variable, worked on the board " + "and so on " * 3, "en", 0.9)
+                for s in range(words // 20)]
+        segs.insert(5, Segment(101, 104, "This will be on the midterm exam.", "en", 0.9))
+        t = Transcript(delivery_id=f"r{i}", segments=segs, duration_s=2400, speech_s=2000,
+                       language_seconds={"en": 2000}, model="m", device="cpu", engine_version="t",
+                       created_at="2026-10-20T10:00:00")
+        env.lib.save_transcript(t, store.save_transcript(t))
+
+
+def test_the_whole_course_sends_every_lecture_s_full_transcript_and_says_so(env, reading):
+    """The owner asked a whole-course chat where the midterm stops and the AI said it had only the starred excerpts:
+    the whole course sent only the highlights. Now it sends every lecture's full transcript when it fits the window,
+    tells the AI exactly what it has, and "Highlights only" stays the student's own choice."""
+    long_lectures(env)
+    ctx = env.svc.context("c", [DAY1, DAY2], focus="course", send={"mode": "pick", "files": reading.ids},
+                          model="sonnet")
+    system = ctx["system"]
+    lectures = system.split("=== LECTURES ===")[1]
+    assert "point 7: the variance" in lectures and "⭐ This will be on the midterm exam." in lectures
+    assert "point 60: the mean" in lectures                      # (not in a starred moment: only the full transcript)
+    assert "Only the moments the lecturer emphasised" not in system
+    assert "- All 2 lectures (L1–L2): the full transcripts of every part that was transcribed." in system
+    assert [d["as"] for d in ctx["parts"]["days"]] == ["full", "full"] and ctx["full_days"] == [DAY1, DAY2]
+    assert not [p for p in ctx["read_pages"] if p.group == "lecture"]
+    # the matching passages of other lectures leave out the ones the AI has whole
+    chat = env.svc.create("c", [DAY1, DAY2], focus="course", send={"mode": "pick", "files": reading.ids})
+    assert chat["scope_label"] == "Whole course · 2 lectures + course files"
+    seen = {}
+    real = chat_mod.retrieve
+
+    def retrieve(lib, course_id, question, skip_days=()):
+        seen["skip"] = list(skip_days)
+        return real(lib, course_id, question, skip_days=skip_days)
+    env.mp.setattr(chat_mod, "retrieve", retrieve)
+    ask(env, chat["id"], "Where does the midterm stop?")
+    assert sorted(seen["skip"]) == sorted([DAY1, DAY2])
+    # "Highlights only": the student's choice, said as such
+    hl = env.svc.context("c", [DAY1, DAY2], focus="highlights")
+    assert "point 60" not in hl["system"] and "⭐ This will be on the midterm exam." in hl["system"]
+    assert "Only the moments the lecturer emphasised (⭐) are included" in hl["system"]
+    assert "only the moments the lecturer emphasised (⭐), as the student chose." in hl["system"]
+
+
+def test_lectures_that_dont_fit_whole_are_read_in_parts_first_and_their_notes_kept(env, reading, monkeypatch):
+    long_lectures(env)
+    whole = env.svc.context("c", [DAY1, DAY2], focus="course", model="sonnet")
+    day_tokens = [d["tokens"] for d in whole["parts"]["days"]]
+    # a window that holds the latest lecture whole but not both: the earlier one is read in parts first
+    monkeypatch.setattr(chat_mod, "MAX_CONTEXT_TOKENS", whole["tokens"] - day_tokens[0] // 2)
+    ctx = env.svc.context("c", [DAY1, DAY2], focus="course", model="sonnet")
+    assert [d["as"] for d in ctx["parts"]["days"]] == ["notes", "full"] and ctx["tokens"] <= ctx["limit"]
+    pieces = [p for p in ctx["read_pages"] if p.group == "lecture"]
+    assert pieces and all(p.label.startswith("[L1 P") and p.file == DAY1 for p in pieces)
+    assert sum(len(p.text) for p in pieces) > 15_000 and max(len(p.text) for p in pieces) <= chat_mod.PIECE_CHARS + 40
+    system = ctx["system"]
+    lectures = system.split("=== LECTURES ===")[1]
+    assert "# L2 ·" in lectures and "# L1 ·" not in lectures
+    assert "- L1 · Tuesday, 13 October 2026 (lecture): notes read for you from its full transcript" in system
+    assert "- L2 · Tuesday, 20 October 2026 (lecture): the full transcript" in system
+    assert "and the lectures you don't get whole," in system and "[L2 P1 05:10]" in system
+    assert ctx["read"]["lectures"] == len(pieces) and ctx["read"]["lecture_days"] == 1 and ctx["read"]["on"]
+    seen = chatinputs.inputs(env.svc, {"course_id": "c", "days": [DAY1, DAY2], "focus": "course", "model": "sonnet"})
+    assert [(d["as"], d["pieces"] > 0) for d in seen["days"]] == [("notes", True), ("full", False)]
+    # asked: the pieces are read (the reading knows they are a lecture's), their notes go with the question
+    chat = env.svc.create("c", [DAY1, DAY2], focus="course")
+    e = ask(env, chat["id"], "Where does the midterm stop?")
+    assert e["state"] == "done" and e["usage"]["read"]["read"] == len(pieces)
+    asked = [x for c in reading.reader.calls for x in c["labels"]]
+    assert sorted(asked) == sorted(p.label for p in pieces)
+    assert all("lecture's transcript" in c["system"] and "[mm:ss]" in c["system"] for c in reading.reader.calls)
+    first = reading.sent()[0]
+    (notes,) = [b["text"] for b in first if "NOTES ON THE PAGES" in b.get("text", "")]
+    # (the fake Claude Code reads its input in the console's code page: "·" and "–" come back mangled)
+    assert "\n## L1 " in notes and "Tuesday, 13 October 2026\n\n[L1 P1 00:00" in notes
+    assert notes.count("\nNotes of [L1 P") == len(pieces)
+    assert "cite their moments as [L2 P1 05:10]" in notes
+    # kept: a new chat about the whole course (its lectures numbered the same or not) reads nothing again
+    n = len(reading.reader.calls)
+    other = env.svc.create("c", [DAY1, DAY2], focus="course")
+    ask(env, other["id"], "And what matters most?")
+    assert len(reading.reader.calls) == n
+    # Read everything off: what doesn't fit goes as its highlights, said to the AI and to the student
+    off = env.svc.context("c", [DAY1, DAY2], focus="course", model="sonnet", read_all=False)
+    assert [d["as"] for d in off["parts"]["days"]] == ["highlights", "full"]
+    assert "- L1 · Tuesday, 13 October 2026 (lecture): only the moments the lecturer emphasised (⭐): the full transcript " \
+           "did not fit, and Read everything is off" in off["system"]
+    assert [n["n"] for n in off["notices"] if n["code"] == "lectures_highlights"] == [1]
+
+
+def test_an_answer_the_app_was_closed_in_while_reading_says_what_was_kept(env, reading, monkeypatch):
+    """The app closed (or crashed) while the pages were read: the answer, stopped at the next start, still says how
+    many pages were read and kept, and the next question reads only the rest."""
+    real = chatlimits.of
+    monkeypatch.setattr(chatlimits, "of", lambda p="", m="": dc.replace(real(p, m), pictures=4, batch_pictures=1))
+    monkeypatch.setattr(chat_mod, "READING_SAVE_S", 0)
+    chat = env.svc.create("c", [DAY1], send={"mode": "pick", "files": reading.ids}, read_all=True)
+    seen = []
+    reading.reader.stop_at = 2
+    reading.reader.on_stop = lambda: seen.append(env.lib.chat_messages(chat["id"])[-1])   # the app "closes" here
+    ask(env, chat["id"], "What is on page 3?")
+    saved = seen[0]
+    assert saved["status"] == "streaming" and saved["usage"]["reading_kept"]["read"] == 1
+    assert saved["usage"]["reading_kept"]["pages"] == 3 and "parts" not in saved["usage"]["reading_kept"]
+
+
+def test_an_answer_that_fails_after_the_reading_says_nothing_is_read_again(env, reading):
+    chat = env.svc.create("c", [DAY1], send={"mode": "pick", "files": reading.ids}, read_all=True)
+    e = ask(env, chat["id"], "CRASH while answering")
+    assert e["state"] == "error" and len(reading.reader.calls) == 1
+    read = e["usage"]["read"]
+    assert read["failed"] and read["read"] == read["pages"] == 3 and "parts" not in read
 
 
 def test_pages_that_still_cant_be_read_are_told(env, reading):
@@ -412,6 +739,7 @@ def weighed(env, monkeypatch, limit, picture_bytes):
     monkeypatch.setattr(chatslides.PagePicture, "path", lambda self: env.tmp / f"page-{self.page}.jpg")
     reader = Reader()
     monkeypatch.setattr(chatread, "default_request", lambda lim, model: reader)
+    monkeypatch.setattr(chatread, "READERS", 1)
     ids = course_files(env, FILES)
 
     def conversation(chat_id):
@@ -497,8 +825,8 @@ def test_a_model_codex_turns_down_while_reading_is_said_to_the_student_once(env,
     w = weighed(env, monkeypatch, 860_000, 10)
     first = []
 
-    def reader(system, content, cancel):
-        r = w.reader(system, content, cancel)
+    def reader(system, content, cancel, on_text=None, on_wait=None):
+        r = w.reader(system, content, cancel, on_text, on_wait)
         if not first:
             first.append(1)
             return {**r, "model_refused": "gpt-6.1-sol"}
@@ -595,7 +923,7 @@ def test_a_question_stopped_before_it_went_leaves_the_conversation_as_it_was(env
 class Dense(Reader):
     """Notes as long as a dense page's (1,150 characters each)."""
 
-    def __call__(self, system, content, cancel):
+    def __call__(self, system, content, cancel, on_text=None, on_wait=None):
         labels = content[-1]["text"].split("each to be noted under its label: ")[1].split(", ")
         self.calls.append({"labels": labels})
         return {"text": "\n\n".join(f"### {x}\n" + "dense notes, formulas and a figure " * 33 for x in labels),
@@ -715,13 +1043,119 @@ def test_a_heavy_chatgpt_request_has_time_to_upload_and_a_failed_upload_says_so(
     class Session:
         def post(self, url, **kw):
             seen.update(kw)
+            seen["posts"] = seen.get("posts", 0) + 1
             raise requests.ConnectionError("('Connection aborted.', TimeoutError('The write operation timed out'))")
 
     monkeypatch.setattr(chatgpt, "_session", lambda: Session())
     monkeypatch.setattr(chatgpt, "access_token", lambda: "token")
     monkeypatch.setattr(chatgpt, "models", lambda refresh=False: [{"slug": "gpt-6.1-sol"}])
-    with pytest.raises(RuntimeError, match=r"didn't finish uploading to ChatGPT"):
+    monkeypatch.setattr(aierrors, "DROP_DELAYS", (0.0, 0.0))
+    with pytest.raises(aierrors.Dropped, match=r"didn't finish uploading to ChatGPT") as heavy_failed:
         chatgpt.one_shot("s", [{"type": "image", "source": {"media_type": "image/jpeg", "data": "x" * 6_000_000}}])
     assert seen["timeout"][0] >= 6_000_000 / 150_000
-    with pytest.raises(RuntimeError, match=r"Can't reach ChatGPT"):           # a small one: the connection
-        chatgpt.one_shot("s", [{"type": "text", "text": "hi"}])
+    # not the same heavy request again (it would take as long to fail: a reading in parts asks a smaller one)
+    assert not heavy_failed.value.same and seen["posts"] == 1
+    with pytest.raises(RuntimeError, match=r"Can't reach ChatGPT"):           # a small one: the connection, asked
+        chatgpt.one_shot("s", [{"type": "text", "text": "hi"}])               # again twice first
+    assert seen["posts"] == 4
+
+
+# ---------------------------------------------------------------------------------------------------- fx-330
+def test_a_slide_from_the_video_keeps_its_notes_whichever_chat_reads_it(notes_home, tmp_path):
+    """A video slide's slot was its place among one chat's slides: a chat about lectures 2-5 found none of the 25
+    slides the whole-course chat had read ("[L4 Part 3, slide 8]" was page 163 there and 134 here)."""
+    pic = tmp_path / "slide-8.jpg"
+    pic.write_bytes(b"jpeg of slide 8")
+    one = lim()
+
+    def shot(n, label):
+        return chatread.Page(label=label, group="video", file="video", name="video", page=n, picture=pic, tokens=800,
+                             bytes=100_000, priority=1, source=str(pic), notes_dir=str(notes_home))
+
+    whole = shot(163, "[L4 Part 3, slide 8]")
+    chatread._keep([(whole, "The Thevenin equivalent seen from a and b.")], one)
+    assert json.loads(chatread._store(whole, one).read_text(encoding="utf-8")) == {
+        chatread.VIDEO_SLOT: "The Thevenin equivalent seen from a and b."}        # not under "p163": this chat's place
+    later = shot(134, "[L3 Part 3, slide 8]")                     # the same picture in another chat
+    assert chatread.cached([later], one) == {later.key: "The Thevenin equivalent seen from a and b."}
+    # kept under its place in one chat (as the first 3.3 builds did): found too, and kept the new way
+    old = tmp_path / "slide-9.jpg"
+    old.write_bytes(b"jpeg of slide 9")
+    nine = chatread.Page(label="[L4 Part 3, slide 9]", group="video", file="video", name="video", page=164, picture=old,
+                         source=str(old), notes_dir=str(notes_home))
+    chatread._store(nine, one).write_text(json.dumps({"p164": "A Norton equivalent."}), encoding="utf-8")
+    again = dc.replace(nine, page=135, label="[L3 Part 3, slide 9]")
+    assert chatread.cached([again], one, move=True) == {again.key: "A Norton equivalent."}
+    assert json.loads(chatread._store(again, one).read_text(encoding="utf-8"))[chatread.VIDEO_SLOT] == "A Norton equivalent."
+
+
+def test_notes_from_3_2_5_are_found_moved_over_and_read_by_every_ai_on_the_plan(notes_home, tmp_path):
+    """3.2.5 kept notes by the AI and the file's path, size and time, by label. Nothing tested that they are found:
+    a slip would read the owner's ~800 pages again (about 550k input tokens)."""
+    pdf_file = tmp_path / "Week04.pdf"
+    pdf_file.write_bytes(b"%PDF week 4")
+    p = chatread.Page(label="[Week04.pdf p.3]", group="course", file="m4", name="Week04.pdf", page=3, text="KVL",
+                      source=str(pdf_file), notes_dir=str(notes_home))
+    chatgpt_lim = lim(provider="chatgpt", model="")             # (its key: "chatgpt")
+    legacy = chatread._legacy(p, chatgpt_lim)
+    assert legacy and all(x.parent == notes_home for x in legacy)
+    stamp = chatread._fingerprint(str(pdf_file))
+    old = notes_home / (__import__("hashlib").sha1(f"{chatread.VERSION}|claude:opus|{stamp}".encode()).hexdigest()[:24]
+                        + ".json")                                # read by Claude Opus in 3.2.5
+    old.write_text(json.dumps({"[Week04.pdf p.3]": "KVL around the outer loop."}), encoding="utf-8")
+    assert old in legacy                                          # every AI of the plan looks where the others kept them
+    assert chatread.cached([p], chatgpt_lim) == {p.key: "KVL around the outer loop."}     # (sizing only looks)
+    assert not chatread._store(p, chatgpt_lim).exists()
+    assert chatread.cached([p], chatgpt_lim, move=True) == {p.key: "KVL around the outer loop."}
+    old.unlink()                                                  # kept the new way: by the file's content
+    claude = lim(provider="claude", model="sonnet")
+    assert chatread.cached([p], claude) == {p.key: "KVL around the outer loop."}
+    lecture = dc.replace(p, group="lecture", label="[L2 P1 00:00–09:40]")
+    assert chatread._legacy(lecture, claude) == []                 # (lectures were never read in parts before)
+
+
+def test_a_part_waiting_for_the_ai_to_ask_again_shows_the_part_once_the_answer_comes(monkeypatch):
+    """A 502 inside a part: the line kept saying "Asking again in 0 s" for the whole retried request, with the pages,
+    clock and notes count hidden."""
+    monkeypatch.setattr(chatread, "PROGRESS_EVERY_S", 0.0)       # every change told
+    pages = [page(i, "r", pic=False) for i in range(1, 9)]
+    snaps = []
+
+    def request(system, content, cancel, on_text=None, on_wait=None):
+        labels = content[-1]["text"].split("each to be noted under its label: ")[1].split(", ")
+        on_wait({"why": "service", "status": 502, "wait": 0.05})
+        time.sleep(0.1)                                           # the wait, then ChatGPT asks again itself
+        text = ""
+        for x in labels:
+            text += ("\n\n" if text else "") + f"### {x}\nNotes of {x}."
+            on_text(text)
+        return {"text": text, "usage": {}}
+
+    chatread.read(pages, "q", lim(), request, progress=snaps.append, readers=1)
+    parts = [x for s in snaps for x in s["parts"]]
+    assert any(x["retry"] for x in parts)                         # said while it waited
+    assert all(not x["retry"] for x in parts if x.get("noted"))   # and not once its answer came
+
+
+def test_what_the_ai_got_names_the_lectures_it_got_when_a_day_is_gone(env):
+    gone = "c|2026-10-15|lecture"                                 # its recordings and transcript gone since
+    ctx = env.svc.context("c", [DAY1, gone, DAY2], focus="course")
+    assert "# L1 ·" in ctx["system"] and "# L3 ·" in ctx["system"]
+    assert "All 2 lectures (L1, L3): the full transcripts" in ctx["system"] and "(L1–L2)" not in ctx["system"]
+
+
+def test_the_viewer_shows_a_whole_course_lecture_as_it_goes(env):
+    long_lectures(env)
+    chat = env.svc.create("c", [DAY1, DAY2], focus="course")
+    day = chatinputs.file_view(env.svc, {"chat_id": chat["id"]}, f"day:{DAY1}")
+    assert day["as"] == "full" and "point 60: the mean" in day["text"]            # the full transcript, not highlights
+    hl = env.svc.create("c", [DAY1, DAY2], focus="highlights")
+    day = chatinputs.file_view(env.svc, {"chat_id": hl["id"]}, f"day:{DAY1}")
+    assert day["as"] == "highlights" and "point 60" not in day["text"]
+
+
+def test_a_lecture_read_in_parts_is_named_by_its_number_and_day_for_the_page():
+    p = chatread.Page(label="[L2 P1 00:00–09:40]", group="lecture", file="c|2026-09-30|lecture",
+                      name="L2 · Tuesday, 30 September 2026", page=1, text="x")
+    (f,) = chatread._files([p, dc.replace(p, page=2, label="[L2 P1 09:40–19:10]")])
+    assert (f["lecture"], f["date"], f["pages"]) == (2, "2026-09-30", [1, 2])

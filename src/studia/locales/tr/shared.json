@@ -21,7 +21,6 @@
   "The PDF couldn't be made: the pack has the transcript and slides without it. It's shown in Explorer.": "PDF oluşturulamadı: pakette PDF olmadan ders metni ve slaytlar var. Paket Dosya Gezgini'nde gösteriliyor.",
   "Copied {chars} characters (~{k}k tokens). Paste it into ChatGPT or Claude.": "{chars} karakter kopyalandı (~{k} bin token). ChatGPT'ye ya da Claude'a yapıştırabilirsin.",
   "{title} could not be transcribed again: {error}. The earlier transcript is kept.": "{title} yeniden yazıya dökülemedi: {error}. Önceki ders metni duruyor.",
-  "Cancel all {n} lectures in the queue? To stop for a while instead, use Pause.": "Sıradaki {n} dersin hepsi iptal edilsin mi? Bir süreliğine durdurmak istiyorsan Duraklat'ı kullan.",
   "Which section are you in?": "Hangi şubedesin?",
   "IEUStudia needs at least {min} GB of memory; this PC has {ram} GB.": "IEUStudia en az {min} GB bellek istiyor, bu bilgisayarda {ram} GB var.",
   "Not enough free disk space: the downloads need about {need} GB plus room for your lectures, but drive {drive} has {free} GB free.": "Diskte yeterince boş yer yok: indirilecekler için yaklaşık {need} GB, derslerin için de ayrıca yer gerekiyor; {drive} sürücüsünde ise {free} GB boş.",

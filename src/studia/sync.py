@@ -18,6 +18,7 @@ import requests
 from . import secrets_store
 from .config import Settings
 from .domain import Course, Profile
+from .health import ServiceChanged
 from .i18n import t
 from .ieulearn import AccountAction, AuthError, Busy, IEULearn, NeedLogin, SiteChanged, account_action
 from .library import Library
@@ -34,6 +35,13 @@ class SyncResult:
     new_ids: list[str]
     errors: list[str]
     seconds: float
+    changed: list[str] = dc.field(default_factory=list)   # services that answered in a form IEUStudia doesn't know
+                                                          # (health says what doesn't work): what they had stays
+
+
+def who(c: Course) -> str:
+    """A course for the log: its code, and its section and IEULearn number (FENG 495 has two pages, one a section)."""
+    return f"{c.code or c.name or c.id}" + (f" (section {c.section}, {c.id})" if c.section else f" ({c.id})")
 
 
 class SyncService:
@@ -51,6 +59,7 @@ class SyncService:
         self._account_action: Optional[AccountAction] = None
         self._flight: dict[int, tuple[str, str, float]] = {}                # see slow()
         self._flight_lock = threading.Lock()
+        self._changed: set[str] = set()    # services found changed during the sync under way (see SyncResult.changed)
 
     # ------------------------------------------------------------------ what a slow sync waits for
     @contextlib.contextmanager
@@ -234,6 +243,8 @@ class SyncService:
             try:
                 with self._asking("Panopto", known.code if known else ""):
                     folder = IEULearn(self._session).launch_panopto(cid)
+            except ServiceChanged:             # the way into Panopto changed: said as that, not as "try again"
+                raise
             except RuntimeError as exc:        # (its own words name the course by IEULearn's number: by its code here)
                 self.log.warning("%s", exc)
                 raise RuntimeError(t("Panopto didn't open {course} through IEULearn, so the lecture couldn't be "
@@ -263,6 +274,9 @@ class SyncService:
         try:
             with self._asking("Panopto", known.code if known else ""):
                 return course_id, IEULearn(s).launch_panopto(course_id), s
+        except ServiceChanged as exc:  # the way into Panopto changed: what the course had stays (and it is said)
+            self._changed.add(exc.service)
+            return course_id, "", s
         except RuntimeError as exc:  # transient: try again on the next sync, keep has_panopto
             self.log.warning("%s", exc)
             return course_id, "", s
@@ -271,6 +285,9 @@ class SyncService:
         try:
             with self._asking("Panopto"):
                 return Panopto(self._session).is_authenticated()
+        except ServiceChanged as exc:
+            self._changed.add(exc.service)
+            return False
         except (requests.RequestException, OSError):
             return False
 
@@ -285,7 +302,8 @@ class SyncService:
         since = self.lib.get_meta(key) or ""
         if first and not since:
             self.lib.set_meta(key, dt.datetime.now().isoformat(timespec="seconds"))
-        new = self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "")
+        new = self.lib.merge_recordings(course_id, recs, first_sync=first, new_after=since if first else "",
+                                        complete=getattr(recs, "complete", True))
         if heads != self._heads(course_id, empty_too=True):
             self.lib.set_meta(f"folders:{course_id}", json.dumps(heads))
         self.lib.set_meta(f"listed_full:{course_id}", dt.datetime.now().isoformat(timespec="seconds"))
@@ -322,9 +340,9 @@ class SyncService:
                 self.lib.set_meta(f"nofolder:{cid}", dt.datetime.now().isoformat(timespec="seconds"))
                 continue
             if not folder:                              # IEULearn didn't open it: said, and tried again next time
-                self.log.warning("Panopto listed no recordings for %s and IEULearn didn't open it again",
-                                 c.code or c.id)
-                failed.append(c.code or c.name or c.id)
+                self.log.warning("Panopto listed no recordings for %s and IEULearn didn't open it again", who(c))
+                if "panopto" not in self._changed:      # (a way in that changed is said as that)
+                    failed.append(c.code or c.name or c.id)
                 continue
             self._launched(cid)
             if folder != c.folder_id:                   # the course moved to another folder
@@ -332,12 +350,17 @@ class SyncService:
                 c = dc.replace(c, folder_id=folder)
             try:
                 course, recs, s2, got = self._list(c, s)
+            except ServiceChanged as exc:               # its answer changed: what the course had stays
+                self._changed.add(exc.service)
+                continue
             except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
-                self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
+                self.log.warning("Listing the recordings of %s failed: %s", who(c), exc)
                 failed.append(c.code or c.name or c.id)
                 continue
             merge_cookies(self._session, s2)
-            self.log.info("Panopto listed no recordings for %s; opened through IEULearn again: %d", c.code or c.id,
+            # (FENG 495 is two IEULearn courses, its sections 1 and 3, with a lecturer and a Panopto folder each, both
+            # empty: each is a course of its own, opened again at most every REOPEN_EMPTY_EVERY, not the same twice)
+            self.log.info("Panopto listed no recordings for %s; opened through IEULearn again: %d", who(c),
                           len(recs or []))
             listed[course.id] = recs
             new_ids += self._merge(course.id, recs, got)
@@ -413,6 +436,7 @@ class SyncService:
         t0 = time.monotonic()
         errors: list[str] = []
         with self._lock:
+            self._changed = set()
             progress(t("Checking IEULearn and Panopto…"))
             listed: dict[str, Optional[list]] = {}
             probing = full_every is not None
@@ -436,36 +460,53 @@ class SyncService:
                 try:
                     with self._asking("Panopto"):
                         panopto_ok = Panopto(probe_session).is_authenticated()
+                except ServiceChanged as exc:     # its sign-in check changed: nothing of Panopto's can be trusted now
+                    self._changed.add(exc.service)
+                    panopto_ok, panopto_down = False, True
                 except (requests.RequestException, OSError) as exc:   # IEULearn's own content still syncs
                     self.log.warning("Panopto can't be reached: %s", exc)
                     panopto_ok, panopto_down = False, True
-                early = []
+                early: list[tuple[Course, Any]] = []
                 if panopto_ok:  # fast path: list known folders while the dashboard loads
-                    early = [pool.submit(self._timed, "Panopto", c.code, self._list, c, clone_session(probe_session),
-                                         heads(c)) for c in self.lib.courses() if c.folder_id]
-                for n, f in enumerate(early, 1):
+                    early = [(c, pool.submit(self._timed, "Panopto", c.code, self._list, c, clone_session(probe_session),
+                                             heads(c))) for c in self.lib.courses() if c.folder_id]
+                for n, (c, f) in enumerate(early, 1):
                     try:
                         course, recs, s, got = f.result()
                         merge_cookies(self._session, s)
                         listed[course.id] = recs
                         new_ids += self._merge(course.id, recs, got)
+                    except ServiceChanged as exc:   # Panopto's answer changed: not asked again, and what it had stays
+                        self._changed.add(exc.service)
+                        listed[c.id] = None
                     except Exception as exc:  # noqa: BLE001 - retried below
                         self.log.info("Early listing failed (%s); retrying", exc)
                     progress(t("Looking for new recordings: {done} of {total} courses…", done=n, total=len(early)))
                 if listed:
                     partial(list(new_ids))   # the UI can show new recordings before the dashboard arrives
+                profile: Optional[Profile] = None
+                courses: Optional[list[Course]] = None
                 try:
-                    profile, courses = f_dash.result()      # NetworkError propagates
+                    try:
+                        profile, courses = f_dash.result()      # NetworkError propagates
+                        merge_cookies(self._session, dash_session)
+                    except NeedLogin:
+                        profile, courses = self._dashboard()    # signs in again with stored credentials
+                except ServiceChanged as exc:   # its courses page changed: the courses known stay as they are, and the
+                    self._changed.add(exc.service)          # recordings and files of those are still looked for
                     merge_cookies(self._session, dash_session)
-                except NeedLogin:
-                    profile, courses = self._dashboard()    # signs in again with stored credentials
-            old = self.profile
-            if old and old.username and not profile.username:
-                profile.username = old.username
-            if old and not profile.name:          # a page that came back without the name: keep who this is
-                profile.name, profile.student_number = old.name, profile.student_number or old.student_number
-            self._set_profile(profile)
-            self.lib.upsert_courses(courses)
+            if profile is not None and courses is not None:
+                old = self.profile
+                if old and old.username and not profile.username:
+                    profile.username = old.username
+                if old and not profile.name:          # a page that came back without the name: keep who this is
+                    profile.name, profile.student_number = old.name, profile.student_number or old.student_number
+                self._set_profile(profile)
+                if not courses and self.lib.courses():     # (an empty list is never taken for "no courses": see
+                    self.log.warning("IEULearn listed no courses; the %d known stay", len(self.lib.courses()))
+                    errors.append(t("IEULearn shows no courses for you right now, so the ones on this PC stay as they "
+                                    "are. If it stays like this, open learn.ieu.edu.tr to see what it shows."))
+                self.lib.upsert_courses(courses)            # upsert_courses, which keeps them)
             known = {c.id: c for c in self.lib.courses()}
 
             # courses whose Panopto folder we don't know yet (first sync / new course)
@@ -478,7 +519,8 @@ class SyncService:
                     continue
                 todo.append(c.id)
             if panopto_down:
-                errors.append(t("Panopto isn't answering right now: new recordings are checked again next time."))
+                if "panopto" not in self._changed:         # (one that changed is said as that: health's words)
+                    errors.append(t("Panopto isn't answering right now: new recordings are checked again next time."))
             elif todo or not panopto_ok:
                 progress(t("Connecting to Panopto…"))      # (the dashboard or course list showed the sign-in works)
                 launch_ids = todo or [next((c.id for c in known.values() if c.folder_id), None)]
@@ -503,7 +545,11 @@ class SyncService:
                 some = any(c.folder_id for c in self.lib.courses())
                 if some and not self._panopto_open():
                     panopto_down = True
-                    errors.append(t("Panopto didn't open through IEULearn: new recordings are checked again next time."))
+                    if "panopto" not in self._changed:     # (a way into Panopto that changed: health says what)
+                        errors.append(t("Panopto didn't open through IEULearn: new recordings are checked again next "
+                                        "time."))
+                elif "panopto" in self._changed:
+                    pass
                 elif unopened and not some:                # a new library where not one course opened: never "Up to date"
                     errors.append(t("Panopto didn't open through IEULearn for any of your courses, so no recordings "
                                     "could be looked for. Open the Panopto page of one of your courses on "
@@ -524,8 +570,12 @@ class SyncService:
                 for n, (f, c) in enumerate(futures.items(), 1):
                     try:
                         course, recs, s, got = f.result()
+                    except ServiceChanged as exc:   # its answer changed: never "0 new recordings", what it had stays
+                        self._changed.add(exc.service)
+                        listed[c.id] = None
+                        continue
                     except Exception as exc:  # noqa: BLE001 - one course failing must not stop the rest
-                        self.log.warning("Listing the recordings of %s failed: %s", c.code or c.id, exc)
+                        self.log.warning("Listing the recordings of %s failed: %s", who(c), exc)
                         failed.append(c.code or c.name or c.id)
                         continue
                     finally:
@@ -541,10 +591,11 @@ class SyncService:
             self._save_cookies()
             self.lib.set_meta("last_sync", dt.datetime.now().isoformat(timespec="seconds"))
             secs = time.monotonic() - t0
-            self.log.info("Sync done in %.1fs: %d courses, %d new recordings (%s)", secs, len(courses), len(new_ids),
+            changed = sorted(self._changed)
+            self.log.info("Sync done in %.1fs: %d courses, %d new recordings (%s)%s", secs, len(known), len(new_ids),
                           f"{sum(r is not None for r in listed.values())} of {len(listed)} listed after a probe"
-                          if probing else "full listing")
-            res = SyncResult(self.profile, self.lib.courses(), new_ids, errors, secs)
+                          if probing else "full listing", f"; changed: {', '.join(changed)}" if changed else "")
+            res = SyncResult(self.profile, self.lib.courses(), new_ids, errors, secs, changed)
         try:
             self.after_sync()
         except Exception:  # noqa: BLE001 - the sync itself worked
@@ -568,15 +619,30 @@ class SyncService:
             return True
 
     def _content(self, course: Course, s: requests.Session, info: dict, units: bool = True) -> dict:
+        """What the course's pages hold now: "units", "announcements", "overview" (as far as asked), each left out when
+        its page changed ("changed": the ServiceChanged of those; what the course had of them stays)."""
         from .coursesite import CourseSite
 
+        from .ieulearn import changed
+
         site = CourseSite(s)
-        out: dict = {"course": course, "session": s}
-        if units:
-            out["units"] = site.unit_plan(course.id, course.title)
-        out["announcements"] = site.announcements(course.id)
+        out: dict = {"course": course, "session": s, "changed": []}
+        parts: list[tuple[str, str, Callable[[], Any]]] = [
+            ("units", "unit_plan", lambda: site.unit_plan(course.id, course.title))] if units else []
+        parts.append(("announcements", "announcements", lambda: site.announcements(course.id)))
         if self._stale(info.get("overview_at", ""), self.OVERVIEW_EVERY):
-            out["overview"] = site.overview(course.id)
+            parts.append(("overview", "course_page", lambda: site.overview(course.id)))
+        for key, part, read in parts:
+            try:
+                out[key] = read()
+            except ServiceChanged as exc:
+                out["changed"].append(exc)
+            except (ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+                if isinstance(exc, requests.RequestException):     # (some of requests' errors are ValueErrors too)
+                    raise
+                # IEULearn's page made the parser fail: a page that changed in a way nothing checked for
+                self.log.warning("Reading the %s of %s failed", part, who(course), exc_info=True)
+                out["changed"].append(changed(part, f"reading it failed ({exc.__class__.__name__})", where=course.id))
         return out
 
     def sync_content(self, progress: Callable[[str], None] = lambda m: None,
@@ -597,18 +663,28 @@ class SyncService:
         new_announcements: list[str] = []
         failures: dict[str, list[str]] = {}       # what went wrong (in words) -> the courses it went wrong for
         relogin: list[Course] = []                # IEULearn's sign-in page came back: the session ran out halfway
+        changed: set[str] = set()                 # services whose pages changed (health says what doesn't work)
 
         def want(c: Course) -> bool:
             return units or not infos[c.id].get("content_at")
 
         def take(res: dict) -> None:
-            nonlocal new_materials, new_announcements
             c = res["course"]
             now = dt.datetime.now().isoformat(timespec="seconds")
             first = not infos[c.id].get("content_at")
-            if "units" in res:
-                new_materials += self.lib.merge_units(c.id, res["units"], first_sync=first)
-            new_announcements += self.lib.merge_announcements(c.id, res["announcements"], first_sync=first)
+            for key, merge, into in (("units", self.lib.merge_units, new_materials),
+                                     ("announcements", self.lib.merge_announcements, new_announcements)):
+                # a part that couldn't be read at a course's first sync is first when it can: what it holds then
+                # is what was there already, not news (a page fixed by an update doesn't bring 40 "new" files)
+                unread = f"unread:{key}:{c.id}"
+                if key in res:
+                    pending = bool(self.lib.get_meta(unread))
+                    into.extend(merge(c.id, res[key], first_sync=first or pending))
+                    if pending:
+                        self.lib.set_meta(unread, "")
+                elif first and any(e.part == ("unit_plan" if key == "units" else key) for e in res["changed"]):
+                    self.lib.set_meta(unread, now)
+            changed.update(e.service for e in res["changed"])
             fields = {"content_at": now}
             if "overview" in res:
                 fields.update(overview=res["overview"].to_json(), overview_at=now)
@@ -672,7 +748,8 @@ class SyncService:
                       len(new_materials), len(new_announcements))
         errors = [t("{courses}: {problem}", courses=", ".join(sorted(set(codes))), problem=problem)
                   for problem, codes in failures.items()]
-        return {"new_materials": new_materials, "new_announcements": new_announcements, "errors": errors}
+        return {"new_materials": new_materials, "new_announcements": new_announcements, "errors": errors,
+                "changed": sorted(changed)}
 
     def _content_failed(self, course: Course, exc: BaseException, failures: dict[str, list[str]]) -> None:
         self.log.warning("Course content of %s failed: %s", course.code or course.id, exc)

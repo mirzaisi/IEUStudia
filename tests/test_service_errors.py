@@ -82,10 +82,14 @@ def test_a_500_is_asked_again_and_then_answered(openai, caplog):
     openai.answers = [(500, {}, {"error": {"message": "The server had an error while processing your request.",
                                            "type": "server_error"}}),
                       (502, {}, "<html>Bad gateway</html>"), (200, {}, OK)]
+    told = []
     with caplog.at_level(logging.INFO, logger="studia"):
-        assert ask()["text"] == "Hi"
+        assert ask(on_wait=told.append)["text"] == "Hi"
     assert len(openai.requests) == 3 and openai.waits == list(aierrors.DELAYS[:2])
     assert openai.requests[0]["body"] == openai.requests[2]["body"]          # the same request each time
+    # each wait is told first, so a page can say it (the reading in parts does)
+    assert [(w["why"], w["status"], w["wait"], w["try"]) for w in told] == [("service", 500, aierrors.DELAYS[0], 2),
+                                                                            ("service", 502, aierrors.DELAYS[1], 3)]
     assert "server had an error while processing" in caplog.text and "Bad gateway" in caplog.text   # the body is kept
     assert "eyJsecret" not in caplog.text                                     # never the token
 

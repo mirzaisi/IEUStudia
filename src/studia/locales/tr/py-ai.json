@@ -73,7 +73,6 @@
   "The connection to ChatGPT broke off ({error}). Try again.": "ChatGPT bağlantısı koptu ({error}). Tekrar dene.",
   "Unknown course.": "Ders bulunamadı.",
   "{n} class day ({first} – {last})": "{n} ders günü ({first} – {last})",
-  "Whole course · {n} lectures' highlights + course files": "Dersin tamamı · {n} ders kaydının öne çıkanları + ders dosyaları",
   "{label} · highlights only": "{label} · yalnızca öne çıkanlar",
   "This chat no longer exists.": "Bu sohbet artık yok.",
   "Pick at least one transcribed class day.": "Yazıya dökülmüş en az bir ders günü seç.",

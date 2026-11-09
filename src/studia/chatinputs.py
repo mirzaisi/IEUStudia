@@ -120,10 +120,14 @@ def file_view(svc: Any, spec: Any, ref: str, page: int = 0, zoom: float = 1.0) -
             raise RuntimeError(t("That class day is no longer in your library."))
         _, course, recs, trans = d
         sl = {r.delivery_id: store.load_slides(r.delivery_id) for r in recs} if sp["slides"] else None
+        # as it goes: whole (the whole course's lectures too: one read in parts is read from this), or its highlights
+        how = "highlights" if sp["focus"] == "highlights" else next(
+            (x["as"] for x in _ctx(svc, sp)["parts"]["days"] if x["key"] == rest), "full") if sp["focus"] == "course" \
+            else "full"
         text = compact_day(course, recs, trans, sl, label=f"L{n}" if len(sp["days"]) > 1 else "",
-                           only_starred=sp["focus"] in ("highlights", "course"))
+                           only_starred=how == "highlights")
         return {"kind": "transcript", "title": date_long(min(r.start for r in recs).date()), "text": text,
-                "day_key": rest}
+                "day_key": rest, "as": how}
     if kind == "video":
         video = _ctx(svc, sp)["video"]
         if not page:

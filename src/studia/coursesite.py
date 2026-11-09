@@ -293,6 +293,57 @@ def parse_announcements(page: str) -> list[Announcement]:
     return out
 
 
+def _count(page: str, pattern: str) -> int:
+    return len(re.findall(pattern, page or ""))
+
+
+def overview_problem(page: str, ov: Overview) -> str:
+    """What doesn't add up on a course's page ("" when it reads as IEUStudia knows it): none of the parts the outcomes,
+    weeks and grading come from, or parts whose items IEUStudia can't read. A course without outcomes is fine."""
+    if "ov-intro" not in page and "ov-ects" not in page:
+        return "no outcomes, weekly topics or grading parts on the course page"
+    for marker, got, name in (('class="ov-intro-lo-no"', ov.outcomes, "learning outcomes"),
+                              ('class="ov-ects-week-no"', ov.weeks, "weekly topics"),
+                              ('class="ov-ects-assess-item"', ov.grading, "grading items")):
+        if page.count(marker) and not got:
+            return f"{page.count(marker)} {name} on the page, none read"
+    return ""
+
+
+def unit_plan_problem(page: str, units: list[Unit]) -> str:
+    """What doesn't add up on a weekly unit plan ("" when it reads as IEUStudia knows it): no plan at all, units or
+    files IEUStudia can't read. An empty plan IEULearn says is empty is fine."""
+    items, files = _count(page, r'<article class="curriculum-item'), _count(page, r'class="ovup-syl-item"')
+    payloads, read = _count(page, r"data-rv-payload="), sum(len(u.resources) for u in units)
+    if "ovup-syl" not in page and not items:
+        return "no unit plan on the page"
+    if items > len(units):
+        return f"{items} units on the page, {len(units)} read"
+    if not units and "ovup-syl-empty" not in page:
+        return "a unit plan without units and without its empty note"
+    if units and all(not u.title for u in units):
+        return f"{len(units)} units without their titles"
+    if payloads > read:
+        return f"{payloads} files on the page, {read} read"
+    if files and not payloads:
+        return f"{files} files on the page without what IEUStudia reads them from"
+    return ""
+
+
+def announcements_problem(page: str, items: list[Announcement]) -> str:
+    """What doesn't add up on a course's announcements ("" when they read as IEUStudia knows them): no announcements
+    panel, or announcements on it but none read. (The panel may hold fewer than its count says: only none is odd.)"""
+    if 'class="ov-ann' not in page:
+        return "no announcements panel"
+    count = re.search(r'class="ov-ann-count"[^>]*>\s*(\d+)', page)
+    said = max(int(count.group(1)) if count else 0, _count(page, r'class="ov-ann-card-title"'))
+    if said and not items:
+        return f"{said} announcements on the page, none read"
+    if not items and not count and "ov-ann-empty" not in page:
+        return "an announcements panel without announcements, a count or its empty note"
+    return ""
+
+
 class CourseClosed(RuntimeError):
     """IEULearn sent a course's page elsewhere (to the course list): the course isn't open to students yet, or you
     no longer have access to it. That course only: signing in again wouldn't change it."""
@@ -321,14 +372,40 @@ class CourseSite:
         r.raise_for_status()
         return r.text
 
+    # Each part is checked against what its page should hold: one that doesn't add up raises ieulearn.PageChanged
+    # (noted in health), so the course keeps what it had instead of an empty plan, no announcements or no outcomes.
     def overview(self, course_id: str) -> Overview:
-        return parse_overview(self._get(f"/student/courses/{course_id}"))
+        page = self._get(f"/student/courses/{course_id}")
+        ov = parse_overview(page)
+        return self._checked("course_page", page, overview_problem(page, ov), ov, course_id)
 
     def unit_plan(self, course_id: str, course_title: str = "") -> list[Unit]:
-        return parse_unit_plan(self._get(f"/student/courses/{course_id}/overview/unit-plan"), course_title)
+        page = self._get(f"/student/courses/{course_id}/overview/unit-plan")
+        units = parse_unit_plan(page, course_title)
+        return self._checked("unit_plan", page, unit_plan_problem(page, units), units, course_id)
 
     def announcements(self, course_id: str) -> list[Announcement]:
-        return parse_announcements(self._get(f"/student/courses/{course_id}/overview/announcements"))
+        page = self._get(f"/student/courses/{course_id}/overview/announcements")
+        items = parse_announcements(page)
+        return self._checked("announcements", page, announcements_problem(page, items), items, course_id)
+
+    @staticmethod
+    def _checked(part: str, page: str, problem: str, value: Any, course_id: str = "") -> Any:
+        """``value`` when its page adds up; else what the page is: IEULearn's sign-in form (the session ran out), a
+        maintenance page (busy for a while), or a page that changed (health: for that course; the other courses'
+        pages reading fine don't make it over)."""
+        from . import health
+        from .ieulearn import Busy, _sign_in_form, changed, page_shape, under_maintenance
+
+        if problem:
+            if ("password" in page or "loginForm" in page) and _sign_in_form(page) is not None:
+                raise NeedLogin(t("Your IEULearn session has expired."))
+            roots = ("ovup-syl", "curriculum-item", "ov-ann", "ov-intro", "ov-ects")   # (a course's own words may say
+            if under_maintenance(page) and not any(r in page for r in roots):      # "bakım": only a page without them)
+                raise Busy(t("IEULearn isn't responding right now (it may be down for maintenance). Try again later."))
+            raise changed(part, f"{problem} ({page_shape(page)})", where=course_id)
+        health.ok("ieulearn", part, where=course_id)
+        return value
 
 
 def cover_file(url: str) -> Path:

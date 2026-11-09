@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import fnmatch
 import functools
 import glob
 import json
@@ -145,10 +144,9 @@ def download_model(model: str, progress: Callable[[int, int], None],
         session = plain_session()
         session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
         info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
-        info.raise_for_status()
-        siblings = info.json().get("siblings", [])
-        files = [(s["rfilename"], int(s.get("size") or 0)) for s in siblings
-                 if any(fnmatch.fnmatch(s["rfilename"], pat) for pat in MODEL_FILE_PATTERNS)]
+        from ..components import hf_files
+
+        files = hf_files(info, repo, MODEL_FILE_PATTERNS)        # (its API changing is said as that: health)
         if not any(name == "model.bin" for name, _ in files):
             raise RuntimeError(t("Model files for {model} were not found on Hugging Face.", model=model))
         grand_total = sum(size for _, size in files) or MODEL_PRESETS[model]["size_mb"] * 1024 * 1024

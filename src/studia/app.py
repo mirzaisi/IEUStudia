@@ -384,6 +384,68 @@ def _note_window_creation(webview: Any, instance: str) -> None:
     webview.initialize = initialize
 
 
+# WebView2 asks a page's permission questions (reading the clipboard, the camera, notifications…) in a bar of its own,
+# in the browser's words and style. IEUStudia answers them itself instead, so that bar never shows: its own page may
+# read the clipboard and play sound; everything else it doesn't use is turned down, and so is anything a page that
+# isn't IEUStudia's asks for (the window shows no other: links open in the browser).
+PAGE_ALLOWS = frozenset({"ClipboardRead", "Autoplay"})
+
+
+def permission_answer(uri: str, kind: str) -> bool:
+    """Whether IEUStudia's window allows a permission it was asked for: ``uri``, the page asking (IEUStudia's own is a
+    file: page, see _main); ``kind``, the name of WebView2's CoreWebView2PermissionKind."""
+    return (uri or "").lower().startswith("file:") and kind in PAGE_ALLOWS
+
+
+def _on_permission(sender: Any, args: Any) -> None:
+    """WebView2's PermissionRequested (on the window's thread): answered at once, so its own question never shows."""
+    try:
+        from Microsoft.Web.WebView2.Core import CoreWebView2PermissionState  # type: ignore[import-not-found]
+
+        kind = args.PermissionKind
+        kind = str(kind.ToString() if hasattr(kind, "ToString") else kind)
+        uri = str(args.Uri or "")
+        allow = permission_answer(uri, kind)
+        args.State = CoreWebView2PermissionState.Allow if allow else CoreWebView2PermissionState.Deny
+        try:
+            args.SavesInProfile = False          # asked again next time: this answer stays the app's, never stored
+        except Exception:  # noqa: BLE001 - an older WebView2: the answer counts all the same
+            pass
+        log.info("WebView2 asked for %s (%s): %s", kind, uri[:60], "allowed" if allow else "turned down")
+    except Exception:  # noqa: BLE001 - left to WebView2 then
+        log.debug("A permission request could not be answered", exc_info=True)
+
+
+def _answer_permissions(webview: Any) -> None:
+    """Once WebView2 has started in the window, its permission questions go to _on_permission. Hooked in where
+    pywebview gets WebView2 ready (its window's thread, where WebView2 raises its events too), before the window is
+    made: webview.initialize loads that part of pywebview."""
+    init = getattr(webview, "initialize", None)
+    if init is None or getattr(init, "_studia_permissions", False):
+        return
+
+    def initialize(*args: Any, **kwargs: Any) -> Any:
+        lib = init(*args, **kwargs)
+        chrome = getattr(sys.modules.get("webview.platforms.edgechromium"), "EdgeChrome", None)
+        ready = getattr(chrome, "on_webview_ready", None)
+        if ready is not None and not getattr(ready, "_studia_permissions", False):
+            def on_webview_ready(self: Any, sender: Any, event: Any) -> Any:
+                out = ready(self, sender, event)
+                try:
+                    if event.IsSuccess:
+                        sender.CoreWebView2.PermissionRequested += _on_permission
+                except Exception:  # noqa: BLE001 - WebView2 shows its own questions then
+                    log.debug("Permission requests not hooked", exc_info=True)
+                return out
+
+            on_webview_ready._studia_permissions = True    # type: ignore[attr-defined]
+            chrome.on_webview_ready = on_webview_ready
+        return lib
+
+    initialize._studia_permissions = True          # type: ignore[attr-defined]
+    webview.initialize = initialize
+
+
 def _other_instance(name: str) -> bool:
     """Another copy holds the single-instance lock. Bring its window (or its start-up window) forward. If it has
     shown nothing for a while it is stuck: offer to replace it. True if this copy should start after all."""
@@ -604,6 +666,8 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
     window.events.loaded += on_loaded
     window.events.closing += on_closing
     _note_window_creation(webview, name)
+    if WINDOWS:
+        _answer_permissions(webview)             # WebView2's permission questions: answered by IEUStudia itself
     # Qt's developer tools stop pywebview's first call into the page from returning: debug logs only on Linux
     try:
         webview.start(gui="edgechromium" if WINDOWS else "qt", debug=debug and WINDOWS, private_mode=False,

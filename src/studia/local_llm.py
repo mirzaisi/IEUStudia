@@ -492,18 +492,14 @@ CHAT_SYSTEM = ("You answer a university student's questions about their own lect
                "tagged [TR], each paragraph starting with [mm:ss]. Answer briefly from them and cite the moments you use "
                "like {cite}. If they don't cover the question, say so.")
 CITE_ONE, CITE_MANY = "[P2 14:05] (part, time)", "[L2 P1 05:10] (lecture L2, part, time)"   # as the app links them
-_STOP = set("""the and for are was were with what which who how why when where does did can could would should will
-about there their they you your our this that these those from into than then have has had not but also just
-bir ile için gibi daha çok var yok ama şey nasıl neden nedir""".split())
-
-
-def _keywords(text: str) -> set[str]:
-    return {w for w in re.findall(r"[\wçğıöşü]+", text.replace("İ", "i").lower()) if len(w) >= 3 and w not in _STOP}
 
 
 def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) -> str:
-    """The paragraphs of the chat's lectures that match the question best, in lecture order under their headings, in
-    at most ``max_tokens``. A question that matches nothing gets the emphasised (⭐) moments, then an even spread."""
+    """The paragraphs of the chat's lectures that match the question best (matched as the search matches: search.py),
+    in lecture order under their headings, in at most ``max_tokens``. A question that matches nothing gets the
+    emphasised (⭐) moments, then an even spread."""
+    from .search import overlap
+
     blocks: list[tuple[str, str, str]] = []          # (lecture heading, part heading, paragraph)
     day = part = ""
     for line in lectures.splitlines():
@@ -515,8 +511,7 @@ def lecture_excerpts(lectures: str, question: str, key: str, max_tokens: int) ->
             blocks.append((day, part, line))
     if not blocks:
         return ""
-    want = _keywords(question)
-    scores = [len(want & _keywords(p)) + (0.5 if "⭐" in p else 0.0) for _, _, p in blocks]
+    scores = [s + (0.5 if "⭐" in p else 0.0) for s, (_, _, p) in zip(overlap(question, [p for _, _, p in blocks]), blocks)]
     if max(scores) >= 1:
         # equally good matches: the newest lectures first (they say what is coming next)
         ranked = [i for i in sorted(range(len(blocks)), key=lambda i: (-scores[i], -i)) if scores[i] > 0]

@@ -51,6 +51,10 @@ jobs:
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content build\installer\SHA256SUMS.txt -Encoding ascii
           Get-Content build\installer\SHA256SUMS.txt
+          # the anonymous count of copies in use (updates.py): an installed copy that looks for new versions downloads
+          # this tiny file of its own version about once a day, and its download count on the release says how many
+          # copies of that version were in use (scripts/usage.py prints them). Not in SHA256SUMS: nothing runs it.
+          Set-Content build\installer\active.txt "IEUStudia ${version}: its download count is how many copies of this version are in use." -Encoding ascii
       - uses: softprops/action-gh-release@v3
         if: github.ref_type == 'tag'
         with:
@@ -61,3 +65,4 @@ jobs:
             build/installer/IEUStudia-Setup.exe
             build/installer/IEUStudia-*-portable.zip
             build/installer/SHA256SUMS.txt
+            build/installer/active.txt

@@ -163,10 +163,30 @@ def test_read_everything_has_its_switch_its_cost_and_its_progress(tmp_path):
   const off = await St.call("chat_create", "17933", [DAY], "full", false, "sonnet", "", null, "", null);
   St.go({ name: "chat", chatId: off.chat.id }); await tick(300);
   out.panelOff = els["#cf-side"].innerHTML;
-  out.progress = St.chatReadingHTML({ seq: 2, status: "streaming", text: "", usage: { reading: { done: 1, total: 3, pages: 30, read: 12 } } }).body;
+  const now = Date.now() / 1000;
+  const reading = (parts) => St.chatReadingHTML({ seq: 2, status: "streaming", text: "", usage: { reading: { done: 1, total: 3, pages: 30, read: 12, eta: 130, at: now, parts } } }).body;
+  const pdf = (name, pages) => ({ name, kind: "course", pages });
+  out.progress = reading([{ n: 2, from: 11, to: 20, size: 10, files: [pdf("Week04_Student.pdf", [3, 4, 5, 6, 7, 9, 12, 13, 14, 15])], started: now - 65.4, noted: 4, words: 300, try: 1 },
+    { n: 3, from: 21, to: 30, size: 10, files: [pdf("Week05_Student.pdf", [1]), pdf("Week06_Student.pdf", [2, 3]), pdf("Week07_Student.pdf", [4])], started: now - 3, noted: 0, words: 0, try: 2 }]);
+  out.others = reading([{ n: 1, size: 9, files: [{ name: "video", kind: "video", pages: [1, 2, 3, 4] }, { name: "L2 · Tuesday, 30 September 2026", kind: "lecture", lecture: 2, date: "2026-09-30", pages: [1, 2, 3, 4, 5] }], started: now - 30, noted: 0, words: 850, try: 1 }]);
+  out.waiting = reading([{ n: 2, from: 11, to: 20, size: 10, names: [], started: now - 120, noted: 0, try: 1, retry: { why: "dropped", wait: 10, until: now + 7.6, split: true } },
+    { n: 3, from: 21, to: 30, size: 10, names: [], started: now - 20, noted: 0, try: 1, retry: { why: "service", status: 502, wait: 12, until: now + 12, split: false } }]);
+  out.oldProgress = St.chatReadingHTML({ seq: 2, status: "streaming", text: "", usage: { reading: { done: 1, total: 3, pages: 30, read: 12 } } }).body;
+  out.failed = St.chatReadingHTML({ seq: 2, status: "error", text: "", usage: { read: { pages: 289, read: 240, done: 4, total: 5, failed: true, tries: 4 } } }).foot;
+  out.closed = St.chatReadingHTML({ seq: 2, status: "stopped", text: "", usage: { reading_kept: { pages: 289, read: 120, done: 4, total: 10 } } }).body;
+  out.reopened = St.chatReadingHTML({ seq: 2, status: "streaming", text: "", usage: { reading_kept: { pages: 289, read: 120 } } }).body;
   out.foot = St.chatReadingHTML({ seq: 2, status: "done", text: "x", usage: { read: { pages: 30, read: 30, cached: 4, done: 3, total: 3 } } }).foot;
   out.again = St.chatReadingHTML({ seq: 4, status: "done", text: "x", usage: { read: { pages: 30, again: true } } });
   out.stopped = St.chatReadingHTML({ seq: 2, status: "stopped", text: "", usage: { read: { pages: 30, read: 12, stopped: true } } }).body;
+  // the whole course with a lecture that doesn't fit whole: the panel says it is read in parts, the others go whole
+  const realInputs = St.mocks.chat_inputs;
+  St.mocks.chat_inputs = (sp) => { const r = realInputs(sp);
+    r.days = r.days.map((d, i) => ({ ...d, as: i ? "full" : "notes", pieces: i ? 0 : 9 }));
+    r.read = { ...r.read, on: true, pages: 24, lectures: 9, lecture_days: 1, batches: 1, tokens: 30000, output: 4000 }; return r; };
+  const both = await St.call("chat_create", "17933", [DAY, "17933|y|lecture"], "course", false, "sonnet", "", null, "", null);
+  St.go({ name: "chat", chatId: both.chat.id }); await tick(300);
+  out.lectures = els["#cf-side"].innerHTML;
+  St.mocks.chat_inputs = realInputs;
   out.big = St.effortBig.read({ batches: 3, tokens: 90000 });
   out.small = St.effortBig.read({ batches: 1, tokens: 9000 });
 """)
@@ -175,10 +195,38 @@ def test_read_everything_has_its_switch_its_cost_and_its_progress(tmp_path):
     assert "goes through the 15 pages that don" in out["panel"] and "15 read first" in out["panel"]
     assert "Notes of the pages read first" in out["panel"]
     assert "Turn on Read everything" in out["panelOff"] and "15 read first" not in out["panelOff"]
-    assert "Reading slides: part 2 of 3…" in out["progress"] and "12 of 30 pages read" in out["progress"]
+    assert "full transcript" in out["panel"] and "highlights only" not in out["panel"]     # the whole course: whole
+    lectures = out["lectures"]
+    assert "read in parts first: its notes go with each question" in lectures and "full transcript" in lectures
+    assert "1 lecture doesn&#39;t fit whole next to the rest: Claude reads it in parts before it answers" in lectures
+    assert "The other 1 go whole." in lectures
+    assert "Among them: 1 lecture that doesn&#39;t fit whole, in 9 pieces of its transcript." in lectures
+    # while the pages are read: which pages each part has, since when (its clock ticks on the page), how many came,
+    # about how long the rest takes, and that Stop keeps them; never a bar without a word
+    progress = out["progress"]
+    assert "Reading your slides and files: 12 of 30 pages" in progress and 'width:40%' in progress
+    assert "Part 2 of 3 · Week04_Student.pdf p. 3–7, 9, 12–15 · " in progress and ">1:05</span> · 4 of 10 pages noted" in progress
+    assert "Part 3 of 3 · Week05_Student.pdf p. 1, Week06_Student.pdf p. 2–3, … · " in progress
+    # (a lecture named in the page's language: its own name is the AI's, in English)
+    assert "Part 1 of 3 · 4 slides from the video, L2 · Wed 30 Sep (5 pieces of its transcript) · " in out["others"]
+    assert "about 850 words written" in out["others"]
+    assert "Claude is looking at the pages · try 2" in progress
+    assert "about 2 minutes left" in progress and "Stop keeps every page read so far: asking again reads only the rest." in progress
+    # waiting to ask again after a dropped connection, or after the service's own failure: said, with a countdown
+    assert "Part 2 of 3 · The connection to Claude dropped. Asking again in <span data-until=" in out["waiting"]
+    assert ">8</span> s, in two smaller parts." in out["waiting"]
+    assert "Claude had a problem on its side (error 502). Asking again in " in out["waiting"]
+    assert "Reading your slides and files: 12 of 30 pages" in out["oldProgress"]         # an older app's news
+    assert out["failed"].count("240 of 289 pages were read and kept: asking again reads only the 49 still missing.") == 1
+    assert "IEUStudia had tried that part 4 times." in out["failed"]
+    # the app closed while reading: said at the next start like a stop (still reading: the next news shows it)
+    assert "Stopped while reading the slides." in out["closed"]
+    assert "120 of 289 pages were read and kept: asking again reads only the 169 still missing." in out["closed"]
+    assert out["reopened"] == ""
     assert "Went through all 30 pages first" in out["foot"] and "4 read before" in out["foot"]
     assert out["again"] == {"body": "", "foot": ""}                   # a follow-up that reused the notes: nothing to say
-    assert "Stopped while reading the slides." in out["stopped"] and "12 of 30 pages were read and kept" in out["stopped"]
+    assert "Stopped while reading the slides." in out["stopped"]
+    assert "12 of 30 pages were read and kept: asking again reads only the 18 still missing." in out["stopped"]
     assert "about 90.0k tokens in 3 requests" in out["big"] and out["small"] == ""
 
 

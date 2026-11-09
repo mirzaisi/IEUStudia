@@ -7,6 +7,10 @@ app to slow down. "Continue with ChatGPT" (chatgpt.py) asks again itself, after 
 answer's Retry-After says; the Claude Code and Codex CLIs already do that inside, so for them the failure is only
 explained. Either way the student reads what happened, that it is on the service's side, and what to do, instead of
 "ChatGPT: HTTP 500".
+
+A connection that ends before the answer is complete (``Dropped``: OpenAI's stream sometimes just stops, measured Nov
+2026) is asked again too: by chatgpt.one_shot when none of the answer had come yet, and by the reading of a chat's
+slides in parts (chatread) after some had, keeping what came.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from .i18n import t, tn
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529})
 DELAYS = (4.0, 12.0, 30.0)        # the waits before the 2nd, 3rd and 4th try
 MAX_WAIT_S = 90.0                 # a longer Retry-After: not waited for (the student is told to wait instead)
+DROP_DELAYS = (3.0, 10.0)         # a connection that dropped before any of the answer came: asked again after these
 
 
 class ServiceError(RuntimeError):
@@ -35,6 +40,25 @@ class ServiceError(RuntimeError):
     def __init__(self, message: str, status: int = 0, tries: int = 1) -> None:
         super().__init__(message)
         self.status, self.tries = status, tries
+
+
+class Dropped(RuntimeError):
+    """The connection to the AI ended or broke before its answer was complete, or could not be made: nothing the
+    student did, worth asking again in a moment. ``text``: some of the answer had come already (a caller that showed
+    it, or kept it, asks again itself, knowing what came); ``same``: asking the same request again may help (not for
+    a heavy request that didn't finish uploading: a smaller one may). The pages can tell it by ``kind``
+    ("dropped")."""
+
+    kind = "dropped"
+
+    def __init__(self, message: str, text: bool = False, same: bool = True) -> None:
+        super().__init__(message)
+        self.text, self.same = text, same
+
+
+def worth_again(exc: BaseException) -> bool:
+    """Whether a failed request is worth asking again by itself: a dropped connection, or the service's own failure."""
+    return isinstance(exc, (Dropped, ServiceError))
 
 
 def retryable(status: int) -> bool:

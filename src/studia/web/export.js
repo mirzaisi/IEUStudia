@@ -10,6 +10,13 @@
   const $ = (s) => (typeof document !== "undefined" && document.querySelector ? document.querySelector(s) : null);
   const MB = 1048576;
   const said = (p) => (St.said ? St.said(p) : p);
+  // Copy path, Copy the first message: refused by the clipboard, the text is shown to copy by hand (setup.js's Copy
+  // failed dialog); without it, said in a toast
+  async function copied(text, done) {
+    const r = (await call("copy_text", text)) || { ok: false };
+    if (St.copied) { St.copied(r, text, done); return; }
+    toast(r.ok ? done : t("Could not access the clipboard."), r.ok ? "success" : "error");
+  }
   let X = null;                  // the dialog: {courseId, opts, picked, inc, download, view, id, starting, cancelling, open}
   let lastInc = null;            // what you put in last time (this session)
   S.cexp = null;                 // the export being made, or the last one: its newest event (also with the dialog closed)
@@ -250,8 +257,8 @@
     },
     "cx-again": () => { if (!X) return; X.view = "pick"; if (X.opts) draw(); else openDialog(X.courseId); },
     "cx-show": (el) => said(call("course_export_show", (el && el.dataset && el.dataset.path) || (S.cexp || {}).path || "")),
-    "cx-copy-path": async () => { const r = await call("copy_text", (S.cexp || {}).path || ""); toast(r && r.ok ? t("Copied") : t("Could not access the clipboard."), r && r.ok ? "success" : "error"); },
-    "cx-copy-msg": async () => { const r = await call("copy_text", (S.cexp || {}).first_message || ""); toast(r && r.ok ? t("Copied: paste it into ChatGPT with the zip.") : t("Could not access the clipboard."), r && r.ok ? "success" : "error"); },
+    "cx-copy-path": () => copied((S.cexp || {}).path || "", t("Copied")),
+    "cx-copy-msg": () => copied((S.cexp || {}).first_message || "", t("Copied: paste it into ChatGPT with the zip.")),
   });
   St.cexp = { open: openDialog };
 

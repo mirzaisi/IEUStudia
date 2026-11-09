@@ -13,13 +13,14 @@ from studia.api import Api, same_username
 from studia.config import Settings
 from studia.coursesite import CourseClosed, CourseSite
 from studia.domain import Course, Profile
-from studia.ieulearn import BASE, AccountAction, AuthError, Busy, IEULearn, NeedLogin, SiteChanged
+from studia.ieulearn import BASE, AccountAction, AuthError, Busy, IEULearn, NeedLogin, PageChanged, SiteChanged
 from studia.library import Library
 from studia.net import NetworkError
 
 FORM = ('<form id="loginForm" method="post" action="https://learn.ieu.edu.tr/login"><input name="csrf_token" '
         'value="tok"><input name="email"><input name="password" type="password"></form>')
-COURSES = '<div class="ov-user-name">Ali Veli</div><article class="dash-course" data-course-id="7"></article>'
+COURSES = ('<div class="ov-user-name">Ali Veli</div><div id="dashCourseGrid"><article class="dash-course" '
+           'data-course-id="7" data-course-title="2026-1 EEE 242 Sayısal Tasarım 1"></article></div>')
 
 
 class Site:
@@ -122,13 +123,17 @@ def test_a_lock_says_to_wait_and_a_plain_refusal_has_no_hints():
 @pytest.mark.parametrize("answer,kind,words", [
     ((302, "", "/student", f"{BASE}/login"), NeedLogin, "session has expired"),
     ((302, "", "/student", "/kvkk"), AccountAction, "wants something from you"),
-    ((200, "<h1>Bakımdayız</h1>", "/student"), SiteChanged, "doesn't recognise"),
+    ((200, "<h1>Bakımdayız</h1>", "/student"), Busy, "may be under maintenance"),       # down for a while, not changed
+    ((200, "<h1>Yeni öğrenci paneli</h1>", "/student"), SiteChanged, "doesn't recognise"),   # a page that changed
     ((200, FORM, "/student"), NeedLogin, "session has expired"),
     ((429, "", "/student"), Busy, "too many requests"),
 ])
 def test_the_courses_page_never_takes_another_page_for_no_courses(answer, kind, words):
+    from studia import health
+
     with pytest.raises(kind, match=words):
         IEULearn(Site({("GET", "/student"): answer})).dashboard()
+    assert health.is_changed("ieulearn", "courses") is (kind is SiteChanged)
 
 
 @pytest.mark.parametrize("answer,kind,words", [
@@ -231,14 +236,18 @@ def _service(tmp_path):
 
 @pytest.mark.parametrize("answer", [Busy("IEULearn didn't finish signing you in."),
                                     AuthError("Kimlik servisine ulaşılamadı.", server_error=True),
-                                    SiteChanged("IEULearn now signs you in on another site.")])
+                                    SiteChanged("IEULearn now signs you in on another site."),
+                                    # (its copy raised a TypeError: PageChanged is made from its service and part)
+                                    PageChanged("ieulearn", "signin", "IEULearn now signs you in on another site "
+                                                                      "(login.ieu.edu.tr).")])
 def test_ieulearn_answering_without_a_sign_in_isnt_asked_again_at_once(learn, tmp_path, answer):
     sync = _service(tmp_path)
     secrets_store.set_credentials("ali", "right")
     learn.answer = answer
     for _ in range(5):                                   # downloads, files and the helper asking one after another
-        with pytest.raises(type(answer)):
+        with pytest.raises(type(answer)) as e:
             sync.ensure_login()
+        assert str(e.value) == str(answer) and getattr(e.value, "part", None) == getattr(answer, "part", None)
     assert learn.logins == 1 and not secrets_store.rejected()
     learn.answer = None
     sync.allow_sign_in()                                 # you pressed Sync: tried at once
@@ -331,10 +340,12 @@ def test_each_courses_problem_is_one_plain_line_naming_the_courses(tmp_path, mon
     (tmp_path / "2").mkdir()
     lib, sync, _ = _content_service(tmp_path / "2", monkeypatch, {"a": Busy("IEULearn is busy right now (too many "
                                     "requests). Try again in a few minutes."), "b": ValueError("bad page")})
-    assert sync.sync_content()["errors"] == [
-        "EEE 215: IEUStudia couldn't read the course's pages (IEULearn's pages may have changed). If it stays like "
-        "this, check for an IEUStudia update in Settings → About.",
-        "MATH 240: IEULearn is busy right now (too many requests). Try again in a few minutes."]
+    res = sync.sync_content()
+    # a page the parser fails on is IEULearn's page changing: no error line of its own, health says what (and the
+    # course's other parts, its announcements here, are still read)
+    assert res["errors"] == ["MATH 240: IEULearn is busy right now (too many requests). Try again in a few minutes."]
+    assert res["changed"] == ["ieulearn"] and lib.course_info("b").get("content_at")
+    assert sync._content_problem(ValueError("bad page")).startswith("IEUStudia couldn't read the course's pages")
 
 
 def test_a_session_that_runs_out_halfway_is_signed_in_again_once_not_the_sign_in_screen(tmp_path, monkeypatch, learn):

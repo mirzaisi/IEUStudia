@@ -44,10 +44,21 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from . import aierrors
+from . import aierrors, health
 from .cancel import Cancelled
-from .i18n import N_, date_short, day_month, language, t
+from .i18n import N_, Retold, date_short, day_month, language, retell, t
 from .notices import ALERTS_MD
+
+# the kinds of lines Claude Code's stream-json and the Codex CLI's --json print: output with none of them (a CLI that
+# prints its answers another way since an update) is that CLI changing, said as that (health), not "no answer"
+CLAUDE_KINDS = frozenset({"system", "assistant", "user", "result", "stream_event", "rate_limit_event",
+                          "control_response", "control_request", "keep_alive"})
+CODEX_KINDS = frozenset({"thread.started", "turn.started", "turn.completed", "turn.failed", "item.started",
+                         "item.updated", "item.completed", "error"})
+
+
+def _kinds(kinds: list[str]) -> str:
+    return ", ".join(list(dict.fromkeys(kinds))[:12]) or "none"
 
 log = logging.getLogger("studia")
 
@@ -487,7 +498,9 @@ def _claude_failure(message: str) -> RuntimeError:
         if _version_of(info.get("version") or "") >= CLAUDE_KNOWN_GOOD:
             log.warning("Claude Code %s turned down a flag IEUStudia passes: %s", info.get("version"),
                         (message or "")[:300])
-            return RuntimeError(text)                 # not older: kept (an update of it can't help)
+            # not older: kept (an update of it can't help); Claude Code changed how it is asked: a newer IEUStudia
+            return health.changed("claude", "answers", f"Claude Code {info.get('version')} turned down a flag "
+                                                       f"IEUStudia passes", message=text)
         log.warning("Claude Code is too old for IEUStudia: %s", (message or "")[:300])
         _claude_too_old(info.get("path", ""))
         return RuntimeError(text)
@@ -496,6 +509,8 @@ def _claude_failure(message: str) -> RuntimeError:
     if service is not None and text == str(service):
         log.warning("Claude failed on its side: %s", (message or "")[:800])
         return service
+    if text == t(UNREACHABLE):                    # the connection: a reading in parts asks again by itself
+        return aierrors.Dropped(text)
     return RuntimeError(text)
 
 
@@ -596,14 +611,19 @@ def ask_json(system_prompt: str, text: str, *, model: str = "sonnet", effort: st
 
 def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "sonnet", effort: str = "",
              cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
-             timeout_s: int = 900, *, think: bool = True) -> dict[str, Any]:
+             timeout_s: int = 900, *, think: bool = True, drops: Optional[int] = None,
+             on_wait: Optional[Callable[[dict[str, Any]], None]] = None) -> dict[str, Any]:
     """One request (no tools, no history) to the AI the user chose: text, usage, model. ``effort``: the reasoning
     level (effort.resolve; "" = low for Claude, the one ``model`` meant for ChatGPT, thinking off offline).
     ``think=False``: a task that needs no extended thinking (a summary of given facts) - Claude then answers without
-    it."""
+    it. ChatGPT only (the CLIs ask again inside): ``drops``, how many times a connection that dropped before any of
+    the answer came is asked again (None: chatgpt.one_shot's default), ``on_wait``: told before each such wait."""
     p = provider()
     if p == "chatgpt":
-        return _chatgpt_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
+        kw: dict[str, Any] = {"on_wait": on_wait}
+        if drops is not None:
+            kw["drops"] = drops
+        return _chatgpt_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s, **kw)
     if p == "codex":
         return _codex_one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s)
     if p == "local":
@@ -667,12 +687,19 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
                     return
 
         threading.Thread(target=killer, daemon=True).start()
+        kinds: list[str] = []                      # what it printed (see CLAUDE_KINDS)
         try:
             for raw in proc.stdout:
                 try:
                     ev = json.loads(raw.decode("utf-8", "replace"))
                 except ValueError:
+                    if raw.strip() and len(kinds) < 400:
+                        kinds.append("(not JSON)")
                     continue
+                if not isinstance(ev, dict):
+                    continue
+                if len(kinds) < 400:
+                    kinds.append(str(ev.get("type")))
                 if ev.get("type") == "assistant":
                     for block in (ev.get("message") or {}).get("content") or []:
                         if block.get("type") == "text" and block.get("text"):
@@ -693,9 +720,18 @@ def _claude_one_shot(system_prompt: str, content: list[dict[str, Any]], model: s
         log.warning("Claude Code did not answer within %s s: %s", timeout_s, err[-400:])
         raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
                              "reasoning level."))
+    if not result and proc.returncode == 0 and kinds and not CLAUDE_KINDS & set(kinds):
+        # it ended well and printed, but nothing IEUStudia reads: Claude Code's output changed (an update of it)
+        raise health.changed("claude", "answers", f"Claude Code {claude_cli_info().get('version')} printed "
+                                                  f"{len(kinds)} lines of kinds IEUStudia doesn't know: {_kinds(kinds)}")
+    if result and not result.get("is_error") and result.get("subtype") in (None, "success") \
+            and "result" not in result and not text_parts:
+        raise health.changed("claude", "answers", f"Claude Code {claude_cli_info().get('version')}'s result has no "
+                                                  f"text ({', '.join(sorted(result)[:12])})")
     if not result or result.get("is_error") or result.get("subtype") not in (None, "success"):
         msg = result.get("result") or (err.strip().splitlines() or [t("Claude did not return a result.")])[-1]
         raise _claude_failure(msg)
+    health.ok("claude", "answers")
     return {
         "text": result.get("result") or "".join(text_parts),
         "usage": usage_of(result),
@@ -796,11 +832,18 @@ class ClaudeSession:
             interrupted_at: Optional[float] = None
             timed_out = False
             result: Optional[dict[str, Any]] = None
+            kinds: list[str] = []                  # what it printed this turn (see CLAUDE_KINDS)
             while True:
                 try:
                     ev = self._events.get(timeout=0.2)
                 except queue.Empty:
                     ev = {}
+                if ev and isinstance(ev, dict) and len(kinds) < 400:
+                    kinds.append(str(ev.get("type")))
+                    if len(kinds) >= 20 and not CLAUDE_KINDS & set(kinds) and interrupted_at is None:
+                        self.kill()               # 20 lines and not one IEUStudia reads: not waited for to the end
+                        raise health.changed("claude", "answers", f"a chat's turn printed only kinds IEUStudia "
+                                                                  f"doesn't know: {_kinds(kinds)}")
                 now = time.monotonic()
                 if interrupted_at is None and ((stop is not None and stop.is_set()) or now - started > timeout_s):
                     timed_out = not (stop is not None and stop.is_set())
@@ -842,6 +885,9 @@ class ClaudeSession:
                     break
             self.last_used = time.monotonic()
             if timed_out:
+                if kinds and not CLAUDE_KINDS & set(kinds):     # it printed, but nothing IEUStudia reads: changed
+                    raise health.changed("claude", "answers", f"a chat's turn printed only kinds IEUStudia doesn't "
+                                                              f"know: {_kinds(kinds)}")
                 raise RuntimeError(t("Claude took too long to answer. Try again; if it keeps happening, pick a lower "
                                      "reasoning level."))
             text = _join(blocks)
@@ -849,6 +895,7 @@ class ClaudeSession:
                 if result is None or result.get("is_error") or result.get("subtype") not in (None, "success"):
                     raise _claude_failure((result or {}).get("result") or "")
                 text = text or str(result.get("result") or "")
+                health.ok("claude", "answers")
             return {"text": text, "usage": usage_of(result or {}), "stopped": interrupted_at is not None}
 
     # ---------------------------------------------------------------- shutdown
@@ -913,13 +960,34 @@ def provider() -> str:
     return "claude" if claude_cli_info()["available"] else "none"
 
 
+def ai_label(p: str) -> str:
+    """The name of an AI as the page shows it: "ChatGPT", "Claude", "Offline model" (in the language shown), "" for
+    none."""
+    label = PROVIDER_LABELS.get(p, "")
+    return t(label) if p == "local" else label
+
+
+def chosen_now(seen: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+    """The AI as chosen now, for the first screen, from the settings alone (no program is started): ``seen``, the
+    last look at it (api._system_info), when it is about the same AI; else only its name, usable once the next look
+    says so. None before an AI is chosen."""
+    from . import appconfig
+
+    p = appconfig.load().ai_provider
+    if not p:
+        return seen
+    out = dict(seen or {}) if (seen or {}).get("provider") == p else {
+        "available": False, "can_plans": p in PLAN_AIS, "can_images": p in PLAN_AIS}
+    out.update(provider=p, label=ai_label(p))
+    return out
+
+
 def ai_info() -> dict[str, Any]:
     """The chosen AI and whether it can be used now (fast: no sign-in check)."""
     from . import appconfig
 
     p = provider()
-    label = PROVIDER_LABELS.get(p, "")
-    out: dict[str, Any] = {"provider": p, "label": t(label) if p == "local" else label, "available": False, "path": "",
+    out: dict[str, Any] = {"provider": p, "label": ai_label(p), "available": False, "path": "",
                            "version": "", "can_plans": p in PLAN_AIS, "can_images": p in PLAN_AIS}
     if p == "claude":
         out.update(claude_cli_info())
@@ -982,6 +1050,11 @@ def claude_auth() -> dict[str, Any]:
         d = json.loads(out[out.find("{"):out.rfind("}") + 1])
     except ValueError:
         return {"logged_in": False, "plan": "", "email": "", "error": out.strip()[-300:]}
+    if not isinstance(d, dict) or "loggedIn" not in d:      # its answer no longer says whether it is signed in
+        health.changed("claude", "signin", f"auth status --json of Claude Code {info.get('version')} has no loggedIn "
+                                           f"({', '.join(sorted(d)[:12]) if isinstance(d, dict) else type(d).__name__})")
+        return {"logged_in": False, "plan": "", "email": "", "error": health.said("claude", "signin")}
+    health.ok("claude", "signin")
     # authMethod: "claude.ai" (the subscription), "api_key" (apiKeySource: ANTHROPIC_API_KEY, "/login managed key" for
     # an Anthropic Console sign-in, apiKeyHelper), "api_key_helper", "oauth_token" (CLAUDE_CODE_OAUTH_TOKEN),
     # "third_party", "none"; before 2.1: "apiKey", "console"
@@ -1219,6 +1292,8 @@ def _codex_text(system_prompt: str, content: list[dict[str, Any]], work: Path) -
 
 _CODEX_NETWORK = ("stream disconnected", "error sending request", "dns error", "connection refused", "connection reset",
                   "failed to connect", "timed out", "network is unreachable", "no route to host")
+CODEX_UNREACHABLE = N_("ChatGPT could not be reached through the Codex CLI: check your internet connection (on campus "
+                       "Wi-Fi, make sure you are signed in to it), then try again.")
 
 
 def _codex_error(message: str) -> str:
@@ -1238,8 +1313,7 @@ def _codex_error(message: str) -> str:
     if cert_date_said(message):                       # a wrong date on this PC ("error sending request" comes with it)
         return clock_tls_text()
     if any(k in low for k in _CODEX_NETWORK):
-        return t("ChatGPT could not be reached through the Codex CLI: check your internet connection (on campus Wi-Fi, "
-                 "make sure you are signed in to it), then try again.")
+        return t(CODEX_UNREACHABLE)
     if "contains a virus" in low or "potentially unwanted software" in low:
         return t("Windows Security (or your antivirus) blocked the Codex CLI. It comes from OpenAI: if your antivirus "
                  "put it in quarantine, restore it there, then try again.")
@@ -1268,7 +1342,8 @@ def _codex_failure(message: str) -> RuntimeError:
     if service is not None and text == str(service):
         log.warning("ChatGPT (Codex CLI) failed on its side: %s", (message or "")[:800])
         return service
-    err = RuntimeError(text)
+    # the connection ("stream disconnected", after the CLI's own retries): a reading in parts asks again by itself
+    err = aierrors.Dropped(text) if text == t(CODEX_UNREACHABLE) else RuntimeError(text)
     err.codex_message = message or ""          # type: ignore[attr-defined] - its own words (a model turned down)
     return err
 
@@ -1334,14 +1409,21 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
         texts: list[str] = []
         usage: dict[str, int] = {}
         error = ""
+        kinds: list[str] = []                      # what it printed (see CODEX_KINDS)
         try:
             for raw in proc.stdout:
                 try:
                     ev = json.loads(raw.decode("utf-8", "replace"))
                 except ValueError:
+                    if raw.strip() and len(kinds) < 400:
+                        kinds.append("(not JSON)")
+                    continue
+                if not isinstance(ev, dict):
                     continue
                 kind = ev.get("type")
-                item = ev.get("item") or {}
+                if len(kinds) < 400:
+                    kinds.append(str(kind))
+                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
                 if kind == "item.completed" and item.get("type") == "agent_message" and item.get("text"):
                     texts.append(item["text"])
                     if on_text:
@@ -1362,6 +1444,12 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
         log.warning("The Codex CLI did not answer within %s s: %s", timeout_s, err[-400:])
         raise RuntimeError(t("ChatGPT took too long to answer through the Codex CLI. Try again; if it keeps happening, "
                              "pick a lower reasoning level."))
+    if not texts and proc.returncode == 0 and not error and kinds and (
+            not CODEX_KINDS & set(kinds) or "turn.completed" in kinds):
+        # it ended well and printed, but no answer IEUStudia can read: the Codex CLI's output changed (an update)
+        known = _codex_versions.get(cmd[0])
+        raise health.changed("codex", "answers", f"the Codex CLI {known[1] if known else ''} printed {len(kinds)} "
+                                                 f"lines without an answer IEUStudia reads: {_kinds(kinds)}")
     if not texts:
         last = error or _codex_last_words(err)
         if not error and re.search(r"unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)",
@@ -1370,15 +1458,17 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
             version = known[1] if known else ""
             if version and _version_of(version) >= CODEX_KNOWN_GOOD:     # not older: an update of it can't help
                 log.warning("The Codex CLI %s turned down a flag IEUStudia passes: %s", version, last)
-                raise RuntimeError(t("This Codex CLI ({version}) is newer than this IEUStudia knows, and it turned "
-                                     "down how IEUStudia asks it. Look for a new version of IEUStudia in Settings → "
-                                     "About.", version=version))
+                raise health.changed("codex", "answers", f"the Codex CLI {version} turned down a flag IEUStudia passes",
+                                     message=t("This Codex CLI ({version}) is newer than this IEUStudia knows, and it "
+                                               "turned down how IEUStudia asks it. Look for a new version of "
+                                               "IEUStudia in Settings → About.", version=version))
             log.warning("The Codex CLI at %s is too old for IEUStudia: %s", cmd[0], last)
             _codex_too_old(cmd[0])
             raise RuntimeError(_codex_old_message(version))
         if not last:
             log.warning("The Codex CLI ended with %s and said nothing: %s", proc.returncode, err[-800:])
         raise _codex_failure(last)
+    health.ok("codex", "answers")
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
             "model": _codex_model() or "Codex's default model"}
 
@@ -1622,8 +1712,9 @@ def login_state(which: str) -> dict[str, Any]:
     "asks_code", "error", "started"}."""
     with _logins_lock:
         a = _logins.get(which) or {}
-        return {k: a.get(k, d) for k, d in (("state", ""), ("page", ""), ("code", ""), ("device", False),
-                                              ("asks_code", False), ("error", ""), ("started", 0.0))}
+        # (why it failed: in the language of now, also when it was said before a language switch)
+        return {k: retell(a.get(k, d)) for k, d in (("state", ""), ("page", ""), ("code", ""), ("device", False),
+                                                      ("asks_code", False), ("error", ""), ("started", 0.0))}
 
 
 def start_login(which: str, emit: LoginEmit = lambda e: None, device: bool = False) -> dict[str, Any]:
@@ -1733,16 +1824,18 @@ def _watch_login(which: str, attempt: dict[str, Any], emit: LoginEmit) -> None:
     said = list(attempt["lines"].copy())                     # (copy: the reader may still be adding to it)
     log.info("Sign-in to %s ended with code %s after %.0f s%s:\n%s", which, code, seconds,
              f" ({attempt['ended']})" if attempt["ended"] else "", "\n".join(said[-12:]) or "(it printed nothing)")
+    error: str = ""
     if attempt["ended"] == "cancel":
-        state, error = "", ""
+        state = ""
     elif attempt["ended"] == "time":
-        state, error = "error", t("The sign-in waited 15 minutes and was stopped. Click the button to start it again.")
+        state, error = "error", Retold(lambda: t("The sign-in waited 15 minutes and was stopped. Click the button to "
+                                                 "start it again."))
     else:
         auth = claude_auth() if which == "claude" else codex_auth()
         if auth.get("logged_in"):
-            state, error = "done", ""
+            state = "done"
         else:
-            state, error = "error", _login_failure(which, code, said, seconds)
+            state, error = "error", Retold(lambda: _login_failure(which, code, said, seconds))
             log.warning("Sign-in to %s did not sign in: %s", which, error)
     with _logins_lock:
         attempt.update(state=state, error=error)

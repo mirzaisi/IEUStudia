@@ -238,11 +238,17 @@ class Engine:
 
     # ------------------------------------------------------------------ transcription
     def transcribe(self, audio: np.ndarray, progress: Progress, cancel: Optional[threading.Event],
-                   meta: Optional[dict[str, Any]] = None, speech: Optional[Speech] = None) -> Transcript:
-        """``speech``: find_speech's result for this audio, when a download thread found it already."""
+                   meta: Optional[dict[str, Any]] = None, speech: Optional[Speech] = None,
+                   languages: Optional[Sequence[str]] = None) -> Transcript:
+        """``speech``: find_speech's result for this audio, when a download thread found it already. ``languages``:
+        the languages to decode this recording in (of those the model knows), instead of the engine's own - e.g. one
+        for a YouTube video spoken in it (a study plan listening to it): each one more costs a decoding pass."""
         if self._wm is None or self._decoder is None:
             self.ensure_model(progress, cancel)
         assert self._wm is not None and self._decoder is not None
+        langs = tuple(dict.fromkeys(x for x in (languages or ()) if x in self.languages
+                                    or x in (getattr(self._wm, "supported_languages", None) or ())))
+        self._mine.languages = langs or self.languages
         meta = dict(meta or {})
         timings: dict[str, float] = {}
         duration = len(audio) / SR
@@ -314,6 +320,10 @@ class Engine:
         )
 
     # ------------------------------------------------------------------ internals
+    def _languages(self) -> tuple[str, ...]:
+        """The languages this thread's recording is decoded in (see transcribe)."""
+        return getattr(self._mine, "languages", None) or self.languages
+
     def _batch_size(self) -> int:
         if self._device != "cuda":
             return 4
@@ -335,7 +345,7 @@ class Engine:
         assert dec is not None
         try:
             enc = dec.encode(dec.features(audio, batch) if feats is None else feats)
-            lid = dec.language_prior(enc, self.languages) if priors is not None else []
+            lid = dec.language_prior(enc, self._languages()) if priors is not None else []
             passes = [dec.generate(enc, batch, langs, opts) for langs in langs_per_pass]
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower() or len(batch) == 1:
@@ -370,7 +380,7 @@ class Engine:
             key = checkpoint.make_key(
                 v=checkpoint.VERSION, id=delivery_id, audio=checkpoint.audio_digest(audio), gain=gain,
                 units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, app=__version__,
-                device=self._device, compute=self._compute, languages=list(self.languages),
+                device=self._device, compute=self._compute, languages=list(self._languages()),
                 card_workers=CARD_REPLICAS if self._device == "cuda" else 1,     # (how the card's batches run)
                 ct2=getattr(ct2, "__version__", ""),       # the processor's threads, or the graphics card itself
                 where=detect_gpu().get("name", "") if self._device == "cuda" else cpu_threads())
@@ -389,7 +399,7 @@ class Engine:
         self._mine.resumed = 0
         if n == 0:
             return [], []
-        langs = list(self.languages)
+        langs = list(self._languages())
         opts = DecodeOptions(batch_size=self._batch_size(), beam_size=5 if self._device == "cuda" else 2)
         cands: list[list[Decoded]] = [[] for _ in range(n)]
         # large-v3-turbo's language-ID head, read off the encoder pass it already made (~0.3 s per 15 minutes on the

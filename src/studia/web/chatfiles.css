@@ -64,6 +64,11 @@ button.cf-open:focus-visible { outline: 2px solid var(--blue); outline-offset: -
 .cf-reading-t { flex: 1; min-width: 0; display: grid; gap: 4px; font-size: 13px; }
 .cf-reading .cf-bar { margin: 4px 0 0; }
 .cf-reading.stopped { background: none; }
+/* each part being read: its pages, its clock, the notes so far (or the wait before asking again) */
+.cf-read-part { font-size: 12px; color: var(--text-2); line-height: 1.45; overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums; }
+.cf-read-part.warn { color: var(--text); }
+.cf-read-part.warn .i { color: var(--warning); vertical-align: -2px; }
 .cf-read-foot { display: inline-flex; align-items: center; gap: 4px; }
 .cf-side-btn.on { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
 .cf-side-btn .i { margin-right: 4px; }

@@ -1,0 +1,12 @@
+/* Settings → Services, and the warnings when a service IEUStudia reads changed on its side (services.js) */
+.svc-row { align-items: flex-start; }
+.svc-dot { flex: none; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%;
+  background: color-mix(in srgb, var(--text-3) 45%, transparent); }
+.svc-dot.ok { background: var(--green); }
+.svc-dot.down { background: var(--amber); }
+.svc-dot.changed { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.svc-what { margin: 4px 0 0; padding-left: 18px; color: var(--text-2); }
+.svc-warn .grow { min-width: 0; }
+.svc-safe { margin-top: 6px; color: var(--text-2); }
+.svc-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.svc-note .link { margin-left: 4px; }

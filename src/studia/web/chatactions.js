@@ -78,7 +78,8 @@
         const keys = a.date ? [dayOf(cid, a.date)].filter(Boolean)
           : (d ? d.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.days.filter((x) => x.mine !== false && !x.transcribed).map((x) => x.day_key)) : []);
         if (!keys.length) { toast(t("Those lectures are already transcribed (or not recorded yet)."), "info"); return; }
-        if (!confirm(t.n(keys.length, "Transcribe {n} class day of {course} on this PC?", "Transcribe {n} class days of {course} on this PC?", { course: course(cid).code || t("this course") }))) return;
+        if (!(await St.ask({ title: t.n(keys.length, "Transcribe {n} class day of {course} on this PC?", "Transcribe {n} class days of {course} on this PC?", { course: course(cid).code || t("this course") }),
+          ok: t("Transcribe") }))) return;
         let n = 0;
         const left = { unknown: 0, needs_section: false };     // only your section's lectures (catchup.js)
         for (const k of keys) { const r = await call("transcribe_day", k, !a.date); if (r.ok) { n += r.queued || 0; left.unknown += r.unknown || 0; left.needs_section = left.needs_section || !!r.needs_section; } }   // a day you named queues also when it matches no section

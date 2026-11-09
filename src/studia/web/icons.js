@@ -121,6 +121,11 @@
     bookmark: '<path d="M6.5 4.5A1.5 1.5 0 0 1 8 3h8a1.5 1.5 0 0 1 1.5 1.5v16l-5.5-3.6-5.5 3.6z"/>',
     link: '<path d="M10.2 13.8a4.5 4.5 0 0 0 6.4 0l2.8-2.8a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M13.8 10.2a4.5 4.5 0 0 0-6.4 0L4.6 13a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
     "hard-drive": '<path d="M21.5 13H2.5M5.4 5.6 2.5 13v5a2 2 0 0 0 2 2h15a2 2 0 0 0 2-2v-5l-2.9-7.4a1.8 1.8 0 0 0-1.7-1.1H7.1a1.8 1.8 0 0 0-1.7 1.1z"/><path d="M6.5 16.5h.01M10 16.5h.01"/>',
+    // the two places to reach the maker (contact.js): their marks drawn in this set's line style, one colour
+    instagram: '<rect x="3" y="3" width="18" height="18" rx="5.2"/><circle cx="12" cy="12" r="4.1"/>' +
+      '<circle cx="17.2" cy="6.8" r="1.05" fill="currentColor" stroke="none"/>',
+    linkedin: '<rect x="3" y="3" width="18" height="18" rx="3.2"/><path d="M8 10.6v5.9M11.6 16.5v-5.9M11.6 13.4a2.6 2.6 0 0 1 5.2 0v3.1"/>' +
+      '<circle cx="8" cy="7.7" r="1.05" fill="currentColor" stroke="none"/>',
   };
 
   function svg(name, cls) {

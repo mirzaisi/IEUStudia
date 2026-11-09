@@ -25,7 +25,7 @@
       <li>${window.LS_LINUX ? t("<b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with a key in your desktop's keyring, so only your user account can read it. It never goes to any other server: there is no IEUStudia server.") : t("<b>Your EkoID password stays with you.</b> It is sent only to learn.ieu.edu.tr to sign you in. On this PC it is stored encrypted with Windows' own protection, so only your Windows account can read it. It never goes to any other server: there is no IEUStudia server.")}</li>
       <li>${t("<b>Your lectures stay on this PC.</b> Audio is transcribed on your own computer. Recordings, slides and materials belong to your lecturers and the university: keep them for your own study and do not share them.")}</li>
       <li>${t("<b>AI is optional and can make mistakes.</b> Nothing is sent to an AI service until you use an AI feature. Then the lectures and course files you chose are sent to the service you picked (OpenAI or Anthropic, under your own account). Always check AI answers against your lectures and materials.")}</li>
-      <li>${t("<b>New versions.</b> About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. That request says nothing about you or your courses. You can turn it off in Settings → About.")}</li></ul>`;
+      <li>${t("<b>New versions.</b> About once a day IEUStudia asks GitHub, where it's published, whether there's a new version, and fetches a tiny file there so the number of people using each version can be counted. Nothing about you is sent. You can turn it off in Settings → About.")}</li></ul>`;
   St.NOTICE = NOTICE;
 
   // ------------------------------------------------------------------ flow
@@ -147,7 +147,8 @@
       <div class="su-hero"><img class="su-logo" src="../assets/logo.svg" alt=""><div><h1>${t("Welcome to IEUStudia")}</h1>
         <p class="lead">${t("Your IEULearn courses, Panopto lectures, materials and announcements in one place. IEUStudia turns the lectures into text on this PC (English with Turkish passages) and picks out what the lecturer says about quizzes, exams and homework. AI help is optional and uses your own ChatGPT or Claude plan.")}</p></div></div>
       <div class="card su-notice"><h3>${I("shield", "sm")} ${t("Before you start")}</h3>${NOTICE()}
-        <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> ${t("I have read this and want to continue")}</label></div>`;
+        <label class="su-accept"><input type="checkbox" class="check" data-act="su-accept" ${U.accepted ? "checked" : ""}> ${t("I have read this and want to continue")}</label></div>
+      ${St.contact ? St.contact.line() : ""}`;
   }
   function stepPc() {
     if (!U.st) return U.error ? `<div class="callout error">${I("x-circle")}<div>${esc(U.error)}</div>
@@ -781,7 +782,11 @@
   };
   // Copy link, Copy details, a code or a command: when Windows refuses the clipboard (another program holds it open),
   // the text is shown to copy by hand, or to photograph, with another try. A red toast alone left the link, or the
-  // report meant for whoever helps, nowhere
+  // report meant for whoever helps, nowhere. Every other copy button uses it too (St.copied: a lecture moment's link,
+  // a chat answer, Copy for AI, the course export's)
+  St.copied = copied;
+  // (over a dialog that is open, such as the course export's "The zip is ready": a layer of its own, so that one stays
+  // as it is under it, with its path and its steps; Close, Escape and a click beside it close only the layer)
   function copied(r, text, done) {
     if (r.ok) { toast(done, "success"); return; }
     if (!text) { toast(r.error, "error"); return; }
@@ -791,13 +796,36 @@
     // (on Linux it copies with wl-copy, xclip or xsel, or the page itself: not Windows' words there)
     const why = window.LS_LINUX ? t("IEUStudia couldn't use the clipboard just now (it copies with wl-copy, xclip or xsel). Click Try again, or copy it from the box yourself: click in the box, press Ctrl+A, then Ctrl+C.")
       : t("Windows didn't let IEUStudia use the clipboard just now (another program may be using it). Click Try again, or copy it from the box yourself: click in the box, press Ctrl+A, then Ctrl+C.");
-    St.modal(`<h2>${t("Copy failed")}</h2>
+    const over = !!$("#overlay .modal");          // (a dialog is open: this one goes over it, as a layer)
+    const html = `<h2>${t("Copy failed")}</h2>
       <p class="lead">${why}</p>
       <textarea class="input cn-copybox" id="cn-copybox" readonly spellcheck="false" rows="${rows}">${esc(text)}</textarea>
       <div class="err-txt cn-copyerr" id="cn-copy-err"></div>
-      <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button><button class="btn primary" data-act="ai-copy-again">${t("Try again")}</button></div>`);
+      <div class="actions"><button class="btn" data-act="${over ? "cn-copy-close" : "modal-close"}">${t("Close")}</button><button class="btn primary" data-act="ai-copy-again">${t("Try again")}</button></div>`;
+    if (over) copyLayer(html); else St.modal(html);
     setTimeout(() => { const box = $("#cn-copybox"); if (box) { box.focus(); box.select(); } }, 30);
   }
+  function copyLayer(html) {
+    closeCopyLayer();
+    const box = document.createElement("div");
+    box.className = "backdrop ask-back"; box.id = "copy-fail"; box.dataset.act = "cn-copy-bg";
+    box.innerHTML = `<div class="modal" role="alertdialog" aria-modal="true" tabindex="-1">${html}</div>`;
+    document.body.appendChild(box);
+  }
+  function closeCopyLayer() {          // true when there was one (the dialog under it gets the focus back)
+    const layer = document.getElementById("copy-fail");
+    if (!layer) return false;
+    layer.remove();
+    const under = $("#overlay .modal"); if (under) under.focus({ preventScroll: true });
+    return true;
+  }
+  St.closeCopyLayer = closeCopyLayer;
+  document.addEventListener("keydown", (e) => {        // (before app.js's: Escape there would close the dialog under it)
+    const layer = document.getElementById("copy-fail");
+    if (!layer) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCopyLayer(); }
+    else if (e.key === "Tab" && St.trapTab) { e.stopPropagation(); St.trapTab(e, layer.querySelector(".modal")); }
+  }, true);
   Object.assign(A, {
     "ai-install": async (el) => {
       const which = el.dataset.id;
@@ -923,7 +951,7 @@
       loadAi("chatgpt"); rerenderAi();
     },
     "ai-signout": async (el) => {
-      if (!confirm(t("Sign out of ChatGPT in IEUStudia? OpenAI ends the session; you can sign in again any time."))) return;
+      if (!(await St.ask({ title: t("Sign out of ChatGPT?"), text: t("OpenAI ends IEUStudia's session. You can sign in again any time."), ok: t("Sign out") }))) return;
       const r = await call("ai_sign_out", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       toast(r.revoked ? t("Signed out of ChatGPT.") : t("Signed out here. OpenAI didn't confirm it, so also disconnect IEUStudia in ChatGPT's settings."), r.revoked ? "success" : "info");
@@ -931,9 +959,11 @@
     },
     "ai-test": (el) => runTest(el.dataset.id),
     "ai-copy": async (el) => { const r = await call("copy_text", el.dataset.text); copied(r, el.dataset.text || "", t("Copied")); },
+    "cn-copy-close": () => { if (!closeCopyLayer()) St.closeModal(); },
+    "cn-copy-bg": (el, e) => { if (e.target === el) closeCopyLayer(); },
     "ai-copy-again": async () => {
       const c = U.copy || { text: "", done: "" }, r = await call("copy_text", c.text);
-      if (r.ok) { St.closeModal(); toast(c.done, "success"); return; }
+      if (r.ok) { if (!closeCopyLayer()) St.closeModal(); toast(c.done, "success"); return; }
       const err = $("#cn-copy-err");
       if (err) err.textContent = t("Still not possible. Copy it from the box yourself (Ctrl+A, then Ctrl+C), or take a screenshot of it.");
     },
@@ -1065,8 +1095,9 @@
     const startupOff = !window.LS_LINUX && app.tray && app.start_with_windows && U.startupReal === false;
     const use = st ? Object.entries({ speech_models: t("Speech models"), gpu_libraries: t("NVIDIA graphics card files"), offline_ai: t("Offline AI model"), library: t("Library and transcripts"), cache: t("Temporary files"), your_files: t("Your files (IEUStudia folder)") })
       .filter(([k]) => st.usage[k]).map(([k, l]) => `<div class="su-row"><span class="grow">${l}</span><b>${bytes(st.usage[k])}</b></div>`).join("") : St.skeleton();
-    const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t.html("Speech model “{name}”", { name: m.label }), m.size_mb]),
-      ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t.html("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
+    // (plain text: the row shows it escaped, and the question before removing it names it)
+    const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t("Speech model “{name}”", { name: m.label }), m.size_mb]),
+      ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
     return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}</h3>
         ${app.tray ? "" : `<div class="callout info bg-hint">${I("info")}<div>${t("Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.")}</div>
           <button class="btn sm" data-act="bg-on">${t("Turn them on")}</button></div>`}
@@ -1079,7 +1110,7 @@
         ${row(t("New files"), t("Slides and PDFs added to a course."), sw("notify_materials", !app.tray))}
         ${row(t("Quizzes and exams coming up"), t("A reminder the evening before an announced quiz, and before an exam week: from the background checks, or from IEUStudia itself while it's open."), sw("notify_reminders"))}</div>
       <div class="card set-card" id="set-storage"><h3>${t("Storage")}</h3>${use}
-        ${removable.map(([id, l, mb]) => row(l, t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}">${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
+        ${removable.map(([id, l, mb]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}">${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
       <div class="card set-card" id="set-about"><h3>${t("About")}</h3>
         ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, t("Free and open source (MIT License). Lectures are transcribed on this PC. AI runs only through the service you chose, and only when you ask."),
           `<div style="display:flex;gap:6px"><button class="btn ghost sm" data-act="logs">${I("terminal", "sm")} ${t("Logs")}</button><button class="btn sm" data-act="setup-again">${I("refresh", "sm")} ${t("Run setup again")}</button></div>`)}
@@ -1092,8 +1123,9 @@
           return row(t("New versions"), said, up.available
             ? `<button class="btn sm update-btn" data-act="update-open">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>`
             : `<button class="btn ghost sm" data-act="update-check">${I("refresh", "sm")} ${t("Check now")}</button>`)
-            + row(t("Look for new versions by itself"), t("About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. You decide when to update."), sw("check_updates"));
+            + row(t("Look for new versions by itself"), t("About once a day IEUStudia asks GitHub, where it's published, whether there's a new version, and fetches a tiny file there so the number of people using each version can be counted. Nothing about you is sent. You decide when to update."), sw("check_updates"));
         })()}
+        ${St.contact ? St.contact.card() : ""}
         ${St.sq.about()}
         <div class="su-notice-small">${NOTICE()}</div></div>`;
   };
@@ -1146,7 +1178,9 @@
     },
     "setup-ai": () => { St.startSetup().then(() => go(STEPS.indexOf("ai"))); },
     "del-component": async (el) => {
-      if (!confirm(t("Remove it from this PC? You can download it again later."))) return;
+      // (its name starts its own sentence: "Remove Speech model “Large v3” from this PC?" had a capital mid-sentence)
+      if (!(await St.ask({ title: t("Remove it from this PC?"), text: `${el.dataset.name || ""}: ${t("You can download it again later.")}`,
+        ok: t("Remove"), danger: true }))) return;
       const r = await call("delete_component", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       U.storage = r; St.renderView();

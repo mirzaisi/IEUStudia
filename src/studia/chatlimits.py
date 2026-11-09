@@ -17,8 +17,9 @@ slides and files the way each AI really takes them (not a ZIP: none of these fou
   pictures again with every question.
 - **Offline model**: text only, a few thousand tokens per request.
 
-A chat's material that doesn't fit in one request is read in batches first ("Read everything", chatread.py); each
-batch respects the same limits.
+A chat's material that doesn't fit in one request is read in parts first ("Read everything", chatread.py): the slides
+and files that don't go whole, and for the whole course the lectures whose full transcripts don't fit next to the rest
+(chat.py); each part respects the same limits.
 """
 
 from __future__ import annotations

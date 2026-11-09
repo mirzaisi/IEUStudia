@@ -525,7 +525,10 @@ def test_tokens_are_refreshed_and_an_ended_sign_in_is_forgotten(openai):
     assert chatgpt.status()["ended"] and chatgpt.status()["registered"]       # the set-up says it ended
 
 
-def test_answers_stream_and_errors_are_explained(openai):
+def test_answers_stream_and_errors_are_explained(openai, monkeypatch):
+    from studia import aierrors
+
+    monkeypatch.setattr(aierrors, "DROP_DELAYS", (0.0, 0.0))        # (a dropped connection is asked again: no wait here)
     _sign_in(openai)
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "Hel"},
                                         {"type": "response.output_text.delta", "delta": "lo"},
@@ -561,14 +564,26 @@ def test_answers_stream_and_errors_are_explained(openai):
     with pytest.raises(RuntimeError, match="VPN or proxy"):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
     openai.stream_answers = [(200, _sse({"type": "response.output_text.delta", "delta": "half"}))]   # cut off
-    with pytest.raises(RuntimeError, match="ended before"):
+    with pytest.raises(aierrors.Dropped, match="ended before") as cut:      # (some text came: not asked again here)
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
-    openai.stream_answers = [(0, requests.ConnectionError("HTTPSConnectionPool(host='api.openai.com'): Max retries"))]
+    assert cut.value.text and openai.stream_answers == []
+    # a connection that drops before any of the answer came (OpenAI's stream just stops, or the network): asked again
+    # twice, a few seconds apart, each wait told (a page says it), then said
+    ended = _sse({"type": "response.created"})
+    openai.stream_answers = [(200, ended), (0, requests.ConnectionError("reset")),
+                             (200, _sse({"type": "response.output_text.delta", "delta": "ok"},
+                                        {"type": "response.completed", "response": {}}))]
+    waits = []
+    assert chatgpt.one_shot("x", [{"type": "text", "text": "y"}], on_wait=waits.append)["text"] == "ok"
+    assert [(w["why"], w["try"]) for w in waits] == [("dropped", 2), ("dropped", 3)]
+    openai.stream_answers = [(0, requests.ConnectionError("HTTPSConnectionPool(host='api.openai.com'): Max retries"))] * 3
     with pytest.raises(RuntimeError, match="^Can't reach ChatGPT. Check your internet connection"):
         chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
+    assert openai.stream_answers == []
     openai.stream_answers = [(0, requests.ReadTimeout("Read timed out."))]
     with pytest.raises(RuntimeError, match="did not answer in time"):
-        chatgpt.one_shot("x", [{"type": "text", "text": "y"}])
+        chatgpt.one_shot("x", [{"type": "text", "text": "y"}], drops=0)            # (a reading asks again itself)
+    assert openai.stream_answers == []
 
 
 def test_stop_ends_a_quiet_answer_at_once(openai):
@@ -990,7 +1005,8 @@ def test_the_address_pasted_from_the_browser_finishes_the_sign_in(openai):
     assert made_up["state"] == "refused" and "isn't the address" in made_up["error"]
     assert chatgpt.paste_address(r["page"])["state"] == "refused"          # OpenAI's own page: not the way back
     wrong = chatgpt.paste_address(f"{q['redirect_uri']}?code=c0de&state=nope&client_id=oaiapp_123")
-    assert wrong["state"] == "refused" and "earlier sign-in" in wrong["error"]
+    # (a state no sign-in had: not "an earlier sign-in's", test_contact_leftovers)
+    assert wrong["state"] == "refused" and "isn't an address from the sign-in IEUStudia started" in wrong["error"]
     # (said while this sign-in waits, when its row has Open the page again and no Continue with ChatGPT)
     assert "Open the page again" in wrong["error"] and "Continue with ChatGPT" not in wrong["error"]
     assert chatgpt.status()["sign_in"]["state"] == "waiting" and not chatgpt.signed_in()

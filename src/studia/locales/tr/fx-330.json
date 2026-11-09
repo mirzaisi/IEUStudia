@@ -1,0 +1,29 @@
+{
+  "_unit": "fx-330: the fixes made while merging 3.3.0 (services that changed, search, contact, video plans, reading in parts)",
+  "Download the newest IEUStudia from its page on GitHub ({url}) and install it over this one: your library stays. If there's none yet, the developer can fix it: Settings → Services → Copy details gives them what they need, with nothing personal in it.": "En yeni IEUStudia'yı GitHub'daki sayfasından ({url}) indir ve bunun üzerine kur: kütüphanen yerinde kalır. Henüz yoksa geliştirici bunu düzeltebilir: Ayarlar → Hizmetler → Ayrıntıları kopyala, ona gereken her şeyi kişisel hiçbir bilgi olmadan verir.",
+  "IEULearn's sign-in page changed, so IEUStudia can't sign you in right now. Your password was not rejected and stays saved. Check for an IEUStudia update in Settings → About.": "IEULearn'ün giriş sayfası değişti, bu yüzden IEUStudia şu an senin adına giriş yapamıyor. Şifrende sorun yok, kayıtlı kalıyor. Ayarlar → Hakkında bölümünden IEUStudia güncellemesi var mı bak.",
+  "Open the download page": "İndirme sayfasını aç",
+
+  "The plan's limit of extra videos and checks was reached before IEUStudia could look further for it.": "IEUStudia bunun için daha fazla arayamadan planın ek video ve kontrol sınırına ulaşıldı.",
+  "{n} video from {searches} was checked, and it doesn't teach {what}.": "{searches} sonucunda kontrol edilen {n} videoda {what} öğretilmiyor.",
+  "{n} videos from {searches} were checked, and none of them teaches {what}.": "{searches} sonucunda kontrol edilen {n} videoda {what} öğretilmiyor.",
+  "IEUStudia listened to {n} video without usable captions and heard no speech in it.": "IEUStudia kullanılabilir altyazısı olmayan {n} videoyu dinledi ve içinde konuşma duymadı.",
+  "IEUStudia listened to {n} videos without usable captions and heard no speech in them.": "IEUStudia kullanılabilir altyazısı olmayan {n} videoyu dinledi ve içlerinde konuşma duymadı.",
+  "title, description and chapters only: it has no usable captions, and IEUStudia heard no speech in it when it listened": "yalnızca başlık, açıklama ve bölümler: kullanılabilir altyazısı yok ve IEUStudia onu dinlediğinde içinde konuşma duymadı",
+  "The checked video that teaches {what} has mistakes or explains it poorly, so the plan leaves it out.": "{what} konusunu öğreten kontrol edilmiş video hatalı ya da konuyu kötü anlatıyor, bu yüzden plan onu kullanmıyor.",
+  "The {n} checked videos that teach {what} have mistakes or explain it poorly, so the plan leaves them out.": "{what} konusunu öğreten kontrol edilmiş {n} video hatalı ya da konuyu kötü anlatıyor, bu yüzden plan onları kullanmıyor.",
+  "A checked video teaches {what}, but the plan doesn't use it.": "{what} konusunu kontrol edilmiş bir video öğretiyor, ama plan onu kullanmıyor.",
+  "{n} checked videos teach {what}, but the plan doesn't use them.": "{what} konusunu kontrol edilmiş {n} video öğretiyor, ama plan onları kullanmıyor.",
+  "not covered": "kapsanmıyor",
+  "No good video for {n} topic:": "{n} konu için iyi bir video yok:",
+  "click to see the skills and why": "becerileri ve nedenini görmek için tıkla",
+  "It also listened to {n} more, but heard no speech in it.": "{n} video daha dinledi, ama içinde konuşma duymadı.",
+  "IEUStudia listened to {n} video that has no usable captions, but heard no speech in it.": "IEUStudia kullanılabilir altyazısı olmayan {n} videoyu dinledi, ama içinde konuşma duymadı.",
+
+  "The search is still being prepared (the first start after an update). Try again in a moment.": "Arama hâlâ hazırlanıyor (güncellemeden sonraki ilk açılış). Biraz sonra tekrar dene.",
+  "{n} passage with some of the words": "kelimelerin bazılarının geçtiği {n} parça",
+  "Show more ({shown} of {n})": "Daha fazla göster ({n} sonuçtan {shown} tanesi gösteriliyor)",
+
+  "Remove the profile of {name} from this PC?": "{name} profili bu bilgisayardan kaldırılsın mı?",
+  "Remove it from this PC?": "Bu bilgisayardan kaldırılsın mı?"
+}

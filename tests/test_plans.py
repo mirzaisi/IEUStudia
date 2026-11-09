@@ -58,10 +58,12 @@ class Info:
     upload_date: str = ""
     view_count: int = 1
     chapters: list = dc.field(default_factory=list)
-    cues: list = dc.field(default_factory=lambda: [1])
+    cues: list = dc.field(default_factory=lambda: [real_videos.Cue(0, 5, "Hello and welcome.")])
     like_count: int = None
     channel_id: str = ""
     language: str = ""
+    problem: str = ""                   # what videos.caption_problem says of it ("" for one with captions)
+    heard: dict = dc.field(default_factory=dict)
 
     @property
     def has_captions(self):
@@ -71,6 +73,7 @@ class Info:
 VIDEOS = {"v1": Info("v1", "Bayes' Theorem - The Simplest Case", "Dr. Trefor Bazett", 331, chapters=[Ch(0, 100, "Deriving")]),
           "v2": Info("v2", "Conditional probability explained", "Khan Academy", 600),
           "v3": Info("v3", "No captions here", "Someone", 400, caption_kind="", cues=[])}
+HEARD: dict = {}                        # videos the fake listening heard: inspect() gives these
 
 
 def fake_videos(calls):
@@ -89,6 +92,7 @@ def fake_videos(calls):
     def inspect_many(ids, *, workers=4, langs=("en",), cancel=None, progress=None):
         calls["inspect"] += 1
         calls["langs"] = langs
+        calls.setdefault("inspected", []).append(list(ids))
         return {i: VIDEOS.get(i) or Info(i, "Preferred video", "Preferred channel", 500, channel_id="UC" + "p" * 22,
                                          like_count=40) for i in ids}
 
@@ -103,6 +107,10 @@ def fake_videos(calls):
 
     m.search_many = search_many
     m.inspect_many = inspect_many
+    m.inspect = lambda vid, langs=("en",), cancel=None: HEARD.get(vid) or VIDEOS[vid]
+    m.caption_problem = lambda info, langs=("en",): info.problem or ("" if info.has_captions else "none")
+    m.VideoError, m.BLOCKING_KINDS = real_videos.VideoError, real_videos.BLOCKING_KINDS
+    m.heard = lambda vid: {"cues": HEARD[vid].cues} if vid in HEARD else None
     m.channel_search_many = channel_search_many
     m.channels = lambda ids, **kw: calls.setdefault("channels", []).extend(ids) or {
         "UC" + "p" * 22: real_videos.Channel("UC" + "p" * 22, "Preferred channel", avatar="https://yt3.ggpht.com/p=s88")}
@@ -147,14 +155,20 @@ def fake_ask(log, fail_verify=None):
             if fail_verify and fail_verify.pop():
                 raise RuntimeError("Claude hiccup")
             return {"verdicts": [
-                {"concept": "c1", "video": "v1", "coverage": "full", "skills": [1], "start": 20, "end": 300,
+                {"concept": "c1", "video": "v1", "coverage": "full", "start": 20, "end": 300,
+                 "skills": [{"n": 1, "t": 40, "quote": "so the posterior is the prior times the likelihood"},
+                            {"n": 2, "t": 60, "quote": "we draw the tree with all of its branches"}],   # never said
                  "level": "course", "examples": True, "quality": 5, "note": "",
                  "quotes": [{"t": 40, "text": "so the posterior is the prior times the likelihood"},
                             {"t": 50, "text": "Bayes was a French mathematician who lived in Paris"}],     # not said
                  "errors": [{"t": 100, "text": "says P(A|B) = P(B|A); it is P(B|A)P(A)/P(B)"}]},
                 {"concept": "c1", "video": "v2", "coverage": "none"},
-                {"concept": "c2", "video": "v2", "coverage": "partial", "skills": [1], "start": 0, "end": 9999, "quality": 3},
+                {"concept": "c2", "video": "v2", "coverage": "partial", "start": 0, "end": 9999, "quality": 3,
+                 "skills": [{"n": 1, "t": 30, "quote": "the posterior is the prior times the likelihood divided by the evidence"}]},
                 {"concept": "c9", "video": "v1", "coverage": "full"}]}, usage           # never asked: ignored
+        if prompt.startswith("TASK: YouTube searches for what the videos checked so far do not teach"):
+            return {"searches": [{"concept": c, "queries": [f"{c} narrow", f"{c} other words", "already searched"]}
+                                 for c in re.findall(r"^(c\d+) — ", prompt, re.M)]}, usage
         if prompt.startswith("TASK: Build the final video study plan"):
             return {"title": "Bayes for Quiz 2", "summary": "Two videos.", "items": [
                 {"n": 1, "video": "v2", "start": 0, "end": 600, "role": "prerequisite", "concepts": ["c2"], "why": "basics"},
@@ -232,10 +246,15 @@ def test_plan_pipeline_end_to_end(env):
     assert second["title"] == "Bayes' Theorem - The Simplest Case" and second["channel"] == "Dr. Trefor Bazett"
     assert [(s["start"], s["end"]) for s in second["segments"]] == [(0, 120), (180, 300)] and second["minutes"] == 4
     assert second["segments"][1]["url"].endswith("&t=180s") and not second["whole"]
-    # "full" without every skill is only partial; what it does not teach is said
+    # "full" without every skill is only partial; what it does not teach is said; a skill counts with its own quote
+    # (the tree diagram's "quote" was never said)
+    sentence = "So the posterior is the prior times the likelihood divided by the evidence, and here is a tree diagram."
     assert second["teaches"] == [{"concept": "c1", "state": "partial", "skills": ["invert a conditional"],
-                                  "missing": ["use a tree diagram"]}]
+                                  "missing": ["use a tree diagram"],
+                                  "proofs": [{"skill": "invert a conditional", "t": 30, "text": sentence,
+                                              "url": "https://www.youtube.com/watch?v=v1&t=30s"}]}]
     assert [q["t"] for q in second["quotes"]] == [30] and second["quotes"][0]["url"].endswith("&t=30s")   # made-up quote dropped
+    assert second["quotes"][0]["skill"] == "invert a conditional"
     assert second["errors"][0]["t"] == 100 and second["limits"] == "no tree diagram" and second["state"] == "verified"
     assert second["excerpts"][0]["text"].startswith("[0:30] Bayes' Theorem") and "1 part read" in second["inspected"]
     assert first["whole"] and first["role"] == "prerequisite" and first["inspected"].startswith("captions (auto, en)")
@@ -243,12 +262,20 @@ def test_plan_pipeline_end_to_end(env):
     assert third["extra"] and third["role"] == "optional" and third["teaches"][0]["state"] == "unchecked"
     cov = {c["concept"]: c for c in r["coverage"]}
     assert cov["c1"]["state"] == "partial" and [x["how"] for x in cov["c1"]["skills"]] == ["video", "supplement"]
-    assert cov["c1"]["note"] == "trees only in the supplement"
+    assert cov["c1"]["note"] == "trees only in the supplement" and cov["c1"]["skills"][0]["quote"]["t"] == 30
+    # why no good video teaches the tree diagram: what was searched, checked and not listened to
+    # (its other skill is taught by a checked video: the one this is about is named)
+    assert cov["c1"]["why"] == ("2 videos from 4 YouTube searches were checked, and none of them teaches “use a tree "
+                                "diagram”. 1 more video had no usable captions, and IEUStudia didn't listen to it "
+                                "because no speech model for it is on this PC.") and cov["c1"]["why_en"] == cov["c1"]["why"]
+    assert not cov["c2"]["why"]
     assert cov["c2"]["state"] == "verified" and not cov["c3"]["in_scope"] and not cov["c3"]["searched"]
     cp = r["completeness"]
     assert cp["complete"] and (cp["skills"], cp["video"], cp["supplement"], cp["missing"]) == (3, 2, 1, 0)
     assert cp["goal"] == "Quiz 2 (LO3)" and cp["level"] == "written"            # a third only in writing: said so
     assert cp["headline"].startswith("Covered for Quiz 2 (LO3), but partly only in writing: of the 3 skills")
+    assert [(x["name"], x["skills"]) for x in cp["no_video"]] == [("Bayes' theorem", ["use a tree diagram"])]
+    assert cp["no_video"][0]["why"] == cov["c1"]["why"]
     assert [x["name"] for x in cp["extras"]] == ["Independence"]
     assert [x["concept"] for x in r["checklist"]] == ["c1", "c2"] and r["practice"][0]["concept"] == "c1"
     assert r["supplements"][1]["name"] == "Conditional probability" and r["practice"][0]["source"] == "Week01.pdf p.3"
@@ -261,11 +288,22 @@ def test_plan_pipeline_end_to_end(env):
     assemble = next(q for m, q in asked if q.startswith("TASK: Build the final video study plan"))
     assert "teaches skills 1" in assemble and "MISTAKE at 1:40" in assemble
     assert "no videos were searched: Independence" in assemble
+    assert "NO CHECKED VIDEO teaches skills 2 (2 videos from 4 YouTube searches were checked" in assemble
+    # more searches for the tree diagram: the AI's, never one already made; nothing new found, so the search stops
+    more = full["data"]["more"]
+    assert more["queries"] == {"c1": ["c1 narrow", "c1 other words"]} and len(more["rounds"]) == 1
+    assert {"c1 narrow", "c1 other words"} <= set(env.calls["queries"]) and "already searched" not in env.calls["queries"]
+    # the video without captions: no speech model here, so it was not listened to (and the plan says so)
+    assert full["data"]["inspect"]["videos"]["v3"]["listen"] == {"skipped": "no_model"}
     md = (env.tmp / "out").rglob("*.md")
     text = next(md).read_text(encoding="utf-8")
     assert "## Viewing plan" in text and "Dr. Trefor Bazett" in text and "| Bayes' theorem | yes | partial |" in text
     assert "Covered for Quiz 2 (LO3)" in text and "Possible mistake at" in text and "Independence" in text
-    assert [m for m, _ in asked] == ["sonnet", "haiku", "sonnet"]
+    assert "> No good video for Bayes' theorem (use a tree diagram): 2 videos from 4 YouTube searches" in text
+    assert "> 1 more was not listened to: no speech model for it is on this PC." in text
+    assert r["listened"] == {"heard": 0, "silent": 0, "seconds": r["listened"]["seconds"], "skipped": [
+        {"n": 1, "why": "no speech model for it is on this PC", "why_en": "no speech model for it is on this PC"}]}
+    assert [m for m, _ in asked] == ["sonnet", "haiku", "haiku", "sonnet"]
     assert full["usage"]["verify"]["model"] == "haiku" and full["usage"]["concepts"]["input_tokens"] == 100
     assert any(e["type"] == "plan" and e["status"] == "done" for e in env.events)
 
@@ -289,8 +327,8 @@ def test_a_failed_plan_resumes_without_redoing_finished_stages(env):
     assert p["status"] == "error" and "hiccup" in p["error"]
     runner.start(pid)
     assert wait_done(env.lib, pid)["status"] == "done"
-    assert (env.calls["search"], env.calls["inspect"]) == (1, 1)
-    assert [m for m, _ in asked] == ["sonnet", "haiku", "haiku", "sonnet"]
+    assert env.calls["queries"].count("bayes theorem example") == 1 and env.calls["inspected"].count(["v1", "v2", "v3"]) == 1
+    assert [m for m, _ in asked] == ["sonnet", "haiku", "haiku", "haiku", "sonnet"]       # + the more searches
 
 
 def test_finished_verify_requests_are_kept_when_a_plan_stops(env, monkeypatch):
@@ -331,17 +369,19 @@ def test_an_update_of_only_the_time_reuses_the_concepts_and_the_checked_videos(e
     runner.start(pid)
     wait_done(env.lib, pid)
     del asked[:]
+    before = (env.calls["search"], env.calls["inspect"])
     pid2 = runner.create("c", {"weeks": [1], "minutes": 60, "deadline": "2026-10-10"}, parent_id=pid)
     runner.start(pid2)
     assert wait_done(env.lib, pid2)["status"] == "done"
     assert len(asked) == 1 and asked[0][1].startswith("TASK: Build the final video study plan")
-    assert (env.calls["search"], env.calls["inspect"]) == (1, 1)
+    assert (env.calls["search"], env.calls["inspect"]) == before
     old, new = env.lib.plan(pid)["data"], env.lib.plan(pid2)["data"]
-    assert new["concepts"] == old["concepts"] and new["verify"] == old["verify"]
+    assert new["concepts"] == old["concepts"] and new["verify"] == old["verify"] and new["more"] == old["more"]
+    assert new["listen"] == old["listen"]
     del asked[:]
     pid3 = runner.create("c", {"weeks": [1], "minutes": 60, "difficulties": "trees"}, parent_id=pid2)
     runner.start(pid3)                                                # another question: everything again
-    assert wait_done(env.lib, pid3)["status"] == "done" and [m for m, _ in asked] == ["sonnet", "haiku", "sonnet"]
+    assert wait_done(env.lib, pid3)["status"] == "done" and [m for m, _ in asked] == ["sonnet", "haiku", "haiku", "sonnet"]
 
 
 def test_lectures_share_the_pack_and_keep_their_emphasised_moments(env, monkeypatch):
@@ -466,21 +506,35 @@ def test_quotes_must_be_in_the_captions():
 
 
 def test_verdicts_are_checked():
-    concepts = [{"id": "c1", "skills": ["a", "b", "c"]}, {"id": "c2", "skills": ["x"]}]
+    concepts = [{"id": "c1", "skills": ["a", "b", "c"]}, {"id": "c2", "skills": ["x"]}, {"id": "c3", "skills": ["y"]}]
     vids = {"v": {"duration_s": 600}}
-    excerpts = {"c1": {"v": [{"start": 0, "end": 120, "text": "[0:00] hello [1:00] the row echelon form is unique"}]}}
+    text = ("[0:00] hello [1:00] the row echelon form is unique [2:00] so to find it we swap the rows until the "
+            "pivot is on top and then we clear the column below it")
+    excerpts = {cid: {"v": [{"start": 0, "end": 180, "text": text}]} for cid in ("c1", "c2", "c3")}
     raw = {"verdicts": [
-        {"concept": "c1", "video": "v", "coverage": "full", "skills": [1, 3, 9, "x"], "start": 30, "end": 9000,
+        {"concept": "c1", "video": "v", "coverage": "full", "start": 30, "end": 9000,
+         "skills": [{"n": 1, "t": 120, "quote": "we swap the rows until the pivot is on top"},
+                    {"n": 3, "t": 130, "quote": "clear it"},                                 # too short to prove it
+                    {"n": 2, "t": 140, "quote": "we multiply the matrices together row by column"},   # never said
+                    {"n": 9, "quote": "the row echelon form is unique"}, "x"],
          "quotes": [{"t": 3, "text": "the row echelon form is unique"}, {"t": 4, "text": "something never said at all"}],
          "errors": [{"t": 7000, "text": "wrong sign"}, {"t": 5}]},
-        {"concept": "c2", "video": "v", "coverage": "full"},
+        {"concept": "c2", "video": "v", "coverage": "full", "skills": [1]},       # numbers only: claimed, not shown
+        {"concept": "c3", "video": "v", "coverage": "partial", "skills": [{"n": 1, "quote": "the pivot is on top and "
+                                                                                             "then we clear the column"}]},
         {"concept": "c2", "video": "w", "coverage": "full"}]}
-    out = clean_verdicts(raw, {"c1": {"v"}, "c2": {"v"}}, vids, concepts, excerpts)
+    out = clean_verdicts(raw, {"c1": {"v"}, "c2": {"v"}, "c3": {"v"}}, vids, concepts, excerpts)
     v1 = out["c1"]["v"]
-    assert v1["coverage"] == "partial" and v1["skills"] == ["a", "c"] and (v1["start"], v1["end"]) == (30, 600)
+    assert v1["coverage"] == "partial" and v1["skills"] == ["a"] and (v1["start"], v1["end"]) == (30, 600)
+    assert v1["proofs"] == {"a": {"t": 120, "text": "so to find it we swap the rows until the pivot is on top"}}
+    assert v1["claimed"] == ["a", "c", "b"] and v1["said"] == "full" and not v1["unproven"]
     assert v1["quotes"] == [{"t": 60, "text": "the row echelon form is unique"}] and v1["evidence"]
     assert v1["errors"] == [{"t": 600, "text": "wrong sign"}]
-    assert out["c2"]["v"]["coverage"] == "full" and out["c2"]["v"]["skills"] == ["x"] and "w" not in out["c2"]
+    # the AI said it teaches c2's skill, but no quote of it: nothing shows it, so it doesn't count at all
+    assert out["c2"]["v"]["coverage"] == "none" and out["c2"]["v"]["unproven"] and out["c2"]["v"]["claimed"] == ["x"]
+    assert "w" not in out["c2"]
+    # every skill with its quote: "full", whatever the AI called it
+    assert out["c3"]["v"]["coverage"] == "full" and out["c3"]["v"]["skills"] == ["y"]
 
 
 def test_concepts_are_cleaned_and_scope_is_clamped():
@@ -565,10 +619,11 @@ def test_a_plan_sends_its_reasoning_levels(env):
     pid = runner.create("c", {"weeks": [1], "effort": "high", "verify_effort": "medium"})
     runner.start(pid)
     assert wait_done(env.lib, pid)["status"] == "done"
-    assert {e for w, e in sent if w == "For"} == {"medium"}                     # checking the videos
-    assert {e for w, e in sent if w != "For"} == {"high"} and len(sent) >= 3    # the concepts and the plan
+    assert {e for w, e in sent if w in ("For", "YouTube")} == {"medium"}       # checking the videos, more searches
+    assert {e for w, e in sent if w not in ("For", "YouTube")} == {"high"} and len(sent) >= 3    # concepts, the plan
     est = plans.estimate(env.lib, env.svc.settings, "c", {"weeks": [1], "effort": "xhigh"})
     assert (est["effort"], est["verify_effort"]) == ("xhigh", "low") and est["verify_requests"] >= 1
+    assert est["minutes"] == "about 10–20 minutes"           # (with the listening and the more searches, measured)
 
 
 def test_the_videos_language_and_the_channel_lists_in_the_pipeline(env, monkeypatch):
@@ -585,7 +640,8 @@ def test_the_videos_language_and_the_channel_lists_in_the_pipeline(env, monkeypa
         raw, usage = base(system, prompt, model, cancel, **kw)
         if prompt.startswith("TASK: For each concept, judge"):
             raw = {"verdicts": [*raw["verdicts"], {"concept": "c1", "video": "own00000000", "coverage": "partial",
-                                                   "skills": [1], "start": 0, "end": 400, "quality": 4}]}
+                                                   "skills": [{"n": 1, "quote": "the posterior is the prior times the likelihood"}],
+                                                   "start": 0, "end": 400, "quality": 4}]}
         if prompt.startswith("TASK: Build the final video study plan"):
             raw = {**raw, "items": [*raw["items"], {"n": 5, "video": "own00000000", "role": "required", "concepts": ["c1"]}]}
         return raw, usage
@@ -598,8 +654,9 @@ def test_the_videos_language_and_the_channel_lists_in_the_pipeline(env, monkeypa
     assert full["scope"]["video_lang"] == "both" and env.calls["langs"] == ("en", "tr")
     assert "3 YouTube searches" in asked[0] and "the same in Turkish" in asked[0]
     # the preferred channel is searched itself, with each topic's first query
-    assert env.calls["channel_searches"] == [("UC" + "p" * 22, "bayes theorem example"),
-                                            ("UC" + "p" * 22, "conditional probability")]
+    assert env.calls["channel_searches"][:2] == [("UC" + "p" * 22, "bayes theorem example"),
+                                                ("UC" + "p" * 22, "conditional probability")]
+    assert ("UC" + "p" * 22, "c1 narrow") in env.calls["channel_searches"][2:]      # (more searches for c1's tree)
     cands = full["data"]["search"]
     assert cands["c1"][0]["id"] == "own00000000"                                   # preferred: first
     assert all(h["channel"] != "Khan Academy" for hs in cands.values() for h in hs)  # blocked (by name: no id known)
@@ -621,5 +678,284 @@ def test_a_video_in_another_language_is_replaced_by_the_next_candidate(env, monk
     runner.start(pid)
     assert wait_done(env.lib, pid)["status"] == "done"
     data = env.lib.plan(pid)["data"]
-    assert env.calls["inspect"] == 2 and data["inspect"]["videos"]["v1"]["wrong_lang"]
+    assert env.calls["inspected"][:2] == [["v1"], ["v2"]] and data["inspect"]["videos"]["v1"]["wrong_lang"]
     assert {c: list(per) for c, per in data["inspect"]["excerpts"].items()} == {"c1": ["v2"], "c2": ["v2"]}
+
+
+def test_a_video_without_captions_is_listened_to_and_checked_like_one_with_captions(env, monkeypatch):
+    from studia import listen
+
+    def hear(jobs, settings, todo, used, wanted, cancel, progress=None):
+        out = {}
+        for i, (vid, _, problem) in enumerate(todo, 1):
+            progress(i, len(todo), "transcribe", 0.5)
+            HEARD[vid] = dc.replace(VIDEOS[vid], caption_kind="speech", caption_lang="en",
+                                    heard={"model": "large-v3", "device": "cuda", "why": problem})
+            out[vid] = {"heard": True, "model": "large-v3", "device": "cuda"}
+        return out
+
+    monkeypatch.setattr(listen, "listen", hear)
+    monkeypatch.setitem(HEARD, "_", None)                      # (HEARD is put back after the test)
+    asked, base = [], fake_ask([])
+
+    def ask(system, prompt, model="sonnet", cancel=None, **kw):
+        asked.append(prompt)
+        raw, usage = base(system, prompt, model, cancel, **kw)
+        if prompt.startswith("TASK: For each concept, judge"):     # what it says teaches the tree diagram
+            raw = {"verdicts": [*raw["verdicts"], {"concept": "c1", "video": "v3", "coverage": "partial", "start": 0,
+                                                   "end": 400, "skills": [{"n": 2, "quote": "and here is a tree diagram"}]}]}
+        if prompt.startswith("TASK: Build the final video study plan"):
+            raw = {**raw, "items": [*raw["items"], {"n": 5, "video": "v3", "role": "required", "concepts": ["c1"]}]}
+        return raw, usage
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    full = env.lib.plan(pid)
+    data = full["data"]
+    assert data["inspect"]["listen"] == [{"video": "v3", "problem": "none", "concepts": ["c1", "c2"]}]
+    assert data["listen"] == {"heard": ["v3"], "skipped": {}}
+    row = data["inspect"]["videos"]["v3"]
+    assert row["caption_kind"] == "speech" and row["has_captions"] and row["listen"] == {"heard": True}
+    assert set(data["inspect"]["excerpts"]["c1"]) == {"v1", "v2", "v3"}
+    verify = next(q for q in asked if q.startswith("TASK: For each concept, judge"))
+    assert 'VIDEO v3 — "No captions here" by Someone · 6:40 · captions: transcribed from its sound by IEUStudia en' in verify
+    # both skills of Bayes' theorem are on checked video now: nothing more to search for
+    assert data["more"]["rounds"] == [] and not any(q.startswith("TASK: YouTube searches") for q in asked)
+    item = next(it for it in full["result"]["items"] if it["video"] == "v3")
+    assert item["state"] == "verified" and item["captions"] == "speech, en" and item["heard"]["model"] == "large-v3"
+    assert item["inspected"].startswith("what it says, transcribed from its sound on this PC (large-v3): 1 part read")
+    cov = {c["concept"]: c for c in full["result"]["coverage"]}
+    assert cov["c1"]["state"] == "verified" and [r["how"] for r in cov["c1"]["skills"]] == ["video", "video"]
+    assert full["result"]["completeness"]["no_video"] == []
+    assert full["result"]["listened"]["heard"] == 1 and full["result"]["listened"]["skipped"] == []
+    msgs = [e["message"] for e in env.events if e["type"] == "plan"]
+    assert "Listening to 1 video without captions: 1 of 1 · transcribing it" in msgs
+
+
+def test_more_searches_find_a_video_for_a_skill_no_checked_video_teaches(env, monkeypatch):
+    fake = sys.modules["studia.videos"]
+    first = fake.search_many
+
+    def search_many(queries, limit=8, **kw):
+        out = first(queries, limit, **kw)
+        if "c1 narrow" in out:                                     # the narrow search finds a video about the tree
+            out["c1 narrow"] = [*out["c1 narrow"], Hit("v4tree00001", "Tree diagrams for Bayes", "Trees", 480)]
+        return out
+
+    monkeypatch.setattr(fake, "search_many", search_many)
+    asked, base = [], fake_ask([])
+
+    def ask(system, prompt, model="sonnet", cancel=None, **kw):
+        asked.append(prompt)
+        if prompt.startswith("TASK: For each concept, judge") and "VIDEO v4tree00001" in prompt:
+            assert "VIDEO v1" not in prompt and "CONCEPT c2" not in prompt       # only what is new, for what is missing
+            return {"verdicts": [{"concept": "c1", "video": "v4tree00001", "coverage": "full", "start": 0, "end": 480,
+                                  "skills": [{"n": 1, "quote": "so the posterior is the prior times the likelihood"},
+                                             {"n": 2, "quote": "and here is a tree diagram"}]}]}, {"usage": {}, "model": model}
+        raw, usage = base(system, prompt, model, cancel, **kw)
+        if prompt.startswith("TASK: Build the final video study plan"):
+            raw = {**raw, "items": [*raw["items"], {"n": 5, "video": "v4tree00001", "role": "required", "concepts": ["c1"]}]}
+        return raw, usage
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    full = env.lib.plan(pid)
+    more = full["data"]["more"]
+    queries = next(q for q in asked if q.startswith("TASK: YouTube searches"))
+    assert "c1 — Bayes' theorem" in queries and "not taught by any video checked so far: use a tree diagram" in queries
+    assert '"bayes theorem example"' in queries and "c2 —" not in queries        # what was searched; only the gaps
+    assert [h["id"] for h in more["hits"]["c1"]] == ["v4tree00001"] and more["rounds"][0]["inspected"] == 1
+    assert more["verdicts"]["c1"]["v4tree00001"]["skills"] == ["invert a conditional", "use a tree diagram"]
+    assert full["data"]["verify"]["c1"].keys() == {"v1", "v2"}                    # the first check is kept apart
+    assert len(more["rounds"]) == 1                                               # nothing is missing any more
+    r = full["result"]
+    cov = {c["concept"]: c for c in r["coverage"]}
+    assert cov["c1"]["state"] == "verified" and not cov["c1"]["why"] and r["completeness"]["no_video"] == []
+    item = next(it for it in r["items"] if it["video"] == "v4tree00001")
+    assert item["state"] == "verified" and [p["skill"] for p in item["teaches"][0]["proofs"]] == [
+        "invert a conditional", "use a tree diagram"]
+    assert full["usage"]["more"]["input_tokens"] == 100           # the searches' request (the check's had no usage)
+    msgs = [e["message"] for e in env.events if e["type"] == "plan"]
+    assert "More searches for 1 concept no checked video covers yet…" in msgs
+    assert any(m.startswith("Checking more videos against the course (1/1, ") for m in msgs)
+
+
+def test_why_a_concept_has_no_good_video_in_both_languages():
+    from studia import i18n
+    from studia.plans import why_no_video
+
+    en = why_no_video(6, 9, 7, {"x": "limit", "y": "limit"}, 1, 0, False)
+    assert en[0] == en[1] == ("7 videos from 6 YouTube searches were checked, and none of them teaches this. 2 more videos "
+                              "had no usable captions, and IEUStudia didn't listen to them because the plan listens to "
+                              "at most 8 videos.")
+    assert why_no_video(3, 0, 0, {}, 0, 0, False)[1] == "No video in the plan's language came up in 3 YouTube searches."
+    assert why_no_video(3, 2, 0, {}, 2, 0, False)[1] == "The videos found are in another language."
+    assert why_no_video(3, 2, 0, {"x": "lectures"}, 0, 0, False)[1] == (
+        "The video found has no usable captions, and IEUStudia didn't listen to it because your lectures were being "
+        "transcribed, and they go first.")
+    assert why_no_video(3, 5, 0, {}, 0, 5, True)[1].startswith("YouTube stopped answering IEUStudia for now")
+    i18n.set_language("tr")
+    try:
+        shown, english = why_no_video(6, 9, 1, {"x": "too_long"}, 0, 0, False)
+    finally:
+        i18n.set_language("en")
+    assert shown == ("6 YouTube araması sonucunda kontrol edilen 1 videoda bu öğretilmiyor. Kullanılabilir altyazısı "
+                     "olmayan 1 video daha dinlenmedi, çünkü 120 dakikadan uzun.")
+    assert english.startswith("1 video from 6 YouTube searches was checked, and it doesn't teach this.")
+
+
+def test_a_concept_the_plans_limit_of_extra_checks_left_out_says_so(env, monkeypatch):
+    monkeypatch.setattr(plans, "MORE_REQUESTS", 0)
+    fake = sys.modules["studia.videos"]
+    first = fake.search_many
+    monkeypatch.setattr(fake, "search_many", lambda queries, limit=8, **kw: {
+        q: [*hits, *([Hit("v4tree00001", "Tree diagrams for Bayes", "Trees", 480)] if q == "c1 narrow" else [])]
+        for q, hits in first(queries, limit, **kw).items()})
+    runner = PlanRunner(env.svc, ask=fake_ask([]))
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    full = env.lib.plan(pid)
+    assert full["data"]["more"]["capped"] == ["c1"] and full["data"]["more"]["rounds"][0]["requests"] == 0
+    why = {c["concept"]: c["why"] for c in full["result"]["coverage"]}["c1"]
+    assert why.endswith("More videos were found for it, but the plan's limit of extra checks was reached first.")
+
+
+def test_a_skill_a_checked_video_teaches_but_the_plan_leaves_out_says_why():
+    concepts = [{"id": "c1", "name": "Latches", "summary": "", "importance": "core", "focus": False, "weeks": [], "los": [],
+                 "cues": [], "skills": ["trace a latch", "explain the forbidden input"], "in_scope": True}]
+    vids = {v: {"title": v, "channel": "C", "duration_s": 600, "has_captions": True, "caption_kind": "auto",
+                "caption_lang": "en", "chapters": []} for v in ("good0000001", "poor0000001")}
+    good = {"coverage": "partial", "skills": ["trace a latch"], "start": 0, "end": 300, "quality": 4, "errors": []}
+    poor = {"coverage": "full", "skills": ["trace a latch", "explain the forbidden input"], "start": 0, "end": 600,
+            "quality": 2, "errors": [{"t": 10, "text": "says S=R=1 is allowed"}]}
+    raw = {"items": [{"n": 1, "video": "good0000001", "role": "required", "concepts": ["c1"]}],
+           "supplements": [{"concept": "c1", "text": "The forbidden input: …"}]}
+    r = finalize(raw, concepts, {}, vids, [], "", verdicts={"c1": {"good0000001": good, "poor0000001": poor}},
+                 why={"c1": {"text": "Searched.", "en": "Searched."}})
+    cov = r["coverage"][0]
+    assert [x["how"] for x in cov["skills"]] == ["video", "supplement"]
+    assert cov["why"] == ("Searched. The checked video that teaches “explain the forbidden input” has mistakes or "
+                          "explains it poorly, so the plan leaves it out.")             # (with another reason: named)
+    poor["errors"], poor["quality"] = [], 4                            # a fine one the plan didn't use: said too
+    r = finalize(raw, concepts, {}, vids, [], "", verdicts={"c1": {"good0000001": good, "poor0000001": poor}})
+    assert r["coverage"][0]["why"] == "A checked video teaches this, but the plan doesn't use it."
+    assert r["completeness"]["no_video"][0]["why"] == "A checked video teaches this, but the plan doesn't use it."
+
+
+def test_videos_the_more_searches_found_for_a_missing_skill_reach_the_plan_writing_request(env, monkeypatch, request):
+    """Each concept's checked videos were cut to the 5 that teach the most before the plan was written: the videos the
+    more searches found for the one skill no other video teaches ranked last and were cut, and the plan said it
+    "doesn't use them" (EEE 242 week 7: the only two that teach counting the 2^n input combinations)."""
+    import copy
+
+    concepts = copy.deepcopy(CONCEPTS)
+    skills = ["standardize", "read the table", "symmetry", "inverse lookup", "continuity correction",
+              "normal approximation of the binomial"]
+    concepts["concepts"] = [dict(concepts["concepts"][0], skills=skills)]           # one concept, six skills
+    saved = dict(VIDEOS)
+    request.addfinalizer(lambda: (VIDEOS.clear(), VIDEOS.update(saved)))
+    VIDEOS.clear()
+    VIDEOS.update({f"v{i}": Info(f"v{i}", f"Normal video {i}", f"Channel {i}", 600) for i in range(1, 6)})
+    VIDEOS["vnew0000001"] = Info("vnew0000001", "Continuity correction", "Other", 600)
+    VIDEOS["vnew0000002"] = Info("vnew0000002", "Normal approximation of the binomial", "Other", 600)
+    monkeypatch.setattr(plans, "INSPECT", 5)                     # five checked videos in the first check
+    fake = sys.modules["studia.videos"]
+    first = fake.search_many
+
+    def search_many(queries, limit=8, **kw):
+        out = first(queries, limit, **kw)
+        for q in out:
+            out[q] = [h for h in out[q] if not h.id.startswith("vnew")]
+            if q == "c1 narrow":
+                out[q] = [Hit("vnew0000001", "Continuity correction", "Other", 600),
+                          Hit("vnew0000002", "Normal approximation of the binomial", "Other", 600)]
+        return out
+
+    monkeypatch.setattr(fake, "search_many", search_many)
+    said = "So the posterior is the prior times the likelihood"
+    first_check = {"v1": [1, 2, 3], "v2": [1, 2], "v3": [2, 3], "v4": [1, 3], "v5": [1, 4]}
+    asked, base = [], fake_ask([])
+
+    def ask(system, prompt, model="sonnet", cancel=None, **kw):
+        asked.append(prompt)
+        usage = {"usage": {"input_tokens": 1, "output_tokens": 1}, "model": model}
+        if prompt.startswith("TASK: List what the student must learn"):
+            return concepts, usage
+        if prompt.startswith("TASK: For each concept, judge"):
+            out = [{"concept": "c1", "video": vid, "coverage": "partial", "start": 0, "end": 600, "quality": 4,
+                    "skills": [{"n": n, "quote": said} for n in ns]} for vid, ns in first_check.items()
+                   if f"VIDEO {vid} " in prompt]
+            out += [{"concept": "c1", "video": vid, "coverage": "partial", "start": 0, "end": 600, "quality": 5,
+                     "skills": [{"n": n, "quote": said}]} for vid, n in (("vnew0000001", 5), ("vnew0000002", 6))
+                    if f"VIDEO {vid} " in prompt]
+            return {"verdicts": out}, usage
+        if prompt.startswith("TASK: YouTube searches"):
+            return {"searches": [{"concept": "c1", "queries": ["c1 narrow", "c1 other words"]}]}, usage
+        if prompt.startswith("TASK: Build the final video study plan"):
+            return {"title": "t", "summary": "s", "items": [
+                {"n": 1, "video": "v1", "start": 0, "end": 600, "role": "required", "concepts": ["c1"]}]}, usage
+        return base(system, prompt, model, cancel, **kw)
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    assemble = next(q for q in asked if q.startswith("TASK: Build the final video study plan"))
+    assert "vnew0000001" in assemble and "vnew0000002" in assemble          # the only ones teaching skills 5 and 6
+    assert all(f"VIDEO v{i}" in assemble or f"v{i}" in assemble for i in range(1, 6))
+
+
+def test_more_searches_stop_once_the_plans_limit_of_checks_is_used_up_and_say_so(env, monkeypatch):
+    """Round 1 used every extra check; round 2 still ran 30 YouTube searches whose videos nobody read, and the
+    concepts said "N videos from 7 YouTube searches were checked, and none of them teaches this", as if the search
+    had found nothing more."""
+    monkeypatch.setattr(plans, "MORE_REQUESTS", 1)
+    fake = sys.modules["studia.videos"]
+    first = fake.search_many
+    monkeypatch.setattr(fake, "search_many", lambda queries, limit=8, **kw: {   # a new video, checked, teaching nothing
+        q: [*hits, *([Hit("v4tree00001", "Tree diagrams for Bayes", "Trees", 480)] if q == "c1 narrow" else [])]
+        for q, hits in first(queries, limit, **kw).items()})
+    runner = PlanRunner(env.svc, ask=fake_ask([]))
+    pid = runner.create("c", {"weeks": [1], "focus": "Quiz 2", "los": [3]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    full = env.lib.plan(pid)
+    more = full["data"]["more"]
+    assert len(more["rounds"]) == 1 and more["rounds"][0]["requests"] == 1
+    assert "already searched" not in env.calls["queries"]          # round 2's searches: never made
+    assert "c1" in more["stopped"]
+    why = {c["concept"]: c["why"] for c in full["result"]["coverage"]}["c1"]
+    assert why.endswith("The plan's limit of extra videos and checks was reached before IEUStudia could look further "
+                        "for it.")
+
+
+def test_reasons_about_different_skills_of_a_concept_say_which_is_which():
+    """One skill no checked video teaches, another a checked video teaches but the plan doesn't use: the reasons said
+    "…none of them teaches this. A checked video teaches this, but the plan doesn't use it." And a video IEUStudia
+    listened to and heard no speech in was said as one it "didn't listen to"."""
+    from studia.plans import listened_summary, unheard_text
+
+    concepts = [{"id": "c1", "name": "Latches", "summary": "", "importance": "core", "focus": True, "weeks": [], "los": [],
+                 "cues": [], "skills": ["trace a latch", "explain the forbidden input"], "in_scope": True}]
+    vids = {"good0000001": {"title": "Latches", "channel": "C", "duration_s": 600, "has_captions": True,
+                            "caption_kind": "auto", "caption_lang": "en", "chapters": []},
+            "silent00001": {"title": "Latches, no captions", "channel": "D", "duration_s": 590, "has_captions": False,
+                            "caption_kind": "", "chapters": [], "listen": {"skipped": "no_speech"}}}
+    good = {"coverage": "partial", "skills": ["trace a latch"], "start": 0, "end": 300, "quality": 4, "errors": []}
+    why = PlanRunner._why(None, concepts, {"c1": [{"id": "good0000001"}, {"id": "silent00001"}]},
+                          {"c1": [f"latch {i}" for i in range(5)]}, vids, {"c1": {"good0000001": good}}, {}, {})
+    r = finalize({"items": [], "supplements": [{"concept": "c1", "text": "…"}]}, concepts, {}, vids, [], "",
+                 verdicts={"c1": {"good0000001": good}}, why=why)
+    assert r["coverage"][0]["why"] == (
+        "1 video from 5 YouTube searches was checked, and it doesn't teach “explain the forbidden input”. IEUStudia "
+        "listened to 1 video without usable captions and heard no speech in it. A checked video teaches “trace a "
+        "latch”, but the plan doesn't use it.")
+    heard = listened_summary(vids, {"wall_s": 12})
+    assert heard["heard"] == 0 and heard["silent"] == 1 and heard["skipped"] == []        # listened to, not skipped
+    assert "heard no speech in it when it listened" in unheard_text(vids["silent00001"], english=True)
+    assert "didn't listen" not in unheard_text(vids["silent00001"], english=True)

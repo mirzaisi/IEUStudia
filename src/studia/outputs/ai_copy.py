@@ -32,18 +32,26 @@ def compact_day(course: Course, recordings: Iterable[Recording], transcripts: An
         head += f" · Lecturer: {course.instructor}"
     lines = [head]
     for p in parts:
-        paras = [para for para in p.paragraphs if (para.star or not only_starred) and not _noise(para)]
+        paras = part_lines(p, only_starred)
         if not paras and only_starred:
             continue
         lines.append(f"\n## Part {p.index} ({time_range(p.rec)})")
-        for para in paras:
-            tag = lang_tag(para.lang)
-            marks = (f"[{tag}] " if tag else "") + ("⭐ " if para.star else "") + ("⚠ " if para.uncertain else "")
-            slide = f"(slide {para.slide}) " if para.slide is not None else ""
-            lines.append(f"[{format_ts(para.start)}] {slide}{marks}{para.text}")
+        lines += paras
     if only_starred and len(lines) == 1:
         lines.append("(Nothing was marked as emphasised in this lecture.)")
     return "\n".join(lines)
+
+
+def part_lines(p: Any, only_starred: bool = False) -> list[str]:
+    """One recording's paragraphs as compact_day writes them: "[mm:ss] (slide N) [TR] ⭐ text"."""
+    out = []
+    for para in p.paragraphs:
+        if (para.star or not only_starred) and not _noise(para):
+            tag = lang_tag(para.lang)
+            marks = (f"[{tag}] " if tag else "") + ("⭐ " if para.star else "") + ("⚠ " if para.uncertain else "")
+            slide = f"(slide {para.slide}) " if para.slide is not None else ""
+            out.append(f"[{format_ts(para.start)}] {slide}{marks}{para.text}")
+    return out
 
 
 def build_ai_text(template: str, course: Course, days: Sequence[tuple[Sequence[Recording], Any]],

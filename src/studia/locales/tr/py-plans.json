@@ -38,7 +38,6 @@
   "The AI returned an empty review sheet. Try again.": "Yapay zekadan boş bir tekrar özeti geldi. Tekrar dene.",
   "Review sheet ready": "Tekrar özeti hazır",
   "about 1–3 minutes": "yaklaşık 1–3 dakika",
-  "about 3–8 minutes": "yaklaşık 3–8 dakika",
   "Transcribe the lab of {day}": "{day} günkü lab dersini yazıya dök",
   "Transcribe the lecture of {day}": "{day} günkü dersi yazıya dök",
   "Download “{title}” (this week's material)": "Bu haftanın dosyasını indir: “{title}”",

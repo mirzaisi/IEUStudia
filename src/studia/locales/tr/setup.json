@@ -123,7 +123,6 @@
   "Connect it now": "Şimdi bağla",
   "Continue without it": "Onsuz devam et",
   "The download goes on in the background: see Downloads at the top.": "İndirme arka planda sürüyor: üstteki İndirmeler'den takip edebilirsin.",
-  "Sign out of ChatGPT in IEUStudia? OpenAI ends the session; you can sign in again any time.": "IEUStudia'da ChatGPT'den çıkış yapılsın mı? OpenAI oturumu kapatır; istediğin zaman yeniden giriş yapabilirsin.",
   "Signed out of ChatGPT.": "ChatGPT'den çıkış yaptın.",
   "Signed out here. OpenAI didn't confirm it, so also disconnect IEUStudia in ChatGPT's settings.": "Burada çıkış yaptın. OpenAI bunu onaylamadı, o yüzden IEUStudia'nın bağlantısını ChatGPT'nin ayarlarından da kes.",
   "Copied": "Kopyalandı",
@@ -191,10 +190,8 @@
   "Update to {version}": "Güncelle ({version})",
   "Check now": "Şimdi kontrol et",
   "Look for new versions by itself": "Yeni sürümleri otomatik olarak ara",
-  "About once a day IEUStudia asks GitHub, where it's published, whether there's a new version. You decide when to update.": "IEUStudia aşağı yukarı günde bir kez, yayımlandığı GitHub'a yeni bir sürüm olup olmadığını sorar. Ne zaman güncelleyeceğine sen karar verirsin.",
   "Background checks are on: the IEUStudia icon is next to the clock, bottom right.": "Arka plan kontrolleri açık: IEUStudia simgesi sağ altta, saatin yanında.",
   "Background checks are off.": "Arka plan kontrolleri kapalı.",
-  "Remove it from this PC? You can download it again later.": "Bu bilgisayardan kaldırılsın mı? Sonra yeniden indirebilirsin.",
   "Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.": "Arka plan kontrolleri kapalı; bu yüzden yeni dersler, duyurular ve yaklaşan quizler için bildirim almıyorsun.",
   "Turn them on": "Aç",
   "Background checks are on.": "Arka plan kontrolleri açık."

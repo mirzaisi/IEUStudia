@@ -76,6 +76,10 @@ _ENGLISH = {      # for the exported Markdown, which stays English (the page wor
                       "this question went as notes only. A new chat starts afresh.",) * 2,
     "codex_model": ("Codex doesn't offer {model} with your ChatGPT account, so it answered with its default model. "
                     "IEUStudia uses that from now on.",) * 2,
+    "lectures_highlights": ("{n} lecture did not fit whole and Read everything is off: the AI got only what the "
+                            "lecturer stressed in it.",
+                            "{n} lectures did not fit whole and Read everything is off: the AI got only what the "
+                            "lecturer stressed in them."),
 }
 ALERT_OF = {"warning": "WARNING", "error": "CAUTION", "info": "NOTE", "tip": "TIP"}
 

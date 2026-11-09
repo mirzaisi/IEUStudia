@@ -307,7 +307,7 @@ SILENT = """
   require(web + "/studypack.js");
   St.mocks.materials_download = () => ({ ok: false, error: "IEUStudia is still starting. Try again in a moment." });
   St.mocks.plan_delete = () => ({ ok: false, error: "This plan no longer exists." });
-  globalThis.confirm = () => true;
+  St.ask = () => Promise.resolve(true);                // Delete, in IEUStudia's own dialog
   S.courses = [{ id: "c1", code: "MATH 240", display_name: "Probability" }];
   await A["pack-new"]({ dataset: { id: "c1" } }); await tick();
   await A["pk-transcribe"](); out.pk_tr = told();
@@ -423,7 +423,7 @@ def test_switching_profiles_while_the_setup_downloads_asks_first_and_stops_the_d
     app, seen = _app_window(monkeypatch, start)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: seen["popen"].append(cmd))
     assert app._main([]) == "restart"
-    assert seen["asked"]["busy"] and "Switch profiles anyway?" in seen["asked"]["ask"]
+    assert seen["asked"]["busy"] and "Switching stops the download now" in seen["asked"]["ask"]
     assert seen["active_meanwhile"] != other.id                             # nothing switched on the question
     assert seen["switch"]["ok"] and accounts.load()[0] == other.id
     assert seen["window"].closing_result == [True] and seen["cancelled"]
@@ -435,8 +435,8 @@ def test_an_account_added_while_something_runs_closes_its_dialog_when_the_switch
     """No to "switch profiles anyway?" left the add-account dialog with "Signing in…" spinning for ever, although
     the profile was made."""
     out = run(tmp_path, """
-  globalThis.confirm = () => false;
-  St.Mock.profile_switch = (id, force) => ({ ok: false, busy: true, ask: "IEUStudia is still downloading what it needs. Switch profiles anyway?" });
+  St.ask = (q) => { out.asked = q; return Promise.resolve(false); };     // No, in IEUStudia's own dialog
+  St.Mock.profile_switch = (id, force) => ({ ok: false, busy: true, ask: "IEUStudia is still downloading what it needs. Switching stops the download now." });
   els["#overlay"] = { innerHTML: "", querySelector: () => null };
   const form = { dataset: { form: "add-account" }, username: { value: "bob.b" }, password: { value: "pw" } };
   for (const f of listeners.submit || []) await f({ target: form, preventDefault() {} });
@@ -445,6 +445,9 @@ def test_an_account_added_while_something_runs_closes_its_dialog_when_the_switch
 """)
     assert "Signing in" not in out["overlay"]
     assert any("added as a profile of its own" in m for m in out["toasts"])
+    # asked in IEUStudia's own dialog, with the reason from the app under its question
+    assert out["asked"]["title"] == "Switch profiles anyway?" and out["asked"]["danger"]
+    assert out["asked"]["text"] == "IEUStudia is still downloading what it needs. Switching stops the download now."
 
 
 def test_opening_the_app_while_its_last_copy_is_still_closing_waits_for_it_without_a_scary_question(isolated_home,

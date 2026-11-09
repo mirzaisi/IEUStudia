@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__, net, store, views
+from . import search as search_mod
 from .cancel import Cancelled
 from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
@@ -59,7 +60,12 @@ def stall_text(service: str, courses: list[str], seconds: float) -> str:
 
 
 def _site_hint(exc: BaseException) -> dict[str, Any]:
-    """IEULearn wants something done on its site (its terms, a new password): the page offers to open it."""
+    """IEULearn wants something done on its site (its terms, a new password): the page offers to open it. A service
+    that changed on its side: the page knows which (Settings → Services says more)."""
+    from .health import ServiceChanged
+
+    if isinstance(exc, ServiceChanged):
+        return {"changed": exc.service}
     return {"open_site": True} if getattr(exc, "open_site", False) else {}
 
 
@@ -81,7 +87,7 @@ def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
         except Exception as exc:  # noqa: BLE001
             log.exception("API %s failed", fn.__name__)
             msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc   # KeyError's str() adds quotes
-            return {"ok": False, "error": str(msg) or exc.__class__.__name__}
+            return {"ok": False, "error": str(msg) or exc.__class__.__name__, **_site_hint(exc)}
     return wrapper
 
 
@@ -136,33 +142,52 @@ class Api:
         jobs.setup_busy = lambda: self._setup_running and any(
             c == "cuda" or c == f"speech:{jobs.settings().model}" for c in self._setup_left)
         services.subscribe(self._on_service_event)
-        from . import hardware
+        from . import hardware, health
 
         # the graphics card's failure remembered or forgotten (a lecture, the offline AI): Settings says it at once,
         # not after a restart, as the toast that told the student to look there does
         hardware.on_card_change = lambda: threading.Thread(target=self._system_info, daemon=True).start()
+        # a service that changed on its side (or reads again): Home, the course pages and Settings follow at once
+        health.on_change = self._services_changed
         self._ready.set()
         threading.Thread(target=self._auto_sync_loop, name="auto-sync", daemon=True).start()
         threading.Thread(target=self._watch_open_requests, name="open-requests", daemon=True).start()
         threading.Thread(target=self._update_loop, name="update-check", daemon=True).start()
+        threading.Thread(target=self._index_search, name="search-index", daemon=True).start()
 
-    def _update_loop(self) -> None:
-        """About once a day (and shortly after the start), if allowed: is there a new version? The page shows it."""
+    def _index_search(self) -> None:
+        """The search index, built once (a library from before it, or a new INDEX_VERSION) a moment after the start,
+        while Home loads; a search typed meanwhile waits for it."""
+        index = self._services.lib.index if self._services else None
+        if index is None or index.ready:
+            return
+        time.sleep(2)
+        try:
+            index.ensure()
+        except Exception:  # noqa: BLE001 - the search builds it on its first use then
+            log.exception("Building the search index failed")
+
+    def _update_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
+        """About once a day (and shortly after the start), if allowed: is there a new version? The page shows it. With
+        it, at most once a calendar day, the anonymous count of copies in use (updates.count_in), only while it is on
+        too and once the student has seen the notice that says so."""
         from . import appconfig, updates
 
         if not updates.installed():               # run from source or the portable zip: nothing to update with
             return
-        time.sleep(20)
+        sleep(20)
         updates.cleanup()
         while True:
             try:
-                if appconfig.load().check_updates and updates.due():
-                    st = updates.check()
-                    if st["available"]:
-                        self._push({"type": "update", **st})
+                if appconfig.load().check_updates:
+                    if updates.due():
+                        st = updates.check()
+                        if st["available"]:
+                            self._push({"type": "update", **st})
+                    updates.count_in()
             except Exception:  # noqa: BLE001
                 log.debug("Update check failed", exc_info=True)
-            time.sleep(3 * 3600)
+            sleep(3 * 3600)
 
     def _auto_sync_loop(self) -> None:
         """A quiet sync every AUTO_SYNC_S while the app is open, so new lectures, materials and announcements (and
@@ -344,6 +369,32 @@ class Api:
     def _toast(self, message: str, level: str = "info") -> None:
         self._push({"type": "toast", "level": level, "message": message})
 
+    def _services_changed(self) -> None:
+        """What every service IEUStudia reads did, for the page (health.snapshot), as an event."""
+        from . import health
+
+        try:
+            self._push({"type": "services", **health.snapshot()})
+        except Exception:  # noqa: BLE001 - only the page's copy of it
+            log.debug("services event failed", exc_info=True)
+
+    # ------------------------------------------------------------------ the services IEUStudia reads (health.py)
+    @safe
+    def services_state(self) -> dict[str, Any]:
+        """Settings → Services: each service's state (works, didn't answer, changed on its side), what doesn't work."""
+        from . import health
+
+        return {"ok": True, **health.snapshot()}
+
+    @safe
+    def services_copy(self) -> dict[str, Any]:
+        """Copy details: what the developer needs to fix a service that changed, with nothing personal in it."""
+        from . import health
+
+        text = health.details()
+        ok = set_clipboard(text)
+        return {"ok": ok, "text": text, "error": None if ok else t("Could not access the clipboard.")}
+
     def _course_views(self) -> list[dict[str, Any]]:
         return views.all_course_views(self._s.lib, self._s.settings, self._s.jobs.snapshot())
 
@@ -390,13 +441,19 @@ class Api:
             cached_system = json.loads(self._s.lib.get_meta("system_info") or "null")
         except ValueError:
             cached_system = None
-        from . import appconfig, updates
-        from .ai import usage_limits
+        from . import appconfig, health, updates
+        from .ai import chosen_now, usage_limits
 
+        # the AI as chosen now, also when the last look at this PC is from before another one was chosen (or there is
+        # none yet): the sidebar's "Ask ChatGPT" became "Ask AI" a moment after the window opened, with the next look
+        ai_now = chosen_now((cached_system or {}).get("ai"))
+        if ai_now is not None:
+            cached_system = {**(cached_system or {}), "ai": ai_now}
         target, self._open_target = self._open_target, ""
         notes, self._s.notes = list(getattr(self._s, "notes", [])), []    # told once, not at every reload
         return {
             "ok": True, "version": __version__, "signed_in": signed_in, "system": cached_system,
+            "services": health.snapshot(),
             "limits": usage_limits(), "app": appconfig.load().to_json(), "open": target, "update": updates.status(),
             "updated_from": updates.note_version(),
             "first_run": not self._s.settings.first_run_done,
@@ -936,9 +993,10 @@ class Api:
         if busy and not force:
             return {"ok": False, "busy": True, "error": t("A transcription is still running.")}
         if self._setup_running and not force:          # the speech model (or the card's files) still on their way
+            # (the page's question, under its title "Switch profiles anyway?")
             return {"ok": False, "busy": True, "error": t("IEUStudia is still downloading what it needs."),
-                    "ask": t("IEUStudia is still downloading what it needs. Switch profiles anyway? The download "
-                             "stops now, and you can go on with it afterwards from where it stopped.")}
+                    "ask": t("IEUStudia is still downloading what it needs. Switching stops the download now; you can "
+                             "go on with it afterwards from where it stopped.")}
         acc = accounts.set_active(profile_id)
         if busy:
             self._services.jobs.shutdown()           # what is still waiting is kept for this profile
@@ -1053,10 +1111,13 @@ class Api:
             course_views = self._course_views()
             self._push({"type": "courses", "courses": course_views})
             new = self._own_new(course_views, res.new_ids)
+            changed = list(getattr(res, "changed", []) or [])     # (health says what doesn't work: never "Up to date")
+            if changed:                                   # (the page has the words for them before the result)
+                getattr(self, "_services_changed", lambda: None)()
             push({"type": "sync", "phase": "done", "new_count": new,
                   "message": t("{n} new recording(s)", n=new) if new else t("Up to date"),
                   "last_sync": self._s.lib.get_meta("last_sync"),
-                  "profile": res.profile.__dict__ if res.profile else None, "errors": res.errors})
+                  "profile": res.profile.__dict__ if res.profile else None, "errors": res.errors, "changed": changed})
             # then each course's weekly materials, announcements, outcomes (listed, nothing downloaded): how far it is
             # shows in the top bar
             push({"type": "content", "phase": "start"})
@@ -1065,13 +1126,14 @@ class Api:
                             lambda c: bool(c["errors"]), "content")
             self._courses_dirty.set()                     # (built once with whatever else changed meanwhile)
             push({"type": "content", "phase": "done", "new_materials": len(content["new_materials"]),
-                  "new_announcements": len(content["new_announcements"]), "errors": content["errors"]})
+                  "new_announcements": len(content["new_announcements"]), "errors": content["errors"],
+                  "changed": list(content.get("changed") or [])})
             ok = True
         except (AuthError, NeedLogin) as exc:
             push({"type": "sync", "phase": "error", "need_login": True, "message": str(exc), **_site_hint(exc)})
         except Exception as exc:  # noqa: BLE001
             log.log(logging.WARNING if quiet else logging.ERROR, "sync failed", exc_info=True)
-            push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed")})
+            push({"type": "sync", "phase": "error", "message": str(exc) or t("Sync failed"), **_site_hint(exc)})
         finally:
             done.set()
             self._last_sync_ok = ok                       # (for a full sync that waited for this one)
@@ -1328,33 +1390,33 @@ class Api:
         return {"ok": True, "courses": out}
 
     @safe
-    def search(self, query: str) -> dict[str, Any]:
-        hits = self._s.lib.search(query, limit=60)
-        out = []
-        cache: dict[str, Any] = {}
-        courses = {c.id: c for c in self._s.lib.courses(True)}
-        for h in hits:
-            rec = cache.get(h["delivery_id"]) or self._s.lib.get_recording(h["delivery_id"])
-            if rec is None:
-                continue
-            cache[h["delivery_id"]] = rec
-            course = courses.get(rec.course_id)
-            at = float(h["t"])
-            out.append({"day_key": rec.day_key, "delivery_id": rec.delivery_id, "t": at,
-                        "ts": f"{int(at // 60):02d}:{int(at % 60):02d}", "snippet": h["snippet"],
-                        "course_code": course.code if course else "", "date": rec.start.date().isoformat(),
-                        "time": f"{rec.start:%H:%M}", "viewer_url": rec.viewer_url})
-        mats = []
-        found = self._s.lib.search_materials(query, limit=30)
-        known = self._s.lib.get_materials(h["resource_id"] for h in found)
-        for h in found:
-            m = known.get(h["resource_id"])
-            if not m:
-                continue
-            course = courses.get(m["course_id"])
-            mats.append({"resource_id": m["resource_id"], "title": m["title"], "page": h["page"], "snippet": h["snippet"],
-                         "course_id": m["course_id"], "course_code": course.code if course else ""})
-        return {"ok": True, "results": out, "materials": mats}
+    def search(self, query: str, opts: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Everything that matches ``query`` (search.py): lectures (each class day with its best moments), files,
+        announcements, the weekly plan, AI notes and chats, grouped, with counts. ``opts``: course (an id), kind (one
+        group), limit (items per group), quick (the quick search box: a few of each and the best overall), done
+        (the query is finished: its last word is no prefix)."""
+        o = opts if isinstance(opts, dict) else {}
+        kind = str(o.get("kind") or "")
+        res = search_mod.results(self._s.lib, str(query or "")[:300], course=str(o.get("course") or ""),
+                                 kind=kind if kind in search_mod.KINDS else "",
+                                 limit=max(1, min(2000, int(o.get("limit") or search_mod.GROUP_LIMIT))),
+                                 typing=not o.get("done"), quick=bool(o.get("quick")))
+        return {"ok": True, **res}
+
+    @safe
+    def search_rules(self) -> dict[str, Any]:
+        """How words are matched, for the page's own finding (find in a transcript, filters): search.rules(), with the
+        library's own words ("known": a whole word there is never taken for the start of a longer one on the page,
+        where one lecture or one course's files may not hold it). It waits for the index when that is still being
+        built (the page asks once, in the background, as it starts)."""
+        rules = search_mod.rules()
+        try:
+            index = self._s.lib.index
+            if index.ensure(wait=30):
+                rules["known"] = index.known()
+        except Exception:  # noqa: BLE001 - the page then matches as before: by what the list itself holds
+            log.debug("The library's words for the page's finding failed", exc_info=True)
+        return {"ok": True, "rules": rules}
 
     # ------------------------------------------------------------------ course content & materials
     @safe
@@ -1607,8 +1669,9 @@ class Api:
         from .ai import text_tokens
 
         ok = set_clipboard(text)
+        # refused by the clipboard (another program holds it): the text comes back, for the page's Copy failed dialog
         return {"ok": ok, "chars": len(text), "tokens": text_tokens(text),
-                "error": None if ok else t("Could not access the clipboard.")}
+                "error": None if ok else t("Could not access the clipboard."), **({} if ok else {"text": text})}
 
     # ------------------------------------------------------------------ export / AI
     # pywebview runs each call from the page on a thread of its own: a double click asks twice at the same time
@@ -1982,9 +2045,11 @@ class Api:
         p = self._s.lib.plan(plan_id)
         if p is None:
             return {"ok": False, "error": t("This plan no longer exists.")}
+        from .plans import STAGE_NAMES
+
         data = p.pop("data", {}) or {}
         p["concepts"] = (data.get("concepts") or {}).get("concepts", [])
-        p["stages_done"] = [s for s in ("gather", "concepts", "search", "inspect", "verify") if s in data]
+        p["stages_done"] = [s for s in STAGE_NAMES[:-1] if s in data]
         kind = (p.get("scope") or {}).get("kind")
         if kind in ("pack", "sheet"):                     # a study pack's chapters (a cheatsheet's topics) so far
             from .studypack import progress_info

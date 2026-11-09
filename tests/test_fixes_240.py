@@ -16,7 +16,8 @@ from studia.api import Api
 from studia.config import CoursePrefs, Settings
 from studia.coursesite import Resource, Unit
 from studia.domain import Course, Recording, Segment, Transcript
-from studia.library import Library, _fts_word
+from studia.library import Library
+from studia.search import passages, results
 from studia.services import Services
 
 
@@ -42,28 +43,32 @@ def _searchable(tmp_path):
     return lib
 
 
+def _group(res, kind):
+    return next((g["items"] for g in res["groups"] if g["kind"] == kind), [])
+
+
 @pytest.mark.parametrize("query,t", [("sinav", 0), ("sınav", 0), ("SINAV", 0), ("olasilik", 6), ("olasılık", 6),
                                      ("işte", 6), ("İŞTE", 6), ("theven", 10)])
 def test_turkish_words_are_found_however_their_is_are_written(tmp_path, query, t):
     lib = _searchable(tmp_path)
-    assert [h["t"] for h in lib.search(query)] == [t]
+    assert [m["t"] for it in _group(results(lib, query), "lecture") for m in it["moments"]] == [t]
 
 
 def test_course_files_are_searched_the_same_way(tmp_path):
     lib = _searchable(tmp_path)
-    assert [h["page"] for h in lib.search_materials("kısa sınav")] == [1]
-    assert [h["page"] for h in lib.search_materials("integral")] == [2]
-    hits = lib.search_any("İntegral nasıl alınır?")              # what the AI chat sends along with a question
-    assert [h["page"] for h in hits["materials"]] == [2]
-    assert _fts_word("sinav") == '("sinav" OR "sınav")' and _fts_word("ab", True) == '"ab"*'
+    assert [p["page"] for it in _group(results(lib, "kısa sınav"), "file") for p in it["pages"]] == [1]
+    assert [p["page"] for it in _group(results(lib, "integral"), "file") for p in it["pages"]] == [2]
+    found = passages(lib, "İntegral nasıl alınır?", "c")            # what the AI chat sends along with a question
+    assert [h.sub for h, _, _ in found if h.kind == "file" and h.field == "body"] == ["2"]
 
 
 def test_search_lists_the_course_file_pages_too(tmp_path):
     lib = _searchable(tmp_path)
     ns = types.SimpleNamespace(_s=types.SimpleNamespace(lib=lib), _ready=threading.Event())
     res = Api.search.__wrapped__(ns, "sınav")
-    assert [r["delivery_id"] for r in res["results"]] == ["a"]
-    assert [(m["title"], m["page"], m["course_code"]) for m in res["materials"]] == [("Week01", 1, "MATH 240")]
+    assert [m["delivery_id"] for it in _group(res, "lecture") for m in it["moments"]] == ["a"]
+    assert [(it["title"]["text"], [p["page"] for p in it["pages"]], it["course_code"]) for it in _group(res, "file")] \
+        == [("Week01", [1], "MATH 240")]
 
 
 # ------------------------------------------------------------------ the first lectures of a course that had none

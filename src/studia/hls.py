@@ -70,9 +70,22 @@ def get_range(session: requests.Session, url: str, start: int, end: int) -> byte
     return b""
 
 
+def _playlist(r: requests.Response) -> None:
+    """An answer that isn't an HLS playlist (no #EXTM3U at its start) is Panopto's streams changing: never read as one
+    without anything in it."""
+    from . import health
+
+    if not (r.text or "").lstrip("﻿ \r\n\t").startswith("#EXTM3U"):
+        raise health.changed("panopto", "stream", f"a stream's playlist isn't HLS ({r.headers.get('content-type') or '?'}, "
+                                                  f"{len(r.text or '')} characters)")
+
+
 def media_playlist(session: requests.Session, master_url: str, prefer: str = "audio") -> requests.Response:
+    from . import health
+
     r = session.get(master_url)
     r.raise_for_status()
+    _playlist(r)
     vs = variants(r.text, r.url)
     if vs:
         if prefer == "audio":
@@ -82,6 +95,8 @@ def media_playlist(session: requests.Session, master_url: str, prefer: str = "au
             v = max(vs, key=lambda v: (v["height"], v["bandwidth"]))
         r = session.get(v["url"])
         r.raise_for_status()
+        _playlist(r)
+    health.ok("panopto", "stream")
     return r
 
 

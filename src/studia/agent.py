@@ -226,6 +226,23 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     return title, "\n".join(lines[:4]), payload
 
 
+def changed_note() -> Optional[tuple[str, str, str]]:
+    """A notification for the services that changed on their side since the helper last told (each change once):
+    (title, text, what a click opens), or None."""
+    from . import health
+    from .i18n import join
+
+    try:
+        fresh = health.news("tray")
+    except Exception:  # noqa: BLE001 - never a reason for a check to fail
+        log.debug("Helper: the services' state can't be read", exc_info=True)
+        return None
+    if not fresh:
+        return None
+    return (t("{service} changed something on its side", service=join(fresh)),
+            t("Open IEUStudia to see what doesn't work right now. Everything on this PC is safe."), "home")
+
+
 def next_check(now: float, last: float, interval_s: float, screen_on: bool = True, back_at: float = 0.0,
                manual: bool = False, paused: bool = False) -> Optional[float]:
     """Seconds until the helper checks IEULearn (0: now; None: not while notifications are paused, then the first
@@ -360,13 +377,15 @@ class Helper:
             self.wake.wait(interval if wait is None or wait == 0 else min(wait, interval))
 
     def _check_update(self) -> None:
-        """A new version of IEUStudia: said once, and opening the app shows how to update."""
+        """A new version of IEUStudia: said once, and opening the app shows how to update. With the look, at most once
+        a day, the anonymous count of copies in use (updates.count_in)."""
         from . import updates
 
         try:
             if not self.cfg.check_updates or not updates.installed():
                 return
             st = updates.check()
+            updates.count_in()
             if st["available"] and not self.paused and updates.tell_once(st["version"]):
                 self.tray.notify(t("IEUStudia {version} is available", version=st["version"]),
                                  t("Open IEUStudia to update. It takes about a minute."), "update")
@@ -435,6 +454,8 @@ class Helper:
                 told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
                 seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
                 note = reminders(assessment_events(lib, settings), dt.datetime.now(), seen)
+            if note is None and not self.paused:     # a service that changed on its side: said once, while the window
+                note = changed_note()                # is closed (notifications may not come until an update)
             if any(set(v) - known.get(k, set()) for k, v in seen.items()):     # (nothing new: nothing to write)
                 _save_seen(seen)
             told = bool(note) and not self.paused

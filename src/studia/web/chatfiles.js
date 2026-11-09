@@ -108,7 +108,7 @@
       <button class="btn ghost icon sm" data-act="cf-side" title="${esc(drawer ? t("Close") : t("Hide this panel"))}">${I("x", "sm")}</button></div>`;
     if (!r) { side.innerHTML = head + `<div class="cf-body"><div class="skel" style="height:64px"></div><div class="skel" style="height:120px;margin-top:10px"></div><div class="skel" style="height:90px;margin-top:10px"></div></div>`; return; }
     if (r.error) { side.innerHTML = head + `<div class="cf-body">${note("error", esc(r.error))}</div>`; return; }
-    const local = r.provider === "local", hl = r.focus !== "full";
+    const local = r.provider === "local";
     const [wk, wl] = weightOf(r.total);
     const pct = Math.min(100, Math.round((r.material_tokens / r.max_tokens) * 100));
     // "a lot to read with your first question": until it is asked (later ones read it from the cache); the whole
@@ -121,12 +121,18 @@
       <div class="cf-s">${t.html("Everything below goes to {ai} with your questions. A chat holds up to {max} tokens.", { ai, max: fmtK(r.max_tokens) })}</div></div>`);
     if (big) out.push(note("warning", big));
     if (local) out.push(note("info", t("The offline model has room for only a few pages: for each question it reads the passages of these that match it best, and no pictures.")));
-    // the lectures
+    // the lectures: each one whole, read in parts first (the whole course's that don't fit whole), or its highlights
+    const as = (d) => (d.as === "notes" ? t("read in parts first: its notes go with each question")
+      : d.as === "highlights" || r.focus === "highlights" ? t("highlights only") : r.focus === "course" ? t("full transcript") : "");
     const days = r.days.map((d) => row({ ref: `day:${d.key}`, icon: "file-text",
       title: `${d.n ? `<b>L${d.n}</b> ` : ""}${esc(d.label)} · ${esc(d.kind)}`,
-      sub: [t.n(d.parts, "{n} part", "{n} parts"), d.seconds ? t.dur(d.seconds) : "", hl ? t("highlights only") : ""].filter(Boolean).map(esc).join(" · "),
+      sub: [t.n(d.parts, "{n} part", "{n} parts"), d.seconds ? t.dur(d.seconds) : "", as(d)].filter(Boolean).map(esc).join(" · "),
       tokens: d.tokens }));
-    out.push(group(t.n(r.days.length, "Transcript of {n} class day", "Transcripts of {n} class days"), days.join("") || `<div class="cf-empty">${t("No transcript")}</div>`));
+    const whole = r.days.filter((d) => d.as === "full").length, inParts = r.days.filter((d) => d.as === "notes").length;
+    const daysNote = r.focus === "course" && inParts ? note("info", esc(t.n(inParts, "{n} lecture doesn't fit whole next to the rest: {ai} reads it in parts before it answers, and its notes go with every question. The other {whole} go whole.", "{n} lectures don't fit whole next to the rest: {ai} reads them in parts before it answers, and their notes go with every question. The other {whole} go whole.", { ai, whole: t.num(whole) })))
+      : r.focus === "course" && r.days.some((d) => d.as === "highlights") ? note("warning", esc(t("Some lectures don't fit whole and Read everything is off: those go as their highlights only.")))
+      : "";
+    out.push(group(t.n(r.days.length, "Transcript of {n} class day", "Transcripts of {n} class days"), (days.join("") || `<div class="cf-empty">${t("No transcript")}</div>`) + daysNote));
     // the course's slide files
     const f = r.files;
     const slideTools = `<button class="btn ghost sm cf-mini" data-act="sp-open">${t("Change")}</button>`;
@@ -177,6 +183,7 @@
     if (!rd.pages) lines.push(t.html("Everything fits in one request: {ai} sees every page whole.", { ai }));
     else if (rd.on) {
       lines.push(t.n(rd.pages, "Before it answers, {ai} goes through {n} page that doesn't fit whole, in {b} requests, and writes notes of it.", "Before it answers, {ai} goes through the {n} pages that don't fit whole, in {b} requests, and writes notes of them.", { ai: esc(ai), b: t.num(Math.max(1, rd.batches || 0)) }));
+      if (rd.lectures) lines.push(esc(t.n(rd.lecture_days || 1, "Among them: {n} lecture that doesn't fit whole, in {k} pieces of its transcript.", "Among them: {n} lectures that don't fit whole, in {k} pieces of their transcripts.", { k: t.num(rd.lectures) })));
       lines.push(rd.batches ? t("About {k} tokens read and {o} written, once: the notes are kept and serve every question, so follow-ups reuse them.", { k: St.fmtK(rd.tokens || 0), o: St.fmtK(rd.output || 0) })
         : t("All of them were read before: the kept notes go with your questions."));
       if (rd.cached && rd.batches) lines.push(t.n(rd.cached, "{n} page was read before and isn't read again.", "{n} pages were read before and aren't read again."));
@@ -198,25 +205,91 @@
     if (on && c.messages.length) toast(t("{ai} goes through everything before your next answer.", { ai: St.aiName() }), "info");
   }
   St.setReadAll = (on) => { if (!sideOn()) A["cf-side-open"](); setReadAll(on); };
-  // a chat answer while the pages are read (usage.reading), and what was read for it (usage.read)
+  // a chat answer while the pages are read (usage.reading), and what was read for it (usage.read). The reading says
+  // live which pages each part being read has (two at once), how long it has been at it, how many have come and
+  // about how long the rest takes; its clocks tick here every second (tickReading), between the app's news
+  const clock = (s) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0")}`;
+  const now = () => Date.now() / 1000;
+  const leftText = (secs) => (secs <= 50 ? t("less than a minute left") : t.n(Math.round(secs / 60), "about {n} minute left", "about {n} minutes left"));
+  // 1, 2, 3, 5, 7, 8 → "1–3, 5, 7–8"
+  const rangesOf = (nums) => {
+    const ns = Array.from(new Set(nums)).sort((a, b) => a - b), out = [];
+    for (let i = 0; i < ns.length; i++) {
+      let j = i;
+      while (j + 1 < ns.length && ns[j + 1] === ns[j] + 1) j++;
+      out.push(j > i ? `${t.num(ns[i])}–${t.num(ns[j])}` : t.num(ns[i]));
+      i = j;
+    }
+    return out.join(", ");
+  };
+  // one part being read (``ai``: escaped already; the values below are numbers or escaped, so t() fills them as they are)
+  function partLine(x, rd, ai) {
+    const which = t("Part {n} of {total}", { n: t.num(x.n), total: t.num(Math.max(x.n, rd.total || 1)) });
+    if (x.retry) {
+      const wait = `<span data-until="${+x.retry.until || 0}">${Math.max(0, Math.ceil(x.retry.until - now()))}</span>`;
+      const why = x.retry.why === "service"
+        ? (x.retry.status ? t("{ai} had a problem on its side (error {code}).", { ai, code: +x.retry.status }) : t("{ai} had a problem on its side.", { ai }))
+        : t("The connection to {ai} dropped.", { ai });
+      return `<span class="cf-read-part warn">${I("retry", "xs")} ${which} · ${why} ${x.retry.split ? t("Asking again in {s} s, in two smaller parts.", { s: wait }) : t("Asking again in {s} s.", { s: wait })}</span>`;
+    }
+    // which pages: each file's page numbers ("Week05.pdf p. 1–12, 15"), the video's slides, a lecture's pieces
+    const files = x.files || [];
+    const pages = files.slice(0, 2).map((f) => {
+      const nums = (f.pages || []).filter((p) => p > 0);
+      if (f.kind === "video") return esc(t.n((f.pages || []).length, "{n} slide from the video", "{n} slides from the video"));
+      if (f.kind === "lecture") {                // (named in the page's language: its name is the AI's, in English)
+        const name = f.date ? (f.lecture ? `L${f.lecture} · ` : "") + t.date(f.date, "dmw") : f.name;
+        return `${esc(name)} (${esc(t.n(nums.length, "{n} piece of its transcript", "{n} pieces of its transcript"))})`;
+      }
+      return nums.length ? `${esc(f.name)} ${esc(t("p. {pages}", { pages: rangesOf(nums) }))}` : esc(f.name);
+    }).join(", ") + (files.length > 2 ? ", …" : "");
+    const bits = [which];
+    if (pages) bits.push(pages);
+    const since = `<span data-since="${+x.started || 0}">${clock(now() - x.started)}</span>`;
+    const got = x.noted ? t.n(x.size, "{noted} of {n} page noted", "{noted} of {n} pages noted", { noted: t.num(x.noted) })
+      : x.words ? t.n(x.words, "about {n} word written", "about {n} words written") : t("{ai} is looking at the pages", { ai });
+    return `<span class="cf-read-part">${bits.join(" · ")} · ${since} · ${got}${x.try > 1 ? ` · ${t("try {n}", { n: t.num(x.try) })}` : ""}</span>`;
+  }
   St.chatReadingHTML = (m) => {
-    const u = m.usage || {}, rd = u.reading, done = u.read, ai = esc(St.aiName());
+    // (an answer the app was closed in while reading: how far it got was kept with it, and is said as a stop)
+    const u = m.usage || {}, rd = u.reading, ai = esc(St.aiName());
+    const done = u.read || (m.status !== "streaming" && u.reading_kept ? { ...u.reading_kept, stopped: true } : null);
     if (m.status === "streaming" && !m.text && rd && rd.total) {
       const pct = Math.round(((rd.read || 0) / Math.max(1, rd.pages || 1)) * 100);
-      return { body: `<div class="cf-reading" role="status">${St.SPIN()}<div class="cf-reading-t"><b>${t("Reading slides: part {done} of {total}…", { done: t.num(Math.min(rd.total, (rd.done || 0) + 1)), total: t.num(rd.total) })}</b>
-        <span class="dim sm">${t("{read} of {pages} pages read · Stop keeps them: asking again goes on from there.", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) })}</span>
+      const parts = (rd.parts || []).slice().sort((a, b) => a.n - b.n).map((x) => partLine(x, rd, ai)).join("");
+      const left = rd.eta != null && rd.at ? `<span data-eta="${rd.eta}" data-at="${rd.at}">${esc(leftText(rd.eta - (now() - rd.at)))}</span> · ` : "";
+      const title = rd.lectures ? t("Reading your lectures, slides and files: {read} of {pages} pieces", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) })
+        : t("Reading your slides and files: {read} of {pages} pages", { read: t.num(rd.read || 0), pages: t.num(rd.pages || 0) });
+      return { body: `<div class="cf-reading" role="status">${St.SPIN()}<div class="cf-reading-t"><b>${title}</b>${parts}
+        <span class="dim sm">${left}${t("Stop keeps every page read so far: asking again reads only the rest.")}</span>
         <div class="cf-bar light"><i style="width:${pct}%"></i></div></div></div>`, foot: "" };
     }
     if (!done) return { body: "", foot: "" };
     if (done.stopped || done.failed) {
-      const said = t("{read} of {pages} pages were read and kept: asking again goes on from there.", { read: t.num(done.read || 0), pages: t.num(done.pages || 0) });
-      return { body: done.stopped && !m.text ? `<div class="cf-reading stopped">${I("info", "sm")}<div class="cf-reading-t"><b>${t("Stopped while reading the slides.")}</b><span class="dim sm">${said}</span></div></div>` : "",
-        foot: done.failed ? `<span class="cf-read-foot dim sm">${said}</span>` : "" };
+      const rest = Math.max(0, (done.pages || 0) - (done.read || 0));
+      const said = (rest ? t("{read} of {pages} pages were read and kept: asking again reads only the {n} still missing.", { read: t.num(done.read || 0), pages: t.num(done.pages || 0), n: t.num(rest) })
+        : t("All {pages} pages were read and kept: asking again doesn't read them again.", { pages: t.num(done.pages || 0) }))
+        + (done.failed && done.tries > 1 ? " " + t.n(done.tries, "IEUStudia had tried that part {n} time.", "IEUStudia had tried that part {n} times.") : "");
+      return { body: done.stopped && !m.text ? `<div class="cf-reading stopped">${I("info", "sm")}<div class="cf-reading-t"><b>${t("Stopped while reading the slides.")}</b><span class="dim sm">${esc(said)}</span></div></div>` : "",
+        foot: done.failed ? `<span class="cf-read-foot dim sm">${esc(said)}</span>` : "" };
     }
     if (done.again || !done.pages) return { body: "", foot: "" };
     const what = t.n(done.pages, "Went through {n} page first", "Went through all {n} pages first") + (done.cached ? ` (${t.n(done.cached, "{n} read before", "{n} read before")})` : "");
     return { body: "", foot: `<span class="cf-read-foot dim sm" title="${esc(t("Pages that didn't fit whole: {ai} read them in batches and answered from its notes and the pages that matter most.", { ai: St.aiName() }))}">${I("list-checks", "xs")} ${esc(what)}</span>` };
   };
+  // the reading's clocks (how long a part has been read, the wait before asking again, the time left) tick every second
+  function tickReading() {
+    const els = $$(".cf-reading [data-since], .cf-reading [data-until], .cf-reading [data-eta]");
+    const n = now();
+    els.forEach((el) => {
+      const d = el.dataset;
+      if (d.since != null) el.textContent = clock(n - +d.since);
+      else if (d.until != null) el.textContent = String(Math.max(0, Math.ceil(+d.until - n)));
+      else el.textContent = leftText(+d.eta - (n - +d.at));
+    });
+  }
+  St.tickReading = tickReading;
+  setInterval(tickReading, 1000);
 
   // ---------------------------------------------------------------- the composer: the paperclip and the files row
   St.chatAttachBtn = () => (spec() || S.chat.draft ? `<button type="button" class="btn ghost icon sm cf-attach" data-act="cf-attach" title="${esc(t("Add files or photos (or drop them here, or paste a screenshot)"))}" aria-label="${esc(t("Add files or photos"))}">${ic("clip")}</button>` : "");
@@ -490,7 +563,8 @@
   Object.assign(St.mocks, {
     chat_inputs: (sp) => {
       const c = sp.chat_id ? St.S.chat.data : null, d = St.S.chat.draft;
-      const days = (c ? c.days : (d && d.labels) || []).map((x, i, all) => ({ key: x.key, n: all.length > 1 ? i + 1 : 0, label: x.label, long: x.long || x.label, kind: x.kind, parts: 2, chars: 70000, tokens: (c || d).focus === "highlights" ? 2100 : 22600, seconds: 6000 }));
+      const days = (c ? c.days : (d && d.labels) || []).map((x, i, all) => ({ key: x.key, n: all.length > 1 ? i + 1 : 0, label: x.label, long: x.long || x.label, kind: x.kind, parts: 2, chars: 70000, tokens: (c || d).focus === "highlights" ? 2100 : 22600, seconds: 6000,
+        as: (c || d).focus === "highlights" ? "highlights" : "full", pieces: 0 }));
       const key = sp.chat_id || sp.uploads || "none";
       const ups = Object.values(demo.files[key] || {});
       // "Read everything": 15 of Week04's 24 pages don't fit as pictures (app.js's preview chat says the same)

@@ -23,13 +23,15 @@ class NoAudioTrack(ValueError):
     """A file with no sound track at all (a video-only stream, a screen recording)."""
 
 
-def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = None) -> np.ndarray:
+def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = None,
+                 max_s: Optional[float] = None) -> np.ndarray:
     """Decode the first audio track of any media file to 16 kHz mono float32 in [-1, 1].
 
     Corrupt packets are skipped instead of aborting the whole decode, so a lecture with a
     damaged second or two still transcribes. The samples go straight into one array sized from
     the track's length, and frames are resampled in groups of ~0.5 M samples (as faster-whisper
     does): the same samples as frame by frame, with less work and no second copy of the lecture.
+    ``max_s``: only the first that many seconds (a study plan listening to the start of a long video).
     """
     skipped = 0
     with av.open(str(path), mode="r") as container:
@@ -40,6 +42,9 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
         stream.thread_type = "AUTO"
         seconds = (float(stream.duration * stream.time_base) if stream.duration and stream.time_base else
                    float(container.duration) / av.time_base if container.duration else 0.0)
+        if max_s:
+            seconds = min(seconds, max_s) if seconds else max_s
+        limit = int(max_s * SAMPLE_RATE) if max_s else 0
         out = np.empty(int(seconds * SAMPLE_RATE) + SAMPLE_RATE, dtype=np.float32)
         n = 0
 
@@ -61,6 +66,8 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
             packets += 1
             if packets % 500 == 0:
                 check(cancel)
+            if limit and n >= limit:
+                break
             try:
                 frames = packet.decode()
             except av.error.FFmpegError:
@@ -83,6 +90,8 @@ def decode_audio(path: Union[str, Path], cancel: Optional[threading.Event] = Non
         if fifo is not None and fifo.samples:
             put(resampler.resample(fifo.read()))
         put(resampler.resample(None))
+        if limit:
+            n = min(n, limit)                        # (the frames come in groups: the last one may go past it)
     if skipped:
         log.warning("Skipped %d of %d corrupt audio packets in %s", skipped, packets, Path(path).name)
     if not n:

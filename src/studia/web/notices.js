@@ -98,6 +98,10 @@
       case "pictures_left": return { kind: "info", title: t.n(n.n, "{ai} didn't see {n} of the {total} pages of your slides and files whole: it went as text only, or was cut.", "{ai} didn't see {n} of the {total} pages of your slides and files whole: they went as text only, or were cut.", { ai, total: t.num(n.total || n.n) }),
         text: t.html("Turn on Read everything and {ai} goes through every page before it answers.", { ai: answered || St.aiName() }),
         actions: [{ label: t("Read everything"), icon: "list-checks", key, run: () => St.setReadAll && St.setReadAll(true) }] };
+      // the whole course: lectures that don't fit whole, with Read everything off, went as their highlights
+      case "lectures_highlights": return { kind: "info", title: t.n(n.n, "{n} lecture didn't fit whole and Read everything is off, so {ai} got only what the lecturer stressed in it.", "{n} lectures didn't fit whole and Read everything is off, so {ai} got only what the lecturer stressed in them.", { ai }),
+        text: t.html("Turn on Read everything and {ai} reads their full transcripts in parts before it answers.", { ai: answered || St.aiName() }),
+        actions: [{ label: t("Read everything"), icon: "list-checks", key, run: () => St.setReadAll && St.setReadAll(true) }] };
       case "pages_not_read": return { kind: "warning", title: t.n(n.n, "{n} page couldn't be read even on a second try, so {ai} didn't get it.", "{n} pages couldn't be read even on a second try, so {ai} didn't get them.", { ai }),
         text: (n.labels || []).length ? esc((n.labels || []).join(", ") + (n.n > n.labels.length ? ", …" : "")) : "" };
       // one request's weight (chatlimits): the first message's pictures, and the ones added with later questions
