@@ -221,6 +221,41 @@ def test_given_the_speech_the_engine_doesnt_look_for_it_again(monkeypatch):
     assert out.timings["vad"] == 1.5 and "vad" not in stages and out.meta["quality"]["stats"]["speech_s"] == 11.0
 
 
+def _transcribed(monkeypatch, texts, lp=-0.1):
+    """The segments' text of Engine.transcribe for passages 6 s apart that decode (in English) as ``texts``, each with
+    the average log-probability ``lp`` (one, or one per passage)."""
+    from studia.engine.core import compression_ratio
+
+    monkeypatch.setattr(tr, "detect_gpu", lambda *a, **k: {"vram_mb": 8000})
+    lps = lp if isinstance(lp, list) else [lp] * len(texts)
+    units = [Unit(k * 6 * SR, k * 6 * SR + 3 * SR) for k in range(len(texts))]
+
+    class Says(FakeDecoder):
+        def generate(self, enc, batch, langs, opts):
+            ks = [u.start // (6 * SR) for u in batch]
+            return [Decoded(lang, texts[k], lps[k], 0.0, compression_ratio(texts[k]), 8) for k, lang in zip(ks, langs)]
+
+    e = tr.Engine("large-v3", languages=("en",))
+    e._device, e._decoder, e._wm = "cpu", Says(), object()
+    speech = tr.Speech([(u.start, u.end) for u in units], units, [], {"speech_s": 3.0 * len(units)}, 1.0, 0.1)
+    out = e.transcribe(np.full(6 * SR * len(texts), 0.1, dtype=np.float32), lambda *a: None, None, {}, speech=speech)
+    return [s.text for s in out.segments]
+
+
+def test_numbers_read_out_reach_the_transcript_whole(monkeypatch):
+    said = ["The identity matrix is 1, 0, 0, 0, 1, 0, 0, 0, 1.", "One, one, zero, zero, zero, one, zero, one.",
+            "Matris sıfır, sıfır, sıfır, bir.", "So we go go go go go to the next one."]
+    assert _transcribed(monkeypatch, said) == said[:3] + ["So we go to the next one."]
+
+
+def test_a_few_unsure_words_with_numbers_stay_in_the_transcript(monkeypatch):
+    import math
+
+    said = ["Three plus three.", "Good afternoon, everyone.", "You must be zero.", "So the answer is six."]
+    lps = [math.log(0.405), math.log(0.40), math.log(0.433), -0.1]
+    assert _transcribed(monkeypatch, said, lps) == ["Three plus three.", "You must be zero.", "So the answer is six."]
+
+
 def test_find_speech_checks_the_audio(monkeypatch):
     with pytest.raises(NoSpeech):
         tr.find_speech(np.zeros(30 * SR, dtype=np.float32))

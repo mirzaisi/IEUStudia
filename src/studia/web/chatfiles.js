@@ -390,10 +390,14 @@
     if (!e.target || e.target.id !== "chat-input" || !e.clipboardData) return;
     const files = Array.from(e.clipboardData.files || []);
     if (!files.length) return;                 // text: pasted as usual
+    const shot = (f) => /^image\//.test(f.type) && (!f.name || /^image\.\w+$/i.test(f.name));   // the clipboard's own picture (named image.png)
+    // Word, Excel, PowerPoint and OneNote put a picture of the copied text next to it: the text is pasted (a screenshot,
+    // Edge's Copy image and files copied in Explorer come without text, and are added)
+    if (files.every(shot) && (e.clipboardData.getData("text/plain") || "").trim()) return;
     e.preventDefault();
     const now = new Date(), pad = (n) => String(n).padStart(2, "0");
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
-    addFiles(files.map((f, i) => (/^image\//.test(f.type) && (!f.name || /^image\.\w+$/i.test(f.name))
+    addFiles(files.map((f, i) => (shot(f)
       ? new File([f], `${t("Screenshot")} ${stamp}${files.length > 1 ? `-${i + 1}` : ""}.${(f.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: f.type }) : f)));
   });
 

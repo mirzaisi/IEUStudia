@@ -219,6 +219,15 @@ right okay now let's here there then which do does will would should could our y
 were was an or but by from at about because just also these those how when where why one two three four
 five six seven eight nine ten zero minus plus times equal equals over divided""".split())
 _WORD = re.compile(r"[a-zçğıöşüâîû']+")
+# Numbers said as words, and the words of a sum ("three over two", "x eşittir iki"): a matrix or a binary number read
+# out repeats them (clean_text), and a few such words are speech, not noise (hallucination_score)
+NUMBER_WORDS = {
+    "en": frozenset("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+                    "sixteen seventeen eighteen nineteen twenty half plus minus times over equals".split()),
+    "tr": frozenset("sıfır bir iki üç dört beş altı yedi sekiz dokuz on yirmi buçuk artı eksi çarpı bölü "
+                    "eşittir".split()),
+}
+_NUMBERS_IN = {lang: frozenset(w.replace("ı", "i") for w in words) for lang, words in NUMBER_WORDS.items()}  # "SIFIR"
 
 
 def tr_lower(s: str) -> str:
@@ -304,6 +313,11 @@ def _only_filler(n: str) -> bool:
     return bool(words) and all(w in _WEAK_VOCAB for w in words)
 
 
+def _says_numbers(words: Sequence[str], lang: str) -> bool:
+    """Digits, or numbers in words of the language decoded ("Three plus three.", "You must be zero.")."""
+    return any(re.search(r"\d", w) or w.replace("ı", "i") in _NUMBERS_IN.get(lang, ()) for w in words)
+
+
 def hallucination_score(d: Decoded, unit_dur: float) -> float:
     """0 = fine, 1 = certainly a hallucination."""
     n = _norm(d.text)
@@ -318,7 +332,7 @@ def hallucination_score(d: Decoded, unit_dur: float) -> float:
     if (n in WEAK_HALLUCINATIONS or _only_filler(n)) and (d.conf < 0.62 or unit_dur < 1.2):
         return 0.8
     words = n.split()
-    if d.conf < 0.45 and len(words) <= 4 and not re.search(r"\d", n):
+    if d.conf < 0.45 and len(words) <= 4 and not _says_numbers(words, d.lang):
         return 0.76   # a few low-confidence words without numbers: almost always noise
     if d.compression_ratio > 2.8:
         return 0.8
@@ -386,11 +400,25 @@ def segment_language(d: Decoded) -> str:
 # --------------------------------------------------------------------------- text cleanup
 
 _REPEAT = re.compile(r"\b(\w+(?:\W+\w+){0,6}?)(?:\W+\1\b){2,}", re.IGNORECASE)
+_ANY_NUMBER_WORD = frozenset().union(*_NUMBERS_IN.values())
+
+
+def _numbers_only(group: str) -> bool:
+    """Digits, number words and single letters, nothing else ("1, 0, 0", "sıfır, bir", "x, y")."""
+    words = re.findall(r"\w+", neutral_lower(group))
+    return all(w.isdigit() or len(w) == 1 or w.replace("ı", "i") in _ANY_NUMBER_WORD for w in words)
+
+
+def _collapse(m: re.Match) -> str:
+    """Words said three times or more in a row are Whisper looping ("go go go go go" -> "go"). Numbers are not: a
+    matrix or a binary number read out repeats them ("1, 0, 0, 0, 1"). A loop of numbers long enough to be made up
+    compresses well, and hallucination_score drops it before this."""
+    return m.group(0) if _numbers_only(m.group(1)) else m.group(1)
 
 
 def clean_text(text: str) -> str:
     t = text.strip()
-    t = _REPEAT.sub(r"\1", t)                       # "go go go go go" -> "go"
+    t = _REPEAT.sub(_collapse, t)
     t = re.sub(r"\s+([,.!?;:])", r"\1", t)
     t = re.sub(r"\s{2,}", " ", t)
     return t.strip()

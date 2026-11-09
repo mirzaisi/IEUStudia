@@ -133,6 +133,14 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                                "this_week": first <= sun.isoformat() and last >= mon.isoformat(),
                                "dates": [x["date"] for x in classes],
                                "done": (w["end"] or w["start"]) < today.isoformat() or classes_over(classes, now)})
+        planned = {e.get("week") for e in (d.get("alerts") or {}).get("plan") or [] if e.get("kind") != "quiz"}
+        for w in d["weeks"]:        # an exam week of the syllabus no announcement covers (the calendar has it too)
+            last = w["end"] or w["start"]
+            if w.get("exam") and w["start"] and w["no"] not in planned and mon.isoformat() <= last \
+                    and w["start"] <= horizon.isoformat():
+                coming.append({"name": w.get("exam_label") or "Exam", "week": w["no"], "start": w["start"], "end": w["end"],
+                               "los": [], "this_week": w["start"] <= sun.isoformat(), "dates": [],
+                               "done": last < today.isoformat(), "exam_week": True})
         said = [{"category": a["category"], "text": a["text"][:240], "date": a["date"], "source": a["source"],
                  "other_section": a.get("other_section", ""),           # heard in another section: its dates may differ
                  "other_section_en": a.get("other_section_en", "")}     # the same in English, for the AI and the export
@@ -149,7 +157,8 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
             if e["this_week"] and not e["done"]:
                 say = N_("{name} is this week ({los})") if e["los"] else N_("{name} is this week")
                 values = {"name": e["name"], "los": "LO" + ", LO".join(map(str, e["los"]))}     # the name is an id
-                todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"], "name": e["name"],
+                todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"],
+                                **({} if e.get("exam_week") else {"name": e["name"]}),   # (Get ready reads the plan)
                                 "text": t(say, **values), "en": say.format(**values)})
     return {"week": {"start": mon.isoformat(), "end": sun.isoformat(), "offset": offset,
                      "label": f"{day_month(mon)} – {day_month(sun)} {sun.year}"}, "courses": courses, "todo": todo[:30]}
@@ -175,7 +184,8 @@ def digest_prompt(digest: dict[str, Any]) -> str:
             lines.append("  new files: " + ", ".join(f["title"] for f in c["new_files"]))
         if c["announcements"]:
             lines.append("  announcements: " + "; ".join(a["title"] for a in c["announcements"]))
-    lines.append("\nTO DO: " + "; ".join(item.get("en") or item["text"] for item in digest["todo"]))
+    lines.append("\nTO DO: " + "; ".join(f"{item['course']}: " * bool(item.get("course")) + (item.get("en") or item["text"])
+                                         for item in digest["todo"]))
     return ("Write a short weekly digest for the student (Markdown, at most ~250 words): first 2–3 sentences on the week "
             "as a whole, then per course one or two bullets on what was covered and what matters next (quizzes, "
             "deadlines, what the lecturer stressed), then a prioritised list of 3–6 things to do in the next days. "

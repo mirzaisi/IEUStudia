@@ -167,6 +167,16 @@
   function upcoming(d) {
     return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !weekRel(d, e.week, e.kind).past);
   }
+  // the syllabus' exam weeks this week and next that no announcement covers (a course whose lecturer posted no
+  // assessment plan): Coming up lists them too, as the calendar and the reminders do; a click opens that week
+  function examWeeks(d) {
+    const plan = (d && d.alerts && d.alerts.plan) || [];
+    return ((d && d.weeks) || []).filter((w) => w.exam && w.start && !plan.some((e) => e.kind !== "quiz" && e.week === w.no))
+      .map((w) => ({ w, name: w.exam_label || t("Exam"), r: weekRel(d, w.no, "exam") })).filter((x) => x.r.now || x.r.code === "next-week");
+  }
+  St.examWeeks = examWeeks;          // (the tests)
+  const examPill = (c, x) => `<button class="plan-pill ${x.r.now ? "now" : ""} kind-midterm" data-act="exam-week" data-cid="${esc(c.id)}" data-no="${x.w.no}" title="${esc(range(x.w.start, x.w.end))}">
+      <b>${esc(x.name)}</b><span>${t("week {n}", { n: x.w.no })}${x.r.rel ? ` · ${esc(x.r.rel)}` : ""}</span></button>`;
   const readyTip = (d, e) => t("Get ready: what to transcribe, download and read") + (e.los.length ? "\n" + loTitle(d, e.los) : "");
   function planPill(c, d, e) {
     const r = weekRel(d, e.week, e.kind);
@@ -190,14 +200,14 @@
   function headsUpHTML(c, d) {
     const al = d && d.alerts;
     const key = al ? al.items.filter(isKey) : [];
-    const next = upcoming(d).slice(0, 3);
-    if (!key.length && !next.length) return "";
+    const next = upcoming(d).slice(0, 3), exams = examWeeks(d);
+    if (!key.length && !next.length && !exams.length) return "";
     const chips = KEY_ORDER.filter((k) => al.counts[k]).map((k) => catChip(k, al.counts[k], true)).join("");
     return `<div class="card heads ${S.headsOpen ? "" : "closed"}">
       <div class="heads-head"><span class="heads-ico">${I("alert", "sm")}</span><b>${t("Heads-up from the lecturer")}</b><span class="heads-chips">${chips}</span><span class="spacer"></span>
         <button class="btn ghost sm" data-act="course-tab" data-tab="alerts">${t("See all")} ${I("chevron-right", "sm")}</button>
         <button class="btn ghost icon sm" data-act="heads-toggle" title="${S.headsOpen ? t("Collapse") : t("Expand")}">${I(S.headsOpen ? "chevron-up" : "chevron-down", "sm")}</button></div>
-      ${next.length ? `<div class="plan-strip"><span class="plan-strip-label">${I("cap", "xs")} ${t("Coming up")}</span>${next.map((e) => planPill(c, d, e)).join("")}</div>` : ""}
+      ${next.length || exams.length ? `<div class="plan-strip"><span class="plan-strip-label">${I("cap", "xs")} ${t("Coming up")}</span>${next.map((e) => planPill(c, d, e)).join("")}${exams.map((x) => examPill(c, x)).join("")}</div>` : ""}
       ${S.headsOpen && key.length ? `<div class="heads-list">${key.slice(0, 3).map((a) => alertHTML(a, c.id)).join("")}</div>` : ""}</div>`;
   }
   function alertsHTML(c, d) {
@@ -292,7 +302,7 @@
     else if (tab === "materials") body = materialsHTML(c, d);
     else if (tab === "announcements") body = announcementsHTML(c, d);
     else body = weeksHTML(c, d);
-    const gone = c.inactive ? `<div class="callout info">${I("info")}<div>${t("This course is no longer on your IEULearn dashboard (dropped, or from an earlier term). Its transcripts, files, chats and plans stay here.")}</div></div>` : "";
+    const gone = c.inactive ? `<div class="callout info">${I("info")}<div>${c.past ? t("This course is from an earlier term: IEULearn lists it under Past courses. Its transcripts, files, chats and plans stay here.") : t("This course is no longer on your IEULearn dashboard (dropped, or from an earlier term). Its transcripts, files, chats and plans stay here.")}</div></div>` : "";
     const sq = d && (tab === "weeks" || tab === "overview") ? St.sq.card(c) : "";      // Solvequill, the maker's other app
     const changed = St.svcNote ? St.svcNote(tab, c.id) : "";      // its part on IEULearn or Panopto changed (services.js)
     return `<div class="view-inner">${courseHero(c, d)}${gone}${sectionAsk(c)}${tab === "alerts" ? "" : headsUpHTML(c, d)}${tabsHTML(c, d, tab)}<div class="tab-body">${changed}${body}</div>${sq}</div>`;
@@ -412,13 +422,24 @@
     return `<div class="toolbar"><span class="spacer"></span>${anyNew ? `<button class="btn ghost sm" data-act="course-seen" data-id="${c.id}" data-what="announcements">${t("Mark as seen")}</button>` : ""}</div>` +
       d.announcements.map((a) => annCard(a)).join("");
   }
+  // an announcement's text with its web addresses as links: the app keeps a link's address after its text, and an
+  // attached file's ("Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/…/file/0)"), so a Teams link opens
+  function linkText(s) {
+    return String(s || "").split(/(https?:\/\/[^\s<>"]+)/).map((p, i) => {
+      if (!(i % 2)) return esc(p);
+      const url = p.replace(/[).,;:!?'"\]]+$/, "");
+      const label = url.length > 60 ? url.replace(/^https?:\/\//, "").slice(0, 45) + "…" : url;
+      return `<a class="ext" role="link" tabindex="0" data-act="url" data-url="${esc(url)}" title="${esc(url)}">${esc(label)}</a>${esc(p.slice(url.length))}`;
+    }).join("");
+  }
+  St.linkText = linkText;            // (the tests)
   function annCard(a, course) {
     const open = S.ann.has(a.id) || a.body.length < 420;
     const flash = S.flashAnn && S.flashAnn.id === a.id && Date.now() < S.flashAnn.until;
     return `<div class="card ann ${a.is_new ? "is-new" : ""} ${flash ? "flash" : ""}" data-ann-id="${esc(a.id)}">
       <div class="ann-head">${I("megaphone")}<div class="grow"><div class="t">${esc(a.title)} ${a.is_new ? `<span class="pill new">${t("New")}</span>` : ""}</div>
         <div class="s">${course ? `<b>${esc(course.code)}</b> · ` : ""}${esc(a.author)}${a.posted_at ? ` · ${esc(when(a.posted_at))}` : ""}</div></div></div>
-      <div class="ann-body ${open ? "" : "clamp"}">${esc(a.body)}</div>
+      <div class="ann-body ${open ? "" : "clamp"}">${linkText(a.body)}</div>
       ${open ? "" : `<button class="btn ghost sm" data-act="ann-more" data-id="${esc(a.id)}">${t("Show all")}</button>`}</div>`;
   }
 
@@ -491,7 +512,8 @@
     const recs = St.newHTML({ embedded: true });
     const soon = courses.flatMap((c) => {
       const d = S.cd[c.id];
-      return d ? upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week, e.kind) })).filter((x) => x.r.now || x.r.code === "next-week") : [];
+      return d ? [...upcoming(d).map((e) => ({ c, d, e, r: weekRel(d, e.week, e.kind) })).filter((x) => x.r.now || x.r.code === "next-week"),
+        ...examWeeks(d).map((x) => ({ c, d, e: { name: x.name, los: [] }, r: x.r, w: x.w }))] : [];
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
     const twin = (c) => S.courses.filter((x) => x.code === c.code).length > 1;     // FENG 495 twice: which one
     const dateLine = t("{weekday}, {date}", { weekday: t.date(now, "weekday"), date: t.date(now, "dmy") });   // Tue, 27 Oct 2026 · 27 Eki 2026 Sal
@@ -524,7 +546,7 @@
     if (courses.length && !courses.some((c) => (c.counts || {}).done_any) && store("studia-howto") !== "seen") h += howToHTML();
     if (soon.length) {
       h += `<div class="section-title">${I("cap")} ${t("Coming up")} <span class="dim sm">${t("this week and next, as announced")}</span></div>
-        <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}">
+        <div class="soon">${soon.map(({ c, d, e, r, w }) => `<button class="soon-card ${r.now ? "now" : ""}" ${w ? `data-act="exam-week" data-cid="${esc(c.id)}" data-no="${w.no}" title="${esc(t("Week {n}", { n: w.no }))}"` : `data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}"`}>
           <span class="soon-code">${esc(c.code)}${twin(c) && c.section ? ` · ${esc(c.section)}` : ""}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.w && r.code !== "today" ? ` · ${esc(relWhen(r))}` : ""}</span>
           ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}</div>`;
     }
@@ -783,6 +805,7 @@
       const tabs = $(".tabs");
       if (tabs && (scrolled || tabs.getBoundingClientRect().bottom > window.innerHeight - 160)) tabs.scrollIntoView({ block: "start", behavior: "instant" });
     },
+    "exam-week": (el) => go({ name: "course", courseId: el.dataset.cid, tab: "weeks", jumpWeek: +el.dataset.no }),
     "goto-week": (el) => {
       const v = S.view;
       if ((v.tab || "weeks") === "weeks") { v.jumpWeek = +el.dataset.no; renderView(); }

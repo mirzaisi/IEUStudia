@@ -1085,7 +1085,7 @@ wheels = [
 
 [[package]]
 name = "studia"
-version = "3.3.0"
+version = "3.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography", marker = "sys_platform == 'linux'" },

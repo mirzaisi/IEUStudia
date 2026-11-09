@@ -159,7 +159,7 @@ Rules:
 - name: what it is, in at most 6 words.
 - tex: the formula in LaTeX without dollars ("" if there is none). Related forms may share one entry with \\\\begin{aligned}…\\\\end{aligned}; matrices with pmatrix or bmatrix, piecewise definitions with cases, units upright (\\\\,\\\\mathrm{V}, \\\\Omega).
 - text: at most 25 words, maths in $...$, only what the formula doesn't already say ("" if nothing). A definition: the definition itself. A method: its steps as "1) … 2) … 3) …" (at most 5).
-- where: the symbols of tex a student could misread, each with its meaning and unit (sym in LaTeX without dollars; means is plain text with any maths, units like $\\\\Omega$ too, in $...$), at most 4. A symbol is explained once on the whole sheet: not again in later entries. [] when none.
+- where: the symbols of tex a student could misread, each with its meaning and unit (sym in LaTeX without dollars; means is plain text of at most 12 words with any maths, units like $\\\\Omega$ too, in $...$), at most 4. A symbol is explained once on the whole sheet: not again in later entries. [] when none.
 - when: only a condition under which it holds or is used, without "if", starting in lowercase but keeping names and abbreviations as they are written (RC, RL, RLC, DC, KCL, Thevenin), e.g. "$\\\\alpha > \\\\omega_0$", "no load on the output", "source-free RL circuit"; "" if none. Never a remark or a description.
 - covers: the items of the list above that this entry holds, written exactly as in the list.
 - Every entry has a name and a tex or a text. No two entries the same. No explanations, derivations or worked examples.
@@ -223,14 +223,34 @@ def clean_tex(v: Any) -> str:
 _BARE_TEX = re.compile(r"(?:\\[A-Za-z]+(?:\{[^{}$]*\})*(?:[_^](?:\{[^{}$]*\}|[A-Za-z0-9]))*)+")
 
 
+_DOLLAR = re.compile(r"(?<!\\)\$")
+
+
+def _cut(s: str, limit: int) -> str:
+    """``s`` in at most ``limit`` characters: all of it when it fits, else cut before the word or the formula the
+    limit falls in, with "…" (a formula cut in half would print as its LaTeX)."""
+    if len(s) <= limit:
+        return s
+    end = limit - 1
+    dollars = [m.start() for m in _DOLLAR.finditer(s, 0, end)]
+    if len(dollars) % 2:                                 # inside a formula: before it
+        end = dollars[-1]
+    elif not s[end].isspace():                           # inside a word: before it
+        end = max(0, s.rfind(" ", 0, end)) or end
+    out = s[:end].rstrip(" ,;:(")
+    return out + "…" if out else _DOLLAR.sub("", s[:limit - 1]) + "…"     # (one formula longer than it all)
+
+
 def _line(v: Any, limit: int) -> str:
-    """A short text with $...$ maths: its control characters as the backslashes they were, dollars that pair up, and
-    LaTeX written outside a formula ("resistance (\\Omega)") made one."""
+    """A short text with $...$ maths in at most ``limit`` characters (see :func:`_cut`): its control characters as
+    the backslashes they were, dollars that pair up, and LaTeX written outside a formula ("resistance (\\Omega)")
+    made one."""
     from .studypack import _MATH
 
-    s = _str(str(v or "").translate(_CONTROL), limit)
-    if len(re.findall(r"(?<!\\)\$", s)) % 2:
-        s = re.sub(r"(?<!\\)\$", "", s)                  # a formula that doesn't close: its text, not a broken one
+    s = _str(str(v or "").translate(_CONTROL), 10 ** 6)
+    if len(_DOLLAR.findall(s)) % 2:
+        s = _DOLLAR.sub("", s)                          # a formula that doesn't close: its text, not a broken one
+    s = _cut(s, limit)
     if "\\" not in s:
         return s
     bare = lambda part: _BARE_TEX.sub(lambda m: f"\\({m.group(0)}\\)", part)   # noqa: E731
@@ -260,7 +280,7 @@ def clean_entry(e: Any) -> Optional[dict[str, Any]]:
             sym, means = w
         else:
             sym, _, means = str(w).partition(":")
-        sym, means = clean_tex(sym), _line(means, 90)
+        sym, means = clean_tex(sym), _line(means, 160)      # (a unit like ($\mathrm{V}$) is 14 of them)
         if sym and means and len(where) < 8:
             where.append({"sym": sym, "means": means})
     when = re.sub(r"^(?:if|when|only if|valid if|valid when)\s+", "", _line(e.get("when"), 200), flags=re.I)
@@ -474,8 +494,8 @@ def assemble(s: Any, plan: dict[str, Any], sheet: dict[str, Any], facts: dict[st
             "uncovered": [i for v in (checks.get("missing") or {}).values() for i in v],
             "repaired": checks.get("repaired", 0), "duplicates": checks.get("duplicates", 0),
             "empty": checks.get("empty", 0), "files": len(facts["files"]), "lectures": len(facts["lectures"]),
-            "cut": facts.get("cut") or [], "materials_missing": facts["materials_missing"],
-            "days_missing": facts["days_missing"]}
+            "cut": facts.get("cut") or [], "files_cut": facts.get("files_cut") or [],
+            "materials_missing": facts["materials_missing"], "days_missing": facts["days_missing"]}
 
 
 def shown_body(s: Any, plan: dict[str, Any]) -> str:
@@ -658,4 +678,5 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings),
             "main_input": int(tokens_in), "main_output": int(tokens_out), "requests": 1 + batches + repair, "chapters": batches, "files": len(facts["files"]),
             "lectures": len(facts["lectures"]), "materials_missing": facts["materials_missing"],
-            "days_missing": facts["days_missing"], "minutes": t("about {a}–{b} minutes", a=a, b=a * 2)}
+            "days_missing": facts["days_missing"], "files_cut": facts["files_cut"],
+            "minutes": t("about {a}–{b} minutes", a=a, b=a * 2)}

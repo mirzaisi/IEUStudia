@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import struct
@@ -63,6 +64,25 @@ class MediaSource:
     kind: str                 # "audio_podcast" | "video_podcast" | "hls"
     url: str
     est_bytes: Optional[int] = None
+    # a screen stream's stretches the recording keeps: (from, to) in the stream's own seconds and where in the
+    # recording that stretch begins (see _spans); () for all of it, from the stream's start offset
+    spans: tuple[tuple[float, float, float], ...] = ()
+
+
+def _spans(stream: dict[str, Any]) -> tuple[tuple[float, float, float], ...]:
+    """A stream's RelativeSegments as (from, to, at). A stretch cut out in Panopto's editor, or recorded while the
+    recorder was paused, is left out of the sound and the camera but stays in the screen video: there the stretches
+    after it are that much later than in the recording. () when it has none, or one that can't be read."""
+    out = []
+    for g in stream.get("RelativeSegments") or []:
+        try:
+            span = (float(g["Start"]), float(g["End"]), float(g["RelativeStart"]))
+        except (KeyError, TypeError, ValueError):
+            return ()
+        if not all(map(math.isfinite, span)) or span[1] <= span[0]:
+            return ()
+        out.append(span)
+    return tuple(sorted(out))
 
 
 def _write_marker(path: Path, data: dict[str, Any]) -> None:
@@ -399,8 +419,9 @@ class Panopto:
 
     def screen_sources(self, info: dict[str, Any]) -> list[tuple[MediaSource, float]]:
         """The screen/slides videos (HLS) and their start offsets in seconds, in time order. Panopto makes one per
-        stretch of screen sharing: a lecturer who stops and starts sharing again gives several."""
-        out = [(MediaSource("hls", st["StreamUrl"]), float(st.get("RelativeStart") or 0.0))
+        stretch of screen sharing: a lecturer who stops and starts sharing again gives several. Each one's ``spans``:
+        the stretches of it the recording keeps (an edit or a pause cuts the others out)."""
+        out = [(MediaSource("hls", st["StreamUrl"], spans=_spans(st)), float(st.get("RelativeStart") or 0.0))
                for st in info["Delivery"].get("Streams") or []
                if isinstance(st, dict) and str(st.get("Tag") or "").upper() == "SCREEN"
                and isinstance(st.get("StreamUrl"), str) and st["StreamUrl"]]

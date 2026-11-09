@@ -34,6 +34,7 @@ class Course:
     position: int = 0            # order on the IEULearn dashboard
     cover_url: str = ""          # the course's cover picture on the IEULearn dashboard
     progress: Optional[int] = None  # IEULearn's own "İlerleme" (progress %) shown on the dashboard
+    folder: str = ""             # its folder in the output folder, named once by the library and kept
 
 
 @dc.dataclass

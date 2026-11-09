@@ -321,7 +321,8 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .math-block.pending { height: 2.6em; background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
   background-size: 200% 100%; animation: shimmer 1.3s infinite; }
 .math-src { font-family: var(--mono); font-size: .9em; color: var(--text-2); white-space: pre-wrap; }
-.md a.ext { color: var(--accent-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.md a.ext, .ann-body a.ext { color: var(--accent-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.ann-body a.ext { overflow-wrap: anywhere; }
 .cite { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 6px 0 5px; margin: 0 1px; border: 0;
   border-radius: 6px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text);
   font: 600 11.5px var(--mono); vertical-align: 1px; white-space: nowrap; cursor: pointer; transition: background .12s, color .12s; }

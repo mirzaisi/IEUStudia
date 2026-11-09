@@ -1350,7 +1350,10 @@ class JobManager:
             if hardware.card_error_kind(err) == "passing":   # only full, or a one-off fault: the next lecture tries it
                 return ""
             was = bool(hardware.card_failed())
-            first = hardware.remember_card_failed(err, model) and not was
+            # one failure counts once: a lecture that goes on with the engine that fell back doesn't count it again
+            first = (not getattr(engine, "card_counted", False) and hardware.remember_card_failed(err, model)
+                     and not was)
+            engine.card_counted = True
             if not hardware.card_failed():                   # seen once: the next lecture tries the card again
                 return t("Your graphics card couldn't run the speech model this time, so the processor transcribed "
                          "this lecture. The next lecture tries the card again.")
@@ -1368,6 +1371,28 @@ class JobManager:
         if first:
             self.emit({"type": "toast", "level": "warning", "message": note})
         return note
+
+    def _let_fallback_go(self, engine: Any) -> None:
+        """The graphics card failed and the processor took over (Engine.ensure_model keeps that engine): it goes after
+        the lecture, so the next one loads the model again and really tries the card, as its note says (a card that was
+        only full, or failed once, often works then). Kept on Automatic when the card is remembered as unusable (the
+        next engine would go to the processor at once), and while a study plan still uses it."""
+        if not getattr(engine, "gpu_error", "") or getattr(engine, "device", "") == "cuda":
+            return
+        from . import hardware
+
+        try:
+            if getattr(engine, "device_pref", "auto") == "auto" and hardware.card_unusable():
+                return
+        except Exception:  # noqa: BLE001 - only how soon the card is tried again
+            self.log.debug("Asking about the graphics card failed", exc_info=True)
+        with self._lock:
+            if self._engine is not engine or self._engine_users:
+                return
+            self._engine, self._engine_key = None, None
+        engine.unload()
+        self.log.info("The speech model ran on the processor after the graphics card failed; the next lecture tries "
+                      "the card again")
 
     def _transcribe(self, job: Job) -> None:
         if self.setup_busy():                     # the speech model (or the graphics card's files) are on their way
@@ -1404,6 +1429,7 @@ class JobManager:
                 job.own_speed = False
         finally:
             self._done_with_engine()
+            self._let_fallback_go(engine)
         self._drop_audio(job)
         transcript.delivery_id = job.id
         path = store.save_transcript(transcript)

@@ -53,6 +53,19 @@ def test_parse_announcements():
     assert a.body == "Our first quiz is next week.\nGood luck!"
 
 
+def test_an_announcement_keeps_its_link_addresses_and_attached_files():
+    page = """<article class="ov-ann-card"><h4 class="ov-ann-card-title">Makeup Lesson</h4>
+      <div class="ov-ann-card-meta"><span>Dr X</span><span>27.10.2026 09:00</span></div>
+      <div class="st-ov-ann-full"><p>Link: <a href="https://teams.microsoft.com/l/meetup-join/19%3a1?a=1&amp;b=2">Makeup Lesson | Toplantıya Katıl | Microsoft Teams</a></p><p>Sheet: <a href="https://docs.google.com/x">https://docs.google.com/x</a></p><div class="ov-ann-card-files st-ann-attachments" aria-label="Ekler"><a class="ov-ann-file"
+      href="https://learn.ieu.edu.tr/student/announcements/5961/file/0" title="Quiz1 - Solutions.pdf"><span
+      class="ov-ann-file-name">Quiz1 - Solutions.pdf</span> <span class="ov-ann-file-size">142 KB</span></a></div>
+      </div></article>"""
+    (a,) = parse_announcements(page)
+    assert a.body == ("Link: Makeup Lesson | Toplantıya Katıl | Microsoft Teams "
+                      "(https://teams.microsoft.com/l/meetup-join/19%3a1?a=1&b=2)\nSheet: https://docs.google.com/x\n"
+                      "Quiz1 - Solutions.pdf 142 KB (https://learn.ieu.edu.tr/student/announcements/5961/file/0)")
+
+
 def test_parse_overview():
     page = """<ol class="ov-intro-lo-list"><li><span class="ov-intro-lo-no">1.</span> <span class="ov-intro-lo-text">olasılığı açıklar</span></li></ol>
       <span class="ov-ects-week-no">1</span> <span class="ov-ects-week-topic">Örnek uzay</span>
@@ -188,6 +201,34 @@ def test_the_weeks_an_assessment_covers_are_not_the_week_it_is_held_in():
         [("Quiz 1", 3), ("Quiz 2", 6), ("Quiz 3", 9), ("Quiz 4", 12)]
 
 
+def test_ordinals_turkish_week_lists_pairs_on_a_line_and_postponements():
+    plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
+    old = _ann("o", "Quiz-Midterm-Final Exam Schedule", "1st Quiz 4th Week Will be Announced\n2nd Quiz 7th Week Will be "
+               "Announced\nMidterm 8th Week Will be Announced\n3rd Quiz 11th Week\n4th Quiz 14th Week\nFinal 15th Week",
+               "2026-09-26T09:00")
+    new = _ann("n", "New Quiz-Midterm-Final Exam Schedule", "1st Quiz 4th Week\n2nd Quiz 10th Week\nMidterm 8th Week\n"
+               "3rd Quiz 12th Week\n4th Quiz 14th Week\nFinal 16th Week", "2026-10-27T09:00")
+    content = _ann("c", "MIDTERM CONTENT", "The midterm covers everything up to and including the definition of “Slope” "
+                   "in the Week 5 notes.", "2026-11-04T09:00")
+    assert plan(old, new, content) == [("Quiz 1", 4), ("Midterm", 8), ("Quiz 2", 10), ("Quiz 3", 12), ("Quiz 4", 14),
+                                       ("Final", 16)]
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7")
+    moved = _ann("m", "Change", "Dear students, Quiz 2 has been postponed to the 10th week due to the national holiday "
+                 "on 29 October.", "2026-10-20T09:00")
+    assert plan(table, moved) == [("Quiz 1", 4), ("Quiz 2", 10)]
+    assert plan(table, _ann("e", "Erteleme", "Quiz 2 10. haftaya ertelendi.", "2026-10-20T09:00")) == \
+        [("Quiz 1", 4), ("Quiz 2", 10)]
+    assert plan(table, _ann("r", "Quiz 2", "Quiz 2 results from week 7 are out; the make-up will be held in week 9.",
+                            "2026-10-20T09:00")) == [("Quiz 1", 4), ("Quiz 2", 7)]
+    assert plan(_ann("tr", "Sınavlar", "Quiz 1–4\n3., 5., 10. ve 12. haftalarda yapılacaktır.")) == \
+        [("Quiz 1", 3), ("Quiz 2", 5), ("Quiz 3", 10), ("Quiz 4", 12)]
+    assert plan(_ann("k", "Quizler", "Quiz 1-4 sırasıyla 2., 4., 6. ve 8. haftaların konularını kapsayacaktır.")) == []
+    assert plan(_ann("w", "Quizler", "Quiz 1-4: 3, 5, 10 ve 12. haftalarda")) == []         # not Quiz 1 in week 12
+    assert plan(_ann("p", "Plan", "Quiz 1: Week 3, Quiz 2: Week 5, Quiz 3: Week 10")) == \
+        [("Quiz 1", 3), ("Quiz 2", 5), ("Quiz 3", 10)]
+    assert plan(_ann("q", "Plan", "Midterm: Week 8. Quiz 2: Week 10.")) == [("Midterm", 8), ("Quiz 2", 10)]
+
+
 @pytest.mark.parametrize("body", ["Midterm Exam 1\nWeek 7\nMidterm Exam 2\nWeek 12",
                                   "Midterm-1: Week 7\nMidterm-2: Week 12", "Midterm I\nWeek 7\nMidterm II\nWeek 12"])
 def test_two_midterms_however_they_are_written(body):
@@ -318,6 +359,24 @@ def test_a_unit_for_two_weeks_shows_its_files_in_both(tmp_path):
     assert sorted(x["resource_id"] for x in dg["todo"] if x["kind"] == "download") == ["r1", "r2", "r3"]
     pack = gather(lib, Settings(), "e", Scope(kind="prep", weeks=[6, 7]))
     assert sorted(m["id"] for m in pack["materials_missing"]) == ["r1", "r2", "r3"]
+
+
+def test_a_file_s_own_week_beats_its_topic_number_on_the_weeks_tab(tmp_path):
+    """MATH 250: undated "Konu N" units whose files are named for the week after from Konu 10 on (the midterm week
+    shifts the topics): the Weeks tab, and so the export, review sheets and the digest, place them as chat does."""
+    lib = Library(tmp_path / "lib.db")
+    lib.upsert_courses([Course(id="m", title="2026-1 MATH 250 L 1", code="MATH 250", name="Linear Algebra", term="T")])
+    names = {8: "MATH_250_Week 8-9", 9: "MATH_250_Week 9-10", 10: "MATH_250_Week 11", 11: "MATH_250_Week 12"}
+    res = lambda i, name: Resource(i, name, f"{name}.pdf", "pdf", "pdf", "u", "d")     # noqa: E731
+    lib.merge_units("m", [Unit("k1", 1, "Hafta 1", dt.date(2026, 9, 21), dt.date(2026, 9, 27))]
+                    + [Unit(f"k{n}", n, f"Konu {n}", resources=[res(f"m{n}", name)]) for n, name in names.items()]
+                    + [Unit("k7", 7, "Konu 7", resources=[res("m7", "Konu 7 notes"), res("c5", "Chapter 5 slides")])],
+                    first_sync=True)
+    d = course_detail(lib, Settings(), "m", now=dt.datetime(2026, 11, 9, 12, 0))
+    files = {w["no"]: sorted(m["id"] for u in w["units"] for m in u["materials"]) for w in d["weeks"]}
+    assert {n: files.get(n) for n in range(7, 13)} == {7: ["c5", "m7"], 8: ["m8"], 9: ["m8", "m9"], 10: ["m9"],
+                                                       11: ["m10"], 12: ["m11"]}     # (a chapter is no week)
+    assert [u["title"] for w in d["weeks"] if w["no"] == 11 for u in w["units"]] == ["Konu 10"]
 
 
 def test_a_file_asked_for_twice_in_one_go_is_downloaded_once():

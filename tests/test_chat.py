@@ -336,6 +336,66 @@ def test_each_kind_of_ai_notes_has_its_own_file(env):
     assert files["notes:notes"] == str(notes) and "notes:exam" not in files
 
 
+def test_study_notes_label_each_slide_with_its_part_and_spread_a_long_days_slides(env):
+    """Every part numbers its slides from 1: study notes sent the pictures unlabelled (part 2's "(slide 1)" read as
+    the day's first picture, part 1's) and only the first 60 (the first part or two of a long day)."""
+    from studia.api import Api
+
+    ns = env.svc._s
+    for name in ("ai_notes", "ai_inputs"):
+        setattr(ns, name, types.MethodType(getattr(Services, name), ns))
+    ns._notes_path = Services._notes_path
+    img = env.tmp / "s.jpg"
+    img.write_bytes(b"jpg")
+    sent = []
+    env.mp.setattr(ai, "one_shot", lambda system, content, *a, **k: sent.append(content) or {"text": ""})
+    env.mp.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": str(p)}})
+    ai.run_claude("Notes.", "[00:00] The lecture.", [("[Part 2, slide 5]", img)])
+    assert [b.get("text") or b["type"] for b in sent[0][1:3]] == ["[Part 2, slide 5]", "image"]   # right before it
+    got = []
+    env.mp.setattr(ai, "run_claude", lambda prompt, text, images, **k: got.append((prompt, images)) or
+                   {"text": "n", "usage": {}, "model": "m"})
+    env.mp.setattr(ai, "claude_info", lambda: {})
+    for rid in ("r0", "r1"):           # slide 1 shown again later is sent once
+        store.save_slides(rid, [Slide(1, 0.0, 8.0, "x", str(img)), Slide(2, 8.0, 20.0, "x", str(img)),
+                                Slide(1, 20.0, 30.0, "x", str(img))])
+    ns.ai_notes(DAY1, "notes", True, "sonnet")
+    prompt, images = got[-1]
+    assert [x for x, _ in images] == ["[Part 1, slide 1]", "[Part 1, slide 2]", "[Part 2, slide 1]", "[Part 2, slide 2]"]
+    assert "each labelled [Part n, slide m]" in prompt and "Refer to a slide as (Part n, slide m)" in prompt
+    assert "spread over the lecture" not in prompt
+    for rid in ("r0", "r1"):           # a long day: 100 slides
+        store.save_slides(rid, [Slide(i, i * 10.0, i * 10.0 + 9, "x", str(img)) for i in range(1, 51)])
+    ns.ai_notes(DAY1, "notes", True, "sonnet")
+    prompt, images = got[-1]
+    labels = [x for x, _ in images]
+    assert len(labels) == 60 and labels[0] == "[Part 1, slide 1]" and labels[-1] == "[Part 2, slide 50]"
+    assert sum(x.startswith("[Part 2,") for x in labels) == 30 and len(set(labels)) == 60
+    assert "60 of the 100 slides are attached, spread over the lecture" in prompt
+    est = Api.ai_estimate(types.SimpleNamespace(_s=ns), DAY1, True)["estimate"]
+    assert est["images"] == 60 and est["slides"] == 100
+
+
+def test_ai_notes_are_in_the_search_index_for_good_once_written(env):
+    """The notes' rows were added without a commit: closing the app (os._exit) dropped them for good, and the open
+    write kept the command line from opening the library."""
+    ns = env.svc._s
+    for name in ("ai_notes", "ai_inputs", "day_files", "notes_for_search"):
+        setattr(ns, name, types.MethodType(getattr(Services, name), ns))
+    ns._notes_path = Services._notes_path
+    env.lib.index.notes = ns.notes_for_search
+    env.mp.setattr(ai, "run_claude", lambda prompt, text, images, **k: {"text": "## Bayes\n\nThe posterior.", "usage": {},
+                                                                        "model": "m"})
+    ns.ai_notes(DAY1, "notes", False, "sonnet")
+    assert not env.lib.db.in_transaction
+    other = Library(env.lib.path)                        # another process, or the next start
+    try:
+        rows = other.db.execute("SELECT COUNT(*) FROM search_doc WHERE kind='note' AND ref=?", (DAY1,)).fetchone()[0]
+    finally:
+        other.db.close()
+    assert rows >= 1
+
+
 def test_another_ai_choice_gets_its_own_session(env):
     chat = env.svc.create("c", [DAY1])
     ask(env, chat["id"], "q1")

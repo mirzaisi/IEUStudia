@@ -235,20 +235,39 @@ def _frame_after(session: requests.Session, seg: _Segment, init_bytes: bytes, af
     return last
 
 
+def _kept(segs: list[_Segment], spans: tuple[tuple[float, float, float], ...]) -> list[_Segment]:
+    """The segments of a screen stream that the recording keeps, timed in the recording. ``spans`` are its stretches
+    as (from, to, at) in the stream's own seconds (see panopto._spans). A stretch cut out in Panopto's editor, or
+    recorded while the recorder was paused, is in the screen video but not in the sound: its keyframes are left out,
+    and the ones after it move earlier."""
+    out = []
+    for seg in segs:
+        span = next((g for g in spans if g[0] <= seg.t < g[1]), None)
+        if span is not None:
+            out.append(dc.replace(seg, t=span[2] + seg.t - span[0], dur=min(seg.dur, span[1] - seg.t)))
+    return out
+
+
 def extract_slides(session: requests.Session, master_url: str, out_dir: Path, rel_prefix: str, prefix: str,
                    offset: float = 0.0, progress: Callable[[int, int], None] = lambda a, b: None,
                    cancel: Optional[threading.Event] = None, change_threshold: float = 0.06,
-                   min_slide_s: float = 12.0, seen: Optional[list[tuple[np.ndarray, Slide]]] = None) -> list[Slide]:
+                   min_slide_s: float = 12.0, seen: Optional[list[tuple[np.ndarray, Slide]]] = None,
+                   spans: tuple[tuple[float, float, float], ...] = ()) -> list[Slide]:
     """Sample the screen stream, detect slide changes, write ``<out_dir>/<prefix>-NN.jpg``.
 
     ``rel_prefix`` is the folder of the images relative to the Markdown file (e.g. "slides/<day>"). ``seen``: the
     slides kept so far as (thumbnail, slide), shared by the calls for one recording's screen streams: a slide shown
-    again in a later stream is not saved twice, and the numbering goes on.
+    again in a later stream is not saved twice, and the numbering goes on. ``spans``: the stretches of the stream the
+    recording keeps (see _kept); they give the times then, not ``offset``.
     """
     r = media_playlist(session, master_url, prefer="video")
     init, segs = parse_playlist(r.text, r.url)
     if not init or not segs:
         raise RuntimeError("Unsupported screen-recording format.")
+    if spans:
+        segs, offset = _kept(segs, spans), 0.0
+        if not segs:                                    # all of it cut out
+            return []
     init_bytes = _get(session, init[0], init[2], init[2] + init[1] - 1) if init[1] else session.get(init[0]).content
     avcc = find_avcc(init_bytes)
     if not avcc:

@@ -124,6 +124,12 @@
         `<option value="${x}" ${x === v ? "selected" : ""}>${esc(name(x))}</option>`).join("")}</select></label>`;
   };
   St.effortPick = (ctx) => picks[ctx] || "";             // what the student chose in that dialog ("" = the setting)
+  // a dialog's note about its large request, said again when its estimate comes (the new chat: the app's own count)
+  St.effortNote = (ctx, big) => {
+    if (!info[ctx]) return;
+    info[ctx].big = big;
+    const slot = document.getElementById(`eff-note-${ctx}`); if (slot) slot.innerHTML = noteHTML(ctx);
+  };
   St.effortName = name;
   // notes about a large request, for the dialogs to show with their estimate
   St.effortBig = {

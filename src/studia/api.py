@@ -1909,9 +1909,10 @@ class Api:
     @safe
     def ai_estimate(self, day_key: str, include_slides: bool = False) -> dict[str, Any]:
         from .ai import claude_info, estimate_tokens
+        from .services import note_slides
 
         text, images, _, _ = self._s.ai_inputs(day_key, include_slides)
-        est = estimate_tokens(text, min(len(images), 60))
+        est = {**estimate_tokens(text, len(note_slides(images))), "slides": len(images)}     # (sent, of all)
         return {"ok": True, "estimate": est, "ai": claude_info(), "model": self._s.settings.ai_model}
 
     @safe

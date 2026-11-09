@@ -15,6 +15,10 @@
     weeks.forEach((w) => { const r = runs[runs.length - 1]; if (r && w === r[1] + 1) r[1] = w; else runs.push([w, w]); });
     return runs.map(([a, b]) => (a === b ? t("week {n}", { n: a }) : t("weeks {a}–{b}", { a, b }))).join(", ");
   };
+  // the files the plan of the chapters (a cheatsheet's topic list) saw only the first pages of: a whole term of a
+  // heavy course is more than one request takes (studypack.gather)
+  const cutNote = (cut) => t.html("Too long for one request, so the AI plans from the first pages of these files only: {files}. Pick fewer weeks so it sees every page.",
+    { files: cut.map((f) => (f.seen ? t("{name} (pages 1–{seen} of {pages})", { name: f.name, seen: f.seen, pages: f.pages }) : f.name)).join(", ") });
   S.packDoc = {};            // the document's HTML by plan id (it is big: asked for once)
   let P = null;              // the dialog's state
 
@@ -50,7 +54,8 @@
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Plans, review sheets and study packs need ChatGPT or Claude (the offline model is too small).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
     if (!P.files.size && !P.days.size) return `<span class="dim">${t("Pick at least one file or lecture.")}</span>`;
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
-    const more = St.effortCostNote ? St.effortCostNote(e, scope()) : "";    // effort.js: a heavy level, a big read
+    const more = (St.effortCostNote ? St.effortCostNote(e, scope()) : "")    // effort.js: a heavy level, a big read
+      + ((e.files_cut || []).length ? `<div class="dim sm">${I("info", "xs")} ${cutNote(e.files_cut)}</div>` : "");
     if (sheet()) return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${t.html("Uses part of your {ai} plan.", { ai: St.aiName() })}</b>
         ${t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: fmtK(e.main_input + e.main_output), minutes: e.minutes })}
         <div class="dim sm">${t("If your plan's limit is reached it stops; resume it later and what is written is kept.")}</div></div></div>${more}`;
@@ -146,6 +151,7 @@
     if (miss) notes.push(t.n(miss, "{n} picked file was not on this PC, so the pack doesn't use it.", "{n} picked files were not on this PC, so the pack doesn't use them."));
     if (todo) notes.push(t.n(todo, "{n} picked lecture was not transcribed, so the pack doesn't use it.", "{n} picked lectures were not transcribed, so the pack doesn't use them."));
     if ((r.uncovered || []).length) notes.push(t.html("The plan of the chapters left out: {topics}.", { topics: r.uncovered.join(", ") }));
+    if ((r.files_cut || []).length) notes.push(cutNote(r.files_cut));
     if (!r.pdf) notes.push(t("The PDF wasn't made yet: Save PDF makes it."));
     if (St.packNotices) return St.packNotices(r, notes);       // coloured, with Download / Transcribe
     return notes.map((n) => `<div class="note-sm">${I("info", "sm")}<span>${n}</span></div>`).join("");
@@ -212,7 +218,7 @@
     }, 400);
   };
 
-  St.pack = { stateHTML, weekSpan, loadDoc };       // for cheatsheet.js
+  St.pack = { stateHTML, weekSpan, loadDoc, cutNote };       // for cheatsheet.js
 
   Object.assign(A, {
     "pack-new": (el) => packDialog(el && el.dataset.id, el && el.dataset.kind),

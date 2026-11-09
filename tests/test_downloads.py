@@ -246,7 +246,7 @@ def test_slides_come_from_every_screen_stream_and_are_made_once(tmp_path, isolat
 
     calls = []
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
         calls.append((url, offset))
         folder.mkdir(parents=True, exist_ok=True)
         idx = len(seen) + 1
@@ -286,7 +286,7 @@ def test_a_failed_screen_stream_keeps_the_others_and_is_tried_again(tmp_path, is
     from studia.services import Services
     from studia.slides import Slide
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
         if "bad" in url:
             raise RuntimeError("Unsupported screen-recording format.")
         return [Slide(1, offset, offset + 5, "", "")]
@@ -309,7 +309,7 @@ def test_a_capture_that_lost_its_connection_keeps_its_slides_and_is_tried_again(
 
     calls = []
 
-    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None):
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
         calls.append(url)
         raise Incomplete(200, 300, [Slide(1, offset, offset + 5, "", "")])    # the Wi-Fi dropped after slide 1
 
@@ -325,6 +325,37 @@ def test_a_capture_that_lost_its_connection_keeps_its_slides_and_is_tried_again(
     assert len(calls) == SLIDES_TRIES and _slides_done("r1", _slides_key(screens), 1)    # a limit: then kept
     Services.slides_task(svc, job, screens, None)
     assert len(calls) == SLIDES_TRIES
+
+
+def test_slides_of_an_edited_recording_follow_its_cuts(tmp_path, isolated_home, monkeypatch):
+    from studia import slides
+    from studia.panopto import MediaSource, Panopto
+    from studia.services import Services, _slides_key
+    from studia.slides import Slide
+
+    # EEE215-2 Lab Week-4: 6:54 cut out at 47:19 (the editor, or the recorder paused); the screen video still has it
+    url = "https://p/Sessions/a.screen.hls/master.m3u8"
+    info = {"Delivery": {"Streams": [{"Tag": "SCREEN", "StreamUrl": url, "RelativeStart": 0.337, "RelativeSegments": [
+        {"RelativeStart": 2839.381, "Start": 3253.031, "End": 5726.684},
+        {"RelativeStart": 0.337, "Start": 0, "End": 2839.044}]}]}}
+    (edited, offset), = Panopto(None).screen_sources(info)
+    assert edited.spans == ((0.0, 2839.044, 0.337), (3253.031, 5726.684, 2839.381)) and offset == 0.337
+    info["Delivery"]["Streams"][0]["RelativeSegments"][0]["End"] = None      # one that can't be read: as before
+    assert Panopto(None).screen_sources(info)[0][0].spans == ()
+    plain = MediaSource("hls", url)
+    split = MediaSource("hls", url, spans=((0, 0.08, 0.337), (0.08, 5726.6, 0.417)))     # split, nothing moved
+    assert _slides_key([(split, offset)]) == _slides_key([(plain, offset)])   # slides made before: kept
+    assert _slides_key([(edited, offset)]) != _slides_key([(plain, offset)])  # made before the cut: made again
+    got = []
+
+    def extract(session, url, folder, rel, prefix, offset, cancel=None, seen=None, spans=()):
+        got.append(spans)
+        return [Slide(1, offset, offset + 5, "", "")]
+
+    monkeypatch.setattr(slides, "extract_slides", extract)
+    Services.slides_task(_services(tmp_path, isolated_home), types.SimpleNamespace(id="r1", cancel=None),
+                         [(edited, offset)], None)
+    assert got == [edited.spans]
 
 
 def test_old_downloaded_audio_is_swept_unless_its_lecture_is_queued(tmp_path, isolated_home):

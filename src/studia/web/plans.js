@@ -18,6 +18,8 @@
   // lectures of these weeks that the material sent to the AI had no room for (a long scope with many files)
   const leftOut = (n) => t.n(n, "{n} lecture did not fit in what the AI read — topics only there may be missing.",
     "{n} lectures did not fit in what the AI read — topics only there may be missing.");
+  const filesOut = (n) => t.n(n, "{n} file did not fit in what the AI read — topics only there may be missing.",
+    "{n} files did not fit in what the AI read — topics only there may be missing.");
   const ytAt = (vid, sec) => `https://www.youtube.com/watch?v=${encodeURIComponent(vid)}${sec > 0 ? `&t=${Math.floor(sec)}s` : ""}`;
   // captions with "[m:ss]" marks: each mark opens the video at that moment
   const stamped = (vid, text) => esc(text || "").replace(/\[(\d+(?::\d{2}){1,2})\]/g, (m, st) =>
@@ -143,6 +145,7 @@
     const miss = St.planWarnings ? 0 : (r.materials_missing || []).length;      // notices.js warns at the top instead
     return `${miss ? `<div class="note-sm">${I("info", "sm")}<span>${t.n(miss, "{n} file of these weeks was not downloaded, so the review sheet could not use it.", "{n} files of these weeks were not downloaded, so the review sheet could not use them.")}</span></div>` : ""}
       ${r.days_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${leftOut(r.days_left_out)}</span></div>` : ""}
+      ${r.materials_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${filesOut(r.materials_left_out)}</span></div>` : ""}
       <div class="note-sm">${I("youtube", "sm")}<span>${t("A review sheet is written only, with no videos. For YouTube videos of these weeks, make a video study plan.")}</span>
         <button class="btn sm" data-act="plan-new" data-id="${esc(p.course_id)}" data-kind="videos" data-focus="${esc((p.scope || {}).focus || "")}" data-weeks="${esc(((p.scope || {}).weeks || []).join(","))}">${I("youtube", "sm")} ${t("Video plan")}</button></div>
       <div class="card pl-prep md">${St.mdToHtml(r.markdown || "")}</div>`;
@@ -246,6 +249,7 @@
       rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${based} ${lost.length > 1 ? t("{a} and {b} — topics only there may be missing.", { a: lost[0], b: lost[1] }) : t("{a} — topics only there may be missing.", { a: lost[0] })}</span></div>`);
     }
     if (r.days_left_out) rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${leftOut(r.days_left_out)}</span></div>`);
+    if (r.materials_left_out) rows.push(`<div class="pl-cp-row src">${I("file", "xs")}<span>${filesOut(r.materials_left_out)}</span></div>`);
     const heard = r.listened || {};            // videos without usable captions: listened to on this PC, or not (and why)
     if (heard.heard || heard.silent || (heard.skipped || []).length) {
       const silent = heard.silent || 0;        // (listened to, and nothing was said in it)

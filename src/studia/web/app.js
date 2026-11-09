@@ -1604,7 +1604,23 @@
     const maxSlides = () => (st.scope && st.scope.max_slides) || 60;          // what the chosen AI takes in one request
     const maxTokens = () => (st.scope && ((st.scope.limits || {})[st.model] || st.scope.max_tokens)) || 150000;
     const readOn = () => (st.read != null ? st.read : whole() && (S.system.ai || {}).provider !== "local");
-    const total = () => 3000 + chosen().reduce((n, d) => n + tokOf(d), 0) + (st.slides ? Math.min(maxSlides(), slideCount()) * 800 : 0);
+    const textTotal = () => 3000 + chosen().reduce((n, d) => n + tokOf(d), 0);
+    // the slide pictures get only the room the text leaves (chat.context): they never make a chat too big
+    const picTokens = () => Math.min(Math.min(maxSlides(), slideCount()) * 800, Math.max(0, maxTokens() - textTotal()));
+    // what is chosen, for the app's own count of it (chat_estimate)
+    const choice = () => JSON.stringify([st.course, st.focus, chosen().map((d) => d.day_key), !!(st.slides && slideCount() > 0), st.model, st.read]);
+    // the first question's size: the app's count once it comes, until then this page's (the whole course fits: what
+    // doesn't fit whole is read in parts)
+    const total = () => {
+      if (st.tok && st.tok.key === choice()) return st.tok.tokens;
+      const n = textTotal() + (st.slides ? picTokens() : 0);
+      return whole() ? Math.min(maxTokens(), n) : n;
+    };
+    // too much for one chat: only the text of the chosen days can be (the whole course is read in parts)
+    const over = () => !whole() && textTotal() > maxTokens();
+    const costHTML = (tot) => ((S.system.ai || {}).provider === "local" ? t("<b>≈{k} tokens</b> on your first question · runs on this PC", { k: fmtK(tot) })
+      : t.html("<b>≈{k} tokens</b> on your first question · from your {ai} plan", { k: fmtK(tot), ai: aiName() }));
+    const bigNote = (tot) => ((S.system.ai || {}).provider === "local" ? "" : Studia.effortBig.chat(tot, whole()));
     const pickDefault = () => {   // newest days, as many as fit comfortably
       st.sel = new Set(); let sum = 0;
       for (const d of daysOf()) { if (st.sel.size && sum + tokOf(d) > 60000) break; st.sel.add(d.day_key); sum += tokOf(d); }
@@ -1613,7 +1629,7 @@
       const old = $(".cp-days"), keepScroll = old ? old.scrollTop : 0;
       const oldBody = $(".cp-scroll"), keepBody = oldBody ? oldBody.scrollTop : 0;
       const ai = S.system.ai || {}, who = aiName();
-      const max = maxTokens(), tot = total(), over = tot > max && !whole(), sc = slideCount(), ms = maxSlides();   // (the whole course: read in parts)
+      const max = maxTokens(), tot = total(), tooBig = over(), sc = slideCount(), ms = maxSlides();
       const images = ai.can_images !== false && ai.provider !== "local";
       const modes = [["full", "file-text", t("Chosen class days"), t("Full transcripts of the days you pick. Best for questions about specific lectures.")],
         ["highlights", "star", t("Highlights only"), t("Only what the lecturer stressed, from the days you pick. Lightest.")],
@@ -1639,20 +1655,19 @@
         <div class="cp-opts">
           ${ai.provider === "local" ? `<div class="cp-opt"><div class="t">${I("cpu", "xs")} ${t("Offline model")}</div><div class="d">${t("Runs on this PC. For each question it reads the parts of these lectures that match it.")}</div></div>`
             : isChatGPT(ai) ? "" : `<div class="cp-opt"><div class="t">${t("Model")}</div><div class="seg">${models.map(([v, l, h]) => `<button class="${st.model === v ? "on" : ""}" data-act="cp-model" data-val="${v}" title="${h}">${l}</button>`).join("")}</div></div>`}
-          ${Studia.effortField ? Studia.effortField("cp", "chat", preset && preset.effort, { big: ai.provider === "local" ? "" : Studia.effortBig.chat(tot, whole()) }) : ""}
-          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(ms, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(Math.min(ms, sc) * 800) }) : t("No slides were captured for these days.")}</div></div>
+          ${Studia.effortField ? Studia.effortField("cp", "chat", preset && preset.effort, { big: bigNote(tot) }) : ""}
+          ${images ? `<label class="cp-opt cp-switch"><div><div class="t">${t("Include slide images")}</div><div class="d">${sc ? t.n(Math.min(ms, sc), "{n} slide · formulas and figures · ≈{k} more tokens", "{n} slides · formulas and figures · ≈{k} more tokens", { k: fmtK(picTokens()) }) : t("No slides were captured for these days.")}</div></div>
             <input type="checkbox" class="switch" data-act="cp-slides" ${st.slides && sc ? "checked" : ""} ${sc ? "" : "disabled"}></label>` : ""}
           <label class="cp-opt cp-switch"><div><div class="t">${t("Read everything")}</div><div class="d">${ai.provider === "local"
             ? t("Before it answers, the offline model goes through your chosen slides and files in small parts and keeps notes of them. Slow on this PC; off unless you turn it on.")
             : t.html("Before it answers, {ai} goes through every slide and file that doesn't fit whole in one request, in parts, and keeps notes of them. On for the whole course or 4 files and more; the first reading uses more of your plan, later questions reuse the notes.", { ai: who })}
             <div class="cp-read-cost" id="cp-read-cost">${readCost()}</div></div></div>
             <input type="checkbox" class="switch" data-act="cp-read" ${(st.read == null && st.est ? st.est.on : readOn()) ? "checked" : ""}></label></div>
-        ${over ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
+        ${tooBig ? `<div class="callout error">${I("alert-circle")}<div>${t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(max) })}</div></div>` : ""}
         </div>
-        <div class="cp-foot"><div class="cp-cost"><div>${ai.provider === "local" ? t("<b>≈{k} tokens</b> on your first question · runs on this PC", { k: fmtK(tot) })
-            : t.html("<b>≈{k} tokens</b> on your first question · from your {ai} plan", { k: fmtK(tot), ai: who })}</div>
+        <div class="cp-foot"><div class="cp-cost"><div id="cp-cost-line">${costHTML(tot)}</div>
           ${used ? `<div class="cp-limits">${used}</div>` : ""}<div class="dim sm">${I("info", "xs")} ${t("Nothing is sent until you ask. AI can make mistakes — check important answers.")}</div></div>
-          <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button><button class="btn grad" data-act="cp-go" ${chosen().length && !over ? "" : "disabled"}>${I("chat", "sm")} ${t("Start chat")}</button></div></div>`);
+          <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button><button class="btn grad" data-act="cp-go" ${chosen().length && !tooBig ? "" : "disabled"}>${I("chat", "sm")} ${t("Start chat")}</button></div></div>`);
       $(".modal").classList.add("cp");
       const nl = $(".cp-days"); if (nl) nl.scrollTop = keepScroll;
       const nb = $(".cp-scroll"); if (nb) nb.scrollTop = keepBody;
@@ -1675,13 +1690,18 @@
       estTimer = setTimeout(async () => {
         const list = chosen();
         if (!list.length || !$(".modal.cp")) return;
-        const n = ++estSeq;
+        const n = ++estSeq, key = choice();
         const r = await call("chat_estimate", st.course, list.map((d) => d.day_key), st.focus, st.slides && slideCount() > 0,
           (preset && preset.send) || null, (preset && preset.uploads) || "", st.model, st.read);
         if (n !== estSeq || !r.ok || !$(".modal.cp")) return;          // a later choice, or the dialog closed
         st.est = r.read || null;
         const el = $("#cp-read-cost"); if (el) el.innerHTML = readCost();
         const sw = $('[data-act="cp-read"]'); if (sw && st.read == null && st.est) sw.checked = !!st.est.on;
+        if (typeof r.tokens === "number" && key === choice()) {      // the first question's real size, said in place
+          st.tok = { key, tokens: r.tokens };
+          const line = $("#cp-cost-line"); if (line) line.innerHTML = costHTML(r.tokens);
+          if (Studia.effortNote) Studia.effortNote("cp", bigNote(r.tokens));
+        }
       }, 250);
     };
     const load = async () => {
@@ -1705,7 +1725,8 @@
       model: (v) => { st.model = v; draw(); },
       go: () => {
         const list = chosen().sort((a, b) => a.start.localeCompare(b.start));
-        if (!list.length || total() > maxTokens()) return;
+        if (!list.length) { toast(t("Pick at least one transcribed class day."), "info"); return; }
+        if (over()) { toast(t("That is more than one chat can hold (≈{k} tokens). Pick fewer days, or Highlights only.", { k: fmtK(maxTokens()) }), "error"); return; }
         const course = cr.courses.find((c) => c.id === st.course) || {};
         closeModal();
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
@@ -2132,9 +2153,11 @@
   }
   // A question in IEUStudia's own dialog, instead of the window's confirm() and prompt() boxes ("file:// says…", in
   // the browser's style): a title, plain text, Cancel and a clear main button (red for what can't be undone). Enter
-  // answers with the main button, Escape or a click beside the dialog with Cancel, and the focus goes back where it
-  // was. It opens over a dialog that is already open and leaves that one as it is. Resolves true or false; asked for a
-  // line of text (``value``: what the box starts with), what was typed, or null.
+  // answers with the main button (what can't be undone: with Cancel, which has the focus, so only its own red button
+  // does it), Escape or a click beside the dialog with Cancel, and the focus goes back where it was. A key held down
+  // from what opened the question never answers it. It opens over a dialog that is already open and leaves that one
+  // as it is. Resolves true or false; asked for a line of text (``value``: what the box starts with), what was
+  // typed, or null.
   // {title, text, ok, cancel, danger, value, placeholder}. Called as Studia.ask (the page tests answer it)
   let asking = null;               // the question open now: {box, answer}
   function ask(o) {
@@ -2151,7 +2174,7 @@
           <button class="btn primary${o.danger ? " danger" : ""}" data-ask="yes">${esc(o.ok || t("OK"))}</button></div></div>`;
       document.body.appendChild(box);
       const me = asking = {
-        box,
+        box, danger: !!o.danger && !typing,
         answer(yes) {
           if (asking !== me) return;                 // (answered already: Enter, then the click it makes)
           asking = null;
@@ -2167,7 +2190,7 @@
         if (b) me.answer(b.dataset.ask === "yes");
         else if (e.target === box) me.answer(false);
       });
-      const first = box.querySelector(typing ? "#ask-value" : "[data-ask='yes']");
+      const first = box.querySelector(typing ? "#ask-value" : me.danger ? "[data-ask='no']" : "[data-ask='yes']");
       if (first) { first.focus({ preventScroll: true }); if (typing) first.select(); }
     });
   }
@@ -2175,9 +2198,12 @@
   function askKey(e) {
     if (!asking) return false;
     if (e.key === "Escape") { e.preventDefault(); asking.answer(false); return true; }
+    const onButton = !!(e.target && e.target.closest && e.target.closest("#ask button"));
+    // Enter held down on the × that asked "Remove this profile?" pressed Remove with its next repeat
+    if (e.repeat && (e.key === "Enter" || (e.key === " " && onButton))) { e.preventDefault(); return true; }
     // (Enter on one of its buttons presses that button, as usual)
-    if (e.key === "Enter" && !e.isComposing && !(e.target && e.target.closest && e.target.closest("#ask button"))) {
-      e.preventDefault(); asking.answer(true); return true;
+    if (e.key === "Enter" && !e.isComposing && !onButton) {
+      e.preventDefault(); asking.answer(!asking.danger); return true;
     }
     if (e.key === "Tab") { trapTab(e, asking.box.querySelector(".modal")); return true; }
     return false;
@@ -2271,6 +2297,7 @@
               exam: t("This lecture already has exam-focus notes. Generating them again replaces the saved ones."),
               flashcards: t("This lecture already has flashcards. Generating them again replaces the saved ones.") }[tpl]
           : local ? t("The offline model works on this PC: a lecture takes a few minutes with an NVIDIA graphics card, longer on the processor. The notes are saved next to the transcript.")
+          : slides && images && e.slides > e.images ? t("Kept small to save your plan: a short instruction and a compact text version of the transcript, plus smaller copies of {n} of the {total} slides, spread over the lecture. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.", { n: e.images, total: e.slides })
           : slides && images ? t("Kept small to save your plan: a short instruction and a compact text version of the transcript, plus {n} smaller copies of the slides. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.", { n: e.images })
           : t("Kept small to save your plan: a short instruction and a compact text version of the transcript. Tokens are the small pieces of text AI plans count, a word or part of a word each. The notes are saved next to the transcript.")}</div></div>
         <div class="actions"><button class="btn" data-act="modal-close">${t("Cancel")}</button>${have ? `<button class="btn" data-act="cl-open">${I("file-text", "sm")} ${t("Show them")}</button>` : ""}

@@ -28,6 +28,16 @@ log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
+NOTE_SLIDES = 60          # slide pictures that go with a lecture's AI notes at most
+
+
+def note_slides(images: list[Any]) -> list[Any]:
+    """The slide pictures AI notes send: all of them, else NOTE_SLIDES spread over the whole lecture (the first 60
+    were only the first part or two of a long day)."""
+    n = len(images)
+    if n <= NOTE_SLIDES:
+        return list(images)
+    return [images[round(j * (n - 1) / (NOTE_SLIDES - 1))] for j in range(NOTE_SLIDES)]
 
 
 def _course_transcripts(lib: Library, course_recs: list[Recording]) -> dict[str, Any]:
@@ -37,8 +47,14 @@ def _course_transcripts(lib: Library, course_recs: list[Recording]) -> dict[str,
 
 def _slides_key(screens: list[tuple[Any, float]]) -> str:
     """What the slides of a recording were made from: its screen streams (the file in each URL, without the
-    per-request query) and their start offsets. Panopto processing the recording again gives new files."""
-    return "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}" for src, offset in screens)
+    per-request query) and their start offsets. Panopto processing the recording again gives new files. A stream
+    whose stretches moved (a part cut out, a pause) adds them, so slides made before the edit are made again; one
+    Panopto only split where nothing moved keeps the key it had."""
+    def moved(src: Any, offset: float) -> str:
+        if all(abs(at - a - offset) <= 0.5 for a, _, at in src.spans):
+            return ""
+        return " " + ",".join(f"{a:.1f}-{b:.1f}@{at:.1f}" for a, b, at in src.spans)
+    return "\n".join(f"{urlsplit(src.url).path}@{offset:.1f}{moved(src, offset)}" for src, offset in screens)
 
 
 SLIDES_TRIES = 3          # captures of the same streams that came out incomplete before what they got is kept as it is
@@ -522,7 +538,7 @@ class Services:
         for src, offset in screens:
             try:
                 slides += extract_slides(session, src.url, folder, f"slides/{stem}", rec.start.strftime("%H%M"), offset,
-                                         cancel=job.cancel, seen=seen)
+                                         cancel=job.cancel, seen=seen, spans=src.spans)
             except Cancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 - the other streams' slides are still worth having
@@ -549,22 +565,25 @@ class Services:
         slides = {i: store.load_slides(i) for i in ids}
         return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides)
 
-    def ai_inputs(self, day_key: str, include_slides: bool) -> tuple[str, list[Path], Course, list[Recording]]:
+    def ai_inputs(self, day_key: str, include_slides: bool) -> tuple[str, list[tuple[str, Path]], Course, list[Recording]]:
+        """A class day for study notes: its compact text and (``include_slides``) its slide pictures, each with the
+        label the AI cites it by, "[Part 2, slide 5]" (every part numbers its slides from 1, as the text marks them)."""
         from .outputs.ai_copy import compact_day
+        from .outputs.markdown import part_views
 
         course, recs = self.day(day_key)
         ids = [r.delivery_id for r in recs]
         trans = store.load_transcripts(ids)
         slides = {i: store.load_slides(i) for i in ids}
         text = compact_day(course, recs, trans, slides if include_slides else None)
-        images: list[Path] = []
+        images: list[tuple[str, Path]] = []
         if include_slides:
-            seen = set()
-            for i in ids:
-                for s in slides.get(i, []):
-                    if s.path and s.path not in seen and os.path.isfile(s.path):
-                        seen.add(s.path)
-                        images.append(Path(s.path))
+            for p in part_views(recs, trans, slides):         # the parts the text has, numbered as there
+                seen: set[int] = set()
+                for s in p.slides if p.transcript else []:
+                    if s.index not in seen and s.path and os.path.isfile(s.path):
+                        seen.add(s.index)
+                        images.append((f"[Part {p.index}, slide {s.index}]", Path(s.path)))
         return text, images, course, recs
 
     def ai_notes(self, day_key: str, template: str, include_slides: bool, model: str,
@@ -578,10 +597,14 @@ class Services:
         if not text:
             raise RuntimeError(t("Transcribe this class day first."))
         prompt = ai_prompt(template)
-        if include_slides and images:
-            prompt += ("\n\nThe slide images are attached in order; the transcript marks each paragraph with "
-                       "(slide N), the slide that was on screen.")
-        res = run_claude(prompt, text, images[:60], model=model, effort=effort, cancel=cancel, on_text=on_text)
+        sent = note_slides(images)
+        if include_slides and sent:
+            prompt += ("\n\nThe slide images are attached in order, each labelled [Part n, slide m]. In the transcript, "
+                       "(slide m) on a paragraph of Part n is that part's slide m, the one on screen (every part "
+                       "numbers its slides from 1). Refer to a slide as (Part n, slide m).")
+            if len(sent) < len(images):
+                prompt += f" {len(sent)} of the {len(images)} slides are attached, spread over the lecture; not the others."
+        res = run_claude(prompt, text, sent, model=model, effort=effort, cancel=cancel, on_text=on_text)
         stem = day_stem(course, recs[0].start.date(), recs[0].kind)
         path = self._notes_path(course_dir(self.output_root, course, self.lib.courses(True)), stem, template)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -593,7 +616,9 @@ class Services:
                   f"{tokens_in:,} input / {usage.get('output_tokens', 0):,} output tokens.*\n")
         # never half a file (the app closed, a power cut)
         atomic_write(path, dollar_math(res["text"].rstrip()) + footer)
-        self.lib.index.day_notes(day_key)                  # found by the search from now on
+        with self.lib._lock:                               # found by the search from now on: committed here, as no
+            self.lib.index.day_notes(day_key)              # Library write follows (closing the app dropped them, and
+            self.lib.db.commit()                           # the open write locked the library for the command line)
         return path
 
     def notes_for_search(self, day_key: str) -> list[tuple[str, str, str, str]]:

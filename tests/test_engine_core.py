@@ -1,3 +1,5 @@
+import math
+
 from studia.engine.core import (SR, Decoded, choose, clean_text, foreign_script, hallucination_score,
                                        neutral_text, segment_language, speech_units, text_language)
 
@@ -30,6 +32,20 @@ def test_hallucination_filters():
     assert hallucination_score(d("en", "Thank you very much. Thank you.", lp=-0.8), 4.0) >= 0.75
     assert hallucination_score(d("en", "So the Thevenin resistance is 4 ohms.", lp=-0.2), 4.0) == 0.0
     assert foreign_script("6ip até o upload.") and not foreign_script("Şimdi ğüşıöç İĞÜŞÇÖ")
+
+
+def test_a_few_unsure_words_are_noise_unless_they_say_numbers():
+    """Numbers in words count as digits there, in the language decoded ("on" is ten only in Turkish): "Three plus
+    three." (MATH 250) was dropped, and "Three and a half." lost to the Turkish "3.30 saat." and became [unclear]."""
+    unsure = lambda lang, text: Decoded(lang, text, math.log(0.42), 0.1, 1.0, 6)    # noqa: E731
+    for lang, text in (("en", "Three plus three."), ("en", "You must be zero."), ("en", "Three and a half."),
+                       ("en", "x equals 2"), ("tr", "Üç artı üç."), ("tr", "SIFIR."), ("tr", "3.30 saat.")):
+        assert hallucination_score(unsure(lang, text), 2.0) == 0.0, text
+    for lang, text in (("en", "Good afternoon, everyone."), ("en", "Thank you, Steve."), ("en", "Come on."),
+                       ("en", "It's not."), ("tr", "değil."), ("tr", "One more."), ("en", "On iki.")):
+        assert hallucination_score(unsure(lang, text), 2.0) == 0.76, text
+    three = [unsure("en", "Three and a half."), Decoded("tr", "3.30 saat.", math.log(0.26), 0.1, 1.0, 6)]
+    assert choose(three, 2.0, "en").text == "Three and a half."
 
 
 def test_choose_prefers_likelihood_and_handles_identical_text():
@@ -82,3 +98,16 @@ def test_a_passage_of_digits_and_short_letters_is_tagged_english():
 def test_clean_text_collapses_loops():
     assert clean_text("Bugün derik. Bugün derik. Bugün derik.") == "Bugün derik."
     assert clean_text("so ,  we have") == "so, we have"
+    assert clean_text("go go go go go") == "go" and clean_text("the the the") == "the"
+    assert clean_text("we have, we have, we have the matrix") == "we have the matrix"
+    assert clean_text("the 0 the 0 the 0") == "the 0"                       # words among the numbers: a loop
+
+
+def test_clean_text_keeps_numbers_read_out():
+    """A matrix row by row, a binary number digit by digit: 2.0 cut "1, 0, 0, 0, 1" to "1, 0, 1" (MATH 250, EEE 242)."""
+    for text in ("The identity matrix is 1, 0, 0, 0, 1, 0, 0, 0, 1.", "1, 2, 0, 3, 4, 0, 0, 0, 5.", "2, 4, 2, 4, 2, 4",
+                 "How about this one? One, one, zero, zero, zero, one, zero, one.", "Matris sıfır, sıfır, sıfır, bir.",
+                 "SIFIR SIFIR SIFIR", "İki, iki, iki.", "3-30-18-0-0-0-1-2", "binary number 1 1 0 0 0 1 0 1",
+                 "minus 1, minus 1, minus 1", "three over two, three over two, three over two", "x, y, x, y, x, y",
+                 "eksi bir, eksi bir, eksi bir"):
+        assert clean_text(text) == text, text

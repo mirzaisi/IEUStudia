@@ -39,7 +39,7 @@ def test_a_slide_that_only_gains_writing_counts_as_added():
     assert not slides.added_only(_f("ink_a"), _f("ink_b"))                 # scrolled while writing: both are kept
 
 
-def _run(monkeypatch, tmp_path, shown, held=None, real=False, min_slide_s=12.0):
+def _run(monkeypatch, tmp_path, shown, held=None, real=False, min_slide_s=12.0, offset=0.0, spans=()):
     """extract_slides over 9-second segments whose keyframes are ``shown`` (ints, or names of real frames);
     ``held``: what each segment shows 5 s in (segment index -> frame)."""
     monkeypatch.setattr(slides, "media_playlist", lambda s, u, prefer: types.SimpleNamespace(text=u, url=u))
@@ -66,7 +66,8 @@ def _run(monkeypatch, tmp_path, shown, held=None, real=False, min_slide_s=12.0):
         monkeypatch.setattr(slides, "added_only", lambda a, b: False)
     monkeypatch.setattr(slides, "save_jpeg", lambda frame, path, max_width=1600: path.write_bytes(str(frame).encode()))
     session = types.SimpleNamespace(get=lambda url: types.SimpleNamespace(content=b""))
-    out = slides.extract_slides(session, "m3u8", tmp_path, "slides/x", "s", min_slide_s=min_slide_s)
+    out = slides.extract_slides(session, "m3u8", tmp_path, "slides/x", "s", offset, min_slide_s=min_slide_s,
+                                spans=spans)
     return out, asked
 
 
@@ -122,3 +123,16 @@ def test_a_capture_that_loses_its_connection_is_incomplete(tmp_path, monkeypatch
         _run(monkeypatch, tmp_path, [None] * 12)
     out, _ = _run(monkeypatch, tmp_path, [1, None, 1, 1, 2, 2, 2, 2, 2, 2, 2], min_slide_s=1)
     assert [s.index for s in out] == [1, 2]                      # one frame missing now and then: complete
+
+
+def test_a_part_cut_out_of_the_recording_is_left_out_of_its_slides(tmp_path, monkeypatch):
+    # 36-54 s of the screen video is cut out of the recording (Panopto's editor, or the recorder paused: 9 is its
+    # "Recording paused" screen): that part's slide is not kept and slide 3 comes right after slide 2's text
+    spans = ((0.0, 36.0, 0.3), (54.0, 72.0, 36.3))
+    out, _ = _run(monkeypatch, tmp_path, [1, 1, 2, 2, 9, 9, 3, 3], min_slide_s=1, offset=0.3, spans=spans)
+    assert [(s.index, s.t, s.end) for s in out] == [(1, 0.3, 18.3), (2, 18.3, 36.3), (3, 36.3, 54.3)]
+    assert sorted(os.listdir(tmp_path)) == ["s-01.jpg", "s-02.jpg", "s-03.jpg"]
+    assert (tmp_path / "s-03.jpg").read_bytes() == b"3"
+    out, _ = _run(monkeypatch, tmp_path, [1, 1, 2, 2], min_slide_s=1, offset=0.3)   # none: timed as before
+    assert [(s.index, s.t) for s in out] == [(1, 0.3), (2, 18.3)]
+    assert _run(monkeypatch, tmp_path, [1, 1], spans=((100.0, 200.0, 0.0),))[0] == []    # all of it cut out

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS courses(
   id TEXT PRIMARY KEY, title TEXT, code TEXT, name TEXT, instructor TEXT, term TEXT, status TEXT,
   section TEXT, folder_id TEXT, has_panopto INTEGER DEFAULT 1, position INTEGER DEFAULT 0, active INTEGER DEFAULT 1,
-  cover_url TEXT DEFAULT '', progress INTEGER);
+  cover_url TEXT DEFAULT '', progress INTEGER, folder TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS recordings(
   delivery_id TEXT PRIMARY KEY, course_id TEXT, folder_id TEXT, folder_path TEXT, name TEXT, start TEXT,
   duration_s REAL, viewer_url TEXT, session_id TEXT, kind TEXT, section_tag TEXT, is_new INTEGER DEFAULT 0,
@@ -70,11 +70,27 @@ _REC_COLS = ["delivery_id", "course_id", "folder_id", "folder_path", "name", "st
              "live", "uploaded"]
 DAY_MOVES_KEY = "day_moves"            # meta: transcribed lectures whose class day changed, files not moved yet
 _COURSE_COLS = ["id", "title", "code", "name", "instructor", "term", "status", "section", "folder_id",
-                "has_panopto", "position", "cover_url", "progress"]
+                "has_panopto", "position", "cover_url", "progress", "folder"]
 
 
 def _now() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
+
+
+_TERM = re.compile(r"\s*(\d{4})-([1-3])\b")     # "2026-1 MATH 240 …": academic year 2026-27, its fall (1) semester
+MIN_CLASS_S = 600         # a recording shorter than this (a test, a few seconds by mistake) doesn't start a term
+
+
+def _term_opens(titles: Iterable[str]) -> str:
+    """The first day a term's lectures can be on, from its courses' titles: "2026-1 …" (fall) from 1 August 2026,
+    "2026-2" (spring) from 1 January 2027, "2026-3" (summer) from 1 June 2027; "" when no title says."""
+    opens = []
+    for title in titles:
+        m = _TERM.match(title or "")
+        if m:
+            year, sem = int(m.group(1)), int(m.group(2))
+            opens.append(f"{year}-08-01" if sem == 1 else f"{year + 1}-{'01' if sem == 2 else '06'}-01")
+    return min(opens, default="")
 
 
 class Library:
@@ -92,6 +108,7 @@ class Library:
                 self._backup_before_upgrade(app_version)
             self.db.executescript(_SCHEMA)
             self._add_columns()
+            self._name_folders()
             self.fts = self._init_fts()
             self.index = Index(self)                     # what the search looks in (search.py)
             self.db.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?)", (str(SCHEMA_VERSION),))
@@ -129,10 +146,35 @@ class Library:
     def _add_columns(self) -> None:
         """Columns added after a table first shipped (CREATE TABLE IF NOT EXISTS leaves old tables as they were)."""
         for table, col, decl in (("courses", "cover_url", "TEXT DEFAULT ''"), ("courses", "progress", "INTEGER"),
+                                 ("courses", "folder", "TEXT DEFAULT ''"),
                                  ("recordings", "live", "INTEGER DEFAULT 0"),
                                  ("recordings", "uploaded", "TEXT DEFAULT ''")):
             if col not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+    def _name_folders(self) -> None:
+        """Each course's folder in the output folder, named once and kept: a second course with the same code (a
+        retake, another section) gets a name of its own instead of renaming the first one's folder, and with it
+        where its notes, day files, study pack and files are found, or sharing it. Courses that arrive together
+        (and every course of a library from before) get the names they always had: "FENG 495 (sec 1)"."""
+        from .outputs.writer import safe_name
+
+        rows = self.db.execute("SELECT id, title, code, name, section, folder FROM courses ORDER BY position, id").fetchall()
+        taken = {r["folder"].lower() for r in rows if r["folder"]}
+        base = {r["id"]: (r["code"] or r["name"] or f"Course {r['id']}").strip() for r in rows}
+        for r in rows:
+            if r["folder"]:
+                continue
+            b, sec = base[r["id"]], f"sec {r['section']}" if r["section"] else ""
+            twins = [x for x in rows if x["id"] != r["id"] and base[x["id"]] == b]
+            m = re.match(r"\s*(\d{4}-\d)\b", r["title"] or "")              # "2027-1 MATH 250 …": the term
+            dated = [f"{b} ({' '.join(x for x in (m.group(1), sec) if x)})"] if m else []
+            own = f"{b} ({sec or r['id']})"
+            names = ([b] if not twins else [own] if not any(x["folder"] for x in twins) else [b, own]) \
+                + dated + [f"{b} ({r['id']})"]
+            name = next((n for n in map(safe_name, names) if n.lower() not in taken), safe_name(f"{b} {r['id']}"))
+            self.db.execute("UPDATE courses SET folder=? WHERE id=?", (name, r["id"]))
+            taken.add(name.lower())
 
     def _init_fts(self) -> bool:
         try:
@@ -193,17 +235,21 @@ class Library:
     def upsert_courses(self, courses: list[Course]) -> None:
         with self._lock:
             ids = [c.id for c in courses]
+            # IEULearn keeps last term's courses on the dashboard marked past: earlier courses once a newer term has
+            # begun (not while every card is past, as at the end of a term, when exams and make-ups still come)
+            newer = any(c.status != "past" for c in courses)
             for c in courses:
                 self.db.execute(
                     "INSERT INTO courses(id, title, code, name, instructor, term, status, section, position, cover_url, "
-                    "progress, active) VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET title=excluded.title, "
+                    "progress, active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, "
                     "code=excluded.code, name=excluded.name, instructor=excluded.instructor, term=excluded.term, "
                     "status=excluded.status, section=excluded.section, position=excluded.position, "
-                    "cover_url=excluded.cover_url, progress=excluded.progress, active=1",
+                    "cover_url=excluded.cover_url, progress=excluded.progress, active=excluded.active",
                     (c.id, c.title, c.code, c.name, c.instructor, c.term, c.status, c.section, c.position, c.cover_url,
-                     c.progress))
+                     c.progress, 0 if newer and c.status == "past" else 1))
             if ids:
                 self.db.execute(f"UPDATE courses SET active=0 WHERE id NOT IN ({','.join('?' * len(ids))})", ids)
+            self._name_folders()
             self.db.commit()
 
     def courses(self, include_inactive: bool = False) -> list[Course]:
@@ -744,10 +790,20 @@ class Library:
         return [dict(r) for r in rows]
 
     def term_start(self, term: str) -> Optional[str]:
-        """The earliest dated unit of any course in this term (for courses whose weekly plan has no dates)."""
+        """When the term's teaching began, for the courses whose weekly plan has no dates (the callers count the weeks
+        from its Monday): the earliest dated unit of any course in this term; when no course of the term has one
+        (lecturers who never date their plans), the day of the term's first lecture recording. A recording counts
+        from the term's own months on (see _term_opens), so a stray one of an earlier term doesn't move week 1, and
+        one you hid or a short test doesn't count."""
         with self._lock:
             row = self.db.execute("SELECT MIN(u.start_date) FROM units u JOIN courses c ON c.id = u.course_id "
                                   "WHERE c.term = ? AND u.start_date != ''", (term,)).fetchone()
+            if row and row[0]:
+                return row[0]
+            since = _term_opens(r[0] for r in self.db.execute("SELECT title FROM courses WHERE term=?", (term,)))
+            row = self.db.execute("SELECT MIN(substr(r.start, 1, 10)) FROM recordings r JOIN courses c ON c.id = r.course_id "
+                                  "WHERE c.term = ? AND r.hidden = 0 AND r.duration_s >= ? AND substr(r.start, 1, 10) >= ?",
+                                  (term, MIN_CLASS_S, since)).fetchone()
         return row[0] if row and row[0] else None
 
     def clear_new_announcements(self, course_id: Optional[str] = None) -> None:

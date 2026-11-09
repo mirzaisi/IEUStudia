@@ -165,6 +165,20 @@ def test_latex_outside_a_formula_in_the_text_is_drawn():
     assert "(\\(\\Omega\\))" in page and "(\\Omega)" not in page
 
 
+def test_a_long_symbol_legend_keeps_its_unit_and_a_cut_one_never_prints_latex():
+    """Legends were cut at 90 characters mid-word, and a cut inside the unit's $...$ printed the LaTeX source of every
+    formula in it (a real sheet: "…; $\\mathrm{A}$ for current ")."""
+    long = "inductor voltage, positive at the terminal where the referenced current enters ($\\mathrm{V}$)"
+    real = "real sinusoidal response amplitudes ($\\mathrm{V}$ for voltage responses; $\\mathrm{A}$ for current responses)"
+    e = cs.clean_entry({"kind": "rule", "name": "Inductor", "tex": "v_L = L\\frac{di}{dt}", "text": "",
+                        "where": [{"sym": "v_L", "means": long}, {"sym": "P_1", "means": real}]})
+    assert [w["means"] for w in e["where"]] == [long, real]
+    assert cs._line("the amplitude of the underdamped response in the series circuit", 40) == "the amplitude of the underdamped…"
+    assert cs._line("current $i_1$, then $\\mathrm{A}$ for current responses", 28) == "current $i_1$, then…"
+    cut = cs._line("the matrix $I_n=\\begin{bmatrix}\\mathbf{e}_1&\\cdots&\\mathbf{e}_n\\end{bmatrix}$ of columns", 60)
+    assert cut == "the matrix…" and "\\begin" not in cs.entry_html({**e, "where": [{"sym": "I_n", "means": cut}]})
+
+
 def test_a_formula_must_close():
     assert cs.balanced(r"\frac{a}{b} \left( \begin{pmatrix} 1 \\ 2 \end{pmatrix} \right) \{x\}")
     for bad in (r"\frac{a}{b", r"a}{", r"\begin{cases} x", r"\left( x", r"\begin{bmatrix} 1 \end{pmatrix}"):

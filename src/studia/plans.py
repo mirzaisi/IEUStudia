@@ -203,36 +203,40 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …(cut)"
 
 
+_REST = "…(rest of the file left out)"
+
+
 # ------------------------------------------------------------------ gather (no AI)
 _STARRED = re.compile(r"\[[\d:]+\] (?:\(slide \d+\) )?(?:\[\w+\] )?⭐ ")     # a compact_day line the lecturer emphasised
 
 
-def _shares(budget: int, sizes: list[int]) -> list[int]:
-    """``budget`` split as evenly as it goes: all of a text (at most DAY_CHARS) when that is less than an equal share,
+def _shares(budget: int, sizes: list[int], cap: int = DAY_CHARS) -> list[int]:
+    """``budget`` split as evenly as it goes: all of a text (at most ``cap``) when that is less than an equal share,
     equal shares of the rest for the others."""
     out, left = [0] * len(sizes), budget
     order = sorted(range(len(sizes)), key=lambda i: sizes[i])
     for n, i in enumerate(order):
-        out[i] = max(0, min(sizes[i], DAY_CHARS, left // (len(order) - n)))
+        out[i] = max(0, min(sizes[i], cap, left // (len(order) - n)))
         left -= out[i]
     return out
 
 
-def _fit_days(sizes: list[int], heads: list[int], budget: int) -> tuple[list[int], dict[int, int]]:
-    """Which lecture days go into the pack and the characters each gets: every day, when each gets at least DAY_MIN
-    (or all of a shorter one); else the short days and as many of the others as fit, spread over the scope (the
-    days left out are reported)."""
+def _fit_days(sizes: list[int], heads: list[int], budget: int, cap: int = DAY_CHARS,
+              least: int = DAY_MIN) -> tuple[list[int], dict[int, int]]:
+    """Which lecture days (or files) go into the pack and the characters each gets (at most ``cap``): every one, when
+    each gets at least ``least`` (or all of a shorter one); else the short ones and as many of the others as fit,
+    spread over the scope (the ones left out are reported)."""
     def spread(days: list[int], n: int) -> list[int]:
         return [days[round(j * (len(days) - 1) / max(1, n - 1))] for j in range(n)]
 
-    short = [i for i, size in enumerate(sizes) if size <= DAY_MIN]
-    long = [i for i, size in enumerate(sizes) if size > DAY_MIN]
+    short = [i for i, size in enumerate(sizes) if size <= least]
+    long = [i for i, size in enumerate(sizes) if size > least]
     tries = [short + spread(long, n) for n in range(len(long), -1, -1)]
     tries += [spread(list(range(len(sizes))), n) for n in range(len(sizes), 0, -1)]   # too many short ones
     for keep in tries:
         keep = sorted(set(keep))
-        shares = _shares(budget - sum(heads[i] for i in keep), [sizes[i] for i in keep])
-        if keep and all(s >= min(sizes[i], DAY_MIN) for i, s in zip(keep, shares)):
+        shares = _shares(budget - sum(heads[i] for i in keep), [sizes[i] for i in keep], cap)
+        if keep and all(s >= min(sizes[i], least) for i, s in zip(keep, shares)):
             return keep, dict(zip(keep, shares))
     return [], {}
 
@@ -313,8 +317,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
     if keys:
         out.append("WHAT THE LECTURER SAID ABOUT ASSESSMENTS IN THESE WEEKS:")
         out += [f"  [{a['category']}] {a['text'][:300]}" for a in keys[:12]]
-    used, missing, budget = [], [], PACK_CHARS - sum(len(x) + 1 for x in out)
-    mat_budget = int(budget * 0.62)
+    missing, files = [], []
     seen: set[str] = set()                  # a unit for two weeks ("Hafta 6 ve 7") is in both: its files once
     for w in weeks:
         for u in w["units"]:
@@ -325,28 +328,36 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
                 if not m["downloaded"] or m["text"] != "done":
                     missing.append({"id": m["id"], "title": m["title"], "week": w["no"]})
                     continue
-                pages = lib.material_pages(m["id"])
-                body, size = [], 0
-                for n, page in enumerate(pages, 1):
-                    page = " ".join(page.split())
-                    if not page:
-                        continue
-                    piece = f"[p.{n}] {page}"
-                    if size + len(piece) > min(MAT_CHARS, mat_budget):
-                        body.append("…(rest of the file left out)")
-                        break
-                    body.append(piece)
-                    size += len(piece)
-                if body:
-                    text = f"\n=== FILE (week {w['no']}): {m['file_name'] or m['title']} ===\n" + "\n".join(body)
-                    out.append(text)
-                    mat_budget -= len(text)
-                    used.append({"id": m["id"], "title": m["title"], "week": w["no"]})
+                pieces = [f"[p.{n}] {' '.join(page.split())}" for n, page in enumerate(lib.material_pages(m["id"]), 1)
+                          if page.strip()]
+                if pieces:
+                    files.append(({"id": m["id"], "title": m["title"], "week": w["no"]},
+                                  f"\n=== FILE (week {w['no']}): {m['file_name'] or m['title']} ===\n", pieces))
+    # the files share their part of the pack evenly (a short one leaves its share to the others), so the newest
+    # weeks' files are read too and not only the first weeks'; a file whose first page alone is longer than its share
+    # gives a part of that page
+    mat_budget = int((PACK_CHARS - sum(len(x) + 1 for x in out)) * 0.62)
+    fkeep, frooms = _fit_days([len("\n".join(p)) for _, _, p in files], [len(h) + 1 for _, h, _ in files],
+                              mat_budget, cap=MAT_CHARS)
+    used = []
+    for i in fkeep:
+        about, head, pieces = files[i]
+        body, size, room = [], 0, frooms[i] - (0 if frooms[i] >= len("\n".join(pieces)) else len(_REST) + 1)
+        for piece in pieces:
+            if size + len(piece) > room:
+                if not body:
+                    body.append(_clip(piece, room - 8))
+                body.append(_REST)
+                break
+            body.append(piece)
+            size += len(piece) + 1
+        out.append(head + "\n".join(body))
+        used.append(about)
     done = lib.transcribed_ids()
     recs = lib.recordings(course_id)
     days, days_missing = [], []
     for w in weeks:
-        for day in w["days"]:
+        for day in reversed(w["days"]):          # in the order they were taught (the course page: newest first)
             if not day["any_done"]:
                 if day.get("mine") is not False:
                     days_missing.append({"day_key": day["day_key"], "date": day["date"], "week": w["no"]})
@@ -365,6 +376,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         out.append(head + _excerpt(full, rooms[i]))
     pack = "\n".join(out)
     return {"pack": pack, "chars": len(pack), "materials_used": used, "materials_missing": missing,
+            "materials_left_out": [about for i, (about, _, _) in enumerate(files) if i not in frooms],
             "days_used": [days[i][0] for i in keep], "days_missing": days_missing,
             "days_left_out": [d for i, (d, _, _) in enumerate(days) if i not in rooms],
             "course": {"id": course_id, "code": d["code"], "name": d["display_name"]},
@@ -1960,6 +1972,7 @@ class PlanRunner:
         result["days_used"] = len(facts.get("days_used", []))
         result["days_left_out"] = len(facts.get("days_left_out", []))
         result["materials_used"] = len(facts.get("materials_used", []))
+        result["materials_left_out"] = len(facts.get("materials_left_out", []))
         try:
             result["file"] = str(self._write_markdown(plan, result, facts, scope, data, save))
         except OSError:
@@ -2368,7 +2381,8 @@ class PlanRunner:
         result = {"kind": "prep", "title": title, "markdown": md,
                   "materials_missing": facts.get("materials_missing", []),
                   "materials_used": len(facts.get("materials_used", [])), "days_used": len(facts.get("days_used", [])),
-                  "days_left_out": len(facts.get("days_left_out", []))}
+                  "days_left_out": len(facts.get("days_left_out", [])),
+                  "materials_left_out": len(facts.get("materials_left_out", []))}
         try:
             result["file"] = str(self._write_file(plan, english, f"# {english}\n\n*{facts['course']['code']} · made with "
                                                   f"IEUStudia on {dt.date.today():%d %b %Y}*\n\n{md}\n", "Review sheets",

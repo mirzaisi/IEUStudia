@@ -23,7 +23,7 @@ TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to sh
             "theorem and formula (LaTeX: $P(A\\mid B)$ in a sentence, $$...$$ on lines of their own for a displayed "
             "formula); the lecturer's worked examples step by step; "
             "and the timestamp where it starts, e.g. (Part 2, 14:05). If slides are attached, refer to them "
-            "(\"Slide 7\") and use them to correct formulas.\n"
+            "as (Part 2, slide 7) and use them to correct formulas.\n"
             "3. **What the lecturer emphasised** — everything marked ⭐ or described as important / likely on "
             "the exam, with timestamps.\n"
             "4. **Announcements & deadlines** — homework, quizzes, exams, schedule changes.\n"

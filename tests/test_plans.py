@@ -416,6 +416,35 @@ def test_lectures_share_the_pack_and_keep_their_emphasised_moments(env, monkeypa
     assert [d["week"] for d in facts["days_used"]] == [1, 1, 3] and [d["week"] for d in facts["days_left_out"]] == [2]
 
 
+def test_every_week_of_a_long_scope_sends_its_files_text(env):
+    """A final over eight weeks of long slide decks: the files share their part of the pack, so the newest weeks'
+    files are read too. They used to send only "…(rest of the file left out)" once the first weeks had used it up,
+    and were still counted as read."""
+    monday = dt.date(2026, 9, 21)
+    env.lib.merge_units("c", [Unit(f"u{w}", w - 1, f"Hafta {w}", monday + dt.timedelta(7 * w - 7),
+                                   monday + dt.timedelta(7 * w - 1), "",
+                                   [Resource(f"f{w}", f"Week{w:02d}", f"Week{w:02d}.pdf", "pdf", "pdf", f"u{w}", "d")])
+                              for w in range(1, 9)], first_sync=False)
+    for w in range(1, 9):
+        (env.tmp / f"Week{w:02d}.pdf").write_bytes(b"%PDF")
+        env.lib.set_material_file(f"f{w}", str(env.tmp / f"Week{w:02d}.pdf"), 10, "u")
+        env.lib.set_material_text(f"f{w}", [f"Week {w} page {n}: " + "slide words " * 170 for n in range(1, 11)])
+    facts = plans.gather(env.lib, env.svc.settings, "c", Scope(weeks=list(range(1, 9))))
+    pack = facts["pack"]
+    assert len(pack) <= plans.PACK_CHARS and "Today: Bayes theorem" in pack          # the lecture still fits
+    shares = [len(x) for x in re.split(r"\n=== (?:FILE|LECTURE)", pack) if "page 1:" in x]
+    for w in range(1, 9):
+        assert f"[p.1] Week {w} page 1:" in pack and f"[p.2] Week {w} page 2:" in pack, w
+    assert len(shares) == 8 and max(shares) - min(shares) < 300                     # about the same share each
+    assert [m["week"] for m in facts["materials_used"] if m["id"].startswith("f")] == list(range(1, 9))
+    assert facts["materials_left_out"] == []
+    env.lib.set_material_text("f8", ["One long title page " * 600])               # longer than its share alone
+    pack = plans.gather(env.lib, env.svc.settings, "c", Scope(weeks=list(range(1, 9))))["pack"]
+    assert "[p.1] One long title page" in pack and "…(cut)" in pack and len(pack) <= plans.PACK_CHARS
+    keep, rooms = plans._fit_days([20_000] * 60, [40] * 60, 50_000, cap=plans.MAT_CHARS)   # far too many: spread
+    assert len(keep) < 60 and keep[0] == 0 and keep[-1] == 59 and min(rooms.values()) >= plans.DAY_MIN
+
+
 def test_lecture_days_are_split_evenly():
     keep, rooms = plans._fit_days([500, 8_000, 8_000], [0, 0, 0], 10_000)
     assert keep == [0, 1, 2] and rooms == {0: 500, 1: 4_750, 2: 4_750}      # a short day leaves its share to the others

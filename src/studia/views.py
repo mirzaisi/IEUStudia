@@ -140,6 +140,7 @@ def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]
     for c in active + earlier:
         v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids)
         v["inactive"] = c.id not in ids
+        v["past"] = v["inactive"] and c.status == "past"           # (IEULearn lists it under Past courses)
         n = counts.get(c.id, {})
         v["content"] = {k: n.get(k, 0) for k in ("materials", "materials_new", "downloaded", "announcements_new")}
         out.append(v)
@@ -217,6 +218,18 @@ def classes_over(classes: list[dict[str, str]], now: dt.datetime) -> bool:
     return bool(classes) and all(c["date"] < today or (c["date"] == today and c["end"] <= hm) for c in classes)
 
 
+_NOT_A_WEEK = re.compile(r"konu|topic|unit|ünite|bölüm|chapter", re.I)
+
+
+def _own_weeks(m: dict[str, Any]) -> set[int]:
+    """The weeks a file's own name or title gives ("MATH_250_Week 8-9.pdf": 8 and 9), by week or hafta only (a
+    "Chapter 5.pdf" is the book's chapter, not the term's week)."""
+    from .chatslides import title_weeks
+
+    return {n for s in (m.get("title") or "", m.get("file_name") or "") for n in title_weeks(_NOT_A_WEEK.sub(" ", s))
+            if n <= 20}
+
+
 def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[dict[str, Any]] = (),
                   now: Optional[dt.datetime] = None) -> Optional[dict[str, Any]]:
     """Everything about one course, organised by week: topics (EN/TR), readings, materials, lecture days, when the
@@ -269,13 +282,23 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         w = week(n)
         if u.get("start_date"):
             w["start"], w["end"] = u["start_date"], u.get("end_date") or w["end"]
-        w["units"].append(item)
         if not w["readings"] and u.get("readings"):
             w["readings"] = u["readings"]
-        if not u.get("start_date") and _UNIT_WEEKS.search(u["title"] or ""):     # "Hafta 6 ve 7": week 7's too
-            for extra in title_weeks(u["title"]):
-                if extra != n:
-                    week(extra)["units"].append(item)
+        if u.get("start_date"):
+            w["units"].append(item)
+            continue
+        # undated: in the weeks its title names ("Hafta 6 ve 7": week 7's too), and each file also in the weeks its
+        # own name gives, as chat's slides are (MATH 250's "Konu 10" holds "MATH_250_Week 11.pdf", taught in week 11)
+        named = bool(_UNIT_WEEKS.search(u["title"] or ""))
+        unit_weeks = [n] + [x for x in title_weeks(u["title"]) if x != n] if named else [n]
+        at: dict[int, list[dict[str, Any]]] = {x: [] for x in unit_weeks}
+        for m in item["materials"]:
+            own = _own_weeks(m)
+            for x in sorted(own | set(unit_weeks)) if named else sorted(own) or unit_weeks:
+                at.setdefault(x, []).append(m)
+        for x, ms in sorted(at.items()):            # (a unit without files: at its own week)
+            if ms or not item["materials"]:
+                week(x)["units"].append(item if len(ms) == len(item["materials"]) else {**item, "materials": ms})
     known_units = {u["unit_id"] for u in units}
     stray = [m for uid, ms in mats.items() if uid not in known_units for m in ms]
     if stray:          # downloaded files of a week that left the plan: still on your PC, so still listed

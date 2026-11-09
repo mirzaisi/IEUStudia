@@ -122,3 +122,54 @@ def test_a_course_that_left_the_dashboard_stays_while_it_holds_your_transcripts(
     lib.upsert_courses([Course(id="a", title="t", code="MATH 240", name="P")])     # b and c left the dashboard
     views = all_course_views(lib, Settings(), [])
     assert [(v["code"], v["inactive"]) for v in views] == [("MATH 240", False), ("EEE 215", True)]   # c: nothing yours
+
+
+def test_last_term_s_courses_marked_past_become_earlier_once_a_new_term_begins(tmp_path):
+    from studia import store
+    from studia.config import Settings
+    from studia.views import all_course_views
+
+    lib = Library(tmp_path / "lib.db")
+    fall = [Course(id=f"f{i}", title=f"2026-1 EEE 21{i} X 1", code=f"EEE 21{i}", name="X", term="2026-1") for i in (1, 2)]
+    lib.upsert_courses(fall)
+    lib.upsert_courses([Course(**{**c.__dict__, "status": "past"}) for c in fall])     # the term's end: all past
+    assert [c.id for c in lib.courses()] == ["f1", "f2"]                              # (exams, make-ups still come)
+    spring = Course(id="s1", title="2026-2 EEE 301 Y 1", code="EEE 301", name="Y", term="2026-2")
+    lib.upsert_courses([Course(**{**c.__dict__, "status": "past"}) for c in fall] + [spring])
+    assert [c.id for c in lib.courses()] == ["s1"]
+    lib.merge_recordings("f1", [rec("r1", 0)], first_sync=True)                        # f1 holds a transcript
+    t = Transcript(delivery_id="r1", segments=[Segment(0, 9, "Hello", "en", 0.9)], duration_s=2400, speech_s=9,
+                   language_seconds={"en": 9}, model="m", device="cpu", engine_version="t", created_at="2026-11-01T12:00:00")
+    lib.save_transcript(t, store.save_transcript(t))
+    views = {v["id"]: v for v in all_course_views(lib, Settings(), [])}
+    assert sorted(views) == ["f1", "s1"] and views["f1"]["inactive"] and views["f1"]["past"] and not views["s1"]["past"]
+
+
+def test_a_course_keeps_its_folder_when_a_second_course_with_its_code_arrives(tmp_path):
+    import sqlite3
+    from pathlib import Path
+
+    from studia.outputs.writer import course_dir
+
+    lib = Library(tmp_path / "lib.db")
+    fall = Course(id="16988", title="2026-1 MATH 250 Linear Algebra 3", code="MATH 250", name="L", section="3")
+    feng = [Course(id=f"e{s}", title=f"2026-1 FENG 495 P {s}", code="FENG 495", name="P", section=s) for s in "13"]
+    lib.upsert_courses([fall, *feng])                       # twins that arrive together: named as they always were
+    folder = lambda cid: course_dir(Path("out"), lib.get_course(cid), lib.courses(True)).name     # noqa: E731
+    assert [folder(c) for c in ("16988", "e1", "e3")] == ["MATH 250", "FENG 495 (sec 1)", "FENG 495 (sec 3)"]
+    retake = Course(id="20113", title="2027-1 MATH 250 Linear Algebra 3", code="MATH 250", name="L", section="3")
+    again = Course(id="23001", title="2027-2 MATH 250 Linear Algebra 3", code="MATH 250", name="L", section="3")
+    lib.upsert_courses([fall, *feng, retake])
+    lib.upsert_courses([retake, again])                    # (the fall course gone from the dashboard)
+    assert [folder(c) for c in ("16988", "20113", "23001")] == ["MATH 250", "MATH 250 (sec 3)", "MATH 250 (2027-2 sec 3)"]
+
+    db = sqlite3.connect(tmp_path / "old.db")              # a library from before: the names it always had
+    db.execute("CREATE TABLE courses(id TEXT PRIMARY KEY, title TEXT, code TEXT, name TEXT, instructor TEXT, term TEXT, "
+               "status TEXT, section TEXT, folder_id TEXT, has_panopto INTEGER DEFAULT 1, position INTEGER DEFAULT 0, "
+               "active INTEGER DEFAULT 1)")
+    db.executemany("INSERT INTO courses(id, title, code, name, section) VALUES(?,?,?,?,?)",
+                   [("a", "t", "EEE 242", "X", "1"), ("b", "t", "EEE 242", "X", "2"), ("c", "t", "EEE 215", "Y", "")])
+    db.commit()
+    db.close()
+    old = Library(tmp_path / "old.db")
+    assert {c.id: c.folder for c in old.courses(True)} == {"a": "EEE 242 (sec 1)", "b": "EEE 242 (sec 2)", "c": "EEE 215"}

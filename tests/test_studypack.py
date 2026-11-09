@@ -124,6 +124,28 @@ def test_gather_takes_only_the_picked_material(env):
     assert not none["lectures"]
 
 
+def test_a_weeks_lectures_come_in_the_order_they_were_taught(env):
+    """The course page lists a week's class days newest first; packs, cheatsheets and review sheets read them in
+    the order they were taught (L1 Wednesday, L2 Friday), so the cover's dates and the AI's material follow it."""
+    rec = Recording(delivery_id="fri", course_id="c", folder_id="f", folder_path="", name="n",
+                    start=dt.datetime(2026, 9, 25, 9, 0), duration_s=3000, viewer_url="v")
+    env.lib.merge_recordings("c", [rec], first_sync=False)
+    tr = Transcript(delivery_id="fri", segments=[Segment(0, 5, "Friday: the total probability rule.", "en", 0.9)],
+                    duration_s=3000, speech_s=5, language_seconds={"en": 5}, model="m", device="cpu", engine_version="t",
+                    created_at="2026-09-25T12:00:00")
+    env.lib.save_transcript(tr, store.save_transcript(tr))
+    env.lib.set_status("fri", "done")
+    facts = studypack.gather(env.lib, env.svc.settings, "c", Scope(kind="pack", weeks=[1]))
+    assert [(x["ref"], x["date"]) for x in facts["lectures"]] == [("L1", "2026-09-23"), ("L2", "2026-09-25")]
+    assert facts["pack"].index("Today: conditional probability") < facts["pack"].index("Friday: the total")
+    assert "Lectures: 2026-09-23, 2026-09-25" in studypack.document_body(
+        {"title": "T", "intro": "", "chapters": []}, {}, {}, studypack.meta_of(facts), str)
+    from studia import plans
+
+    review = plans.gather(env.lib, env.svc.settings, "c", Scope(kind="prep", weeks=[1]))
+    assert [x["date"] for x in review["days_used"]] == ["2026-09-23", "2026-09-25"]
+
+
 def test_unticking_every_file_or_lecture_in_the_chooser_leaves_them_out(env):
     day = studypack.gather(env.lib, env.svc.settings, "c", Scope(kind="pack", weeks=[1]))["lectures"][0]["day_key"]
     lectures_only = studypack.gather(env.lib, env.svc.settings, "c",
@@ -132,6 +154,38 @@ def test_unticking_every_file_or_lecture_in_the_chooser_leaves_them_out(env):
     files_only = studypack.gather(env.lib, env.svc.settings, "c",
                                   Scope.from_json({"kind": "pack", "weeks": [1], "files": ["r1"], "days": [], "picked": True}))
     assert [f["ref"] for f in files_only["files"]] == ["F1"] and not files_only["lectures"] and not files_only["days_missing"]
+
+
+def test_the_outline_sees_every_page_of_weeks_of_slides_and_says_which_files_it_could_not(env):
+    """A midterm's weeks of dense slides (200k characters) all go to the outline and the topic list: a topic only on
+    a late page is in no chapter otherwise. More than one request takes is cut, and the estimate and the result name
+    the files and the pages seen."""
+    page = "Cramer's rule and the cofactor matrix adjugate " * 100           # ~4,700 characters
+    env.lib.set_material_text("r1", [f"page {n} {page}" for n in range(1, 43)])
+    scope = Scope(kind="pack", weeks=[1], files=["r1"])
+    facts = studypack.gather(env.lib, env.svc.settings, "c", scope)
+    assert "[F1 p.42] page 42" in facts["pack"] and not facts["files_cut"] and "F1" not in facts["cut"]
+    assert "=== LECTURE L1" in facts["pack"]                    # and the lecture next to them
+    env.lib.set_material_text("r1", [f"page {n} {page}" for n in range(1, 101)])     # a whole term: ~470k
+    facts = studypack.gather(env.lib, env.svc.settings, "c", scope)
+    [cut] = facts["files_cut"]
+    assert cut["ref"] == "F1" and cut["pages"] == 100 and 50 < cut["seen"] < 100 and "F1" in facts["cut"]
+    assert f"[F1 p.{cut['seen']}] " in facts["pack"] and f"[F1 p.{cut['seen'] + 1}] " not in facts["pack"]
+    assert studypack.estimate(env.lib, env.svc.settings, "c", scope)["files_cut"] == [cut]
+    assert "=== LECTURE L1" in facts["pack"]
+
+
+def test_a_whole_two_hour_lecture_goes_to_the_outline_when_it_fits(env):
+    """A one-lecture cheatsheet or pack: the topic list was made from 12,000 characters of it (a video plan's share
+    of a day), about a fifth of a two-hour lecture, though the outline has room for all of it."""
+    words = "the inductor current cannot change instantly so i of zero plus equals i of zero minus "
+    segs = [Segment(i * 10, i * 10 + 9, f"{words}{i}", "en", 0.9) for i in range(700)]     # ~60k characters
+    tr = Transcript(delivery_id="r", segments=segs, duration_s=7000, speech_s=6300, language_seconds={"en": 6300},
+                    model="m", device="cpu", engine_version="t", created_at="2026-09-23T12:00:00")
+    env.lib.save_transcript(tr, store.save_transcript(tr))
+    facts = studypack.gather(env.lib, env.svc.settings, "c", Scope(kind="pack", weeks=[1], files=["r1"]))
+    assert facts["full_chars"] > 50_000 and not facts["cut"] and not facts["left_out"]
+    assert f"{words}699" in facts["pack"] and "(Excerpts:" not in facts["pack"]
 
 
 def test_study_pack_pipeline_end_to_end(env):

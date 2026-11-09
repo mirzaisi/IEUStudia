@@ -29,7 +29,7 @@ from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, lo
 __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "model_is_downloaded",
            "delete_model", "ENGINE_VERSION", "Speech", "find_speech"]
 
-ENGINE_VERSION = "2.0"
+ENGINE_VERSION = "2.1"              # 2.1: numbers read out are kept whole (2.0's cleanup cut "0, 0, 0" to "0")
 UNCLEAR = "[unclear]"
 MIN_CONF = 0.38                     # below this in both languages a passage makes no sense: it becomes [unclear]
 Progress = Callable[[str, float, str], None]

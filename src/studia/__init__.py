@@ -1,4 +1,4 @@
 """IEUStudia (package ``studia``): sync IEULearn/Panopto lectures and transcribe them locally."""
 
-__version__ = "3.3.0"
+__version__ = "3.3.1"
 APP_NAME = "IEUStudia"

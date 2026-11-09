@@ -59,6 +59,8 @@ def fit_name(folder: Path, stem: str, ext: str = "", limit: int = 150, spare: in
 
 
 def course_folder_name(course: Course, all_courses: Sequence[Course]) -> str:
+    if getattr(course, "folder", ""):         # named once by the library and kept (Library._name_folders)
+        return course.folder
     code = (course.code or course.name or f"Course {course.id}").strip()
     twins = [c for c in all_courses if (c.code or c.name) == (course.code or course.name)]
     if len(twins) > 1:

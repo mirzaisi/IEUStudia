@@ -13,18 +13,26 @@ from typing import Iterable, Optional
 
 from .domain import Course, Recording
 
+# a date in a name ("6 Kasım 2026", "23 Ekim", "23.10.2026", "23-10-2026", "2026-10-23"): its day is not a section
+_MONTHS = (r"january|february|march|april|may|june|july|august|september|october|november|december|ocak|[şs]ubat|"
+           r"mart|nisan|may[ıi]s|haziran|temmuz|a[ğg]ustos|eyl[üu]l|ek[iı]m|kas[ıi]m|aral[ıi]k")
+_DATES = re.compile(rf"\b\d{{1,2}}\.?\s*(?:{_MONTHS})\b(?:\s+\d{{4}})?|\b\d{{1,2}}[./]\d{{1,2}}[./]\d{{2,4}}\b"
+                    r"|\b\d{1,2}-\d{1,2}-\d{4}\b|\b\d{4}-\d{1,2}-\d{1,2}\b", re.I)
+_N = r"\d{1,2}(?!\d|[.,]\d)"     # a whole number, not a textbook section ("Section 2.1") or part of a longer one
 _TAG_PATTERNS = [
     # Section 1, Sections 2-3, Sec 3, Section-2, Section_2, Section: 2, Sec. #3
-    re.compile(r"\bsect?(?:ion)?s?\.?\s*[-_:#]?\s*(\d{1,2}(?:\s*[-*,&/]\s*\d{1,2})*)", re.I),
-    re.compile(r"\b[A-Z]{2,5}\s?\d{3}\s*-\s*(\d{1,2})\b"),                              # EEE215-2
-    re.compile(r"\bşube\s*[-_:#]?\s*(\d{1,2}(?:\s*[-*,]\s*\d{1,2})*)", re.I),            # Şube 1, Şube-1
+    re.compile(rf"\bsect?(?:ion)?s?\.?\s*[-_:#]?\s*({_N}(?:\s*[-*,&/]\s*{_N})*)", re.I),
+    re.compile(r"\b[A-Z]{2,5}\s?\d{3}\s*-\s*(\d{1,2})(?![\d.,:/])\b"),                   # EEE215-2 (not "- 3. Hafta")
+    re.compile(rf"\bşube\s*[-_:#]?\s*({_N}(?:\s*[-*,]\s*{_N})*)", re.I),                 # Şube 1, Şube-1
 ]
 
 
 def parse_section_tag(name: str) -> str:
-    """``"... Sections 2-3"`` → ``"2-3"``; ``"EEE215-2 Lab"`` → ``"2"``; untagged → ``""``."""
+    """``"... Sections 2-3"`` → ``"2-3"``; ``"EEE215-2 Lab"`` → ``"2"``; untagged → ``""``. The dates in a name are
+    left out first: "MATH 250 - 6 Kasım 2026" has none, "Section 1 - 3 Kasım 2026" is section 1."""
+    name = _DATES.sub(" ", name or "")
     for pat in _TAG_PATTERNS:
-        m = pat.search(name or "")
+        m = pat.search(name)
         if m:
             nums = re.findall(r"\d{1,2}", m.group(1))
             return "-".join(nums)

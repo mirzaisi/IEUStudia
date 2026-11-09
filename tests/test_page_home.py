@@ -92,3 +92,58 @@ def test_home_and_course_pages_ask_again_only_for_changed_courses_and_draw_once_
     assert out["left"] == {"asked": [], "draws": []}               # another course changed: the page stays
     assert out["page"] == {"asked": ["a"], "draws": ["course"]}
     assert out["file1"] == [] and out["file2"] == ["a"]           # (b's file waiting doesn't hold a back)
+
+
+PAGE = """
+globalThis.window = globalThis;
+globalThis.document = { documentElement: {}, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+globalThis.localStorage = { getItem: () => null, setItem() {} };
+globalThis.CSS = { escape: (s) => s };
+globalThis.requestAnimationFrame = () => {};
+require(%(i18n)s);
+const S = { courses: [], view: { name: "home" }, sync: {} };
+window.Studia = { S, call: () => Promise.resolve({ ok: true }), I: () => "", SPIN: () => "", toast() {}, go() {},
+  esc: (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])),
+  renderView() {}, renderSidebar() {}, emptyHTML: () => "", skeleton: () => "", openDay() {}, jumpTo() {}, A: {}, views: {},
+  onGo: {}, after: {}, onEvents: {}, mocks: {} };
+require(%(course)s);
+const St = window.Studia, out = {};
+%(body)s
+console.log(JSON.stringify(out));
+"""
+
+
+def _page(tmp_path, body):
+    script = tmp_path / "page.js"
+    script.write_text(PAGE % {"i18n": json.dumps(str(WEB / "i18n.js")), "course": json.dumps(str(WEB / "course.js")),
+                              "body": body}, encoding="utf-8")
+    return json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8",
+                                     check=True).stdout)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_an_announcement_s_links_and_attached_files_can_be_clicked(tmp_path):
+    out = _page(tmp_path, r"""out.html = St.linkText("Join: Lesson | Teams (https://teams.microsoft.com/l/x?a=1&b=2).\n" +
+      "Quiz1.pdf 142 KB (https://learn.ieu.edu.tr/student/announcements/5961/file/0) <b>\n" +
+      "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmQ1YjQ2NjctMjM0Ny00@thread.v2/0");""")
+    html = out["html"]
+    assert ('(<a class="ext" role="link" tabindex="0" data-act="url" data-url="https://teams.microsoft.com/l/x?a=1&amp;b=2"'
+            in html and ">https://teams.microsoft.com/l/x?a=1&amp;b=2</a>).\n" in html)
+    assert ('data-url="https://learn.ieu.edu.tr/student/announcements/5961/file/0"' in html and
+            ">https://learn.ieu.edu.tr/student/announcements/5961/file/0</a>) &lt;b&gt;\n" in html)   # text escaped
+    assert ">teams.microsoft.com/l/meetup-join/19%3ameetin…</a>" in html                             # long: shortened
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_coming_up_has_the_syllabus_exam_weeks_no_announcement_covers(tmp_path):
+    out = _page(tmp_path, r"""
+      const iso = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+      const week = (no, from, label) => ({ no, start: iso(from), end: iso(from + 6), exam: !!label, exam_label: label || "", past: from < -6 });
+      const weeks = [week(7, -7, "Midterm"), week(8, 0, "Midterm Exam"), week(9, 7, ""), week(15, 49, "Final")];
+      const names = (plan) => St.examWeeks({ weeks, alerts: { plan } }).map((x) => [x.name, x.w.no, x.r.now]);
+      out.none = names([]);
+      out.quiz = names([{ kind: "quiz", no: 2, name: "Quiz 2", week: 8, los: [], sources: [] }]);
+      out.announced = names([{ kind: "midterm", no: 0, name: "Midterm", week: 8, los: [], sources: [] }]);""")
+    assert out["none"] == [["Midterm Exam", 8, True]]          # not last week's, nor the final weeks away
+    assert out["quiz"] == [["Midterm Exam", 8, True]]          # a quiz that week doesn't cover the midterm
+    assert out["announced"] == []                              # announced: Coming up has it from the plan

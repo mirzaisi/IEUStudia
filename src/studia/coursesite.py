@@ -275,6 +275,19 @@ def parse_unit_plan(page: str, course_title: str = "") -> list[Unit]:
     return units
 
 
+_LINK = re.compile(r'(?is)<a\b[^>]*?\bhref\s*=\s*"(https?://[^"]+)"[^>]*>(.*?)</a>')
+
+
+def _keep_links(fragment: str) -> str:
+    """An announcement's links with their addresses, which plain text would lose: "<a href=U>T</a>" → "T (U)", or
+    U alone where T is the address, so a Teams link or an attached file (a.ov-ann-file) still opens."""
+    def one(m: re.Match) -> str:
+        url, inner = m.group(1), m.group(2)
+        text = _text(inner)
+        return inner if html.unescape(url) in text else f"{inner} ({url})" if text else url
+    return _LINK.sub(one, fragment or "")
+
+
 def parse_announcements(page: str) -> list[Announcement]:
     out: list[Announcement] = []
     for card in re.findall(r'<article class="ov-ann-card[^"]*"[^>]*>(.*?)</article>', page, re.S):
@@ -286,7 +299,7 @@ def parse_announcements(page: str) -> list[Announcement]:
         found = [w for w in (posted_when(s) for s in spans) if w]
         when = found[-1] if found else None            # (the date comes after the author's name)
         body = re.search(r'class="st-ov-ann-full"[^>]*>(.*)', card, re.S)
-        body_text = _text(body.group(1)) if body else ""
+        body_text = _text(_keep_links(body.group(1))) if body else ""
         key = hashlib.sha1(f"{title_text}|{author}|{when}".encode("utf-8")).hexdigest()[:16]
         if title_text or body_text:
             out.append(Announcement(key, title_text, author, when, body_text))

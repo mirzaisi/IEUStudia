@@ -43,8 +43,10 @@ STAGES = [("gather", N_("Reading the course material")), ("outline", N_("Plannin
           ("sections", N_("Writing the chapters")), ("figures", N_("Drawing the figures")),
           ("assemble", N_("Putting your study pack together"))]
 LABELS = dict(STAGES)
-OUTLINE_CHARS = 150_000       # material the outline sees (~43k tokens)
-FILE_CHARS = 32_000           # of one file in it
+OUTLINE_CHARS = 150_000       # material the outline (a cheatsheet's topic list) sees (~43k tokens), and more when
+FILES_CHARS = 300_000         # the files need it: up to this (every page of about eight weeks of slides), with
+LECTURES_MIN = 60_000         # at least this of the lectures next to them (their passages are read whole later)
+FILE_CHARS = 32_000           # of one file in a chapter's material
 SECTION_CHARS = 36_000        # material one chapter is written from
 MAX_CHAPTERS = 12
 MAX_FIGURES = 3               # per chapter
@@ -95,11 +97,26 @@ def _file_text(lib: Any, f: dict[str, Any], pages: Optional[tuple[int, int]] = N
             continue
         piece = f"[{f['ref']} p.{n}] {page}"
         if size + len(piece) > limit:
+            if not out and limit >= 600:                 # its first page alone is longer: a part of it
+                out.append(piece[:limit - 40].rsplit(" ", 1)[0] + " …(cut)")
             out.append("…(rest of the file left out)")
             break
         out.append(piece)
         size += len(piece) + 1
     return "\n".join(out)
+
+
+def _outline_room(scope: Any, settings: Any) -> int:
+    """The most material the outline (a cheatsheet's topic list) may carry, in characters: FILES_CHARS and
+    LECTURES_MIN, less when the model's window is smaller (it also holds the answer and the reasoning before it)."""
+    from . import appconfig, chatlimits
+    from .ai import CHARS_PER_TOKEN, CHARS_PER_TOKEN_BY
+    from .plans import main_model
+
+    p = appconfig.load().ai_provider
+    p = p if p in ("chatgpt", "codex") else "claude"        # (packs need one of these)
+    window = chatlimits.of(p, main_model(scope, settings)).window
+    return min(FILES_CHARS + LECTURES_MIN, int(window * 0.55 * CHARS_PER_TOKEN_BY.get(p, CHARS_PER_TOKEN)))
 
 
 def _file_head(f: dict[str, Any]) -> str:
@@ -118,7 +135,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     ticks (``scope.picked``) left them empty), as one text for the outline, with references (F1…, L1…) the later
     stages use."""
     from .outputs.markdown import part_views
-    from .plans import _excerpt, _fit_days, _week_span
+    from .plans import _excerpt, _fit_days, _shares, _week_span
     from .views import course_detail
 
     d = course_detail(lib, settings, course_id)
@@ -155,7 +172,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                     files.append({"ref": f"F{len(files) + 1}", "id": m["id"], "name": m["file_name"] or m["title"],
                                   "week": w["no"], "pages": n, "path": path,
                                   "pdf": (m.get("ext") or Path(path).suffix.lstrip(".")).lower() == "pdf"})
-        for day in w["days"]:
+        for day in reversed(w["days"]):          # in the order they were taught (the course page: newest first)
             if (only_d and day["day_key"] not in pick_d) or (not only_d and day.get("mine") is False):
                 continue
             if not day["any_done"]:
@@ -167,20 +184,29 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             if parts:
                 lectures.append({"ref": f"L{len(lectures) + 1}", "day_key": day["day_key"], "date": day["date"],
                                  "week": w["no"], "parts": parts})
-    out, cut = list(head), []
-    budget = int(OUTLINE_CHARS * (0.6 if lectures else 1.0)) - sum(len(x) + 1 for x in out)
-    for i, f in enumerate(files):
-        room = max(2_000, min(FILE_CHARS, budget // max(1, len(files) - i)))
-        body = _file_text(lib, f, limit=room)
-        if body.endswith("…(rest of the file left out)"):
+    # every page of the files first, as far as the room goes (the plan names the pages each chapter or topic is taught
+    # from, and what it never saw is in none); the lectures share the rest, at least LECTURES_MIN (their excerpts:
+    # the chapters and entries read the passages the plan names in full)
+    out, cut, files_cut = list(head), [], []
+    whole = [_file_text(lib, f, limit=10 ** 9) for f in files]
+    heads = [len(_file_head(f)) + 1 for f in files]
+    need = sum(len(x) + 1 for x in out) + sum(heads) + sum(len(x) for x in whole)
+    total = min(_outline_room(scope, settings), max(OUTLINE_CHARS, need + (LECTURES_MIN if lectures else 0)))
+    least = min(LECTURES_MIN, int(total * 0.4)) if lectures else 0
+    budget = total - least - sum(len(x) + 1 for x in out) - sum(heads)
+    for f, text, room in zip(files, whole, _shares(budget, [len(x) for x in whole], cap=max(0, budget))):
+        if room < len(text):
+            text = _file_text(lib, f, limit=room)
             cut.append(f["ref"])
-        text = _file_head(f) + body
-        out.append(text)
-        budget -= len(text) + 1
+            got = re.findall(rf"^\[{f['ref']} p\.(\d+)\]", text, re.M)       # the last page it reached
+            files_cut.append({"ref": f["ref"], "name": f["name"], "seen": int(got[-1]) if got else 0,
+                              "pages": f["pages"]})
+        out.append(_file_head(f) + text)
     texts = [(x, _lecture_head(x), lecture_text(lib, course_id, x["day_key"])) for x in lectures]
     full_chars = sum(len(p) for f in files for p in lib.material_pages(f["id"])) + sum(len(x) for _, _, x in texts)
-    budget = OUTLINE_CHARS - sum(len(x) + 1 for x in out)
-    keep, rooms = _fit_days([len(full) for _, _, full in texts], [len(h) + 1 for _, h, _ in texts], budget)
+    budget = total - sum(len(x) + 1 for x in out)
+    keep, rooms = _fit_days([len(full) for _, _, full in texts], [len(h) + 1 for _, h, _ in texts], budget,
+                            cap=max(0, budget))         # a lecture that fits goes whole (not a video plan's 12k)
     for i in keep:
         x, h, full = texts[i]
         out.append(h + _excerpt(full, rooms[i]))
@@ -188,6 +214,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             cut.append(x["ref"])
     pack = "\n".join(out)
     return {"pack": pack, "chars": len(pack), "full_chars": full_chars, "files": files, "lectures": lectures, "cut": cut,
+            "files_cut": files_cut,
             "left_out": [texts[i][0]["ref"] for i in range(len(texts)) if i not in rooms],
             "materials_missing": missing, "days_missing": days_missing,
             "course": {"id": course_id, "code": d["code"], "name": d["display_name"]},
@@ -1133,6 +1160,7 @@ def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[
             "chapters": [{"id": c["id"], "title": c["title"]} for c in outline["chapters"]],
             "concepts": len(outline.get("concepts") or []), "uncovered": outline.get("uncovered") or [],
             "files": len(facts["files"]), "lectures": len(facts["lectures"]), "cut": facts.get("cut") or [],
+            "files_cut": facts.get("files_cut") or [],
             "materials_missing": facts["materials_missing"], "days_missing": facts["days_missing"]}
 
 
@@ -1233,6 +1261,7 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings),
             "main_input": int(tokens_in), "main_output": int(tokens_out), "requests": 1 + n + figures, "chapters": n, "files": len(facts["files"]), "lectures": len(facts["lectures"]),
             "materials_missing": facts["materials_missing"], "days_missing": facts["days_missing"],
+            "files_cut": facts["files_cut"],
             "minutes": t("about {a}–{b} minutes", a=a, b=a * 2)}
 
 

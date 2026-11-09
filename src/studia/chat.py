@@ -740,10 +740,10 @@ class ChatService:
                 "limits": {m: self.limit(m) for m in MODELS} if lim.provider == "claude" else {}}
 
     def courses(self) -> list[dict[str, Any]]:
-        """Courses that have at least one transcribed class day."""
+        """Courses that have at least one transcribed class day (an earlier term's too: a retake or make-up exam)."""
         done = self.lib.transcribed_ids()
         out = []
-        for c in self.lib.courses():
+        for c in self.lib.courses(include_inactive=True):
             days = {r.day_key for r in self.lib.recordings(c.id) if r.delivery_id in done}
             if days:
                 out.append({"id": c.id, "code": c.code, "name": c.name, "days": len(days)})

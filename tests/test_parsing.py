@@ -106,9 +106,40 @@ def test_parse_sessions():
     ("EEE 215 SECTION 3 WEEK 4 LAB 16 Ekim 2026 Cuma at 08:29:45", "3"),
     ("Tuesday, October 6, 2026 at 1:04:34 PM", ""),
     ("Lecture4.1-Friday, October 16, 2026 at 2:05:56 PM", ""),
+    ("EEE215-2 22 Ekim 2026 Perşembe 08:29:22", "2"),
+    ("Section-2 Labs 31 Ekim 2026 Cumartesi 08:29:01", "2"),
+    ("27 Ekim 2026 Salı at 08:16:48 EEE 215 Section 1 Online", "1"),
+    ("Sec. #3", "3"), ("Section: 2", "2"), ("Şube-1", "1"), ("Sections 10-11-12", "10-11-12"),
+    # a date or a textbook number is not a section
+    ("MATH 250 - 6 Kasım 2026 Cuma at 12:09:43", ""),
+    ("MATH 250 - 6 KASIM 2026 Cuma", ""),
+    ("EEE 215 - 23 Ekim 2026", ""),
+    ("MATH 250 - 4 November 2026 Wednesday at 08:28:43", ""),
+    ("MATH250-23 Ekim 2026", ""),
+    ("MATH 250 - 23.10.2026", ""), ("MATH 250 - 23/10/2026", ""), ("MATH 250 - 2026-10-23", ""),
+    ("MATH 250 - 08:29:22", ""),
+    ("PSY 307 - 3. Hafta", ""),
+    ("MATH 250 Section 2.1 Matrices", ""), ("Sec. 4.2 Eigenvalues", ""), ("Section 123", ""),
+    ("EEE 215 Section 1 - 3 Kasım 2026 Salı", "1"),
+    ("EEE 215 Section 2, 15 Ekim 2026", "2"),
+    ("Section 1 - 24 Ekim 2026 Cumartesi 09:41:50", "1"),
+    ("Section 1 - 2026-10-24", "1"),
+    ("EEE 215 Sections 2-3 - 14 Ekim 2026", "2-3"),
+    ("EEE215-2 - 22 Ekim 2026", "2"),
 ])
 def test_parse_section_tag(name, tag):
     assert parse_section_tag(name) == tag
+
+
+def test_lectures_named_by_their_date_are_not_another_sections():
+    """A lecturer naming each lecture "MATH 250 - <day> <month> <year>": no day becomes a section, so with the
+    section guessed from the IEULearn title ("… 3") the lectures are not all another section's."""
+    course = Course(id="c", title="2026-1 MATH 250 Lineer Cebir 3", code="MATH 250", name="", section="3")
+    recs = [_rec(f"d{day}", day, f"MATH 250 - {day} Ekim 2026 Cuma at 12:09:43") for day in (2, 9, 16, 23, 30)]
+    assert [r.section_tag for r in recs] == [""] * 5 and available_sections(recs) == []
+    assert classify(course, recs) == {r.delivery_id: None for r in recs}
+    recs.append(_rec("s1", 13, "EEE 215 Section 1 - 13 Ekim 2026 Salı"))
+    assert available_sections(recs) == ["1"] and classify(course, recs)["s1"] is False
 
 
 def _rec(did, day, name, kind="lecture"):

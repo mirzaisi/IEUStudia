@@ -55,15 +55,18 @@ globalThis.requestAnimationFrame = (f) => f();
 globalThis.setInterval = () => 0; const later = setTimeout; globalThis.setTimeout = () => 0;
 require(%(i18n)s); require(%(icons)s); require(%(app)s);
 const St = window.Studia;
-const key = (k, target) => { const e = { key: k, target, defaultPrevented: false, stopped: false, preventDefault() { this.defaultPrevented = true; },
+const key = (k, target, repeat) => { const e = { key: k, target, repeat: !!repeat, defaultPrevented: false, stopped: false, preventDefault() { this.defaultPrevented = true; },
   stopImmediatePropagation() { this.stopped = true; } }; for (const f of listeners.keydown) { f(e); if (e.stopped) break; } return e; };
 const top = () => body.children[body.children.length - 1];
 const out = {};
 (async () => {
-  // a destructive question: its markup, the main button in red, the focus on it
+  // a destructive question: its markup, the main button in red, the focus on Cancel
   let p = St.ask({ title: "Delete this chat?", text: "This <b>cannot</b> be undone.", ok: "Delete", danger: true });
   const box = top();
   out.html = box.innerHTML; out.layer = [box.id, box.className]; out.focusFirst = focused;
+  // Enter (or Space) held down from the × that asked: its repeats answer nothing, on either button
+  const held = [key("Enter", box.parts.no, true), key("Enter", box.parts.yes, true), key(" ", box.parts.yes, true)];
+  out.held = { kept: held.every((e) => e.defaultPrevented && e.stopped), open: !box.removed };
   box.on.click({ target: box.parts.yes });
   out.clickYes = await p; out.removed = box.removed; out.focusBack = focused;
   // Escape is Cancel, Enter the main button; neither reaches the page's own keys (a dialog under it stays open)
@@ -76,6 +79,9 @@ const out = {};
   p = St.ask({ title: "Sign out?", ok: "Sign out" });
   key("Enter", { closest: () => null });                                  // Enter somewhere in the dialog
   out.enter = await p;
+  p = St.ask({ title: "Remove this profile?", ok: "Remove", danger: true });
+  key("Enter", { closest: () => null });                                  // what can't be undone: Enter is Cancel
+  out.enterDanger = await p;
   // Enter on the Cancel button presses that button (the click it makes answers), not the main one
   p = St.ask({ title: "Sign out?", ok: "Sign out" });
   const onCancel = key("Enter", top().parts.no);
@@ -125,10 +131,11 @@ def test_the_dialog_asks_in_the_apps_own_style_and_answers_with_enter_escape_and
     assert '<h2 id="ask-title">Delete this chat?</h2>' in html
     assert "This &lt;b&gt;cannot&lt;/b&gt; be undone." in html            # plain text, never markup
     assert re.search(r'<button class="btn" data-ask="no">Cancel</button>\s*<button class="btn primary danger" data-ask="yes">Delete</button>', html)
-    assert out["focusFirst"] == "yes" and out["clickYes"] is True and out["removed"] and out["focusBack"] == "opener"
+    assert out["focusFirst"] == "no" and out["held"] == {"kept": True, "open": True}
+    assert out["clickYes"] is True and out["removed"] and out["focusBack"] == "opener"     # only its own red button
     # Escape: Cancel, kept from the page (the dialog under it stays open and gets the focus back)
     assert out["escape"] is False and out["escapeStopped"] and out["underStill"] and out["focusUnder"] == "under"
-    assert out["enter"] is True
+    assert out["enter"] is True and out["enterDanger"] is False
     assert out["enterOnCancel"] is False and out["cancelled"] is False
     assert out["insideOpen"] and out["beside"] is False
     assert out["value"] == {"start": "Bayes & co", "selected": True, "focus": "input"}

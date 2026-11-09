@@ -164,7 +164,8 @@
   };
 
   // a study pack's or cheatsheet's notes (already worded by studypack.js / cheatsheet.js, in this order): files not on
-  // this PC, lectures not transcribed, what the AI left out, the PDF not made yet
+  // this PC, lectures not transcribed, what the AI left out, the files it planned from only the first pages of, the PDF
+  // not made yet
   St.packNotices = (r, notes) => {
     const files = (r.materials_missing || []).map((f) => f.id).filter(Boolean), days = (r.days_missing || []).map((d) => d.day_key).filter(Boolean);
     const out = [];
@@ -180,6 +181,7 @@
       } }] : [] });
     }
     if ((r.uncovered || []).length) out.push({ kind: "warning", title: notes[i++] });
+    if ((r.files_cut || []).length) out.push({ kind: "info", title: notes[i++] });      // (studypack.js cutNote)
     if (!r.pdf) out.push({ kind: "info", title: notes[i++] });
     return listHTML(out);
   };

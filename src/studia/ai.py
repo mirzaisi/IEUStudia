@@ -538,13 +538,18 @@ def usage_of(result: dict[str, Any]) -> dict[str, int]:
 TRANSCRIPT_MARK, TASK_MARK = "=== LECTURE TRANSCRIPT ===", "=== TASK ==="
 
 
-def run_claude(prompt: str, transcript: str, images: Sequence[Path] = (), model: str = "sonnet",
+def run_claude(prompt: str, transcript: str, images: Sequence[Any] = (), model: str = "sonnet",
                effort: str = "", cancel: Optional[threading.Event] = None,
                on_text: Optional[Callable[[str], None]] = None, timeout_s: int = 900) -> dict[str, Any]:
     """Study material from a lecture: the lecture (and its slides) first, the task last. Every kind of notes for the same
-    lecture then begins with the same text, which ChatGPT reads from its prompt cache for the next kind."""
+    lecture then begins with the same text, which ChatGPT reads from its prompt cache for the next kind. ``images``:
+    pictures, or (label, picture) pairs, the label going right before its picture ("[Part 2, slide 5]")."""
     content: list[dict[str, Any]] = [{"type": "text", "text": f"{TRANSCRIPT_MARK}\n\n{transcript}"}]
-    content += [image_block(Path(img)) for img in images]
+    for img in images:
+        if isinstance(img, tuple):
+            label, img = img
+            content.append({"type": "text", "text": label})
+        content.append(image_block(Path(img)))
     content.append({"type": "text", "text": f"{TASK_MARK}\n\n{prompt}"})
     return one_shot(SYSTEM_PROMPT, content, model, effort, cancel, on_text, timeout_s)
 

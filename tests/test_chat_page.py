@@ -100,6 +100,33 @@ def test_the_preview_s_new_chat_keeps_its_files_after_the_first_question(tmp_pat
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+def test_text_pasted_with_a_picture_of_itself_is_pasted_as_text(tmp_path):
+    """Word, Excel, PowerPoint and OneNote copy text with a picture of it: the question box got a "Screenshot" file
+    and no text. A screenshot, Edge's Copy image (HTML and the picture) and a copied file are still added."""
+    out = run(tmp_path, """
+  globalThis.setTimeout = later;
+  draft(); await tick();
+  const paste = (types, files, text) => { let stopped = false;
+    const e = { target: { id: "chat-input" }, preventDefault() { stopped = true; },
+      clipboardData: { types, files, getData: (k) => (k === "text/plain" ? text : "") } };
+    listeners.paste.forEach((f) => f(e)); return stopped; };
+  const pic = () => new File(["png"], "image.png", { type: "image/png" });
+  out.office = paste(["text/plain", "text/html", "text/rtf", "Files"], [pic()], "x = 3, y = 4: what is the norm?");
+  await tick(150); out.officeFiles = names();
+  out.shot = paste(["Files"], [pic()], "");
+  await tick(150); out.shotFiles = names();
+  out.copied = paste(["text/html", "Files"], [pic()], "");
+  out.blank = paste(["text/plain", "Files"], [pic()], " \\r\\n");
+  out.file = paste(["text/plain", "Files"], [new File(["x"], "notes.pdf", { type: "application/pdf" })], "notes.pdf");
+  out.text = paste(["text/plain"], [], "hello");
+""")
+    assert out["office"] is False and out["officeFiles"] == []          # the text goes into the box as usual
+    assert out["shot"] is True and len(out["shotFiles"]) == 1 and out["shotFiles"][0].startswith("Screenshot ")
+    assert out["copied"] is True and out["blank"] is True and out["file"] is True
+    assert out["text"] is False
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
 def test_a_chat_s_panel_is_read_again_when_the_chat_is_opened_again(tmp_path):
     out = run(tmp_path, """
   globalThis.setTimeout = later;                         // the panel reads what the chat sees a moment after it is drawn

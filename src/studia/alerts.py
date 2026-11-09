@@ -255,11 +255,37 @@ _MID = (r"(?:([1-3])\s*\.\s*)?(ara sinavi?|midterm|vize)(?:\s*(?:exam(?:ination)
         + _MONTH + r"))|(?<=[\s#-])i{1,3}\b(?=\s*(?:$|[:,./()–—-]|week|hafta))))?")
 _A_NAME = re.compile(r"^(?:(quiz|kisa sinav|küçük sinav)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)\b)")
 _A_ANY = re.compile(r"\b(?:(quiz)\s*#?\s*(\d{1,2})\b|" + _MID + r"|(final)(?= exam| sinav))")
+# another assessment named further on in a row: "Quiz 1: Week 3, Quiz 2: Week 5", "Midterm: Week 8. Quiz 2: Week 10."
+_NEXT_NAME = re.compile(r"[,;.]\s+(?=(?:quiz|kisa sinav|küçük sinav)\s*#?\s*\d{1,2}\b|(?:[1-3]\s*\.\s*)?"
+                        r"(?:ara sinavi?|midterm|vize)\b|final\b)")
+# ordinals, written the way the rest reads them: "1st Quiz 4th Week" → "quiz 1 week 4", "the 10th week" → "the week
+# 10", "2nd midterm" and "second midterm" → "midterm 2", and a row starting "1. Quiz" (Turkish) → "quiz 1"
+_ORDINAL = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)\s+(quiz|week|midterm)\b")
+_WORD_ORDINAL = re.compile(r"\b(first|second|third|fourth|fifth)\s+(quiz|midterm)\b")
+_NTH = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+_DOT_QUIZ = re.compile(r"(?m)^(\d{1,2})\s*\.\s*(quiz)\b")
 # "week 5" (not "weeks 1-4": that is what it covers, not when it is held)
 _WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweek\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
+_IN_LIST = re.compile(r"\d{1,2}\s*\.?\s*(?:,|ve|and|&)\s*$")      # "3., 5., 10. ve 12. hafta": a list of weeks
+_TR_COVERS = re.compile(r"[\w'’]*\s+(?:\w+\s+){0,2}?(?:konu|kapsa)")   # "5. haftanın konularını kapsar": what it covers
 _LO_RANGE = re.compile(r"\blo\s*(\d{1,2})\s*[–—-]\s*(?:lo\s*)?(\d{1,2})\b")
 _LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çiktisi)\s*(\d{1,2})\b")
 _QUIZ_WEEKS = re.compile(r"\bquiz\w*\b[^.]{0,200}?\bweeks?\s+((?:\d{1,2}\s*(?:,|and|&)\s*)+\d{1,2})\b")
+# the same in Turkish: "Quiz 1–4 / 3., 5., 10. ve 12. haftalarda", "Quizler 3., 5., 10. ve 12. haftalarda yapılır" (every
+# week an ordinal: in "Quiz 3, 8. ve 9. haftaların…" the 3 is the quiz), not "… 2., 4. ve 6. haftaların konularını
+# kapsar" or "… haftalarda işlenen konular" (what they cover)
+_QUIZ_WEEKS_TR = re.compile(r"\bquiz\w*\b[^.]{0,200}?((?:\d{1,2}\s*\.\s*(?:,|ve)\s*)+\d{1,2})\s*\.\s*"
+                            r"hafta(?:lar(?:da)?|da)\b(?!\s*(?:\w+\s+){0,2}?(?:konu|kapsa))")
+# a sentence saying when an assessment it names is held: "Quiz 2 has been moved to week 10", "the midterm will be held
+# in the 8th week", "Quiz 2 10. haftaya ertelendi" (not what it covers, and not a make-up, its results or "not held")
+_HELD = re.compile(r"\b(?:held|given|takes? place|taking place|postponed|moved|rescheduled|shifted|delayed)\b"
+                   r"(?:(?!cover|includ|kapsa)[^.;\n]){0,40}?\b(?:to|in|on|during|until|into)\s+(?:the\s+)?week\s*(\d{1,2})\b"
+                   r"|\b(\d{1,2})\s*\.\s*hafta(?:ya|da)\s+(?:\w+\s+){0,2}?(?:ertelen|al[iı]n|ta[sş][iı]n|yap[iı]l|"
+                   r"ger[cç]ekle[sş])")
+_NOT_WHEN = re.compile(r"make-?up|telafi|mazeret|b[uü]t[uü]nleme|results?|grades?|scores?|sonu[cç]|\bnot\b|cannot|"
+                       r"n't\b|cancel|iptal")
+# where a sentence ends ("10. haftaya" and "1. vize" go on)
+_SENTENCE = re.compile(r"\n|[;!?](?=\s|$)|\.(?=\s|$)(?!\s*(?:hafta|vize|ara sinav))")
 _QUIZ_NOS = re.compile(r"\bquiz(?:zes)?\s*#?\s*(\d{1,2}(?:\s*(?:,|and|&|ve|-|–|to|through)\s*(?:quiz\s*)?#?\s*"
                        r"\d{1,2}\b(?![./:]\d)(?![^\S\n]*" + _MONTH + r"))*)\b")   # (a month in the next cell isn't)
 # "… will cover the topics of weeks 2, 4, 6 and 8": what the quizzes cover, not when they are held
@@ -294,10 +320,39 @@ def _los(text: str) -> set[int]:
     return out
 
 
+def _ordinals(text: str) -> str:
+    """Folded text with its ordinals as the patterns read them (see _ORDINAL)."""
+    text = _ORDINAL.sub(r"\2 \1", text)
+    text = _WORD_ORDINAL.sub(lambda m: f"{m.group(2)} {_NTH[m.group(1)]}", text)
+    return _DOT_QUIZ.sub(r"\2 \1", text)
+
+
 def _week(text: str) -> Optional[int]:
-    m = _WEEK.search(text)
-    n = int(next(g for g in m.groups() if g)) if m else 0
-    return n if 1 <= n <= 20 else None
+    """The week an assessment is held in: "week 5", "5. hafta", "hafta 5"; not a week it covers ("covers week 5",
+    "5. haftanın konularını kapsar") or a week of a list ("3., 5., 10. ve 12. haftalarda": read as a list below)."""
+    for m in _WEEK.finditer(text):
+        if m.group(1):                                       # "5. hafta"
+            if _IN_LIST.search(text, 0, m.start()) or _TR_COVERS.match(text, m.end()):
+                continue
+        elif _COVERS.search(text, 0, m.start(m.lastindex or 0)):     # "… covers (the topics of) week 5"
+            continue
+        n = int(next(g for g in m.groups() if g))
+        return n if 1 <= n <= 20 else None
+    return None
+
+
+def _pairs(line: str) -> list[tuple[re.Match, str]]:
+    """A row naming several assessments, each with its own week ("Quiz 1: Week 3, Quiz 2: Week 5"): each name and
+    what follows it; [] for a row that isn't one."""
+    cuts = [m.end() for m in _NEXT_NAME.finditer(line)]
+    out: list[tuple[re.Match, str]] = []
+    for a, b in zip([0, *cuts], [*cuts, len(line)]):
+        part = line[a:b]                                     # (_A_NAME's ^ holds only at a string's start)
+        m = _A_NAME.match(part)
+        if not m or _week(part[m.end():]) is None:
+            return []
+        out.append((m, part[m.end():]))
+    return out if len(out) > 1 else []
 
 
 def _assessment(m: re.Match) -> tuple[str, int]:
@@ -322,11 +377,14 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             e["sources"][a["id"]] = {"id": a["id"], "title": a["title"], "date": date}
 
     for a in sorted(anns, key=lambda x: x["posted_at"] or x["first_seen"] or ""):
-        body = _fold(_tidy(a["body"] or ""))
+        body = _ordinals(_fold(_tidy(a["body"] or "")))
         lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
         for i, ln in enumerate(lines):                 # table rows and short list items
+            pairs = _pairs(ln) if len(ln) <= 200 else []
+            for m, rest in pairs:                      # "Quiz 1: Week 3, Quiz 2: Week 5"
+                add(_assessment(m), _week(rest), _los(rest), a)
             m = _A_NAME.match(ln)
-            if not m or len(ln) > 60:
+            if pairs or not m or len(ln) > 60:
                 continue
             cells = [ln[m.end():]]
             for nxt in lines[i + 1:i + 4]:
@@ -335,10 +393,11 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cells.append(nxt)
             text = " ".join(cells)
             add(_assessment(m), _week(text), _los(text), a)
-        named = list(_A_ANY.finditer(_fold(a["title"])))
+        named = list(_A_ANY.finditer(_ordinals(_fold(a["title"]))))
         if len(named) == 1:                            # a note about one assessment
             add(_assessment(named[0]), None, _los(body), a)
-        for m in _QUIZ_WEEKS.finditer(body):           # "quizzes … in weeks 3, 5, 10 and 12"
+        lists = [*_QUIZ_WEEKS.finditer(body), *_QUIZ_WEEKS_TR.finditer(body)]
+        for m in lists:                                # "quizzes … in weeks 3, 5, 10 and 12", "… 3., 5. ve 10. haftalarda"
             weeks = [int(x) for x in re.findall(r"\d{1,2}", m.group(1))]
             before = m.group(0)[:m.start(1) - m.start(0)]
             if _COVERS.search(before):
@@ -352,6 +411,14 @@ def assessment_plan(anns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             for n, w in zip(nos, weeks):
                 add(("quiz", n), w, set(), a)
+        for sent in _SENTENCE.split(body):             # "Quiz 2 has been postponed to the 10th week."
+            held = list(_HELD.finditer(sent))
+            if not held or _NOT_WHEN.search(sent):
+                continue
+            said = {_assessment(m) for m in _A_ANY.finditer(sent)} or {_assessment(m) for m in named}
+            week = int(next(g for g in held[-1].groups() if g))      # the last: "held in week 8, now moved to week 9"
+            if len(said) == 1 and 1 <= week <= 20:
+                add(said.pop(), week, set(), a)
     if ("midterm", 0) in plan and {no for kind, no in plan if kind == "midterm"} == {0, 1}:
         one, other = plan[("midterm", 1)], plan.pop(("midterm", 0))     # "Midterm" and "Midterm 1": the same exam
         if other["week"] and other["week_at"] >= one["week_at"]:
