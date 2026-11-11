@@ -105,6 +105,9 @@ const out = {};
   later({ ok: true, path: "C:/z.zip", name: "z.zip", folder: "C:/", bytes: 10 }); await zipping; await tick();
   answers.export_weeks = { ok: true, lectures: 0, notes: false, weeks: [] };
   A["menu-export"](course); await tick(); await tick(); out.none = menu();
+  // Export for AI chat: the course menu's last row opens export.js's dialog for this course
+  St.cexp = { open: (id) => calls.push(["cx-open", id]) };
+  A["xp-aichat"](); out.afterAi = menu();
   // a chat: no subtitles
   A["menu-export"](anchor("chat", "ch1")); out.chat = menu();
   t.load({ lang: "tr", table: turkish });
@@ -174,6 +177,11 @@ def test_the_export_menu(tmp_path):
     assert ["export_pick", "course:c", "week:7", "pdf", {"zip": True, "notes": True}] in out["calls"]
     assert "This can take about 2 minutes." in out["zipBusy"] and "Lecture 2 of 2 · This can take about 2 minutes." in out["zipStep"]
     assert "No lecture of this course is transcribed yet." in out["none"]
+    # Export for AI chat: a row of every course menu (also with nothing transcribed yet), not of a lecture's or a chat's
+    for menu in (out["course"], out["loading"], out["none"]):
+        assert 'data-act="xp-aichat"' in menu and "Export for AI chat" in menu and "One zip for ChatGPT" in menu
+    assert "xp-aichat" not in out["day"] and "xp-aichat" not in out["chat"]
+    assert ["cx-open", "c"] in out["calls"] and out["afterAi"] == ""
     # a chat: no subtitles
     assert 'data-fmt="sub"' not in out["chat"] and 'data-what="chat"' in out["chat"] and "Your questions and the answers" in out["chat"]
     # in Turkish
@@ -187,6 +195,6 @@ def test_the_menu_is_on_the_lecture_the_course_and_the_chat():
     assert 'Studia.exportBtn("chat", c.id, true, !c.messages.length)' in app
     assert 'data-act="export"' not in app and "chat_export" not in app.split("const Mock")[0]   # (the old buttons)
     course = (WEB / "course.js").read_text(encoding="utf-8")
-    assert 'St.exportBtn("course", c.id, false, !k.done)' in course
+    assert 'St.exportBtn("course", c.id)' in course and 'data-act="cx-open" data-id="${c.id}"' not in course
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert page.index('src="export.js"') < page.index('src="exportmenu.js"') and 'href="export.css"' in page

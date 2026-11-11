@@ -649,7 +649,8 @@ kbd { font: 600 10.5px var(--font); color: var(--text-3); border: 1px solid var(
 .qp-wt { flex: none; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 @container (max-width: 700px) { .qp-now .bar { width: 110px; } }
 .topbar .bg-off { color: var(--text-3); font-weight: 500; }
-@media (max-width: 1220px) { .topbar .bg-off .lbl { display: none; } }     /* the icon and its tooltip stay */
+/* a narrow window: the graphics card chip (all is normal there) gives way, so "Background checks off" stays readable */
+@media (max-width: 1220px) { .topbar .gpu-chip { display: none; } }
 .bg-hint { align-items: center; } .bg-hint > div { flex: 1; }
 
 /* ------------------------------------------------------------------ overlays */
@@ -1559,8 +1560,12 @@ button.link:hover { text-decoration-color: currentColor; }
 
 /* Settings: a row of links to its sections, kept in view (it covers the page's own top padding too: nothing shows
    above it while the page scrolls under it) */
-.set-nav { position: sticky; top: -22px; z-index: 5; display: flex; flex-wrap: wrap; gap: 2px; margin: -28px 0 12px; padding: 28px 0 6px;
-  background: var(--bg); border-bottom: 1px solid var(--border); }
+/* One line: tighter links, and in a window too narrow for them all (Turkish words are longer) a thin sideways scroll
+   instead of a second row. */
+.set-nav { position: sticky; top: -22px; z-index: 5; display: flex; flex-wrap: nowrap; gap: 0; margin: -28px 0 12px; padding: 28px 0 6px;
+  background: var(--bg); border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; }
+.set-nav::-webkit-scrollbar { height: 8px; }                  /* the app's own thumb (above), slimmer: no second row */
+.set-nav .btn { flex: none; padding: 0 6px; font-size: 12px; }     /* (Turkish fits at 1024 px; English with room) */
 @media (max-width: 1040px) { .set-nav { top: -18px; } }
 .set-card { scroll-margin-top: 64px; }
 .set-card > h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

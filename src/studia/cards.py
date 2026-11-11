@@ -42,6 +42,12 @@ SYSTEM = ("You make flashcards for a university student, only from the course ma
           "notation. You answer with the JSON asked for, maths in LaTeX, and never ask questions back.")
 
 
+class Failed(RuntimeError):
+    """A card set that couldn't be made, for a reason of its own. Its message stays with the set (the plan's error is
+    the exception's text) as the English words t() looks up, with {ai} left for the page to fill in: the Practice tab
+    says it in the language of the moment (practice.js), not in the one it was made in."""
+
+
 def norm(text: str) -> str:
     return re.sub(r"[\W_]+", " ", str(text or "").lower()).strip()
 
@@ -441,7 +447,7 @@ def clean_cards(rows: list[dict[str, Any]], facts: dict[str, Any], plan_id: str,
 def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usage: dict[str, Any], model: str,
         cancel: threading.Event) -> None:
     """Make (or resume) the cards of the ``plan``: one request per batch of pages, each saved when it is done."""
-    from .ai import ai_name, one_shot
+    from .ai import one_shot
     from .plans import model_shown
     from .quizzes import source_units
     from .studypack import _level, _usage_add
@@ -466,7 +472,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         s.lib.update_plan(pid, data=data, usage=usage)
     facts = data["gather"]
     if not facts["files"]:
-        raise RuntimeError(t("None of the picked files is on this PC yet. Download them on the course page first."))
+        raise Failed(N_("None of the picked files is on this PC yet. Download them on the course page first."))
     check()
     parts = batches(s.lib, facts)
     written: dict[str, list] = data.setdefault("written", {})
@@ -490,7 +496,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
             _usage_add(usage, "write", again)
             rows = read_cards(again.get("text") or "")
             if not rows:
-                raise RuntimeError(t("{ai}'s answer could not be read (it was not valid JSON). Try again.", ai=ai_name()))
+                raise Failed(N_("{ai}'s answer could not be read (it was not valid JSON). Try again."))
         written[str(i)] = rows[:most]
         s.lib.update_plan(pid, data=data, usage=usage)
         check()
@@ -499,7 +505,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     units = source_units(s.lib, plan["course_id"], {**facts, "lectures": []})
     cards = clean_cards([c for i in sorted(written, key=int) for c in written[i]], facts, pid, seen, units)[:MAX_CARDS]
     if not cards:
-        raise RuntimeError(t("The AI made no cards these files don't already have. Pick other files."))
+        raise Failed(N_("The AI made no cards these files don't already have. Pick other files."))
     names = [f["name"] for f in facts["files"]]
     title = t("Cards from {files}", files=", ".join(names[:3]) + ("…" if len(names) > 3 else ""))
     result = {"kind": "cards", "title": title, "made": dt.date.today().isoformat(), "cards": cards,

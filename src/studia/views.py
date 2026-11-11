@@ -27,9 +27,23 @@ def _too_short(rec: Recording, settings: Settings) -> bool:
     return 0 < rec.duration_s < settings.min_duration_s
 
 
+def replaced_ids(lib: Any, course_id: Optional[str] = None) -> set[str]:
+    """Transcribed recordings Panopto replaced with a new copy (it left Panopto, and a copy starting within a minute
+    of it came: library.merge_recordings makes it that copy's duplicate). Their transcript is still shown, in the
+    course's list of lectures and on the class day until the new copy is transcribed, with "Replaced on Panopto", so
+    nobody wonders why the lecture is there twice."""
+    q = "SELECT delivery_id FROM recordings WHERE gone=1 AND duplicate_of IS NOT NULL"
+    try:
+        with lib._lock:
+            rows = lib.db.execute(q + (" AND course_id=?" if course_id else ""), (course_id,) if course_id else ())
+            return {r[0] for r in rows.fetchall()}
+    except Exception:  # noqa: BLE001 - a library without these (an older one): no label
+        return set()
+
+
 def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], part: Optional[int], parts: int,
                    job: Optional[dict[str, Any]], warnings: list[dict[str, Any]], has_slides: bool,
-                   anomalies: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
+                   anomalies: Optional[list[dict[str, str]]] = None, replaced: bool = False) -> dict[str, Any]:
     status = "live" if rec.live else rec.status            # (live: still being recorded)
     progress = detail = None
     error = rec.error or None
@@ -47,7 +61,7 @@ def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], par
         "warnings": [{"level": w.get("level", "info"), "message": w.get("message", "")} for w in warnings],
         "warn_level": worst_level(warnings), "has_slides": has_slides,
         "no_sound": no_sound(rec, warnings),         # (also one that failed so before 2.3: only its error says it)
-        "anomalies": anomalies or [],
+        "anomalies": anomalies or [], "replaced": replaced,
     }
 
 
@@ -66,7 +80,8 @@ def _cover_uri(url: str) -> str:
 
 
 def course_view(course: Course, recs: list[Recording], settings: Settings, jobs: dict[str, dict[str, Any]],
-                warnings: dict[str, list[dict[str, Any]]], slides_ids: Collection[str]) -> dict[str, Any]:
+                warnings: dict[str, list[dict[str, Any]]], slides_ids: Collection[str],
+                replaced: Collection[str] = ()) -> dict[str, Any]:
     prefs = settings.prefs(course.id)
     my_section = prefs.my_section or guess_my_section(course)
     sections = available_sections(recs)
@@ -83,7 +98,7 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
         part_no = {r.delivery_id: i for i, r in enumerate(countable, start=1)}
         rviews = [recording_view(r, settings, mine_map.get(r.delivery_id), part_no.get(r.delivery_id), len(countable),
                                  jobs.get(r.delivery_id), warnings.get(r.delivery_id, []), r.delivery_id in slides_ids,
-                                 found.get(r.delivery_id))
+                                 found.get(r.delivery_id), r.delivery_id in replaced)
                   for r in rs]
         flags = [mine_map.get(r.delivery_id) for r in countable] or [None]
         mine = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
@@ -158,8 +173,9 @@ def all_course_views(lib: Any, settings: Settings, jobs: Iterable[dict[str, Any]
              | {cid for cid, n in counts.items() if n["downloaded"]} | lib.chat_and_plan_courses())
     ids = {c.id for c in active}
     earlier = [c for c in lib.courses(True) if c.id not in ids and c.id in yours]
+    replaced = replaced_ids(lib)
     for c in active + earlier:
-        v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids)
+        v = course_view(c, by_course.get(c.id, []), settings, job_map, warnings, slides_ids, replaced)
         v["inactive"] = c.id not in ids
         v["past"] = v["inactive"] and c.status == "past"           # (IEULearn lists it under Past courses)
         n = counts.get(c.id, {})
@@ -275,7 +291,8 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
     for m in lib.materials(course_id):
         mats[m["unit_id"]].append(material_view(m))
     recs = lib.recordings(course_id)
-    cv = course_view(course, recs, settings, {j["id"]: j for j in jobs}, lib.all_warnings(), store.slide_ids())
+    cv = course_view(course, recs, settings, {j["id"]: j for j in jobs}, lib.all_warnings(), store.slide_ids(),
+                     replaced_ids(lib, course_id))
     first = week_starts(units)
     if first is None and course.term:      # no dates in this plan: the term's calendar from the other courses
         start = lib.term_start(course.term)
@@ -435,6 +452,7 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
     parts = part_views(recs, trans, slides, warnings)
     shares = language_shares([p.transcript for p in parts if p.transcript])
     marks: dict[str, dict[float, dict[str, Any]]] = defaultdict(dict)       # the student's own marks
+    replaced = replaced_ids(lib, course_id)
     for m in lib.marks(ids):
         marks[m["delivery_id"]][m["t"]] = m
     highlights, out_parts, my_marks = [], [], []
@@ -471,6 +489,7 @@ def day_detail(lib: Any, settings: Settings, day_key: str, files: dict[str, str]
             "anomalies": found.get(p.rec.delivery_id, []),
             "slides": len({s.index for s in p.slides}),
             "warnings": [{"level": w.get("level"), "message": w.get("message")} for w in p.warnings],
+            "replaced": p.rec.delivery_id in replaced,      # (until Panopto's new copy is transcribed)
         })
     d = dt.date.fromisoformat(date_s)
     return {

@@ -184,8 +184,9 @@ def test_the_export_dialog(tmp_path):
 
 def test_the_buttons_are_on_the_course_page_and_home():
     course = (WEB / "course.js").read_text(encoding="utf-8")
-    assert course.count('data-act="cx-open"') == 2 and 'data-act="cx-open" data-id="${c.id}"' in course
-    assert 'data-act="cx-open" data-id=""' in course
+    # Home's button (every course); the course page's is a row of its Export menu (exportmenu.js)
+    assert course.count('data-act="cx-open"') == 1 and 'data-act="cx-open" data-id=""' in course
+    assert "St.cexp.open(id)" in (WEB / "exportmenu.js").read_text(encoding="utf-8")
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert page.index('src="app.js"') < page.index('src="course.js"') < page.index('src="export.js"')
     assert 'href="export.css"' in page

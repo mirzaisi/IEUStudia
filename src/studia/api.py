@@ -939,12 +939,14 @@ class Api(PracticeApi):
 
     @safe
     def storage(self) -> dict[str, Any]:
-        from . import hardware
+        from . import ai_setup, appconfig, hardware
         from .components import catalog, disk_usage
 
         facts = hardware.check()
+        # the Codex CLI IEUStudia installed: its size, and whether the AI chosen uses it (else it can be removed)
+        codex = {"bytes": ai_setup.codex_size(), "in_use": appconfig.load().ai_provider == "codex"}
         return {"ok": True, "usage": disk_usage(Path(self._s.settings.output_dir)), "catalog": catalog(facts),
-                "free_gb": facts["disk"]["data_free_gb"], "data_dir": facts["disk"]["data_dir"]}
+                "free_gb": facts["disk"]["data_free_gb"], "data_dir": facts["disk"]["data_dir"], "codex": codex}
 
     @safe
     def delete_component(self, cid: str) -> dict[str, Any]:
@@ -962,6 +964,13 @@ class Api(PracticeApi):
             if appconfig.load().ai_provider == "local" and appconfig.load().local_model == key:
                 return {"ok": False, "error": t("That offline model is in use; pick another AI first.")}
             delete_llm(key)
+        elif kind == "codex":                         # the Codex CLI IEUStudia installed (ai_setup.remove_codex)
+            from . import ai_setup, appconfig
+
+            if appconfig.load().ai_provider == "codex":
+                return {"ok": False, "error": t("The Codex CLI is in use: IEUStudia reaches ChatGPT through it. Pick "
+                                                "another AI in Settings → AI first.")}
+            ai_setup.remove_codex()
         else:
             return {"ok": False, "error": t("This part cannot be removed.")}
         return self.storage()

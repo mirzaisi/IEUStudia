@@ -494,7 +494,7 @@
   const STARTUP_BLOCKED = () => t("Windows doesn't let IEUStudia start by itself when you sign in: your antivirus or Windows' own Startup apps list stops it. Everything else works. To fix it, allow IEUStudia in Task Manager → Startup apps (or in your antivirus), then turn Start with Windows on again in Settings.");
   function stepBackground() {
     const sw = (key, label, d, dis) => `<div class="set-row"><div class="txt"><div class="t">${label}</div><div class="d">${d}</div></div>
-      <input type="checkbox" class="switch" data-act="su-bool" data-key="${key}" ${U.ch[key] ? "checked" : ""} ${dis ? "disabled" : ""}></div>`;
+      <input type="checkbox" class="switch" data-act="su-bool" data-key="${key}" ${U.ch[key] ? "checked" : ""} ${dis ? "disabled" : ""} aria-label="${esc(label)}"></div>`;
     return `<h2>${t("In the background")}</h2><p class="lead">${window.LS_LINUX ? t("IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its notifications then come from your desktop (there is no icon next to the clock on Linux).") : t("IEUStudia can keep checking IEULearn after you close its window and tell you when something new appears. Its icon then stays at the bottom right of the screen, next to the clock (or under the ^ arrow there).")}</p>
       <div class="card set-card">${sw("tray", t("Keep checking after I close IEUStudia"), t("Uses about 50 MB of memory. Checks IEULearn every 30 minutes. It never transcribes or downloads anything on its own."))}
         ${sw("startup", window.LS_LINUX ? t("Start checking when I log in") : t("Start checking when I sign in to Windows"), t("So notifications arrive without opening IEUStudia first."), !U.ch.tray)}</div>
@@ -1087,7 +1087,8 @@
   St.settingsMore = () => {
     const app = (S.boot || {}).app || {};
     const row = (title, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
-    const sw = (key, dis) => `<input type="checkbox" class="switch" data-act="app-bool" data-key="${key}" ${app[key] ? "checked" : ""} ${dis ? "disabled" : ""}>`;
+    // a switch and the row it is in: the row's title is the switch's name for screen readers
+    const swRow = (title, d, key, dis) => row(title, d, `<input type="checkbox" class="switch" data-act="app-bool" data-key="${key}" ${app[key] ? "checked" : ""} ${dis ? "disabled" : ""} aria-label="${esc(title)}">`);
     const st = U.storage;
     if (!st) loadOnce("storage", loadStorage);
     if (!window.LS_LINUX && Date.now() - (U.startupAt || 0) > 30000) loadOnce("startup", loadStartup);
@@ -1097,23 +1098,26 @@
       .filter(([k]) => st.usage[k]).map(([k, l]) => `<div class="su-row"><span class="grow">${l}</span><b>${bytes(st.usage[k])}</b></div>`).join("") : St.skeleton();
     // (plain text: the row shows it escaped, and the question before removing it names it)
     const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t("Speech model “{name}”", { name: m.label }), m.size_mb]),
-      ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t("Offline model “{name}”", { name: m.label }), m.size_mb])] : [];
+      ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t("Offline model “{name}”", { name: m.label }), m.size_mb]),
+      // the Codex CLI IEUStudia installed, when the AI chosen isn't ChatGPT through it (api.py's storage: codex)
+      ...(st.codex && st.codex.bytes > 0 && !st.codex.in_use && app.ai_provider !== "codex" ? [["codex", t("Codex CLI (for ChatGPT)"), st.codex.bytes / 1048576,
+        t("IEUStudia installed it for ChatGPT through the Codex CLI, which you don't use now. If you choose that again, IEUStudia installs it again.")]] : [])] : [];
     return `<div class="card set-card" id="set-bg"><h3>${t("Background and notifications")}${St.resetBtn ? St.resetBtn("notifications") : ""}</h3>
         ${app.tray ? "" : `<div class="callout info bg-hint">${I("info")}<div>${t("Background checks are off, so you get no notifications about new lectures, announcements or coming quizzes.")}</div>
           <button class="btn sm" data-act="bg-on">${t("Turn them on")}</button></div>`}
-        ${row(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own."), sw("tray"))}
+        ${swRow(t("Keep running in the background"), window.LS_LINUX ? t("After you close the window, IEUStudia keeps running in the background (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own.") : t("After you close the window, IEUStudia stays as a small icon next to the clock (about 50 MB of memory). It checks IEULearn now and then and shows notifications. It never transcribes or downloads anything on its own."), "tray")}
         ${St.checkEveryRow ? St.checkEveryRow() : ""}
-        ${row(window.LS_LINUX ? t("Start at login") : t("Start with Windows"), window.LS_LINUX ? t("Start the background checks when you log in.") : t("Start the background checks when you sign in to Windows."), sw("start_with_windows", !app.tray))}
+        ${swRow(window.LS_LINUX ? t("Start at login") : t("Start with Windows"), window.LS_LINUX ? t("Start the background checks when you log in.") : t("Start the background checks when you sign in to Windows."), "start_with_windows", !app.tray)}
         ${startupOff ? `<div class="callout warning su-startup-off">${I("alert")}<div>${t("Windows doesn't start IEUStudia when you sign in, although this is on: Windows' own Startup apps list has it turned off, or your antivirus blocked it. Click Turn it on again; if that doesn't help, allow IEUStudia in Task Manager → Startup apps or in your antivirus.")}</div>
           <button class="btn sm" data-act="startup-fix">${t("Turn it on again")}</button></div>` : ""}
-        ${row(t("New lecture recordings"), t("Of your own section."), sw("notify_recordings", !app.tray))}
-        ${row(t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), sw("notify_announcements", !app.tray))}
-        ${row(t("New files"), t("Slides and PDFs added to a course."), sw("notify_materials", !app.tray))}
-        ${row(t("Quizzes, exams and deadlines coming up"), t("Reminders before quizzes, exams, assignment deadlines and your own calendar entries, from the background checks or from IEUStudia itself while it's open."), sw("notify_reminders"))}
+        ${swRow(t("New lecture recordings"), t("Of your own section."), "notify_recordings", !app.tray)}
+        ${swRow(t("New announcements"), t("Quiz, exam and homework news is marked as a heads-up."), "notify_announcements", !app.tray)}
+        ${swRow(t("New files"), t("Slides and PDFs added to a course."), "notify_materials", !app.tray)}
+        ${swRow(t("Quizzes, exams and deadlines coming up"), t("Reminders before quizzes, exams, assignment deadlines and your own calendar entries, from the background checks or from IEUStudia itself while it's open."), "notify_reminders")}
         ${St.reminderRows ? St.reminderRows() : ""}</div>
       <div class="card set-card" id="set-storage"><h3>${t("Storage")}</h3>${use}
         ${St.screensReadingRow ? St.screensReadingRow() : ""}
-        ${removable.map(([id, l, mb]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}">${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
+        ${removable.map(([id, l, mb, about]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}"${about ? ` data-about="${esc(about)}"` : ""}>${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
       <div class="card set-card" id="set-about"><h3>${t("About")}</h3>
         ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, t("Free and open source (MIT License). Lectures are transcribed on this PC. AI runs only through the service you chose, and only when you ask."),
           `<div style="display:flex;gap:6px"><button class="btn ghost sm" data-act="logs">${I("terminal", "sm")} ${t("Logs")}</button><button class="btn sm" data-act="setup-again">${I("refresh", "sm")} ${t("Run setup again")}</button></div>`)}
@@ -1126,7 +1130,7 @@
           return row(t("New versions"), said, up.available
             ? `<button class="btn sm update-btn" data-act="update-open">${I("download", "sm")} ${t.html("Update to {version}", { version: up.version })}</button>`
             : `<button class="btn ghost sm" data-act="update-check">${I("refresh", "sm")} ${t("Check now")}</button>`)
-            + row(t("Look for new versions by itself"), t("About once a day IEUStudia asks GitHub, where it's published, whether there's a new version, and fetches a tiny file there so the number of people using each version can be counted. Nothing about you is sent. You decide when to update."), sw("check_updates"));
+            + swRow(t("Look for new versions by itself"), t("About once a day IEUStudia asks GitHub, where it's published, whether there's a new version, and fetches a tiny file there so the number of people using each version can be counted. Nothing about you is sent. You decide when to update."), "check_updates");
         })()}
         ${St.contact ? St.contact.card() : ""}
         ${St.sq.about()}
@@ -1182,11 +1186,12 @@
     "setup-ai": () => { St.startSetup().then(() => go(STEPS.indexOf("ai"))); },
     "del-component": async (el) => {
       // (its name starts its own sentence: "Remove Speech model “Large v3” from this PC?" had a capital mid-sentence)
-      if (!(await St.ask({ title: t("Remove it from this PC?"), text: `${el.dataset.name || ""}: ${t("You can download it again later.")}`,
+      if (!(await St.ask({ title: t("Remove it from this PC?"), text: `${el.dataset.name || ""}: ${el.dataset.about || t("You can download it again later.")}`,
         ok: t("Remove"), danger: true }))) return;
       const r = await call("delete_component", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       U.storage = r; St.renderView();
+      if (el.dataset.id === "codex") loadAi();          // (Settings → AI no longer finds IEUStudia's copy)
     },
   });
   St.inputActs = St.inputActs.concat(["app-bool"]);
@@ -1294,6 +1299,7 @@
   St.mocks.app_config = (patch) => { S.boot.app = { ...(S.boot.app || {}), ...(patch || {}) }; return { ok: true, app: S.boot.app, startup: !!S.boot.app.start_with_windows, helper: !!S.boot.app.tray }; };
   St.mocks.finish_setup = () => ({ ok: true, app: { ...(S.boot.app || {}), onboarded: true } });
   St.mocks.storage = () => ({ ok: true, usage: { speech_models: 1.7e9, gpu_libraries: 7.8e8, library: 1.2e8, cache: 6e7, your_files: 2.4e9 }, free_gb: 182.4, data_dir: "C:\\Users\\student\\AppData\\Local\\IEUStudia",
-    catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", size_mb: 1620, ready: true }, { id: "small", label: "Small", size_mb: 484, ready: true }], cuda: {}, llm: [] } });
+    catalog: { speech: [{ id: "large-v3-turbo", label: "Fast & accurate", size_mb: 1620, ready: true }, { id: "small", label: "Small", size_mb: 484, ready: true }], cuda: {}, llm: [] },
+    codex: { bytes: 4.1e8, in_use: false } });
   St.mocks.delete_component = () => St.mocks.storage();
 })();

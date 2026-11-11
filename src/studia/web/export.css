@@ -64,6 +64,7 @@
 .xp-subs { margin-top: 6px; }
 .xp-hint { font-size: 12px; color: var(--text-2); padding: 6px 4px 0; line-height: 1.4; }
 .xp-menu > .xp-rows { flex: 0 1 auto; min-height: 54px; max-height: 290px; overflow-y: auto; }   /* the list gives way */
+.xp-menu > .xp-rows.xp-ai { flex: none; min-height: 0; max-height: none; overflow: visible; }   /* (the weeks give way) */
 .xp-opts { padding: 4px 0 0; }
 .xp-row { display: flex; align-items: stretch; gap: 2px; }
 .xp-row .xp-go { flex: 1; min-width: 0; }

@@ -72,6 +72,48 @@ def codex_exe() -> str:
     return str(exe) if exe.is_file() else ""
 
 
+def _codex_folders() -> list[Path]:
+    """The Codex CLI IEUStudia installed: its folder, a half-swapped copy of it, and a download an install left."""
+    home = codex_home()
+    return [home, home.with_name(home.name + ".new"), home.with_name(home.name + ".old"), tools_dir() / "codex-setup"]
+
+
+def codex_size() -> int:
+    """Bytes the Codex CLI IEUStudia installed takes on this PC (0: there is none). Settings → Storage offers to
+    remove it when no AI choice uses it."""
+    from .components import _dir_size
+
+    return sum(_dir_size(p) for p in _codex_folders() if p.is_dir())
+
+
+def remove_codex() -> None:
+    """Remove the Codex CLI IEUStudia installed (Settings → Storage; the caller has checked that the AI chosen is not
+    ChatGPT through the Codex CLI). Only IEUStudia's own copy: one the student installed with npm stays. Not while it
+    is being installed; a file still in use (a Codex CLI still running) says so and leaves the copy whole, so it keeps
+    working until the next try."""
+    from . import ai
+
+    with _lock:
+        if (_jobs.get("codex") or {}).get("state") == "running":
+            raise Plain(t("The Codex CLI is being installed right now. Cancel that first, or wait until it is done."))
+    home = codex_home()
+    gone = home.with_name(home.name + ".removing")
+    shutil.rmtree(gone, ignore_errors=True)
+    if home.exists():
+        try:
+            home.rename(gone)                       # all or nothing: a running codex.exe can't be moved
+        except OSError as exc:
+            log.warning("The Codex CLI could not be removed: %r", exc)
+            raise Plain(t("The Codex CLI is still running, so it can't be removed now. Close IEUStudia and open it "
+                          "again, then try once more.")) from exc
+    for p in [gone, *_codex_folders()]:
+        shutil.rmtree(p, ignore_errors=True)
+    with _lock:
+        _jobs.pop("codex", None)                    # (its "Installed" line no longer holds)
+    ai.codex_cli_info.cache_clear()
+    log.info("Removed the Codex CLI IEUStudia installed")
+
+
 def git_bash() -> str:
     """Git for Windows' bash.exe if it is installed; "" if not. Claude Code prefers it for shell commands and uses
     PowerShell without it - and IEUStudia runs Claude Code without any tools, so it is never required."""
