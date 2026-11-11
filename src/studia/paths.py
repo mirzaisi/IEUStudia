@@ -100,12 +100,12 @@ def migrate_legacy_data() -> str:
                     shutil.move(str(child), str(target))
             if not any(old.iterdir()):
                 old.rmdir()
-        _legacy_in_use.cache_clear()
         return "moved"
     except OSError as exc:            # e.g. the old app is still running: keep using its folder for now
         return f"failed: {exc}"
     finally:
         _made.clear()                 # folders were moved or removed: make them again where needed
+        _legacy_in_use.cache_clear()  # (also after a failed move: which folder is in use is looked at again)
 
 
 @functools.lru_cache(maxsize=1)
