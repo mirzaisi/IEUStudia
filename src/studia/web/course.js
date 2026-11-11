@@ -294,6 +294,10 @@
     return { done: n.days_done || 0, total: Math.max(0, n.days - (n.days_no_sound || 0)), silent: n.days_no_sound || 0 };
   }
   St.lectureCounts = lectureCounts;
+  // a transcribed recording Panopto replaced with a new copy (views.py "replaced"): its transcript is still shown (in
+  // the Lectures list, and on the class day until the new copy is transcribed), so it says why the lecture is there
+  // twice. app.js puts it on a recording's row and a part's heading.
+  St.replacedTag = (x) => (x && x.replaced ? `<span class="pill replaced" title="${esc(t("Panopto put a new copy of this recording in its place. This transcript is of the old copy; once the new copy is transcribed, the lecture's page shows that one."))}">${I("refresh", "xs")}${t("Replaced on Panopto")}</span>` : "");
   function courseHero(c, d) {
     const cur = d && d.weeks.find((w) => w.current);
     const ects = d && d.syllabus.ects ? `<span>${I("cap", "sm")}${t.html("{n} ECTS", { n: d.syllabus.ects })}</span>` : "";
@@ -308,11 +312,10 @@
         ${k.total || k.silent ? `<div class="stat">${t.n(k.total, "<b>{done}</b>of {n} lecture transcribed", "<b>{done}</b>of {n} lectures transcribed", { done: k.done })}</div>`
           : `<div class="stat dim">${t("No lectures recorded yet")}</div>`}
         ${k.silent ? `<div class="stat dim" title="${esc(St.silentTip(k.silent))}">${t.n(k.silent, "<b>{n}</b>lecture has no speech on Panopto", "<b>{n}</b>lectures have no speech on Panopto")}</div>` : ""}</div></div>
-      <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${St.aiBtn(ai.available && (c.counts.done_any ?? c.counts.done))} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? t.html("Chat with {name} about this course", { name: St.aiName() }) : t("Transcribe a lecture first")) : St.aiHint()}">${I("chat", "sm")} ${t.html("Ask {name}", { name: St.aiName() })}</button>
+      <div class="hero-acts"><button class="btn grad sm" data-act="ask-course" data-id="${c.id}" ${St.aiBtn(ai.available) || St.whyOff((c.counts.done_any ?? c.counts.done) ? "" : t("Transcribe a lecture of this course first: then you can ask {ai} about it.", { ai: St.aiName() }))} title="${ai.available ? ((c.counts.done_any ?? c.counts.done) ? t.html("Chat with {name} about this course", { name: St.aiName() }) : t("Transcribe a lecture first")) : St.aiHint()}">${I("chat", "sm")} ${t.html("Ask {name}", { name: St.aiName() })}</button>
         <button class="btn sm" data-act="course-sync" data-id="${c.id}" title="${t("Sync, then transcribe this course's lectures that aren't transcribed yet (your section) and download its materials")}">${I("zap", "sm")} ${t("Sync course")}</button>
         <button class="btn sm" data-act="plan-new" data-id="${c.id}" ${St.aiBtn(ai.available && ai.can_plans !== false, true)} title="${ai.available ? t("Find YouTube videos that teach this course's weeks, checked through their captions") : St.aiHint()}">${I("youtube", "sm")} ${t("Video plan")}</button>
-        <button class="btn sm" data-act="cx-open" data-id="${c.id}" title="${t("A zip of this course for ChatGPT: the transcripts, the screens with what was said, the course files and the announcements of the weeks you pick, in a folder for each week")}">${I("archive", "sm")} ${t("Export for AI chat")}</button>
-        ${St.exportBtn ? St.exportBtn("course", c.id, false, !k.done) : ""}
+        ${St.exportBtn ? St.exportBtn("course", c.id) : ""}
         <button class="btn sm" data-act="open-folder" data-id="${c.id}" title="${t("Open this course's folder")}">${I("folder-open", "sm")} ${t("Folder")}</button></div></div>`;
   }
   function tabsHTML(c, d, tab) {

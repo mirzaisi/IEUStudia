@@ -1,6 +1,7 @@
 /* IEUStudia — the Export menu on a lecture, a course and a chat (exports.py, api.py's export_*). Pick a format (PDF for
  * reading, Word for editing, Markdown, text, or subtitles with their times), then what to save: a lecture's transcript,
  * its notes or its AI pack; a week or the whole course (one document, or a zip with a file for each lecture); the chat.
+ * A course's menu ends with Export for AI chat (export.js's zip for ChatGPT), so the course page has one Export button.
  * Windows' save dialog opens in the course's folder with a good name; while the file is made a toast says so and how
  * long it may take; then "Saved" with Open and Show in folder. The copy button beside a row copies it as text. The
  * format used last in each place is remembered for the student (Settings: export_prefs). Plugs in through
@@ -81,8 +82,11 @@
         : `${M.notes ? `<label class="xp-opt"><input type="checkbox" class="check" data-act="xp-opt" data-k="notes" ${c.notes ? "checked" : ""}> ${t("With the study notes, exam focus and flashcards")}</label>` : ""}
           <label class="xp-opt"><input type="checkbox" class="check" data-act="xp-opt" data-k="zip" ${c.zip ? "checked" : ""}> ${t("A file for each lecture, in a zip")}</label>`;
     }
-    return head + (opts ? `<div class="xp-opts">${opts}</div>` : "") + "<hr>" + body;
+    return head + (opts ? `<div class="xp-opts">${opts}</div>` : "") + "<hr>" + body + (M.place === "course" ? aiChatHTML() : "");
   }
+  // a course's zip for ChatGPT (export.js's dialog, as Home's Export for AI chat button opens it for every course):
+  // its own row under the others, in any format and also before a lecture is transcribed (files, announcements)
+  const aiChatHTML = () => `<hr><div class="xp-rows xp-ai"><div class="xp-row"><button class="xp-go" data-act="xp-aichat" role="menuitem">${I("archive")}<span class="xp-l">${t("Export for AI chat")}<span class="d">${t("One zip for ChatGPT with the weeks you pick: transcripts, screens, files and announcements")}</span></span></button></div></div>`;
 
   // ------------------------------------------------------------------ the menu
   function close() {
@@ -205,6 +209,7 @@
     "xp-opt": (el) => { if (!M) return; prefs(M.place)[el.dataset.k] = !!el.checked; draw(); },
     "xp-save": (el) => save(el.dataset.what),
     "xp-copy": (el) => copy(el.dataset.what),
+    "xp-aichat": () => { const id = M ? M.id : ""; close(); if (St.cexp && St.cexp.open) St.cexp.open(id); },
     "xp-open": (el) => { const box = el.closest && el.closest(".toast"); if (box) box.remove(); return said(call("export_open", el.dataset.path, false)); },
     "xp-show": (el) => { const box = el.closest && el.closest(".toast"); if (box) box.remove(); return said(call("export_open", el.dataset.path, true)); },
   });

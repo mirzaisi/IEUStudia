@@ -66,7 +66,7 @@
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>${t("This week")}</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="${t("Next week")}">${I("chevron-right", "sm")}</button>
           ${ai.available && St.effortInline && St.isChatGPT() ? St.effortInline("dg", "digest") : ""}
-          <button class="btn primary sm" data-act="dg-summary" ${St.aiBtn(ai.available && !g.running)} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
+          <button class="btn primary sm" data-act="dg-summary" ${St.aiBtn(ai.available) || (writing ? "disabled" : g.running ? St.whyOff(t("Another week's summary is being written. Try again when it's done.")) : "")} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} ${t("To do")}</div><div class="card dg-todos">${todo}</div>` : ""}
       <div class="section-title">${I("book")} ${t("Your courses this week")}</div>

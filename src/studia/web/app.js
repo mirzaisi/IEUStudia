@@ -350,7 +350,8 @@
   function renderTop() {
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
-    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="${t.html("Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB", { name: g.name, mb: g.vram_mb })}"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
+    // the graphics card transcribes: a short plain chip (all is normal, so it gives way in a narrow window: styles.css)
+    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok gpu-chip" title="${t.html("Transcribes on the graphics card ({name}): much faster than on the processor.", { name: g.name })}"><span class="dot"></span>${t("Graphics card")}</span>`
       : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="${t("Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.")}"><span class="dot"></span>${t("Graphics card not set up")}</span>` : "";
     // waiting for the connection (for the recordings, or the files and announcements after them): a short label (the
     // reason is on Home and in the tooltip) and a way to stop waiting
@@ -493,7 +494,7 @@
       <span class="part">${r.part ? t("Part {n}", { n: r.part }) : "—"}</span>
       <span class="time">${esc(r.time)}–${esc(r.end_time)}</span>
       <span class="dur">${fmtDur(r.duration_s)}</span>
-      <span class="state">${statusHTML(r)}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
+      <span class="state">${statusHTML(r)}${Studia.replacedTag ? Studia.replacedTag(r) : ""}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
       <span class="acts">${acts}</span></div>`;
   }
   function updateRow(r) {
@@ -712,7 +713,7 @@
     h += `<div id="notes-slot">${notesHTML()}</div><div id="marks-slot">${marksHTML()}</div>`;
     h += `<div id="hl-slot">${highlightsHTML()}</div>`;
     for (const p of d.parts) {
-      h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
+      h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>${Studia.replacedTag ? Studia.replacedTag(p) : ""}
         <span style="flex:1"></span>${screensAgainHTML(d, p)}${d.parts.length > 1 && Studia.player && Studia.player.partBtn ? Studia.player.partBtn(p) : ""}<button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I(Studia.player && Studia.player.partBtn ? "external" : "play", "sm")} ${t("Watch")}</button></div>`;
       if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : p.status === "live" ? t("Being recorded. It can be transcribed once Panopto has finished it.") : t("Not transcribed yet.")}</div>`; continue; }
       if (screensOnly(d)) { h += screensOnlyHTML(p); continue; }
@@ -855,7 +856,7 @@
       ${Studia.exportBtn ? Studia.exportBtn("day", d.day_key, false, !hasText) : ""}
       ${Studia.player && Studia.player.btn ? Studia.player.btn(!d.parts.length) : ""}
       <button class="btn grad sm" data-act="ask-day" ${aiBtn(hasText && ai.available)} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
-      <button class="btn sm" data-act="claude" ${aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
+      <button class="btn sm" data-act="claude" ${hasText && ai.available && S.ai.running && S.ai.dayKey !== d.day_key ? whyOff(t("{ai} is still writing for another lecture. Try again when it's done.", { ai: aiName() })) : aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
       <span class="spacer"></span>
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
@@ -1438,6 +1439,9 @@
     const ai = S.system.ai || {};
     return !ai.available || (plans && ai.can_plans === false) ? `aria-disabled="true" data-ai-off="${plans ? "plans" : "any"}"` : "disabled";
   }
+  // a button that can't be used now for another reason than the AI, which nothing on the page shows: greyed out the
+  // same way, and a click says ``why`` (a disabled one said it only in its tooltip, or not at all)
+  const whyOff = (why) => (why ? `aria-disabled="true" data-why="${esc(why)}"` : "");
   async function aiOffAsk(plans) {
     const ai = S.system.ai || {};
     const text = plans && ai.available ? t("This needs ChatGPT or Claude: the offline model is too small for it. You can choose one in Settings → AI.")
@@ -2774,7 +2778,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
-    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn });
+    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn, whyOff });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2823,6 +2827,7 @@
     if (el.tagName === "SELECT" || el.tagName === "OPTION") return;
     if (el.tagName === "INPUT" && el.type !== "button" && !["sel", "sel-day", "set-bool", "cl-slides", "cp-day", "cp-slides", "draft-slides", "pd-week", "plan-mark", "cu-pick", "cu-mats", "rd-read", ...(Studia.inputActs || [])].includes(el.dataset.act)) return;
     if (el.dataset.aiOff) { aiOffAsk(el.dataset.aiOff === "plans"); return; }        // an AI button without its AI (aiBtn)
+    if (el.dataset.why) { toast(el.dataset.why, "info"); return; }                   // greyed out for another reason (whyOff)
     const fn = A[el.dataset.act];
     if (fn && !el.disabled) fn(el, e);
   });
