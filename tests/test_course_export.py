@@ -21,7 +21,7 @@ from studia import store
 from studia.api import Api
 from studia.cancel import Cancelled
 from studia.config import Settings
-from studia.coursesite import Announcement, Resource, Unit
+from studia.coursesite import Announcement, Assignment, Resource, Unit
 from studia.domain import Course, Recording, Segment, Transcript
 from studia.library import Library
 from studia.materials import MaterialStore
@@ -187,6 +187,44 @@ def test_the_overview_announcements_and_deadlines_are_written_readably(env):
     week1 = read(path, f"{ROOT}/Week 01 - Sample Spaces/Week overview.md")
     assert "Dates: Mon 21 Sep to Sun 27 Sep 2026" in week1 and "Readings: Read chapter 1" in week1
     assert "- 23 Sep: About Quiz 1" in week1
+
+
+def test_ieulearn_assignments_are_listed_with_their_deadlines(env):
+    env.lib.merge_assignments("c", panel=[
+        Assignment("a1", "Homework 1", "2026-09-30T23:59", "graded", True, "https://l/a1"),
+        Assignment("a2", "Homework 2", "2026-10-14T15:40", "pending", False, "https://l/a2"),
+        Assignment("a3", "Lab sheet", "2026-10-05", "", False, "https://l/a3"),
+        Assignment("a4", "No date yet", "", "pending", False, "https://l/a4")])
+    path = build(env)["path"]
+    dl = read(path, f"{ROOT}/Quizzes, exams and deadlines.md")
+    asg = dl.split("## Assignments on IEULearn")[1].split("## ")[0]
+    assert asg.index("Homework 1") < asg.index("Lab sheet") < asg.index("Homework 2")            # soonest first
+    assert "- Homework 1: due Wed 30 Sep 2026, 23:59 (week 2, over). Graded." in asg
+    assert "- Lab sheet: due Mon 5 Oct 2026 (week 3, over). Not sent." in asg
+    assert "- Homework 2: due Wed 14 Oct 2026, 15:40 (week 4, still ahead). Not sent yet." in asg
+    assert "No date yet" not in dl
+    ov = read(path, f"{ROOT}/Course overview.md")
+    assert "- * Week 2 (Mon 28 Sep to Sun 4 Oct 2026) · Counting · assignment due: Homework 1 (Wed 30 Sep, 23:59)" in ov
+    assert "- Week 4 (Mon 12 Oct to Sun 18 Oct 2026) · Random Variables · assignment due: Homework 2 (Wed 14 Oct, 15:40)" in ov
+    week2 = read(path, f"{ROOT}/Week 02 - Counting/Week overview.md")
+    assert "Assignments due this week (IEULearn): Homework 1 (due Wed 30 Sep, 23:59, graded)" in week2
+    readme = read(path, f"{ROOT}/README.md")
+    assert "and the assignments on IEULearn with their deadlines." in readme
+    part = readme.split("## Assignments\n")[1].split("## ")[0]
+    assert "- Homework 1: Due Wednesday, 30 September 2026, 23:59 · Graded" in part
+    assert "- Lab sheet: Due Monday, 5 October 2026 · Not sent" in part
+    assert "- Homework 2: Due Wednesday, 14 October 2026, 15:40 · Not sent yet" in part
+    # announcements and deadlines left out: the README doesn't list them either (the weeks still say what is due)
+    out = build(env, notices=False)["path"]
+    assert "## Assignments" not in read(out, f"{ROOT}/README.md")
+    assert "Homework 1 (due Wed 30 Sep, 23:59, graded)" in read(out, f"{ROOT}/Week 02 - Counting/Week overview.md")
+
+
+def test_assignments_alone_make_the_deadlines_file(env):
+    env.lib.merge_assignments("e", panel=[Assignment("b1", "Lab 1", "2026-09-25T17:00", "submitted", True, "u")])
+    out = build(env, course_id="e")
+    dl = read(out["path"], out["name"][:-4] + "/Quizzes, exams and deadlines.md")
+    assert "- Lab 1: due Fri 25 Sep 2026, 17:00 (week 1, over). Sent." in dl
 
 
 def test_lectures_not_transcribed_are_listed_in_their_week_and_the_readme(env):

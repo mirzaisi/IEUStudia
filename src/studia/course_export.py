@@ -897,6 +897,7 @@ def course_overview(course: Course, detail: dict[str, Any], plan: Plan) -> str:
         if (syl.get(key) or "").strip():
             lines += ["", f"## {label}", syl[key].strip()]
     chosen = {w.no for w in plan.weeks}
+    asgs = assignments(detail)
     if plan.all_weeks:
         lines += ["", "## Weekly plan", "", "(* = in this export)"]
         for w in plan.all_weeks:
@@ -906,7 +907,14 @@ def course_overview(course: Course, detail: dict[str, Any], plan: Plan) -> str:
                 bits.append(f"on IEULearn: {_other_topic(w)}")
             if w.exam:
                 bits.append(f"exam week: {w.exam}")
+            due = [f"{a.get('title') or 'Assignment'} ({_asg_when(a, year=False)})" for a in asgs if a.get("week") == w.no]
+            if due:
+                bits.append("assignment due: " + "; ".join(due))
             lines.append(f"- {'* ' if w.no in chosen else ''}{' · '.join(bits)}")
+    weekless = [a for a in asgs if not a.get("week") or a["week"] not in {w.no for w in plan.all_weeks}]
+    if weekless:                    # (a plan without dates: the assignments are listed on their own)
+        lines += ["", "## Assignments on IEULearn", ""] + [
+            f"- {a.get('title') or 'Assignment'}: due {_asg_when(a)}" for a in weekless]
     return "\n".join(lines)
 
 
@@ -926,10 +934,36 @@ def announcements_md(course: Course, detail: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def assignments(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """IEULearn's assignments that have a deadline (views.assignment_view), soonest first."""
+    return sorted((a for a in detail.get("assignments") or [] if a.get("due")),
+                  key=lambda a: (a["due"], a.get("time") or "", (a.get("title") or "").casefold()))
+
+
+def _asg_when(a: dict[str, Any], year: bool = True) -> str:
+    d = _date(a["due"])
+    return (_en_day(d, year) if d else a["due"]) + (f", {a['time']}" if a.get("time") else "")
+
+
+def _asg_sent(a: dict[str, Any], today: dt.date) -> str:
+    """Whether it was sent, as IEUStudia last saw it (English, for the files)."""
+    if a.get("done"):
+        return "graded" if a.get("state") == "graded" else "sent"
+    return "not sent yet" if a["due"] >= today.isoformat() else "not sent"
+
+
+def assignment_line(a: dict[str, Any], today: dt.date) -> str:
+    """One assignment for the files: "- Lab 1: due Wed 21 Oct 2026, 15:50 (week 5, over). Graded."."""
+    stamp = today.isoformat()
+    when = "over" if a["due"] < stamp else "due today" if a["due"] == stamp else "still ahead"
+    return (f"- {a.get('title') or 'Assignment'}: due {_asg_when(a)} ("
+            + (f"week {a['week']}, " if a.get("week") else "") + f"{when}). {_asg_sent(a, today).capitalize()}.")
+
+
 def deadlines_md(course: Course, detail: dict[str, Any], today: dt.date) -> Optional[str]:
     """The quizzes, exams, projects, homework and schedule changes IEUStudia knows: the assessments announced (which
-    week, which learning outcomes), the syllabus' exam weeks, and what was said about them in class and in the
-    announcements. None when there is nothing."""
+    week, which learning outcomes), IEULearn's assignments with their deadlines, the syllabus' exam weeks, and what was
+    said about them in class and in the announcements. None when there is nothing."""
     alerts = detail.get("alerts") or {}
     plan = alerts.get("plan") or []
     weeks = {w["no"]: w for w in detail.get("weeks") or []}
@@ -937,7 +971,8 @@ def deadlines_md(course: Course, detail: dict[str, Any], today: dt.date) -> Opti
     items = [a for a in alerts.get("items") or [] if a.get("category") in KEY_CATS]
     exam_weeks = [w for w in detail.get("weeks") or [] if w.get("exam")
                   and not any(e.get("week") == w["no"] and e.get("kind") != "quiz" for e in plan)]
-    if not (plan or items or exam_weeks):
+    asgs = assignments(detail)
+    if not (plan or items or exam_weeks or asgs):
         return None
     stamp = today.isoformat()
     lines = [f"# {course.code or course.name} · quizzes, exams, homework and deadlines", "",
@@ -964,6 +999,12 @@ def deadlines_md(course: Course, detail: dict[str, Any], today: dt.date) -> Opti
                 line += f". As announced in “{src['title']}”" + (f" ({_en_day(d)})" if d else "")
             lines.append(line + ".")
             lines += [f"  - LO{n}: {outs[n - 1]}" for n in e.get("los") or [] if 1 <= n <= len(outs)]
+        lines.append("")
+    if asgs:
+        lines += ["## Assignments on IEULearn", "",
+                  "Each with the deadline IEULearn gives and whether it was sent, as IEUStudia last saw it (check "
+                  "IEULearn before a deadline).", ""]
+        lines += [assignment_line(a, today) for a in asgs]
         lines.append("")
     if exam_weeks:
         lines += ["## Exam weeks in the syllabus", ""]
@@ -999,7 +1040,9 @@ def deadlines_md(course: Course, detail: dict[str, Any], today: dt.date) -> Opti
     return "\n".join(lines)
 
 
-def week_overview(course: Course, w: Week, plan: Plan, lectures: list[str], files: list[str], choice: Choice) -> str:
+def week_overview(course: Course, w: Week, plan: Plan, lectures: list[str], files: list[str], choice: Choice,
+                  today: Optional[dt.date] = None) -> str:
+    today = today or dt.date.today()
     lines = [f"# Week {w.no}" + (f": {w.topic}" if w.topic else ""), "", f"Course: {course_title(course, plan.detail)}"]
     when = _en_range(w.start, w.end)
     if when:
@@ -1016,6 +1059,10 @@ def week_overview(course: Course, w: Week, plan: Plan, lectures: list[str], file
         lines.append("Announced for this week: " + ", ".join(
             str(e.get("name") or "") + (f" (it covers {', '.join(f'LO{n}' for n in e['los'])})" if e.get("los") else "")
             for e in due))
+    asgs = [a for a in assignments(plan.detail) if a.get("week") == w.no]
+    if asgs:
+        lines.append("Assignments due this week (IEULearn): " + "; ".join(
+            f"{a.get('title') or 'Assignment'} (due {_asg_when(a, year=False)}, {_asg_sent(a, today)})" for a in asgs))
     if w.readings:
         lines += ["", f"Readings: {w.readings.strip()}"]
     lines += ["", "## Lectures", "", *(lectures or ["- No lectures were recorded this week."])]
@@ -1126,10 +1173,14 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
     if alone:
         lines += ["- " + t("README.md: this file."), "- " + t("Index of files.md: every file in the zip, with what it is.")]
     lines.append("- " + t("Course overview.md: the course's description, learning outcomes, grading and weekly plan."))
+    asgs = assignments(p.detail) if choice.notices else []
     if choice.notices:
         lines.append("- " + t("Announcements.md: the course's announcements on IEULearn."))
-        lines.append("- " + t("Quizzes, exams and deadlines.md: the quizzes, exams, homework and deadlines that were "
-                              "announced or mentioned in class."))
+        lines.append("- " + (t("Quizzes, exams and deadlines.md: the quizzes, exams, homework and deadlines that were "
+                               "announced or mentioned in class, and the assignments on IEULearn with their deadlines.")
+                             if asgs else
+                             t("Quizzes, exams and deadlines.md: the quizzes, exams, homework and deadlines that were "
+                               "announced or mentioned in class.")))
     if p.weeks:
         lines.append("- " + t("A folder for each week (Week 01 - …):"))
         lines.append("  - " + t("Week overview.md: the week's topic, dates, lectures, course files and announcements."))
@@ -1148,6 +1199,15 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
     lines.append("")
     if w.week_lines:
         lines += ["## " + t("Weeks"), "", *w.week_lines, ""]
+    if asgs:                        # IEULearn's assignments with their deadlines, as the Calendar shows them
+        lines += ["## " + t("Assignments"), ""]
+        for a in asgs:
+            d = _date(a["due"])
+            when = (date_long(d) if d else a["due"]) + (f", {a['time']}" if a.get("time") else "")
+            sent = {"graded": t("Graded"), "sent": t("Sent"), "not sent yet": t("Not sent yet"),
+                    "not sent": t("Not sent")}[_asg_sent(a, today)]
+            lines.append(f"- {a.get('title') or t('Assignment')}: " + t("Due {when}", when=when) + f" · {sent}")
+        lines.append("")
     if notes.lectures or notes.files or notes.links:
         lines += ["## " + t("Not in this zip"), "", *notes.lectures, *notes.files]
         if notes.links:
@@ -1219,7 +1279,7 @@ class _CourseWriter:
             folder = z.folder(self.base, f"Week {w.no:02d}" + (f" - {w.topic}" if w.topic else ""), week_max)
             lectures = [self._day(folder, d, w.no) for d in w.days]
             files = self._files(folder, "Course files", w.files, w.no)
-            z.text(folder, "Week overview.md", week_overview(p.course, w, p, lectures, files, ch),
+            z.text(folder, "Week overview.md", week_overview(p.course, w, p, lectures, files, ch, self.today),
                    t("week {n}: its topic, dates, lectures and course files", n=w.no))
             when = _range(w.start, w.end)
             self.week_lines.append(
