@@ -6,5 +6,9 @@
   "{error} A copy of the notes is kept in {copy}.": "{error} Notların bir kopyası {copy} içinde duruyor.",
   "The speech model's download was damaged. Transcribe the lecture again: it downloads afresh.": "Konuşma tanıma modelinin indirmesi bozuk geldi. Dersi yeniden yazıya dök: model baştan iner.",
   "The offline AI model's download was damaged. Try again: it downloads afresh.": "Çevrimdışı yapay zeka modelinin indirmesi bozuk geldi. Yeniden dene: model baştan iner.",
-  "The speech model's files on this PC were damaged, so IEUStudia deleted them. Transcribe the lecture again: the model downloads afresh.": "Konuşma tanıma modelinin bu bilgisayardaki dosyaları bozulmuştu, bu yüzden IEUStudia onları sildi. Dersi yeniden yazıya dök: model baştan iner."
+  "The speech model's files on this PC were damaged, so IEUStudia deleted them. Transcribe the lecture again: the model downloads afresh.": "Konuşma tanıma modelinin bu bilgisayardaki dosyaları bozulmuştu, bu yüzden IEUStudia onları sildi. Dersi yeniden yazıya dök: model baştan iner.",
+  "An Export for AI chat is still being made. Switching stops it here.": "Yapay zeka için dışa aktarma hâlâ hazırlanıyor. Profil değiştirirsen burada durur.",
+  "The AI is still writing something you asked for. Switching stops it here.": "Yapay zeka istediğin bir şeyi hâlâ yazıyor. Profil değiştirirsen iş burada durur.",
+  "An Export for AI chat is still being made. Update when it has finished, or cancel it first.": "Yapay zeka için dışa aktarma hâlâ hazırlanıyor. Bitince güncelle ya da önce onu iptal et.",
+  "The AI is still writing something you asked for. Update when it has finished, or stop it first.": "Yapay zeka istediğin bir şeyi hâlâ yazıyor. Bitince güncelle ya da önce onu durdur."
 }

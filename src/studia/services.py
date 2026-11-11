@@ -168,6 +168,28 @@ def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
     return n
 
 
+def _sweep_export_leftovers(root: Path, days: float = 1.0) -> int:
+    """The unfinished zips (``<name>.zip.tmp``, up to hundreds of MB) of exports for an AI chat that IEUStudia closed in
+    the middle of, or a power cut stopped: deleted a day later (never one being written now). Returns how many."""
+    import time
+
+    cutoff, n = time.time() - days * 86400, 0
+    try:                                                   # (course_export.EXPORTS: not imported for the start)
+        found = [*root.glob("Exports/*.zip.tmp"), *root.glob("*/Exports/*.zip.tmp")]
+    except OSError:
+        return 0
+    for f in found:
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                n += 1
+        except OSError:
+            continue
+    if n:
+        log.info("Deleted %d unfinished export zips", n)
+    return n
+
+
 def _good_backup(folder: Path) -> Optional[Path]:
     """The newest copy in ``backups`` (library-<version>.db, kept before an update) that reads well, opened read-only."""
     import sqlite3
@@ -409,6 +431,7 @@ class Services:
             self.screens.start()
         self._relink_transcripts()
         self._write_unwritten()
+        _sweep_export_leftovers(Path(self.settings.output_dir))
         self.sync.after_sync = self._after_sync
         try:
             self.move_days()                       # (also those a tray helper's check found)

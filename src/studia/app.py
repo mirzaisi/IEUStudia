@@ -637,6 +637,12 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
         log.info("UI loaded %.1f s after launch", process_age())
 
     def on_closing() -> bool:     # runs on the UI thread
+        ok = _on_closing()
+        if ok:                    # an Export for AI chat being made stops and takes its unfinished zip away
+            api._end_export()
+        return ok
+
+    def _on_closing() -> bool:
         services = started.get("services")
         if api._restart or api._update_installer:     # switching profiles or updating: the user already confirmed
             if api._setup_cancel is not None:         # the setup's download stops (next time it goes on from there)
