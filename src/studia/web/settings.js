@@ -28,7 +28,8 @@
   function changed(group) {
     const d = ((S.setDefaults || {}).defaults || {})[group];
     if (!d) return false;
-    return Object.entries(d).some(([where, keys]) => Object.entries(keys).some(([k, v]) => !same(now(where)[k], v)));
+    // (a setting the page has no value for yet is as its default)
+    return Object.entries(d).some(([where, keys]) => Object.entries(keys).some(([k, v]) => k in now(where) && !same(now(where)[k], v)));
   }
   St.setChanged = changed;          // (the tests)
   // the button in a card's heading: only when something there differs from the default
