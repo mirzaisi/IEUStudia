@@ -4,6 +4,7 @@ cards a day, every student's reviews kept in their own profile's library, the AI
 them, the whole run with a fake AI, and the notes an Anki deck gets."""
 
 import datetime as dt
+import inspect
 import json
 import time
 import types
@@ -241,6 +242,26 @@ def test_cards_from_files_with_a_fake_ai(env):
     assert r["title"] == "Cards from Week01.pdf"
     deck = cards.deck(env.svc, "c")
     assert len(deck) == 4 and {c["origin"] for c in deck} == {"lecture", "files"}
+
+
+def test_a_card_set_s_own_failure_is_kept_in_the_words_t_looks_up(env):
+    """Made while IEUStudia speaks Turkish, its reason stays as the English words (the key of t()), so the Practice tab
+    says it in the language of the moment (practice.js), not in the one it was made in (4.1.0)."""
+    from studia import i18n
+
+    runner = PlanRunner(env.svc, ask_text=lambda *a, **k: {"text": "{}"})
+    pid = runner.create("c", {"kind": "cards", "weeks": [1], "files": ["r1"], "picked": True})   # r1: not on this PC
+    i18n.set_language("tr")
+    try:
+        runner.start(pid)
+        p = wait_done(env.lib, pid)
+    finally:
+        i18n.set_language("en")
+    assert p["status"] == "error"
+    assert p["error"] == "None of the picked files is on this PC yet. Download them on the course page first."
+    assert p["error"] in i18n.table("tr")                          # (the page has its Turkish)
+    src = inspect.getsource(cards.run)
+    assert "raise RuntimeError(" not in src and src.count("raise Failed(N_(") == 3
 
 
 def test_anki_notes_carry_the_source_and_tags(env):

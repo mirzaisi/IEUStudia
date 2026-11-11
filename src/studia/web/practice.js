@@ -44,7 +44,9 @@
   const inView = (id) => {
     const bar = id && [...document.querySelectorAll(".pr-prog[data-id]")].find((b) => b.dataset.id === id);
     const row = bar && (bar.closest(".pr-quiz") || bar);
-    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (!row || !row.scrollIntoView) return;
+    row.style.scrollMarginBottom = "72px";             // (room for its wait line, which comes a moment later)
+    row.scrollIntoView({ block: "nearest", behavior: "smooth" });
   };
   const refresh = (cid) => { loadCourse(cid); loadSummary(S.view.name === "practice"); };
   const canAI = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
