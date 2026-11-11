@@ -540,6 +540,7 @@ def test_the_open_app_reminds_as_set_and_stays_quiet_when_reminders_are_off(tmp_
     told = []
     monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
     monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: False)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: 0.0)
 
     class Clock(dt.datetime):
         @classmethod
@@ -556,6 +557,66 @@ def test_the_open_app_reminds_as_set_and_stays_quiet_when_reminders_are_off(tmp_
     api._remind()
     assert told == [("IEUStudia: a deadline is coming up", "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
                      "calendar:b-asg-3003")]
+
+
+def test_a_reminder_waits_while_nobody_is_at_the_pc(tmp_path, isolated_home, monkeypatch):
+    """The window in front of a screen that turned off: no 4-second toast to nobody (and then never again), the
+    reminder comes when the student is back."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="b", title=TITLE, code="EEE 242", name="S")])
+    lib.merge_assignments("b", None, parse_assignments(PANEL, TITLE))
+    pushed, told, idle = [], [], [900.0]
+    monkeypatch.setattr(api, "_push", pushed.append)
+    monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
+    monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: True)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: idle[0])
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 17, 16, 0)
+
+    monkeypatch.setattr("studia.api.dt.datetime", Clock)
+    monkeypatch.setattr("studia.calendar_export.dt.date", type("D", (dt.date,), {"today": classmethod(lambda c: dt.date(2026, 11, 17))}))
+    api._remind()
+    assert pushed == [] and told == [] and api._remind_waits and agent._load_seen().get("rem", []) == []
+    idle[0] = 3.0                                                     # back
+    api._remind()
+    assert pushed == [{"type": "toast", "level": "info", "message": "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40."}]
+    assert not api._remind_waits and told == []
+
+
+def test_the_open_windows_turns_follow_the_wall_clock():
+    """The quiet sync and the reminders of a window left open overnight: Windows' waits don't count the hours the PC
+    slept, so they look at the wall clock; after waking, a turn that came due comes BACK_S later (Wi-Fi first)."""
+    from studia import api as api_mod
+
+    now, slept, naps = [1000.0], [], {}
+
+    def sleep(s):
+        now[0] += s + naps.pop(len(slept), 0.0)              # (the PC may sleep during this wait)
+        slept.append(s)
+
+    def run(interval, steps, back=lambda: False):
+        got, gen = [], api_mod.turns(interval, sleep, lambda: now[0], back)
+        start = now[0]
+        for _ in range(steps):
+            next(gen)
+            got.append(round(now[0] - start))
+        return got
+
+    assert run(600, 3) == [600, 1200, 1800]                  # every interval
+    slept.clear()
+    naps[2] = 8 * 3600                                        # asleep for 8 hours after a minute: not 29 more minutes
+    assert run(1800, 1) == [8 * 3600 + 3 * 30 + agent.BACK_S] and slept[-1] == agent.BACK_S
+    slept.clear()
+    calls = []
+    back = lambda: calls.append(1) or len(calls) == 3        # noqa: E731 (you're back at the third look)
+    assert run(600, 1, back) == [90]
 
 
 def test_the_calendar_api(tmp_path, isolated_home):

@@ -264,6 +264,10 @@ def is_foreground(hwnd: int) -> bool:
     return False                                 # unknown under Wayland: tell rather than stay quiet
 
 
+def idle_seconds() -> float:
+    return 0.0                                   # unknown under Wayland: somebody is there
+
+
 def flash_taskbar(hwnd: int) -> None:
     pass
 
