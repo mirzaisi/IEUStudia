@@ -422,8 +422,10 @@ def disk_usage(output_dir: Optional[Path] = None) -> dict[str, int]:
             out["library"] += f.stat().st_size
         except OSError:
             pass
+    # (the first profile's files added to chats and AI notes kept when their folder couldn't take them; an added
+    # profile's are in its folder in profiles)
     out["library"] += (_dir_size(root / "transcripts") + _dir_size(root / "backups") + _dir_size(profiles)
-                       - added_cache)
+                       - added_cache + _dir_size(root / "chat-files") + _dir_size(root / "Unsaved notes"))
     if output_dir is not None:
         out["your_files"] = _dir_size(Path(output_dir))
     return out

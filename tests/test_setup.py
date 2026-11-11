@@ -31,12 +31,13 @@ def test_storage_counts_the_library_copies_the_codex_cli_an_update_and_the_logs(
     files = {"library.db": 100, "transcripts/a.json": 10, "backups/library-3.2.5.db": 1000,
              "tools/codex/bin/codex.exe": 5000, "updates/IEUStudia-9.9.9-setup.exe": 700, "logs/studia.log": 30,
              "cache/audio/x.m4a": 3, "profiles/p-12345678/library.db": 50,
-             "profiles/p-12345678/cache/audio/y.m4a": 7}
+             "profiles/p-12345678/cache/audio/y.m4a": 7,
+             "chat-files/c1/slides.pdf": 400, "Unsaved notes/MATH 250 - Study notes.md": 20}    # the first profile's
     for name, size in files.items():
         (isolated_home / name).parent.mkdir(parents=True, exist_ok=True)
         (isolated_home / name).write_bytes(b"x" * size)
     use = components.disk_usage()
-    assert use["library"] == 100 + 10 + 1000 + 50
+    assert use["library"] == 100 + 10 + 1000 + 50 + 400 + 20
     assert use["ai_tools"] == 5000
     assert use["cache"] == 3 + 700 + 30 + 7
     assert sum(use.values()) == sum(files.values())                 # nothing in the app's folder is left out
