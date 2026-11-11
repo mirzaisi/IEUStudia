@@ -320,9 +320,10 @@ def anki_notes(cards: list[dict[str, Any]], code: str) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------ cards from files (AI, a plan of kind "cards")
 def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:
-    """The picked files (studypack.gather, no lectures), the course's language and what the lecturer stressed in
-    these weeks (for the priorities)."""
-    from . import quizzes, stressed, studypack
+    """The picked files (studypack.gather, no lectures), the cards' language (doclang.py) and what the lecturer
+    stressed in these weeks (for the priorities)."""
+    from . import stressed, studypack
+    from .doclang import document_language
     from .views import course_detail
 
     scope.days, scope.picked = [], True
@@ -331,7 +332,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     nos = {w["no"] for w in facts["weeks"]}
     day_week = {day["date"]: w["no"] for w in d.get("weeks") or [] for day in w["days"]}
     lines, _ = stressed.prompt_lines(stressed.ranked(stressed.course_items(lib, course_id), nos, day_week), None, 20)
-    facts.update(language=quizzes.course_language(d, facts), stressed_lines=lines, outcomes=d.get("outcomes_en") or [])
+    facts.update(**document_language(d, settings, facts), stressed_lines=lines, outcomes=d.get("outcomes_en") or [])
     return facts
 
 
@@ -367,9 +368,11 @@ def batches(lib: Any, facts: dict[str, Any], limit: int = BATCH_CHARS) -> list[d
 
 
 def cards_prompt(facts: dict[str, Any], batch: dict[str, Any], most: int, have: list[str]) -> str:
+    from .outputs.prompts import in_language
+
     stressed = facts.get("stressed_lines") or ""
     known = "\n".join(f"- {q}" for q in have[:60])
-    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. Write them in {facts['language']} (the language this course is taught in).
+    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. Write them {in_language(facts['language'], facts.get('taught_in', ''))}
 Answer with one JSON object:
 {{"cards": [{{"front": "a short question or cue", "back": "the answer: short and exact (a formula, a definition, the steps of a method)", "source": "F1 p.3", "topic": "a few words"}}]}}
 Rules:
@@ -521,4 +524,5 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings), "main_input": int(tokens_in),
             "main_output": int(cards * 90 + 300 * len(parts)), "requests": len(parts), "cards": cards,
             "files": len(facts["files"]), "pages": sum(b["pages"] for b in parts),
+            "language": facts["language"], "taught_in": facts.get("taught_in", ""),       # (the dialog's line)
             "materials_missing": facts["materials_missing"], "minutes": t("about {a}–{b} minutes", a=a, b=a * 2 + 1)}

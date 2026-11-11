@@ -1,6 +1,6 @@
 """Practice quizzes: exam-style questions the chosen AI writes from a course's material (the chosen weeks' IEULearn
-files and transcribed lectures, or one lecture with the slides captured from its video), in the language the course
-is taught in: multiple choice with four options (and why each wrong one is wrong), short answers with what a full
+files and transcribed lectures, or one lecture with the slides captured from its video), in the language of study
+documents (doclang.py: the one the course is taught in, unless the student chose English or Turkish): multiple choice with four options (and why each wrong one is wrong), short answers with what a full
 answer says, and, for maths and engineering courses, worked problems with their steps. Every question says where it
 comes from (a file's page, or a lecture's moment) so the app opens it there. What the lecturer stressed
 (stressed.py), the learning outcomes of the next quiz or midterm (alerts.assessment_plan, the syllabus) and the
@@ -8,7 +8,7 @@ chosen weeks weigh more; each quiz says what it covers and what it left out, wor
 
 A quiz is a plan of kind "quiz" (plans.PlanRunner runs it, as study packs), so it runs in the background, can be
 stopped and resumed, and is kept with its course. Its stages:
-  gather - the picked files and lectures (studypack.gather), the priorities, the course's language (no AI)
+  gather - the picked files and lectures (studypack.gather), the priorities, the quiz's language (no AI)
   write  - the questions (AI; JSON, or Markdown when an AI writes that: both are read, in the forms ChatGPT and
            Claude vary between)
   check  - code keeps the questions it can use (four options and one right answer, a source it can open), finds
@@ -29,7 +29,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .cancel import Cancelled
+from .doclang import document_language, taught_in
 from .i18n import N_, t, tn
+from .outputs.prompts import in_language
 
 log = logging.getLogger("studia")
 
@@ -49,22 +51,7 @@ SYSTEM = ("You are an experienced university lecturer writing practice exam ques
 
 
 # ------------------------------------------------------------------ gather (no AI)
-def course_language(d: dict[str, Any], facts: Optional[dict[str, Any]] = None) -> str:
-    """The language the course is taught in, as the AI should write: "English" or "Turkish" - the syllabus's
-    course language, else what the lectures and files are mostly in."""
-    lang = (d.get("syllabus") or {}).get("language", "").lower()
-    if "turk" in lang or "türk" in lang:
-        return "Turkish" if not ("engl" in lang or "ingiliz" in lang or "İngiliz" in lang) else "English"
-    if "engl" in lang or "ingiliz" in lang:
-        return "English"
-    pack = (facts or {}).get("pack", "")
-    lines = [x for x in pack.split("\n") if re.match(r"\[\d+(?::\d{2}){1,2}\]", x)]
-    if lines:
-        tr = sum(1 for x in lines if "[TR]" in x[:40])
-        return "Turkish" if tr > len(lines) / 2 else "English"
-    letters = [c for c in pack if c.isalpha()]
-    turkish = sum(1 for c in letters if c in "çğışöüÇĞİŞÖÜ")
-    return "Turkish" if letters and turkish / len(letters) > 0.01 else "English"
+course_language = taught_in      # the language the course is taught in (doclang.py; the documents' is document_language)
 
 
 def quantitative(d: dict[str, Any], facts: Optional[dict[str, Any]] = None) -> bool:
@@ -155,7 +142,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     refs = {x["day_key"]: x["ref"] for x in facts["lectures"]}
     lines, by_ref = stressed.prompt_lines(mine, refs, 30, [it for it in items if it["kind"] == "not_needed"
                                                          and day_week.get(it["day"]) in nos])
-    facts.update(language=course_language(d, facts), quant=quantitative(d, facts), focus=_focus(d, scope),
+    facts.update(**document_language(d, settings, facts), quant=quantitative(d, facts), focus=_focus(d, scope),
                  outcomes=d.get("outcomes_en") or d.get("outcomes_tr") or [], stressed_lines=lines,
                  stressed={ref: {k: it[k] for k in ("id", "day_key", "part", "t", "ts", "kind", "text")}
                            for ref, it in by_ref.items()},
@@ -206,7 +193,7 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
               "the transcript's (slide m) marks show when each was on screen. Use them (formulas, figures, worked "
               "examples), and cite the lecture moment where the slide was shown.") if facts.get("one_lecture") else ""
     lectures = " (cite the [mm:ss] time written before the passage)" if facts["lectures"] else ""
-    return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. Write every question, option, answer and explanation in {facts['language']} (the language this course is taught in).{extra}
+    return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. Write every question, option, answer and explanation {in_language(facts['language'], facts.get('taught_in', ''))}{extra}
 Priorities, in this order:
 {chr(10).join(prio)}
 Answer with one JSON object:
@@ -1015,7 +1002,8 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
             "main_input": int(tokens_in), "main_output": int(tokens_out), "requests": 1, "files": len(facts["files"]),
             "lectures": len(facts["lectures"]), "materials_missing": facts["materials_missing"],
             "days_missing": facts["days_missing"], "files_cut": facts["files_cut"], "language": facts["language"],
-            "quant": facts["quant"], "slides": slides, "minutes": t("about {a}–{b} minutes", a=a, b=a * 2 + 1)}
+            "taught_in": facts.get("taught_in", ""), "quant": facts["quant"], "slides": slides,
+            "minutes": t("about {a}–{b} minutes", a=a, b=a * 2 + 1)}
 
 
 # ------------------------------------------------------------------ the printed quiz (the study pack's look)

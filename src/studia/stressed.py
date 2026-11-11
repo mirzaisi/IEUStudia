@@ -495,7 +495,10 @@ SYSTEM = ("You help a university student prepare for an exam from what their lec
           "the moments you are given, cite them by their S numbers, and answer with the JSON asked for.")
 
 
-def summary_prompt(course: dict[str, Any], lines: str, language: str, focus: str = "") -> str:
+def summary_prompt(course: dict[str, Any], lines: str, language: str, focus: str = "", taught_in: str = "") -> str:
+    """``language``: the list's (doclang.document_language), ``taught_in`` the course's."""
+    from .outputs.prompts import in_language
+
     return f"""TASK: The lecturer of {course['code']} ({course['name']}) stressed the moments below in class (quotes from automatic lecture transcripts: names and symbols may be misheard). Turn them into a short ranked list "Know this for the exam": what the student must know, most important first.
 {focus}
 Answer with one JSON object:
@@ -504,7 +507,7 @@ Rules:
 - 4 to 12 points. Merge moments about the same thing into one point that cites all of them.
 - Rank: what the lecturer tied to an exam first, then what was said several times, then the rest.
 - Every point cites at least one S number, only from the list. Never add anything the moments don't say.
-- Write in {language} (the language this course is taught in). Maths in LaTeX ($...$).
+- Write {in_language(language, taught_in)} Maths in LaTeX ($...$).
 - Leave out moments that are only about organisation, and say nothing about the NOT NEEDED ones except, if there are any, one last point listing what the lecturer said is not needed (it cites them too if they have S numbers; else no cites).
 
 === THE MOMENTS ===

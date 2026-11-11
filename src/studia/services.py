@@ -1053,8 +1053,8 @@ class Services:
                  effort: str = "") -> Path:
         from .ai import PLAN_AIS, PROVIDER_LABELS, provider, run_claude
         from .outputs.figures import note_slides_for, place_slides
+        from .doclang import document_language
         from .outputs.prompts import ai_prompt, slides_note
-        from .quizzes import course_language
 
         reads_images = provider() in PLAN_AIS
         # the offline model's request is tight: the screens' titles only
@@ -1063,7 +1063,9 @@ class Services:
         if not text:
             raise RuntimeError(t("Transcribe this class day first."))
         info = self.lib.course_info(course.id) if course is not None and getattr(self, "lib", None) else {}
-        prompt = ai_prompt(template, course_language({"syllabus": info.get("syllabus")}) if info else "")
+        # (the language: Settings → AI, else the course's, as its quizzes and packs: the syllabus', else the lecture's)
+        prompt = ai_prompt(template, **document_language({"syllabus": (info or {}).get("syllabus")},
+                                                         getattr(self, "settings", None), {"pack": text}))
         sent = note_slides(images)
         if include_slides and sent:          # the slides, and (notes, exam focus) the ones to show beside the text
             prompt += slides_note(len(sent), len(images), figures=template != "flashcards")

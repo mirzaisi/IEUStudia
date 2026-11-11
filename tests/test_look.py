@@ -24,7 +24,7 @@ def test_every_document_prompt_asks_for_the_house_style_in_the_courses_language(
     assert prompts.STYLE in studypack.SYSTEM and prompts.STYLE in plans.SYSTEM_PREP
     facts = {"span": "week 3", "pack": "", "files": [], "lectures": [], "stressed": [], "language": "Turkish",
              "weeks": [{"no": 3}], "course": {"code": "EEE 215", "name": "Circuits"}}
-    assert "Titles in Turkish." in studypack.outline_prompt(plans.Scope(kind="pack"), facts)
+    assert "Titles and captions in Turkish." in studypack.outline_prompt(plans.Scope(kind="pack"), facts)
     assert "Titles and items in Turkish." in cheatsheet.topics_prompt(facts)
     assert "Write in Turkish" in plans.prep_prompt(plans.Scope(kind="prep"), facts)
     sheet = {"title": "T", "language": "Turkish"}
