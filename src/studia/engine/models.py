@@ -144,11 +144,12 @@ def download_model(model: str, progress: Callable[[int, int], None],
         session = plain_session()
         session.headers["User-Agent"] = "IEUStudia (+https://github.com/mirzaisi/IEUStudia)"
         info = session.get(f"https://huggingface.co/api/models/{repo}", params={"blobs": "true"}, timeout=30)
-        from ..components import hf_files
+        from ..components import fetch_checked, hf_files, hf_sha256
 
         files = hf_files(info, repo, MODEL_FILE_PATTERNS)        # (its API changing is said as that: health)
         if not any(name == "model.bin" for name, _ in files):
             raise RuntimeError(t("Model files for {model} were not found on Hugging Face.", model=model))
+        hashes = hf_sha256(info)          # model.bin's: checked before the model counts as downloaded
         grand_total = sum(size for _, size in files) or MODEL_PRESETS[model]["size_mb"] * 1024 * 1024
         done_before = 0
         for name, size in sorted(files, key=lambda f: f[1]):
@@ -159,14 +160,35 @@ def download_model(model: str, progress: Callable[[int, int], None],
             def cb(done: int, total: int, base: int = base) -> None:
                 progress(base + done, grand_total)
 
-            httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest,
-                            session=session, progress=cb, cancel=cancel, parts=8)
+            fetch_checked(f"https://huggingface.co/{repo}/resolve/main/{name}", dest, hashes.get(name, ""),
+                          t("The speech model's download was damaged. Transcribe the lecture again: it downloads "
+                            "afresh."), session=session, progress=cb, cancel=cancel)
             done_before += size or dest.stat().st_size
         (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
         progress(grand_total, grand_total)
         return target
     finally:
         lock.release()
+
+
+class ModelDamaged(RuntimeError):
+    """The speech model IEUStudia downloaded didn't load (its files on this PC are damaged): they were deleted, so the
+    next lecture downloads it afresh. The message says so."""
+
+
+def drop_damaged(model: str, path: Path, exc: BaseException) -> None:
+    """The model at ``path`` didn't load on the processor: when it is IEUStudia's own download (not the shared Hugging
+    Face cache, which other programs may use) and the error isn't about memory or a file another program holds, its
+    files are deleted and ModelDamaged is raised. Otherwise nothing happens (the caller raises ``exc``)."""
+    text = str(exc).lower()
+    if (Path(path) != _models_root() / model or isinstance(exc, (MemoryError, OSError))
+            or any(w in text for w in ("bad_alloc", "out of memory", "unable to open", "permission", "access is denied"))):
+        return
+    log.warning("The speech model %s didn't load (%s): its files are deleted, to be downloaded afresh", model, exc)
+    (Path(path) / ".complete").unlink(missing_ok=True)       # first: never "downloaded" with a file missing
+    shutil.rmtree(path, ignore_errors=True)
+    raise ModelDamaged(t("The speech model's files on this PC were damaged, so IEUStudia deleted them. Transcribe the "
+                         "lecture again: the model downloads afresh.")) from exc
 
 
 def delete_model(model: str) -> None:

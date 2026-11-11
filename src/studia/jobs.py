@@ -158,6 +158,11 @@ class EngineBusy(RuntimeError):
 
 def model_failure(phase: str, exc: BaseException) -> str:
     """What a lecture says when the speech model couldn't be downloaded (``phase`` "download") or loaded ("load")."""
+    from .components import DownloadDamaged
+    from .engine.models import ModelDamaged
+
+    if isinstance(exc, (DownloadDamaged, ModelDamaged)):    # deleted: the next try downloads it afresh (it says so)
+        return str(exc)
     why = plain_error(exc)
     if phase == "download":
         if why.rstrip(".") == str(exc).rstrip("."):          # the error's own words, not written for people:

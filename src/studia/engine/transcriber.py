@@ -23,7 +23,7 @@ from ..nativeload import LOAD_LOCK, import_onnxruntime
 from ..quality import NoSpeech, analyze_audio, analyze_transcript
 from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
                    hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
-from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, local_model_path,
+from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, drop_damaged, local_model_path,
                      model_is_downloaded, resolve_device, setup_cuda_dlls)
 
 __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "model_is_downloaded",
@@ -203,6 +203,7 @@ class Engine:
                             drive_card(self.card_threads)
                 except Exception as exc:  # noqa: BLE001
                     if device != "cuda":
+                        drop_damaged(self.model_name, path, exc)        # its files damaged: downloaded afresh next
                         raise
                     self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
                     self.gpu_error = str(exc) or exc.__class__.__name__     # (jobs.py remembers a card that can't)
@@ -210,7 +211,11 @@ class Engine:
                     device, compute = "cpu", "int8"
                     drive_card(self.card_threads, False)
                     self.card_threads = set()
-                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
+                    try:
+                        wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
+                    except Exception as cpu_exc:  # noqa: BLE001
+                        drop_damaged(self.model_name, path, cpu_exc)
+                        raise
             self._wm, self._device, self._compute = wm, device, compute
             self._oom_batch = 0              # a batch that ran out of GPU memory stays smaller until the model unloads
             self._decoder = UnitDecoder(wm)

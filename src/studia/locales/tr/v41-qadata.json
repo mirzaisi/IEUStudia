@@ -3,5 +3,8 @@
   "Your Documents folder moved (for example to OneDrive), and your IEUStudia files went with it. IEUStudia now uses {folder}.": "Belgeler klasörün taşınmış (örneğin OneDrive'a) ve IEUStudia dosyaların da onunla gitmiş. IEUStudia artık {folder} klasörünü kullanıyor.",
   "Your library file was damaged, so IEUStudia went back to the copy it kept on {date}. Chats, practice and plans from after that day may be missing. The damaged file is kept in {folder}.": "Kitaplık dosyan bozulmuş, bu yüzden IEUStudia {date} tarihinde sakladığı kopyaya döndü. O günden sonraki sohbetler, alıştırmalar ve planlar eksik olabilir. Bozuk dosya {folder} klasöründe duruyor.",
   "Your library file was damaged and there was no copy to go back to, so IEUStudia started a new one. Sync to bring your courses back. The damaged file is kept in {folder}.": "Kitaplık dosyan bozulmuş ve dönülecek bir kopya yoktu, bu yüzden IEUStudia yeni bir kitaplık başlattı. Derslerini geri getirmek için eşitle. Bozuk dosya {folder} klasöründe duruyor.",
-  "{error} A copy of the notes is kept in {copy}.": "{error} Notların bir kopyası {copy} içinde duruyor."
+  "{error} A copy of the notes is kept in {copy}.": "{error} Notların bir kopyası {copy} içinde duruyor.",
+  "The speech model's download was damaged. Transcribe the lecture again: it downloads afresh.": "Konuşma tanıma modelinin indirmesi bozuk geldi. Dersi yeniden yazıya dök: model baştan iner.",
+  "The offline AI model's download was damaged. Try again: it downloads afresh.": "Çevrimdışı yapay zeka modelinin indirmesi bozuk geldi. Yeniden dene: model baştan iner.",
+  "The speech model's files on this PC were damaged, so IEUStudia deleted them. Transcribe the lecture again: the model downloads afresh.": "Konuşma tanıma modelinin bu bilgisayardaki dosyaları bozulmuştu, bu yüzden IEUStudia onları sildi. Dersi yeniden yazıya dök: model baştan iner."
 }
