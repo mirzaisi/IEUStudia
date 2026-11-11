@@ -606,8 +606,14 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
 
             services = Services(debug=debug)
         except Exception as exc:  # noqa: BLE001 - shown on the start-up screen
+            import sqlite3
+
             log.exception("Services failed to start")
-            api._startup_failed(t("IEUStudia could not open its data folder or library: {error}", error=exc))
+            # (a damaged library came back from its copy already: Services; SQLite's own words are in the log)
+            api._startup_failed(t("IEUStudia couldn't open your library. Another program may be using it, or the disk "
+                                  "has a problem. Wait a moment, then press Try again. If it keeps happening, restart "
+                                  "the PC.") if isinstance(exc, sqlite3.Error) else
+                                t("IEUStudia could not open its data folder or library: {error}", error=exc))
             return
         started["services"] = services
         api._set_services(services)

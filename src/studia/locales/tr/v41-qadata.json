@@ -7,6 +7,7 @@
   "The speech model's download was damaged. Transcribe the lecture again: it downloads afresh.": "Konuşma tanıma modelinin indirmesi bozuk geldi. Dersi yeniden yazıya dök: model baştan iner.",
   "The offline AI model's download was damaged. Try again: it downloads afresh.": "Çevrimdışı yapay zeka modelinin indirmesi bozuk geldi. Yeniden dene: model baştan iner.",
   "The speech model's files on this PC were damaged, so IEUStudia deleted them. Transcribe the lecture again: the model downloads afresh.": "Konuşma tanıma modelinin bu bilgisayardaki dosyaları bozulmuştu, bu yüzden IEUStudia onları sildi. Dersi yeniden yazıya dök: model baştan iner.",
+  "IEUStudia couldn't open your library. Another program may be using it, or the disk has a problem. Wait a moment, then press Try again. If it keeps happening, restart the PC.": "IEUStudia kitaplığını açamadı. Onu başka bir program kullanıyor olabilir ya da diskte bir sorun var. Biraz bekle, sonra Tekrar dene'ye bas. Böyle sürerse bilgisayarı yeniden başlat.",
   "An Export for AI chat is still being made. Switching stops it here.": "Yapay zeka için dışa aktarma hâlâ hazırlanıyor. Profil değiştirirsen burada durur.",
   "The AI is still writing something you asked for. Switching stops it here.": "Yapay zeka istediğin bir şeyi hâlâ yazıyor. Profil değiştirirsen iş burada durur.",
   "An Export for AI chat is still being made. Update when it has finished, or cancel it first.": "Yapay zeka için dışa aktarma hâlâ hazırlanıyor. Bitince güncelle ya da önce onu iptal et.",
