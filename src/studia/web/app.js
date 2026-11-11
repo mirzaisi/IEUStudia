@@ -343,7 +343,9 @@
 
   // courses hidden under the Study group (a short window, many courses): its top edge says how many; a click shows them
   function navMore() {
-    const nav = $("#nav"), study = nav && nav.querySelector(".nav-study"), more = study && study.querySelector(".nav-more");
+    const nav = $("#nav");
+    if (!nav || !nav.querySelector) return;               // (a page without the sidebar's real elements)
+    const study = nav.querySelector(".nav-study"), more = study && study.querySelector && study.querySelector(".nav-more");
     if (!more || !study.getBoundingClientRect) return;
     const top = study.getBoundingClientRect().top;
     const under = [...nav.querySelectorAll(".nav-item[data-view=course]")].filter((b) => b.getBoundingClientRect().bottom > top + 2);
