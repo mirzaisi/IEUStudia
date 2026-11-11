@@ -939,10 +939,8 @@ class Api(PracticeApi):
 
     @safe
     def storage(self) -> dict[str, Any]:
-        from . import hardware
+        from . import ai_setup, appconfig, hardware
         from .components import catalog, disk_usage
-
-        from . import ai_setup, appconfig
 
         facts = hardware.check()
         # the Codex CLI IEUStudia installed: its size, and whether the AI chosen uses it (else it can be removed)
