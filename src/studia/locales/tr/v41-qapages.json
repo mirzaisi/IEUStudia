@@ -1,5 +1,6 @@
 {
   "_unit": "4.1.0: deep QA round 2's page findings (a chat's own unsent question, Save PDF with .pdf, menus with the keyboard, two quizzes in progress, AI labels in Turkish, the focus after a dialog, the sidebar in a short window, Settings > Storage and the shared Hugging Face folder)",
+  "{n} more course": "{n} ders daha",
   "ChatGPT, {level} reasoning": "ChatGPT, akıl yürütme: {level}",
   "Claude {model}, {level} effort": "Claude {model}, akıl yürütme: {level}",
   "{size} · in another program's folder (Hugging Face): IEUStudia uses it from there and doesn't remove it": "{size} · başka bir programın klasöründe (Hugging Face): IEUStudia onu oradan kullanır ve silmez"

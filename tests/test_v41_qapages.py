@@ -21,6 +21,199 @@ node = pytest.mark.skipif(not shutil.which("node"), reason="node is not installe
 TR = json.dumps(i18n.table("tr"), ensure_ascii=False)
 
 
+# ------------------------------------------------------------------ PG-3 and PG-6: menus and dialogs with the keyboard
+# app.js in node with a small DOM: elements made from the markup they are given (their buttons, inputs and boxes, with
+# their data-* attributes), the focus, and selectors of the kinds app.js asks for here
+DOM = """
+globalThis.window = globalThis;
+window.innerWidth = 1024; window.innerHeight = 700;
+const listeners = {};
+const match = (s, e) => s.split(",").some((one) => {
+  one = one.trim();
+  if (one === "button:not(:disabled)") return e.tagName === "BUTTON" && !e.disabled;
+  if (one === "input:not(:disabled)") return e.tagName === "INPUT" && !e.disabled;
+  if (/^input|^textarea/.test(one)) return e.tagName === "TEXTAREA" || (e.tagName === "INPUT" && (e.attrs.type || "text") === "text");
+  if (one === "[autofocus]") return "autofocus" in e.attrs;
+  if (one === ".modal") return /\\bmodal\\b/.test(e.attrs.class || "");
+  const parts = [...one.matchAll(/\\[data-([\\w-]+)(?:="([^"]*)")?\\]/g)];
+  return parts.length > 0 && parts.map((m) => m[0]).join("") === one
+    && parts.every(([, k, v]) => { const key = k.replace(/-(\\w)/g, (x, c) => c.toUpperCase()); return key in e.dataset && (v === undefined || e.dataset[key] === v); });
+});
+function el(tag, attrs = {}) {
+  const dataset = {};
+  for (const k in attrs) if (k.startsWith("data-")) dataset[k.slice(5).replace(/-(\\w)/g, (x, c) => c.toUpperCase())] = attrs[k];
+  const e = { tagName: tag.toUpperCase(), attrs, dataset, kids: [], up: null, isConnected: true, offsetParent: {}, disabled: "disabled" in attrs,
+    style: {}, className: attrs.class || "", id: attrs.id || "", offsetWidth: 200, offsetHeight: 120, _html: "",
+    classList: { add() {}, toggle() {}, contains: () => false },
+    get innerHTML() { return this._html; },
+    set innerHTML(h) {
+      this.kids.forEach((k) => { k.isConnected = false; });
+      this._html = h;
+      this.kids = [...h.matchAll(/<(button|input|textarea|div|form)\\b([^>]*)>/g)].map((m) => {
+        const a = {}; for (const x of m[2].matchAll(/([\\w-]+)(?:="([^"]*)")?/g)) a[x[1]] = x[2] === undefined ? "" : x[2];
+        return el(m[1], a);
+      });
+      this.kids.forEach((k) => { k.up = this; });
+    },
+    setAttribute(k, v) { this.attrs[k] = v; }, getBoundingClientRect: () => ({ left: 100, right: 200, top: 50, bottom: 80 }),
+    focus() { document.activeElement = this; }, remove() { this.isConnected = false; this.kids.forEach((k) => { k.isConnected = false; }); body.kids = body.kids.filter((x) => x !== this); },
+    matches(s) { return match(s, this); }, closest: () => null, select() {}, setSelectionRange() {},
+    // (flat: what follows a dialog's box in its markup is in it)
+    inside() { return this.className.includes("modal") && this.up ? this.up.kids.slice(this.up.kids.indexOf(this) + 1) : this.kids; },
+    contains(x) { return x === this || this.inside().includes(x); },
+    querySelector(s) { return this.inside().find((k) => k.isConnected && match(s, k)) || null; },
+    querySelectorAll(s) { return this.inside().filter((k) => k.isConnected && match(s, k)); },
+    scrollTo() {}, addEventListener() {} };
+  return e;
+}
+const body = el("body"); body.appendChild = (e) => { body.kids.push(e); };
+const view = el("div", { id: "view" }), overlay = el("div", { id: "overlay" });
+const fixed = { "#view": view, "#overlay": overlay, "#toasts": el("div"), "#root": el("div") };
+const find = (s) => {
+  if (s in fixed) return fixed[s];
+  if (s === "#menu") return body.kids.find((k) => k.id === "menu") || null;
+  if (s === "#overlay .modal") return overlay.querySelector(".modal");
+  for (const box of [view, overlay, page, ...body.kids]) { const f = box.querySelector && box.querySelector(s); if (f) return f; }
+  return null;
+};
+const page = el("div");                                   // the rest of the window: the top bar, the sidebar
+globalThis.document = { documentElement: { dataset: {}, style: { setProperty() {} } }, body, activeElement: body,
+  createElement: (tag) => el(tag), querySelector: find, querySelectorAll: () => [], getElementById: () => null,
+  addEventListener: (n, f) => { (listeners[n] = listeners[n] || []).push(f); } };
+globalThis.localStorage = { getItem: () => null, setItem() {} };
+globalThis.sessionStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+globalThis.navigator = { userAgent: "node" }; globalThis.CSS = { escape: (s) => s };
+globalThis.addEventListener = () => {}; globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
+globalThis.requestAnimationFrame = (f) => f();
+globalThis.setInterval = () => 0; globalThis.setTimeout = () => 0;
+require(%(i18n)s); require(%(icons)s); require(%(app)s);
+const St = window.Studia, S = St.S, A = St.A;
+const key = (k, shift) => { const e = { key: k, shiftKey: !!shift, target: document.activeElement, prevented: false,
+  preventDefault() { this.prevented = true; }, stopPropagation() {}, stopImmediatePropagation() {}, getModifierState: () => false };
+  for (const f of listeners.keydown) f(e); return e; };
+const at = () => { const a = document.activeElement; return a === body ? "body" : (a.dataset.menu || a.dataset.act || a.tagName) + (a.isConnected ? "" : " (gone)"); };
+const out = {};
+(() => {
+%(body)s
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));
+})();
+"""
+
+
+def run_dom(tmp_path, body):
+    script = tmp_path / "dom.js"
+    script.write_text(DOM % {"i18n": json.dumps(str(WEB / "i18n.js")), "icons": json.dumps(str(WEB / "icons.js")),
+                             "app": json.dumps(str(WEB / "app.js")), "body": body}, encoding="utf-8")
+    r = subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+@node
+def test_the_app_s_menus_work_with_the_keyboard(tmp_path):
+    out = run_dom(tmp_path, """
+  S.mode = "app";
+  page.innerHTML = '<button data-act="menu-copy"><button data-act="menu-more">';
+  const opener = page.kids[0];
+  const items = [{ id: "notes", label: "Study notes", run() { out.ran = "notes"; } }, "-", { id: "exam", label: "Exam focus", run() {} },
+    { id: "course", label: "Whole course", run() {} }];
+  opener.focus(); St.menu(opener, items);
+  out.open = [at(), document.querySelector("#menu").attrs.role, (document.querySelector("#menu").innerHTML.match(/role="menuitem"/g) || []).length];
+  const seq = [];
+  for (const [k, shift] of [["ArrowDown"], ["ArrowDown"], ["ArrowDown"], ["ArrowUp"], ["Home"], ["End"]]) { key(k, shift); seq.push(at()); }
+  out.keys = seq;
+  const esc = key("Escape");
+  out.escape = [at(), !!document.querySelector("#menu"), esc.prevented];
+  St.menu(opener, items); key("End");
+  const tab = key("Tab");                                   // past the last item: closed, on from its button
+  out.tabOut = [at(), !!document.querySelector("#menu"), tab.prevented];
+  St.menu(opener, items); const inside = key("Tab");       // inside: the browser's own Tab (this DOM doesn't move it)
+  out.tabIn = [at(), !!document.querySelector("#menu"), inside.prevented];
+  const back = key("Tab", true);                            // before the first: back to its button
+  out.shiftTab = [at(), !!document.querySelector("#menu"), back.prevented];
+  St.menu(opener, items);
+  page.innerHTML = '<button data-act="menu-copy"><button data-act="menu-more">';   // its button drawn again meanwhile
+  key("Escape");
+  out.redrawn = [at(), document.activeElement === page.kids[0]];
+""")
+    assert out["open"] == ["notes", "menu", 3]               # the focus in the menu, on its first item
+    assert out["keys"] == ["exam", "course", "notes", "course", "notes", "course"]
+    assert out["escape"] == ["menu-copy", False, True]
+    assert out["tabOut"] == ["menu-copy", False, False]      # (not prevented: the browser goes on from the button)
+    assert out["tabIn"] == ["notes", True, False]
+    assert out["shiftTab"] == ["menu-copy", False, True]
+    assert out["redrawn"] == ["menu-copy", True]
+
+
+@node
+def test_the_focus_comes_back_after_a_dialog_also_when_the_page_was_drawn_again(tmp_path):
+    out = run_dom(tmp_path, """
+  S.mode = "app";
+  let n = 0;
+  St.views.calendar = () => `<button data-act="cal-month"><button data-act="cal-new">${n++}`;
+  S.view = { name: "calendar" }; St.renderView();
+  view.querySelector('[data-act="cal-new"]').focus();
+  St.renderView();                                          // drawn again by an event: the same button keeps the focus
+  out.redrawn = [at(), document.activeElement === view.querySelector('[data-act="cal-new"]')];
+  St.modal('<input id="ce-title" autofocus><button data-act="modal-close">');
+  out.inDialog = document.activeElement.attrs.id;
+  St.closeModal(); St.renderView();                         // an entry added: closed, then the calendar drawn again
+  out.added = [at(), document.activeElement === view.querySelector('[data-act="cal-new"]')];
+  St.modal('<button data-act="qz-start" autofocus>');
+  St.renderView();                                          // drawn again while the dialog is open (a quiz's row), then closed
+  St.closeModal();
+  out.closed = [at(), document.activeElement === view.querySelector('[data-act="cal-new"]')];
+  view.querySelector('[data-act="cal-new"]').focus();
+  St.views.settings = () => '<button data-act="cal-new">';
+  St.go({ name: "settings" });                              // another page: no focus carried over to it
+  out.otherPage = at();
+""")
+    assert out["redrawn"] == ["cal-new", True]
+    assert out["inDialog"] == "ce-title"
+    assert out["added"] == ["cal-new", True]
+    assert out["closed"] == ["cal-new", True]
+    assert out["otherPage"] == "cal-new (gone)"
+
+
+# ------------------------------------------------------------------ PC-7: the sidebar in a short window
+@node
+def test_the_sidebar_says_how_many_courses_are_under_the_study_group(tmp_path):
+    out = run_dom(tmp_path, """
+  S.mode = "app";
+  const course = (id, code) => ({ id, code, display_name: "Course " + id, counts: {}, content: {} });
+  S.courses = [course("a", "EEE 215"), course("b", "EEE 242"), course("c", "MATH 240"), course("d", "FENG 495"), course("e", "FENG 495")];
+  const html = el("div", { id: "nav" }); fixed["#nav"] = html; fixed["#sfoot"] = el("div");
+  St.renderSidebar();
+  out.twins = [...html.innerHTML.matchAll(/class="nav-item[^"]*(twin)?[^"]*" data-act="go" data-view="course" data-id="(\\w)"/g)].map((m) => m[2] + (/twin/.test(m[0]) ? ":twin" : ""));
+  out.button = /<div class="nav-study"><button class="nav-more" data-act="nav-more" hidden>/.test(html.innerHTML);
+  // the list as laid out: 5 courses of 30 px from 100; the Study group sticks at 220, or 195 with the line at its top
+  const more = { hidden: true, lastElementChild: { textContent: "" } };
+  const items = [0, 1, 2, 3, 4].map((i) => ({ getBoundingClientRect: () => ({ bottom: 130 + 30 * i - scroll }) }));
+  let scroll = 0;
+  const study = { getBoundingClientRect: () => ({ top: more.hidden ? 220 : 195 }), querySelector: () => more };
+  fixed["#nav"] = { querySelector: () => study, querySelectorAll: () => items };
+  const scrolled = (y) => { scroll = y; listeners.scroll.forEach((f) => f({ target: { id: "nav" } })); return more.hidden ? "" : more.lastElementChild.textContent; };
+  out.said = [scrolled(0), scrolled(40), scrolled(100)];
+  t.load({ lang: "tr", table: %s });
+  out.tr = scrolled(0);
+""" % TR)
+    assert out["twins"] == ["a", "b", "c", "d:twin", "e:twin"]
+    assert out["button"] is True
+    assert out["said"] == ["2 more courses", "1 more course", ""]
+    assert out["tr"] == "2 ders daha"
+
+
+def test_the_short_window_rules_come_after_the_rules_they_change():
+    """The sidebar's rows for a short window (a laptop at 125-150 %) win over the usual ones only when they come later."""
+    css = (WEB / "styles.css").read_text(encoding="utf-8")
+    short = css.index("@media (max-height: 760px)")
+    assert css.index(".nav-item { width: 100%") < short and css.index(".nav-section { font-size") < short
+    block = css[short:css.index("}\n", css.index(".sub { display: none; }", short)) + 2]
+    assert ".nav-item { padding-top: 5px; padding-bottom: 5px; }" in block
+    assert ".nav-item[data-view=course]:not(.twin) .sub { display: none; }" in block
+    assert "@media (max-height: 600px) { .nav-study { position: static; } }" in css
+
+
 # ------------------------------------------------------------------ PG-4: another quiz keeps one in progress
 def run_practice(tmp_path, body):
     """practice.js in node with test_practice_page.py's stand-in for app.js, running ``body``."""
