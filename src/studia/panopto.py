@@ -493,6 +493,10 @@ class Panopto:
         start, size = 0, 0
         try:
             got = json.loads(marker.read_text(encoding="utf-8"))
+            if got.get("key") == key and got.get("done") and dest.stat().st_size == int(got["size"]):
+                # all downloaded before (closed before its turn, a failed transcription, Transcribe again): kept
+                progress(len(files), len(files))
+                return dest
             if got.get("key") == key and tmp.stat().st_size >= int(got["size"]):
                 start, size = int(got["n"]), int(got["size"])
         except (OSError, ValueError, KeyError, TypeError):
@@ -516,5 +520,5 @@ class Panopto:
                 _write_marker(marker, {"key": key, "n": i + 1, "size": out.tell()})
                 progress(i + 1, len(files))
         tmp.replace(dest)
-        marker.unlink(missing_ok=True)
+        _write_marker(marker, {"key": key, "done": True, "size": dest.stat().st_size})   # (goes with the audio)
         return dest

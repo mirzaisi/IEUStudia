@@ -72,7 +72,7 @@ def plain_error(exc: BaseException, url: str = "") -> str:
                   "can do this: open any website in your browser, then try again.", host=host) if host else
                 t("A secure connection to the server was blocked. Antivirus web or HTTPS scanning, or a Wi-Fi sign-in "
                   "page, can do this: open any website in your browser, then try again."))
-    if isinstance(exc, requests.exceptions.ProxyError):        # (one too)
+    if isinstance(exc, requests.exceptions.ProxyError) or _socks(exc):        # (one too)
         return proxy_refused()
     if isinstance(exc, requests.Timeout) or (isinstance(exc, requests.ConnectionError) and read_timed_out(exc)):
         return (t("{host} took too long to answer. Check your internet connection and try again.", host=host) if host
@@ -199,11 +199,32 @@ def proxy_refused() -> str:
              "Windows Settings → Network & internet → Proxy; otherwise check it with whoever set it up.")
 
 
+def _socks(exc: BaseException) -> bool:
+    """A SOCKS proxy is set on this PC (ALL_PROXY or HTTPS_PROXY "socks5://…", or Windows' Socks proxy setting), which
+    IEUStudia can't go through: requests says "Missing dependencies for SOCKS support", for every connection."""
+    return isinstance(exc, requests.exceptions.InvalidSchema) and "socks" in str(exc).lower()
+
+
+def _drop_stale_ca_bundles() -> None:
+    """REQUESTS_CA_BUNDLE or CURL_CA_BUNDLE left on this PC by a program since removed, naming a file that isn't there:
+    every connection failed with "Could not find a suitable TLS CA certificate bundle". Such a variable is left out
+    (one naming a file that is there, a company's certificates, is used as before)."""
+    for name in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        value = os.environ.get(name, "")
+        if value and not os.path.exists(value):
+            os.environ.pop(name, None)
+            log.info("%s names a file that isn't there (%s): left out", name, value)
+
+
 class _TimeoutSession(requests.Session):
     def request(self, method, url, **kwargs):  # type: ignore[override]
         kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
         try:
             return super().request(method, url, **kwargs)
+        except requests.exceptions.InvalidSchema as exc:
+            if not _socks(exc):
+                raise
+            raise _network_error(proxy_refused(), urlparse(url).hostname or url) from exc
         except (requests.ConnectionError, requests.Timeout) as exc:
             # the site that failed: a redirect's target, not always the address asked for
             failed = getattr(getattr(exc, "request", None), "url", "") or url
@@ -504,6 +525,7 @@ def until_online(fn: Callable[[], Any], waiting: Callable[[], None] = lambda: No
 
 
 def make_session() -> requests.Session:
+    _drop_stale_ca_bundles()
     s = _TimeoutSession()
     s.headers.update({
         "User-Agent": USER_AGENT,
@@ -521,6 +543,7 @@ def make_session() -> requests.Session:
 def plain_session() -> requests.Session:
     """A session like requests.Session() (no retries, no default timeout) that connects through the shared TLS
     contexts: for public sites (updates, models, the syllabus, ChatGPT)."""
+    _drop_stale_ca_bundles()
     s = requests.Session()
     s.mount("https://", _Adapter())
     return s

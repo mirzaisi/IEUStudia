@@ -165,14 +165,21 @@ def test_thinking_comes_first_and_stays_out_of_the_answer(monkeypatch):
     assert len(prefixes) == 1 and prefixes[0][0].endswith("<think>\n\n</think>\n\n")       # thinking off, as before
 
 
-def test_study_notes_send_the_chosen_level(monkeypatch):
+def test_study_notes_send_the_chosen_level(monkeypatch, tmp_path):
+    import datetime as dt
+
     from studia import services
+    from studia.domain import Course
 
     appconfig.update({"ai_provider": "claude"})
     got = {}
     monkeypatch.setattr(ai, "run_claude", lambda prompt, text, images, **k: got.update(k) or {"text": "x", "usage": {}})
-    svc = types.SimpleNamespace(ai_inputs=lambda day, slides, screens="full": ("text", [], None, []))
-    with pytest.raises(Exception):     # no recordings to name the file after: only what was sent matters here
+    course = Course(id="c", title="t", code="MATH 240", name="n")
+    rec = types.SimpleNamespace(start=dt.datetime(2026, 10, 13, 11), kind="lecture")
+    svc = types.SimpleNamespace(ai_inputs=lambda day, slides, screens="full": ("text", [], course, [rec]),
+                                lib=types.SimpleNamespace(course_info=lambda cid: {}, courses=lambda active: [course]),
+                                output_root=tmp_path, _notes_path=services.Services._notes_path)
+    with pytest.raises(Exception):     # (a stand-in service: only what was sent matters here)
         services.Services.ai_notes(svc, "c|2026-10-13|lecture", "notes", False, "sonnet", effort="high")
     assert got["effort"] == "high" and got["model"] == "sonnet"
 

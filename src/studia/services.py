@@ -16,7 +16,7 @@ import requests
 from . import __version__, store
 from .config import Settings, apply_patch, load_settings, save_settings, unreadable as config_unreadable
 from .domain import Course, Recording
-from .i18n import N_, t
+from .i18n import N_, date_long, t
 from .library import Library
 from .log import setup_logging
 from .outputs.mathmd import dollar_math
@@ -29,6 +29,8 @@ log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
 TWINS_KEY = "twin_folders"             # library meta: "1" once the folders of courses sharing a code were put right
 ADOPTED_KEY = "shared_audio_adopted"   # library meta: "1" once an added profile's audio from before 4.0 was moved
+RELINK_KEY = "relink_transcripts"      # library meta: the day a damaged library was replaced (transcripts linked again)
+MOVE_KEY = "output_moving"             # library meta: an output folder change whose copy isn't finished ({"from", "to"})
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
 NOTE_SLIDES = 60          # slide pictures that go with a lecture's AI notes at most
@@ -165,6 +167,51 @@ def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
         except OSError:
             continue
     return n
+
+
+def _sweep_export_leftovers(root: Path, days: float = 1.0) -> int:
+    """The unfinished zips (``<name>.zip.tmp``, up to hundreds of MB) of exports for an AI chat that IEUStudia closed in
+    the middle of, or a power cut stopped: deleted a day later (never one being written now). Returns how many."""
+    import time
+
+    cutoff, n = time.time() - days * 86400, 0
+    try:                                                   # (course_export.EXPORTS: not imported for the start)
+        found = [*root.glob("Exports/*.zip.tmp"), *root.glob("*/Exports/*.zip.tmp")]
+    except OSError:
+        return 0
+    for f in found:
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                n += 1
+        except OSError:
+            continue
+    if n:
+        log.info("Deleted %d unfinished export zips", n)
+    return n
+
+
+def _good_backup(folder: Path) -> Optional[Path]:
+    """The newest copy in ``backups`` (library-<version>.db, kept before an update) that reads well, opened read-only."""
+    import sqlite3
+
+    try:
+        copies = sorted(folder.glob("library-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for p in copies:
+        try:
+            con = sqlite3.connect(p.as_uri() + "?mode=ro", uri=True)
+            try:
+                ok = con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            finally:
+                con.close()
+        except (sqlite3.Error, OSError, ValueError):
+            ok = False
+        if ok:
+            return p
+        log.warning("The library copy %s is damaged too", p)
+    return None
 
 
 def _written_at(db: Path) -> float:
@@ -354,7 +401,7 @@ class Services:
                                 "your sections and your IEUStudia folder in Settings. The old file is kept in {folder}.",
                                 folder=str(settings_path().parent)))
         written = _written_at(db_path())                           # (before this start writes it: adopt_shared_audio)
-        self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
+        self.lib = self._open_library(migrate_output)              # a new version keeps a copy first
         self.lib.index.notes, self.lib.index.note_days = self.notes_for_search, self.days_for_search
         # a command-line run while the app is open (it holds its single-instance lock): the lectures, chats and plans
         # the app is working on, and its files, are its own; nothing of theirs is reset, moved or swept from here
@@ -363,6 +410,7 @@ class Services:
             self.lib.reset_interrupted()
         if migrate_output:
             self._migrate_output_root()
+            self._finish_move()
         self.sync = SyncService(self.lib, lambda: self.settings, self.log)
         from .chat import ChatService
         from .jobs import JobManager
@@ -383,8 +431,10 @@ class Services:
             return
         if migrate_output and not _under_test():  # the app's own (never a command-line run, never a test)
             self.screens.start()
+        self._relink_transcripts()
         self._write_unwritten()
-        self.sync.after_sync = self.move_days
+        _sweep_export_leftovers(Path(self.settings.output_dir))
+        self.sync.after_sync = self._after_sync
         try:
             self.move_days()                       # (also those a tray helper's check found)
         except Exception:  # noqa: BLE001 - never stop the start for it
@@ -408,6 +458,81 @@ class Services:
         from .engine.checkpoint import sweep       # lectures stopped mid-transcription and never continued
 
         sweep()
+
+    def _open_library(self, recover: bool) -> Library:
+        """The profile's library. A damaged file (not a lock, a full disk or a read error: those are said as they
+        are) is put aside, and the newest copy kept in backups that reads well takes its place, or a new library when
+        there is none; the first screen says which. Only the app does this (``recover``): it holds the single-instance
+        lock, so the tray helper or a command-line run never restores behind its back."""
+        import shutil
+        import sqlite3
+
+        path = db_path()
+        try:
+            return Library(path, app_version=__version__)
+        except sqlite3.DatabaseError as exc:
+            if not recover or (getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF not in (sqlite3.SQLITE_CORRUPT,
+                                                                                            sqlite3.SQLITE_NOTADB):
+                raise
+            damaged = exc
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        try:
+            for end in ("-shm", "-wal", ""):        # the main file last: an old -wal never meets a new library
+                src = path.with_name(path.name + end)
+                if src.exists():
+                    os.replace(src, path.with_name(f"{path.name}.damaged-{stamp}{end}"))
+        except OSError:
+            log.warning("The damaged library %s could not be put aside", path, exc_info=True)
+            raise damaged from None
+        log.warning("The library %s was damaged (%s): kept as %s.damaged-%s", path, damaged, path.name, stamp)
+        backup = _good_backup(path.parent / "backups")
+        if backup is not None:
+            shutil.copyfile(backup, path)
+            log.info("The library came back from %s", backup)
+        lib = Library(path, app_version=__version__)
+        lib.set_meta(RELINK_KEY, dt.date.today().isoformat())     # transcripts made after the copy: linked again
+        if backup is not None:
+            self.notes.append(t("Your library file was damaged, so IEUStudia went back to the copy it kept on {date}. "
+                                "Chats, practice and plans from after that day may be missing. The damaged file is "
+                                "kept in {folder}.", date=date_long(dt.date.fromtimestamp(backup.stat().st_mtime)),
+                                folder=str(path.parent)))
+        else:
+            self.notes.append(t("Your library file was damaged and there was no copy to go back to, so IEUStudia "
+                                "started a new one. Sync to bring your courses back. The damaged file is kept in "
+                                "{folder}.", folder=str(path.parent)))
+        return lib
+
+    def _relink_transcripts(self) -> None:
+        """After a library came back from a copy (or started anew): the lectures transcribed since are transcribed
+        again in it (their transcripts are files of their own), once a sync brought their recordings back (for a
+        month: syncs that missed a course, a course opened later)."""
+        from .paths import transcripts_dir
+
+        since = self.lib.get_meta(RELINK_KEY) or ""
+        if not since:
+            return
+        try:
+            if (dt.date.today() - dt.date.fromisoformat(since)).days > 30:
+                raise ValueError(since)
+        except ValueError:
+            self.lib.set_meta(RELINK_KEY, "")
+            return
+        done, n = self.lib.transcribed_ids(), 0
+        for f in transcripts_dir().glob("*.json"):
+            did = f.name[:-5]
+            if "." in did or did.startswith("local-") or did in done or self.lib.get_recording(did) is None:
+                continue
+            tr = store.load_transcript(did)
+            if tr is not None:
+                self.lib.save_transcript(tr, f)
+                self.lib.set_status(did, "done")
+                n += 1
+        if n:
+            self.log.info("%d transcribed lectures linked again in the library", n)
+
+    def _after_sync(self) -> None:
+        self._relink_transcripts()
+        self.move_days()
 
     def _write_unwritten(self) -> None:
         """Write the files of transcripts whose files could not be written before (a file was open in another
@@ -463,6 +588,8 @@ class Services:
             self._finish_rename(Path(begun["from"]), Path(begun["to"]))
             return
         old = Path(self.settings.output_dir)
+        if self._follow_moved_documents(old):
+            return
         new = renamed_output_path(old)
         if new is None or not old.parent.is_dir():
             return
@@ -483,6 +610,31 @@ class Services:
             self.log.warning("Could not rename %s to %s", old, new, exc_info=True)
             return
         self._finish_rename(old, new)
+
+    def _follow_moved_documents(self, old: Path) -> bool:
+        """Windows moved the Documents folder after the set-up (OneDrive's "Back up your folders", or Location in
+        its Properties), and the output folder in it went along: the app follows it there, says so once and returns
+        True. Only a folder in the user's own local Documents counts, which is the one such a move takes away: a
+        folder the student chose elsewhere (a USB stick that isn't plugged in) is waited for, as before."""
+        from .paths import documents_dir
+
+        docs, local = documents_dir(), Path.home() / "Documents"
+        if old.parent != local or docs == local:
+            return False
+        new, apps = docs / old.name, self._app_folders()
+
+        def holds(folder: Path) -> bool:
+            return any((folder / n).is_dir() for n in apps)
+        if not new.is_dir() or holds(old) or not (holds(new) or not old.exists()):
+            return False
+        try:
+            old.rmdir()                         # the empty folder an earlier start made again (never one with files)
+        except OSError:
+            pass
+        self._finish_rename(old, new)
+        self.notes.append(t("Your Documents folder moved (for example to OneDrive), and your IEUStudia files went "
+                            "with it. IEUStudia now uses {folder}.", folder=str(new)))
+        return True
 
     def _finish_rename(self, old: Path, new: Path) -> None:
         self.rebase_output_paths(old, new)
@@ -634,19 +786,56 @@ class Services:
         """Copy the app's folders (course folders with transcripts, slides, materials, packs and notes; weekly
         digests) to a new output folder and point the stored paths there. The old folder is left untouched. Returns
         the number of folders copied."""
+        import json
         import shutil
 
         old_root, new_root = Path(old_root), Path(new_root)
         if not old_root.exists() or old_root.resolve() == new_root.resolve():
             return 0
+
+        def copy(src: str, dst: str) -> str:            # what a copy cut off before got across is not copied again
+            try:
+                if os.path.getsize(dst) == os.path.getsize(src):
+                    return dst
+            except OSError:
+                pass
+            return shutil.copy2(src, dst)
+
+        # noted until it is done: IEUStudia closed in the middle, the next start goes on with it (_finish_move)
+        self.lib.set_meta(MOVE_KEY, json.dumps({"from": str(old_root), "to": str(new_root)}, ensure_ascii=False))
         copied = 0
         for name in sorted(self._app_folders()):
             src = old_root / name
             if src.is_dir() and not new_root.resolve().is_relative_to(src.resolve()):
-                shutil.copytree(src, new_root / name, dirs_exist_ok=True)
+                shutil.copytree(src, new_root / name, dirs_exist_ok=True, copy_function=copy)
                 copied += 1
         self.rebase_output_paths(old_root, new_root)
+        self.lib.set_meta(MOVE_KEY, "")
         return copied
+
+    def _finish_move(self) -> None:
+        """A change of the output folder whose copy IEUStudia was closed in the middle of: it goes on now, before
+        anything is written in the new folder (the files of courses not copied yet seemed gone, and their paths still
+        named the old folder). One the student changed again since is let go; an old folder that isn't there (a drive
+        not plugged in) waits for the next start."""
+        import json
+
+        try:
+            begun = json.loads(self.lib.get_meta(MOVE_KEY) or "{}")
+        except ValueError:
+            begun = {}
+        if not begun.get("to"):
+            return
+        if Path(begun["to"]) != Path(self.settings.output_dir):
+            self.lib.set_meta(MOVE_KEY, "")
+            return
+        if not Path(begun["from"]).is_dir():
+            return
+        try:
+            n = self.relocate_outputs(Path(begun["from"]), Path(begun["to"]))
+            self.log.info("The copy to the new output folder went on: %d folders", n)
+        except OSError:
+            self.log.warning("Going on with the copy to the new output folder failed", exc_info=True)
 
     def move_days(self) -> int:
         """Transcribed lectures whose class day changed (Panopto's date was when the recording was uploaded, and the
@@ -1081,10 +1270,15 @@ class Services:
             from .outputs.ai_copy import SCREEN_LINES
 
             prompt += f"\n\n{SCREEN_LINES}"
-        res = run_claude(prompt, text, sent, model=model, effort=effort, cancel=cancel, on_text=on_text)
         stem = day_stem(course, recs[0].start.date(), recs[0].kind)
         path = self._notes_path(course_dir(self.output_root, course, self.lib.courses(True)), stem, template)
+        # the folder can take the file, before the AI uses any of the student's plan: a drive not plugged in, a folder
+        # Windows' ransomware protection or an antivirus guards, a full disk (a real write: mkdir alone passes then)
         path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.with_name(path.name + ".tmp")
+        probe.write_bytes(b"")
+        probe.unlink(missing_ok=True)
+        res = run_claude(prompt, text, sent, model=model, effort=effort, cancel=cancel, on_text=on_text)
         res["text"] = place_slides(res["text"], note_slides_for(sent), path.parent)
         usage = res.get("usage") or {}
         tokens_in = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens",
@@ -1092,9 +1286,21 @@ class Services:
         who = PROVIDER_LABELS.get(provider()) or "AI"
         footer = (f"\n\n---\n*Generated by {who} ({res.get('model')}) via IEUStudia · "
                   f"{tokens_in:,} input / {usage.get('output_tokens', 0):,} output tokens.*\n")
-        # never half a file (the app closed, a power cut)
-        atomic_write(path, dollar_math(res["text"].rstrip()) + footer)
-        with self.lib._lock:                               # found by the search from now on: committed here, as no
+        body = dollar_math(res["text"].rstrip()) + footer
+        try:
+            atomic_write(path, body)                       # never half a file (the app closed, a power cut)
+        except OSError as exc:                             # the old file held open (Word), the disk filled up meanwhile:
+            from .net import plain_error                   # what the AI wrote is kept in the profile's own folder
+            from .outputs.figures import linked_images
+            from .paths import profile_dir, write_durably
+
+            copy = profile_dir() / "Unsaved notes" / path.name
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            write_durably(copy, linked_images(body, path.parent).encode("utf-8"))
+            log.warning("AI notes %s could not be saved (%s): kept in %s", path, exc, copy)
+            raise RuntimeError(t("{error} A copy of the notes is kept in {copy}.", error=plain_error(exc),
+                                 copy=str(copy))) from exc
+        with self.lib._lock:                              # found by the search from now on: committed here, as no
             self.lib.index.day_notes(day_key)              # Library write follows (closing the app dropped them, and
             self.lib.db.commit()                           # the open write locked the library for the command line)
         return path

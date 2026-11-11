@@ -106,3 +106,32 @@ def test_slides_are_fetched_a_few_frames_ahead_and_let_go(tmp_path, monkeypatch)
     stop.set()
     with pytest.raises(Cancelled):
         slides.extract_slides(session, "m3u8", tmp_path, "slides/x", "s", cancel=stop)
+
+
+def test_a_slide_picture_or_index_held_for_a_moment_is_swapped_in_after_it(tmp_path, monkeypatch):
+    """A sync client, a viewer or an antivirus holding the old picture (or the slide index) for a moment: the swap is
+    tried again, as for the other files, instead of losing the whole stream's slides."""
+    import os
+    from pathlib import Path
+
+    import av
+
+    from studia import slides, store
+
+    real, held = os.replace, []
+
+    def busy_once(src, dst):
+        if Path(dst).name not in held:
+            held.append(Path(dst).name)
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real(src, dst)
+
+    monkeypatch.setattr(store, "SWAP_WAIT", 0.01)
+    monkeypatch.setattr(os, "replace", busy_once)
+    pic = tmp_path / "slides" / "MATH 240 - slide-03.jpg"
+    slides.save_jpeg(av.VideoFrame.from_ndarray(np.zeros((40, 60, 3), np.uint8), format="rgb24"), pic)
+    index = tmp_path / "r1.slides.json"
+    slides.save_index(index, [slides.Slide(1, 0, 5, "slides/x.jpg", str(pic))])
+    assert held == [pic.name, index.name] and slides.jpeg_size(pic) == (60, 40)
+    assert slides.load_index(index)[0].path == str(pic)
+    assert sorted(p.name for p in tmp_path.rglob("*")) == sorted(["slides", pic.name, index.name])   # no .tmp left

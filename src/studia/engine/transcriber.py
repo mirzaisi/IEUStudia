@@ -15,7 +15,6 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from .. import __version__
 from ..cancel import Cancelled, check
 from ..domain import Segment, Transcript
 from ..i18n import num, t, tn
@@ -23,7 +22,7 @@ from ..nativeload import LOAD_LOCK, import_onnxruntime
 from ..quality import NoSpeech, analyze_audio, analyze_transcript
 from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
                    hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
-from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, local_model_path,
+from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, drop_damaged, local_model_path,
                      model_is_downloaded, resolve_device, setup_cuda_dlls)
 
 __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "model_is_downloaded",
@@ -203,6 +202,7 @@ class Engine:
                             drive_card(self.card_threads)
                 except Exception as exc:  # noqa: BLE001
                     if device != "cuda":
+                        drop_damaged(self.model_name, path, exc)        # its files damaged: downloaded afresh next
                         raise
                     self.log.warning("GPU initialisation failed, falling back to CPU: %s", exc)
                     self.gpu_error = str(exc) or exc.__class__.__name__     # (jobs.py remembers a card that can't)
@@ -210,7 +210,11 @@ class Engine:
                     device, compute = "cpu", "int8"
                     drive_card(self.card_threads, False)
                     self.card_threads = set()
-                    wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
+                    try:
+                        wm = WhisperModel(str(path), device=device, compute_type=compute, cpu_threads=cpu_threads())
+                    except Exception as cpu_exc:  # noqa: BLE001
+                        drop_damaged(self.model_name, path, cpu_exc)
+                        raise
             self._wm, self._device, self._compute = wm, device, compute
             self._oom_batch = 0              # a batch that ran out of GPU memory stays smaller until the model unloads
             self._decoder = UnitDecoder(wm)
@@ -369,17 +373,20 @@ class Engine:
 
     def _checkpoint(self, delivery_id: str, audio: np.ndarray, units: list[Unit], gain: float) -> Optional[Any]:
         """The lecture's checkpoint (engine/checkpoint.py), keyed by everything that changes its passages; the
-        decoding options join the key in _decode_units. None without a recording to tie it to."""
+        decoding options join the key in _decode_units. None without a recording to tie it to. Not IEUStudia's
+        version: updating between closing and Resume kept nothing of a lecture half done (ENGINE_VERSION goes up with
+        a change to the passages, and the prompts are in the key)."""
         if not delivery_id or not units:
             return None
         from . import checkpoint
+        from .core import PROMPTS
 
         try:
             t0 = time.monotonic()
             ct2 = sys.modules.get("ctranslate2")
             key = checkpoint.make_key(
                 v=checkpoint.VERSION, id=delivery_id, audio=checkpoint.audio_digest(audio), gain=gain,
-                units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, app=__version__,
+                units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, prompts=PROMPTS,
                 device=self._device, compute=self._compute, languages=list(self._languages()),
                 card_workers=CARD_REPLICAS if self._device == "cuda" else 1,     # (how the card's batches run)
                 ct2=getattr(ct2, "__version__", ""),       # the processor's threads, or the graphics card itself

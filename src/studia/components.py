@@ -247,6 +247,36 @@ def hf_files(info: requests.Response, repo: str, patterns: list[str]) -> list[tu
     return files
 
 
+def hf_sha256(info: requests.Response) -> dict[str, str]:
+    """The SHA-256 Hugging Face keeps for each large (LFS) file of a repo, from the same API answer as hf_files
+    (``?blobs=true``): {file name: hash}. Empty when the answer has none."""
+    try:
+        return {str(s["rfilename"]): str(s["lfs"]["sha256"]).lower() for s in info.json().get("siblings") or []
+                if isinstance(s, dict) and isinstance(s.get("lfs"), dict) and s["lfs"].get("sha256")}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+class DownloadDamaged(RuntimeError):
+    """A downloaded file still didn't match its SHA-256 once downloaded afresh (fetch_checked): the message says what to do."""
+
+
+def fetch_checked(url: str, dest: Path, sha256: str, damaged: str, **kw: Any) -> None:
+    """httpdl.download, then the file compared with the SHA-256 Hugging Face gives for it: a download resumed after a
+    power cut can hold zeros where the cut came, at the right size (NTFS keeps a file's size, not what was being
+    written). A file that doesn't match is downloaded afresh once; if it still doesn't, ``damaged`` is raised."""
+    if sha256 and dest.is_file() and _sha256(dest) == sha256:        # all there from before
+        return
+    for _ in range(2):
+        httpdl.download(url, dest, parts=8, **kw)
+        if not sha256 or _sha256(dest) == sha256:
+            return
+        log.warning("%s doesn't match its SHA-256 on Hugging Face: downloaded afresh", dest.name)
+        for f in [dest, *dest.parent.glob(dest.name + ".*")]:       # its parts and their marker too
+            f.unlink(missing_ok=True)
+    raise DownloadDamaged(damaged)
+
+
 def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress,
                 cancel: Optional[threading.Event] = None, fallback_mb: int = 0) -> Path:
     """The files of a Hugging Face repo matching ``patterns`` into ``target`` (resumable)."""
@@ -256,6 +286,7 @@ def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress
     files = hf_files(info, repo, patterns)
     if not any(name == "model.bin" for name, _ in files):
         raise RuntimeError(t("The model files of {repo} were not found on Hugging Face.", repo=repo))
+    hashes = hf_sha256(info)
     total = sum(size for _, size in files) or fallback_mb * MB
     done = 0
     damaged = target / ".damaged"          # it didn't load (local_llm): every file afresh, also those of the right size
@@ -270,9 +301,10 @@ def download_hf(repo: str, target: Path, patterns: list[str], progress: Progress
             progress(base + d, total)
 
         dest = target / name
-        if not (size and dest.is_file() and dest.stat().st_size == size):
-            httpdl.download(f"https://huggingface.co/{repo}/resolve/main/{name}", dest, session=session,
-                            progress=cb, cancel=cancel, parts=8)
+        if not (size and dest.is_file() and dest.stat().st_size == size) or name in hashes:
+            fetch_checked(f"https://huggingface.co/{repo}/resolve/main/{name}", dest, hashes.get(name, ""),
+                          t("The offline AI model's download was damaged. Try again: it downloads afresh."),
+                          session=session, progress=cb, cancel=cancel)
         done += size or dest.stat().st_size
     damaged.unlink(missing_ok=True)
     (target / ".complete").write_text(json.dumps({"repo": repo}), encoding="utf-8")
@@ -401,8 +433,10 @@ def disk_usage(output_dir: Optional[Path] = None) -> dict[str, int]:
             out["library"] += f.stat().st_size
         except OSError:
             pass
+    # (the first profile's files added to chats and AI notes kept when their folder couldn't take them; an added
+    # profile's are in its folder in profiles)
     out["library"] += (_dir_size(root / "transcripts") + _dir_size(root / "backups") + _dir_size(profiles)
-                       - added_cache)
+                       - added_cache + _dir_size(root / "chat-files") + _dir_size(root / "Unsaved notes"))
     if output_dir is not None:
         out["your_files"] = _dir_size(Path(output_dir))
     return out

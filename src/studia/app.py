@@ -615,8 +615,14 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
 
             services = Services(debug=debug)
         except Exception as exc:  # noqa: BLE001 - shown on the start-up screen
+            import sqlite3
+
             log.exception("Services failed to start")
-            api._startup_failed(t("IEUStudia could not open its data folder or library: {error}", error=exc))
+            # (a damaged library came back from its copy already: Services; SQLite's own words are in the log)
+            api._startup_failed(t("IEUStudia couldn't open your library. Another program may be using it, or the disk "
+                                  "has a problem. Wait a moment, then press Try again. If it keeps happening, restart "
+                                  "the PC.") if isinstance(exc, sqlite3.Error) else
+                                t("IEUStudia could not open its data folder or library: {error}", error=exc))
             return
         started["services"] = services
         api._set_services(services)
@@ -628,6 +634,7 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
         except Exception:  # noqa: BLE001
             log.debug("helper start failed", exc_info=True)
 
+    api._starter = start_services                # (the start-up screen's Try again runs it again: Api.start_again)
     threading.Thread(target=start_services, name="services-start", daemon=True).start()
     watchdog = _start_watchdog(logs_dir())
 
@@ -645,6 +652,12 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
         log.info("UI loaded %.1f s after launch", process_age())
 
     def on_closing() -> bool:     # runs on the UI thread
+        ok = _on_closing()
+        if ok:                    # an Export for AI chat being made stops and takes its unfinished zip away
+            api._end_export()
+        return ok
+
+    def _on_closing() -> bool:
         services = started.get("services")
         if api._restart or api._update_installer:     # switching profiles or updating: the user already confirmed
             if api._setup_cancel is not None:         # the setup's download stops (next time it goes on from there)

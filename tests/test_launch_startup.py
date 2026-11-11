@@ -79,3 +79,62 @@ def test_a_refused_registry_write_is_said_and_never_stops_the_setup(keys, monkey
     r = api.app_config({"tray": True, "start_with_windows": True, "notify_materials": True})
     assert r["ok"] and r["startup"] is False                       # the page says what to do and goes on
     assert r["app"]["notify_materials"] and appconfig.load().notify_materials     # the rest is saved
+
+
+def _run_value(winreg):
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, launch.RUN_KEY) as k:
+        return winreg.QueryValueEx(k, launch.RUN_VALUE)[0]
+
+
+def _released(monkeypatch, tmp_path, cfg):
+    """As a release runs: no STUDIA_HOME (the app folder in the test's own LOCALAPPDATA), with these app settings."""
+    from studia import paths
+
+    monkeypatch.delenv("STUDIA_HOME")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    paths._legacy_in_use.cache_clear()
+    appconfig.save(cfg)
+
+
+def test_the_run_entry_follows_a_portable_copy_in_a_new_folder(keys, monkeypatch, tmp_path):
+    from studia import agent
+
+    winreg = keys
+    old = tmp_path / "IEUStudia-4.0.0-portable" / "IEUStudia.exe"
+    new = tmp_path / "IEUStudia-4.1.0-portable" / "IEUStudia.exe"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(old))
+    assert launch.set_startup(True)                      # the set-up of the first copy
+    _switch(winreg, 3)                                   # then turned off in Task Manager → Startup apps
+    monkeypatch.setattr(agent, "running", lambda: True)  # (the old copy's helper may hold the lock)
+    monkeypatch.setattr(sys, "executable", str(new))     # the new zip, in its own folder
+    _released(monkeypatch, tmp_path, appconfig.AppConfig(tray=True, start_with_windows=True))
+    agent.ensure_running()
+    assert _run_value(winreg) == launch._quote([str(new), "--agent", "--at-login"])
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, launch.APPROVED_KEY) as k:
+        assert winreg.QueryValueEx(k, launch.RUN_VALUE)[0][0] == 3      # the student's choice in Windows stays
+
+
+@pytest.mark.parametrize("case", ["source", "studia_home", "off", "no_entry"])
+def test_the_run_entry_is_left_alone(keys, monkeypatch, tmp_path, case):
+    from studia import agent
+
+    winreg = keys
+    monkeypatch.setattr(sys, "frozen", case != "source", raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "a" / "IEUStudia.exe"))
+    if case != "no_entry":
+        assert launch.set_startup(True)
+    before = _run_value(winreg) if case != "no_entry" else None
+    cfg = appconfig.AppConfig(tray=True, start_with_windows=case != "off")
+    monkeypatch.setattr(agent, "running", lambda: True)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "b" / "IEUStudia.exe"))
+    if case == "studia_home":
+        appconfig.save(cfg)
+    else:
+        _released(monkeypatch, tmp_path, cfg)
+    agent.ensure_running()
+    if case == "no_entry":
+        with pytest.raises(OSError):
+            _run_value(winreg)
+    else:
+        assert _run_value(winreg) == before

@@ -57,7 +57,10 @@ def ensure_running() -> bool:
     """Start the helper if the user wants it and it is not running (called by the app)."""
     from . import appconfig, launch
 
-    if not appconfig.load().tray or running():
+    cfg = appconfig.load()
+    if cfg.tray and cfg.start_with_windows:
+        launch.refresh_startup()       # (also when another copy's helper runs: the next sign-in starts this one)
+    if not cfg.tray or running():
         return False
     return launch.spawn(launch.app_command("--agent"))
 

@@ -122,6 +122,7 @@ class Api(PracticeApi):
         self._services: Optional[Services] = None
         self._ready = threading.Event()
         self._startup_error = ""
+        self._starter: Optional[Callable[[], None]] = None   # app.py: starts the services (again, after a failure)
         self._window: Any = None
         self._events: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self._sync_lock = threading.Lock()
@@ -234,6 +235,16 @@ class Api(PracticeApi):
     def _startup_failed(self, message: str) -> None:
         self._startup_error = message or t("IEUStudia could not start.")
         self._ready.set()
+
+    @safe
+    def start_again(self) -> dict[str, Any]:
+        """The start-up screen's Try again: a start that failed (the library was locked, the disk was full) runs
+        again, instead of the page asking for the same stored error."""
+        if self._services is None and self._startup_error and self._starter is not None:
+            self._startup_error = ""
+            self._ready.clear()
+            threading.Thread(target=self._starter, name="services-start", daemon=True).start()
+        return {"ok": True}
 
     @property
     def _s(self) -> Services:
@@ -734,6 +745,8 @@ class Api(PracticeApi):
                                             "it first.")}
         if self._setup_running:
             return {"ok": False, "error": t("IEUStudia is still downloading what it needs. Update when that's done.")}
+        if self._at_work():                    # the window closes for the update: what the AI writes would stop
+            return {"ok": False, "error": self._at_work_text("update")}
         self._update_running = True
         cancel = self._update_cancel = threading.Event()
 
@@ -754,6 +767,9 @@ class Api(PracticeApi):
                         "A transcription started while the update downloaded. Update when it has finished (the "
                         "download is kept).")})
                     return
+                if self._at_work():                    # the AI was asked meanwhile (or an export): not cut off
+                    self._push({"type": "update", "state": "error", "error": self._at_work_text("update")})
+                    return
                 self._update_installer = path
                 self._push({"type": "update", "state": "installing"})
                 time.sleep(1.5)                        # long enough to read that the window closes now
@@ -761,6 +777,10 @@ class Api(PracticeApi):
                     self._update_installer = None
                     self._push({"type": "update", "state": "error", "error": t(
                         "A transcription started. Update when it has finished (the download is kept).")})
+                    return
+                if self._at_work():
+                    self._update_installer = None
+                    self._push({"type": "update", "state": "error", "error": self._at_work_text("update")})
                     return
                 self._window.destroy()
             except Cancelled:
@@ -1097,6 +1117,8 @@ class Api(PracticeApi):
             return {"ok": False, "busy": True, "error": t("IEUStudia is still downloading what it needs."),
                     "ask": t("IEUStudia is still downloading what it needs. Switching stops the download now; you can "
                              "go on with it afterwards from where it stopped.")}
+        if self._at_work() and not force:              # the AI writing, an export being made: the window closes
+            return {"ok": False, "busy": True, "error": self._at_work_text("switch"), "ask": self._at_work_text("switch")}
         acc = accounts.set_active(profile_id)
         if busy:
             self._services.jobs.shutdown()           # what is still waiting is kept for this profile
@@ -1106,6 +1128,37 @@ class Api(PracticeApi):
         timer.daemon = True
         timer.start()
         return {"ok": True, "profile": acc.view(acc.id)}
+
+    def _at_work(self) -> str:
+        """What closing the window would stop, besides transcription: "ai" (an answer, notes, a plan being written:
+        aiwait.running), "export" (an Export for AI chat being made), or ""."""
+        from .aiwait import running
+
+        if self._services is not None and running():
+            return "ai"
+        run = self.__dict__.get("_cexp")
+        return "export" if run is not None and run["running"] else ""
+
+    def _at_work_text(self, why: str) -> str:
+        """Updating (``why`` "update") or switching profiles ("switch", the page's question) while _at_work."""
+        export = self._at_work() == "export"
+        if why == "switch":
+            return (t("An Export for AI chat is still being made. Switching stops it here.") if export else
+                    t("The AI is still writing something you asked for. Switching stops it here."))
+        return (t("An Export for AI chat is still being made. Update when it has finished, or cancel it first.")
+                if export else t("The AI is still writing something you asked for. Update when it has finished, or "
+                                 "stop it first."))
+
+    def _end_export(self, wait: float = 2.0) -> None:
+        """Closing: an Export for AI chat being made stops, and has a moment to take its unfinished zip away (the app
+        then ends at once, and a .zip.tmp of hundreds of MB was left behind)."""
+        run = self.__dict__.get("_cexp")
+        if run is None or not run["running"]:
+            return
+        run["cancel"].set()
+        end = time.monotonic() + wait
+        while run["running"] and time.monotonic() < end:
+            time.sleep(0.05)
 
     def _close_for_restart(self) -> None:
         try:
