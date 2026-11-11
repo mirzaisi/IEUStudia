@@ -7,6 +7,7 @@ didn't download (the shared Hugging Face folder)."""
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -105,3 +106,81 @@ def test_save_pdf_on_a_study_pack_ends_in_pdf_when_a_name_is_typed(tmp_path, mon
     typed["path"] = ""                                         # cancelled
     assert a.pack_pdf(pid, "save") == {"ok": True, "saved": ""}
     a._s.plans.shutdown()
+
+
+# ------------------------------------------------------------------ Settings → Storage: only IEUStudia's own files
+def _model_files(d: Path, own: bool) -> None:
+    d.mkdir(parents=True)
+    for f in ("model.bin", "config.json", "tokenizer.json"):
+        (d / f).write_bytes(b"x")
+    if own:
+        (d / ".complete").write_text("{}", encoding="utf-8")
+
+
+def test_a_speech_model_in_the_shared_hugging_face_folder_is_not_ieustudias_to_remove(tmp_path, monkeypatch):
+    from studia import components
+    from studia.api import Api
+    from studia.engine import models
+    from studia.services import Services
+
+    hub = tmp_path / "hf" / "hub"
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    shared = hub / "models--Systran--faster-whisper-large-v3" / "snapshots" / "abc"
+    _model_files(shared, own=False)                            # another program's download ("Maximum accuracy")
+    _model_files(models._models_root() / "medium", own=True)   # IEUStudia's own
+    speech = {m["id"]: m for m in components.catalog()["speech"]}
+    assert (speech["large-v3"]["ready"], speech["large-v3"]["own"]) == (True, False)
+    assert (speech["medium"]["ready"], speech["medium"]["own"]) == (True, True)
+    assert (speech["small"]["ready"], speech["small"]["own"]) == (False, False)
+    a = Api(Services())
+    a._push = lambda e: None
+    a._s.settings.model = "small"
+    r = a.delete_component("speech:large-v3")                  # asked anyway: refused, its files stay
+    assert r["ok"] is False and "shared Hugging Face" in r["error"]
+    assert sorted(p.name for p in shared.iterdir()) == ["config.json", "model.bin", "tokenizer.json"]
+    r = a.delete_component("speech:medium")
+    assert r["ok"] and not (models._models_root() / "medium").exists()
+
+
+SETUP = """
+globalThis.window = globalThis;
+globalThis.location = { hash: "" };
+globalThis.document = { documentElement: {}, querySelector: () => null, querySelectorAll: () => [], addEventListener() {},
+  getElementById: () => null };
+require(%(i18n)s);
+const S = { mode: "app", view: { name: "settings" }, boot: { app: { tray: false, ai_provider: "claude" } }, settings: { model: "small" } };
+const storage = { ok: true, usage: { speech_models: 2.1e9 }, free_gb: 80, data_dir: "C:/x", codex: { bytes: 0, in_use: false },
+  catalog: { cuda: {}, llm: [], speech: [{ id: "large-v3-turbo", label: "Fast & accurate", size_mb: 1620, ready: false, own: false },
+    { id: "large-v3", label: "Maximum accuracy", size_mb: 3090, ready: true, own: false },
+    { id: "medium", label: "Medium", size_mb: 1530, ready: true, own: true }, { id: "small", label: "Small", size_mb: 484, ready: true, own: true }] } };
+window.Studia = { S, A: {}, I: (n) => `[${n}]`, SPIN: () => "(spin)", esc: (s) => String(s ?? "").replace(/"/g, "&quot;"), onEvents: {}, mocks: {},
+  toast() {}, renderView() {}, render() {}, renderTop() {}, modal() {}, closeModal() {}, skeleton: () => "(skeleton)", sq: { about: () => "" },
+  call: (name) => Promise.resolve(name === "storage" ? storage : { ok: true }) };
+require(%(setup)s);
+const St = window.Studia, tick = () => new Promise((r) => setTimeout(r, 5));
+const out = {};
+(async () => {
+  St.settingsMore(); await tick();
+  const h = St.settingsMore();
+  out.storage = h.slice(h.indexOf('id="set-storage"'), h.indexOf('id="set-about"'));
+  t.load({ lang: "tr", table: %(tr)s });
+  const tr = St.settingsMore();
+  out.storageTr = tr.slice(tr.indexOf('id="set-storage"'), tr.indexOf('id="set-about"'));
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@node
+def test_settings_storage_lists_a_shared_speech_model_without_remove(tmp_path):
+    script = tmp_path / "setup.js"
+    script.write_text(SETUP % {"i18n": json.dumps(str(WEB / "i18n.js")), "setup": json.dumps(str(WEB / "setup.js")),
+                               "tr": json.dumps(i18n.table("tr"), ensure_ascii=False)}, encoding="utf-8")
+    r = subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    removable = re.findall(r'data-act="del-component" data-id="([^"]+)"', out["storage"])
+    assert removable == ["speech:medium"]                      # not the shared one, not the one in use
+    assert "Speech model “Maximum accuracy”" in out["storage"]
+    assert "in another program's folder (Hugging Face): IEUStudia uses it from there and doesn't remove it" in out["storage"]
+    assert "Hugging Face" in out["storageTr"] and "silmez" in out["storageTr"]

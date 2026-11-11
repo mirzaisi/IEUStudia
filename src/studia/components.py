@@ -290,14 +290,25 @@ def delete_llm(key: str) -> None:
 
 
 # ----------------------------------------------------------------------------- the whole picture
+def own_speech_model(key: str) -> bool:
+    """IEUStudia's own copy of a speech model is complete in its own folder. A model that is ready only through the
+    shared Hugging Face folder in the user folder (another program downloaded it, and may use it) is not: Settings →
+    Storage never offers to remove that one."""
+    from .engine.models import _complete, _models_root
+
+    d = _models_root() / key
+    return _complete(d) and (d / ".complete").exists()
+
+
 def catalog(facts: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Every component with its size and whether it is on this PC (for the first-start screen and Settings)."""
+    """Every component with its size and whether it is on this PC (for the first-start screen and Settings); a speech
+    model also says whether the copy is IEUStudia's own ("own"; else it is used from the shared Hugging Face folder)."""
     from .engine.models import MODEL_PRESETS, model_is_downloaded
 
     gpu = bool(facts and facts.get("gpu", {}).get("present"))
     return {
         "speech": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
-                    "ready": model_is_downloaded(k)} for k, v in MODEL_PRESETS.items()],
+                    "ready": model_is_downloaded(k), "own": own_speech_model(k)} for k, v in MODEL_PRESETS.items()],
         "cuda": {"needed": gpu, "ready": cuda_ready(), "size_mb": CUDA_SIZE_MB, "disk_mb": CUDA_DISK_MB},
         "llm": [{"id": k, "label": t(v["label"]), "description": t(v["description"]), "size_mb": v["size_mb"],
                  "ready": llm_ready(k)} for k, v in LLM_PRESETS.items()],
