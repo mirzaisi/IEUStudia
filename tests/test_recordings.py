@@ -371,6 +371,51 @@ def test_a_lecture_moved_to_another_of_your_courses_takes_its_files_there(isolat
         s.lib.close()
 
 
+def test_a_moved_lecture_copies_a_3x_picture_another_lecture_of_that_minute_still_shows(isolated_home, tmp_path):
+    """Before 4.0 slide pictures were named by the start minute only, so two lectures of a day that start in the same
+    minute (uploaded together) share them. When one of them moves to another of your courses, the picture they share
+    is copied there, not moved: the other lecture keeps showing it."""
+    from studia.outputs.writer import course_dir, day_stem
+    from studia.services import Services
+    from studia.slides import Slide
+
+    s = Services()
+    try:
+        s.settings.output_dir = str(tmp_path / "out")
+        lib = s.lib
+        one = Course(id="17855", title="2026-1 FENG 495 Sec 1", code="FENG 495", name="Project", section="1")
+        three = Course(id="19456", title="2026-1 FENG 495 Sec 3", code="FENG 495", name="Project", section="3")
+        lib.upsert_courses([one, three])
+        when = D(2026, 10, 8, 10, 0)
+        lib.merge_recordings("17855", [_rec("x", when, cid="17855"), _rec("w", D(2026, 10, 8, 10, 0, 40), cid="17855")],
+                             first_sync=True)
+        for did in ("x", "w"):
+            _transcribe(lib, did)
+        old_dir = course_dir(s.output_root, one, lib.courses(True))
+        old_stem = day_stem(one, when.date(), "lecture")
+        shared, own = old_dir / "slides" / old_stem / "1000-01.jpg", old_dir / "slides" / old_stem / "1000-02.jpg"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_bytes(b"shared")
+        own.write_bytes(b"own")
+        store.save_slides("x", [Slide(1, 5.0, 60.0, f"slides/{old_stem}/{shared.name}", str(shared)),
+                                Slide(2, 60.0, 90.0, f"slides/{old_stem}/{own.name}", str(own))])
+        store.save_slides("w", [Slide(1, 0.0, 30.0, f"slides/{old_stem}/{shared.name}", str(shared))])
+        for did in ("x", "w"):
+            s.write_outputs(did)
+        lib.merge_recordings("17855", [_rec("w", D(2026, 10, 8, 10, 0, 40), cid="17855")], first_sync=False)
+        lib.merge_recordings("19456", [_rec("x", when, cid="19456")], first_sync=False)
+        assert s.move_days() == 1
+        new_dir = course_dir(s.output_root, three, lib.courses(True))
+        moved = {Path(sl.path).name: Path(sl.path) for sl in store.load_slides("x")}
+        assert all(p.parent.parent.parent == new_dir for p in moved.values())
+        assert moved[shared.name].read_bytes() == b"shared" and moved[own.name].read_bytes() == b"own"
+        assert shared.read_bytes() == b"shared" and not own.exists()       # w still shows its picture; x's own moved
+        assert [sl.path for sl in store.load_slides("w")] == [str(shared)]
+    finally:
+        s.shutdown()
+        s.lib.close()
+
+
 def _twins(s, b_section, folders, files, days):
     """MATH 250 taken in 2026-1 (course 100, section 1) and course 200 with the same code (a retake in 2027-1, or
     another section) that came before 3.3.1, its folders as they were then: ``folders`` as 3.3.1 named them, ``files``

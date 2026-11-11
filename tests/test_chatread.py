@@ -453,6 +453,24 @@ def test_read_everything_is_on_for_the_whole_course_or_many_files_and_can_be_tur
     assert not env.svc.context("c", [DAY1], send={"mode": "pick", "files": many})["read"]["on"]
 
 
+def test_a_chat_opened_again_reuses_its_material_and_counts_what_was_read_since(env, reading, monkeypatch):
+    builds = []
+    real = chat_mod.ChatService._build
+    monkeypatch.setattr(chat_mod.ChatService, "_build", lambda self, *a: builds.append(1) or real(self, *a))
+    chat = env.svc.create("c", [DAY1], send={"mode": "pick", "files": reading.ids}, read_all=True)
+    seen = chatinputs.inputs(env.svc, {"chat_id": chat["id"]})
+    n = len(builds)
+    assert env.svc.view(chat["id"])["read"]["cached"] == 0 and seen["read"]["pages"] == 3 and len(builds) == n
+    ask(env, chat["id"], "What does the capacitor charging curve look like?")
+    assert len(reading.reader.calls) == 1 and len(builds) == n           # the question took the same material
+    again = env.svc.view(chat["id"])
+    assert again["read"]["cached"] == 3 and again["read"]["pages"] == 3 and len(builds) == n   # its notes are counted
+    pdf_file = env.tmp / "Week04.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 a newer copy")                       # a chosen file downloaded again
+    env.svc.view(chat["id"])
+    assert len(builds) == n + 1
+
+
 def test_stop_while_reading_keeps_what_was_read_and_the_next_question_goes_on(env, reading, monkeypatch):
     chat = env.svc.create("c", [DAY1], send={"mode": "pick", "files": reading.ids}, read_all=True)
     real = chatlimits.of

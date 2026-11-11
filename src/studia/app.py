@@ -301,6 +301,13 @@ def _selftest(out: str) -> int:
         report["ok"] = report["ok"] and vad.is_file()
     except Exception:  # noqa: BLE001
         report["ok"] = False
+    try:                                         # Windows' text reading (the screen timeline): a picture read back
+        from .ocr import self_check
+
+        report["ocr"] = self_check()
+    except Exception as exc:  # noqa: BLE001
+        report["ocr"] = {"ok": False, "status": "failed", "why": repr(exc)[:300]}
+    report["ok"] = report["ok"] and bool(report["ocr"].get("ok"))
     text = json.dumps(report, indent=1)
     if out:
         Path(out).write_text(text, encoding="utf-8")
