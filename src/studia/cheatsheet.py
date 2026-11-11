@@ -9,7 +9,8 @@ Stages (each one's output is saved with the plan, so a stopped sheet resumes whe
   topics   - the topics in the course's order, every item each one must hold and the pages and lecture passages it
              is taught in (AI, JSON): the list the finished sheet is checked against
   entries  - the entries of a few topics at a time, written from those topics' own material (AI, JSON, two requests
-             at once, each saved when it is done)
+             at once, each saved when it is done), with pictures of its pages whose text says little (a slide's
+             formulas or circuit as a picture: sheet_pictures, within SHEET_PICTURES_MAX for the sheet)
   check    - code drops empty and duplicate entries and formulas it can't read; what the list names and no entry
              holds is asked for once more (AI, one request, only when something is missing)
   assemble - the document (HTML) and its PDF, in <course>/Cheatsheets
@@ -141,6 +142,140 @@ def material(lib: Any, course_id: str, facts: dict[str, Any], topics: list[dict[
     return chapter_material(lib, course_id, facts, {"sources": merge_sources(topics)})
 
 
+# ------------------------------------------------------------------ the pages that are pictures (EE slides' formulas)
+SHEET_PICTURES = 8            # pictures one entries request reads at most (~800 tokens each)
+SHEET_PICTURES_MAX = 40       # and the whole sheet (shared by its requests)
+SHORT_PAGE = 200              # a page with less text than this (its title, a few labels) says the rest in pictures
+BARE_PAGE = 80                # one with less than this (its title only) says all of it in pictures: read first
+_WORKED = re.compile(r"^\W*(?:examples?|örnek\w*|exercises?|alıştırma\w*|problems?|questions?|soru\w*|quiz\w*|"
+                     r"homework|ödev\w*)\b", re.I)
+
+
+def _order(label: str) -> tuple[Any, ...]:
+    """A picture's place in the material: "[F2 p.13]" after "[F2 p.9]", "[L1 part 2, slide 4]" after the files'."""
+    return tuple(int(x) if x.isdigit() else x for x in re.findall(r"\d+|[A-Z]", label))
+
+
+def _spread(items: list[Any], k: int) -> list[Any]:
+    """``k`` of ``items`` spread over all of them (in their order)."""
+    if k <= 0:
+        return []
+    if len(items) <= k:
+        return list(items)
+    return [items[int((i + 0.5) * len(items) / k)] for i in range(k)]
+
+
+def _topic_pictures(lib: Any, facts: dict[str, Any], tp: dict[str, Any], texts: dict[str, list[str]],
+                    seen: set[str]) -> list[list[tuple[str, Any]]]:
+    """A topic's pages whose text says little, as (label, what to draw), best first: the ones that teach with their
+    title only (all of it is pictures), the ones that teach with a few words more, worked examples. Of a slide built
+    up step by step (the same text on pages in a row) only its last, complete page. The slides captured in its
+    lecture passages only when its files have none (a topic taught only in class)."""
+    from . import store
+
+    files = {f["ref"]: f for f in facts["files"]}
+    lectures = {x["ref"]: x for x in facts["lectures"]}
+    bare: list[tuple[str, Any]] = []
+    teach: list[tuple[str, Any]] = []
+    worked: list[tuple[str, Any]] = []
+
+    def add(label: str, what: Any, text: str) -> None:
+        seen.add(label)
+        (worked if _WORKED.match(text) else bare if len(text) < BARE_PAGE else teach).append((label, what))
+    for s in tp["sources"]["files"]:
+        f = files.get(s["ref"]) or {}
+        if not f.get("pdf") or not f.get("path") or not Path(f["path"]).is_file():
+            continue
+        if f["id"] not in texts:
+            texts[f["id"]] = [" ".join((p or "").split()) for p in lib.material_pages(f["id"])]
+        pages = texts[f["id"]]
+        a, b = s["pages"]
+        for n in range(a, min(b, len(pages)) + 1):
+            text, label = pages[n - 1], f"[{f['ref']} p.{n}]"
+            if len(text) >= SHORT_PAGE or label in seen or ("pictures" in f and n not in f["pictures"]):
+                continue
+            if n < b and n < len(pages) and pages[n] == text:
+                continue                    # the next page is the same slide with more of it shown
+            add(label, (Path(f["path"]), n), text)
+    if bare or teach or worked:
+        return [bare, teach, worked]
+    for s in tp["sources"]["lectures"]:
+        x = lectures.get(s["ref"]) or {}
+        for part in x.get("parts") or []:
+            if s["part"] and part["part"] != s["part"]:
+                continue
+            screens = (store.load_screens(part["delivery_id"]) or {}).get("screens") or {}
+            shown: set[int] = set()
+            for sl in store.load_slides(part["delivery_id"]):
+                label = f"[{x['ref']} part {part['part']}, slide {sl.index}]"
+                if sl.index in shown or label in seen or not sl.path or not Path(sl.path).is_file():
+                    continue
+                if sl.end < (s["from"] or 0) - 30 or (s["to"] is not None and sl.t > s["to"] + 30):
+                    continue
+                text = " ".join(str((screens.get(str(sl.index)) or {}).get("text") or "").split())
+                if len(text) >= SHORT_PAGE:
+                    continue
+                shown.add(sl.index)
+                add(label, Path(sl.path), text)
+    return [bare, teach, worked]
+
+
+def sheet_pictures(lib: Any, facts: dict[str, Any], topics: list[dict[str, Any]],
+                   most: int = SHEET_PICTURES) -> list[tuple[str, Path]]:
+    """The pages of these topics' material whose text says little, as pictures for the entries' writer (EE slides
+    hold their formulas, circuits and tables as pictures the text never has): at most ``most``, shared out among the
+    topics and spread over each one's pages. [("[F1 p.23]", picture)]"""
+    from .materials import page_image
+    from .studypack import PICTURE_WIDTH
+
+    texts: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    lists = [_topic_pictures(lib, facts, tp, texts, seen) for tp in topics]
+    sizes = [sum(len(x) for x in kinds) for kinds in lists]
+    quota, left = [0] * len(lists), most
+    while left > 0 and any(q < n for q, n in zip(quota, sizes)):
+        for i, n in enumerate(sizes):
+            if left > 0 and quota[i] < n:
+                quota[i] += 1
+                left -= 1
+    out: list[tuple[str, Path]] = []
+    for kinds, q in zip(lists, quota):
+        chosen: list[tuple[str, Any]] = []
+        for pages in kinds:                     # the best kind first, each spread over the topic's pages
+            chosen += _spread(pages, q - len(chosen))
+        for label, what in sorted(chosen, key=lambda c: _order(c[0])):
+            if isinstance(what, Path):
+                out.append((label, what))
+                continue
+            try:
+                img = page_image(what[0], what[1], width=PICTURE_WIDTH)
+            except Exception:  # noqa: BLE001 - a page that can't be drawn: written from its text
+                img = None
+            if img:
+                out.append((label, Path(img)))
+    return out
+
+
+def ask_with_pictures(prompt: str, pictures: list[dict[str, Any]], *, model: str, effort: str,
+                      cancel: Optional[threading.Event]) -> tuple[Any, dict]:
+    """ai.ask_json with pictures after the prompt (the same answer read, asked once more when it isn't JSON)."""
+    from .ai import ai_name, one_shot, parse_json
+
+    content = [{"type": "text", "text": prompt}, *pictures]
+    res = one_shot(SYSTEM, content, model, effort, cancel, None, 900)
+    data = parse_json(res["text"])
+    if data is None:
+        again = one_shot(SYSTEM, [{"type": "text", "text": prompt + "\n\nReply with the JSON object only."},
+                                  *pictures], model, effort, cancel, None, 900)
+        for k, v in (again.get("usage") or {}).items():
+            if isinstance(v, (int, float)):
+                res["usage"][k] = res["usage"].get(k, 0) + v
+        data = parse_json(again["text"])
+        if data is None:
+            raise RuntimeError(t("{ai}'s answer could not be read (it was not valid JSON). Try again.", ai=ai_name()))
+    return data, res
+
+
 def make_batches(sizes: list[int], limit: int = BATCH_CHARS, most: int = BATCH_TOPICS) -> list[list[int]]:
     """Consecutive topics (their material ``sizes``) in groups of at most ``most`` with about ``limit`` characters."""
     out: list[list[int]] = []
@@ -175,7 +310,7 @@ Rules:
 
 
 def entries_prompt(sheet: dict[str, Any], topics: list[dict[str, Any]], mat: str, span: str,
-                   missing: Optional[dict[str, list[str]]] = None) -> str:
+                   missing: Optional[dict[str, list[str]]] = None, pictures: Optional[list[str]] = None) -> str:
     if missing:
         head = (f'TASK: These items are missing from the cheatsheet "{sheet["title"]}" ({span}). Write the entries '
                 "that hold them, from the course material below (nothing else: the rest is already there).\n"
@@ -188,6 +323,11 @@ def entries_prompt(sheet: dict[str, Any], topics: list[dict[str, Any]], mat: str
                 + "\n".join(f"{tp['id']} · {tp['title']}: {'; '.join(tp['items'])}" for tp in topics)
                 + "\nEvery item must be in an entry of its topic. Add what else of these topics' material a student "
                   "needs to solve its problems (a formula, special case, condition, unit or shortcut the list missed).")
+    if pictures:
+        head += ("\nThe pages of this material whose text says little are attached as pictures, labelled "
+                 + ", ".join(pictures) + ": their formulas, circuits and tables are not in the text below. Read them "
+                 "and put what they hold on the sheet like the text's, in their notation (a worked example's numbers "
+                 "are not entries).")
     return (f"{head}\n{_FORMAT}\n- {written_in(sheet.get('language', ''), sheet.get('taught_in', ''))}\n\n"
             f"=== THE COURSE MATERIAL OF THESE TOPICS ===\n{mat}")
 
@@ -563,9 +703,9 @@ def _all_entries(data: dict[str, Any]) -> dict[str, list]:
 def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usage: dict[str, Any], model: str,
         cancel: threading.Event) -> None:
     """Build (or resume) the cheatsheet ``plan``; every finished stage and batch is saved at once."""
-    from .ai import ask_json
+    from .ai import PLAN_AIS, ask_json, provider
     from .plans import model_shown
-    from .studypack import _level, _usage_add, gather
+    from .studypack import _level, _usage_add, gather, picture_blocks
 
     pid, s = plan["id"], runner._s
     level = _level(scope, s.settings)
@@ -585,8 +725,20 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         if cancel.is_set():
             raise Cancelled()
 
-    def ask(prompt: str) -> tuple[Any, dict]:
-        return (runner._ask or ask_json)(SYSTEM, prompt, model=model, effort=level, cancel=cancel)
+    def ask(prompt: str, pictures: Optional[list[dict[str, Any]]] = None) -> tuple[Any, dict]:
+        if not pictures:
+            return (runner._ask or ask_json)(SYSTEM, prompt, model=model, effort=level, cancel=cancel)
+        if runner._ask is not None:              # (tests: a stand-in for the AI)
+            return runner._ask(SYSTEM, prompt, model=model, effort=level, cancel=cancel, pictures=pictures)
+        return ask_with_pictures(prompt, pictures, model=model, effort=level, cancel=cancel)
+
+    def pictures_of(group: list[dict[str, Any]], most: int) -> tuple[list[dict[str, Any]], list[str]]:
+        """The pages of these topics' material whose text says little, as pictures (an AI that reads them), and
+        their labels for the prompt."""
+        if most <= 0 or provider() not in PLAN_AIS:
+            return [], []
+        blocks = picture_blocks(sheet_pictures(s.lib, facts, group, most))
+        return blocks, [b["text"] for b in blocks if b.get("type") == "text"]
 
     # gather
     if "gather" not in data:
@@ -627,9 +779,13 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
                     total=len(batches), model=shown))
             aiwait.of(cancel).units(len(done), len(batches), PARALLEL)      # the parts still to come (time left)
 
+        per = min(SHEET_PICTURES, SHEET_PICTURES_MAX // len(batches))     # the sheet's pictures shared by its parts
+
         def write(i: int) -> tuple[int, Any, dict]:
             group = [by_id[x] for x in batches[i]]
-            raw, res = ask(entries_prompt(sheet, group, material(s.lib, plan["course_id"], facts, group), facts["span"]))
+            blocks, labels = pictures_of(group, per)
+            raw, res = ask(entries_prompt(sheet, group, material(s.lib, plan["course_id"], facts, group), facts["span"],
+                                          pictures=labels), blocks)
             return i, raw, res
 
         def keep(f: Any) -> None:
@@ -667,8 +823,9 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
             stage("check", 0.84, tn(sum(len(v) for v in missing.values()), "Adding {n} missing item ({model})…",
                                     "Adding {n} missing items ({model})…", model=shown))
             group = [tp for tp in topics if tp["id"] in missing]
+            blocks, labels = pictures_of(group, SHEET_PICTURES // 2)
             raw, res = ask(entries_prompt(sheet, group, material(s.lib, plan["course_id"], facts, group),
-                                          facts["span"], missing))
+                                          facts["span"], missing, labels), blocks)
             _usage_add(usage, "check", res)
             fixed = clean_entries(raw, group, seen, stats)
         data["check"] = {"entries": fixed}
@@ -705,7 +862,7 @@ def progress_info(data: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------ the cost, before it starts
 def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:
     """Roughly what a cheatsheet costs: tokens in and out, requests and time."""
-    from .ai import PROMPT_OVERHEAD, chars_per_token
+    from .ai import IMAGE_TOKENS, PROMPT_OVERHEAD, chars_per_token
     from .plans import main_model
     from .studypack import _level, gather
 
@@ -714,9 +871,12 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     full = facts["full_chars"]
     batches = max(1, -(-int(full * 0.8) // BATCH_CHARS))           # pages of a file are often shared by topics
     repair = 1
+    # the pages whose text says little, as pictures (at most): a PDF with pictures on its pages
+    pictures = min(SHEET_PICTURES_MAX, batches * SHEET_PICTURES) if any(
+        f.get("pdf") and f.get("pictures", True) for f in facts["files"]) else 0
     tokens_in = (facts["chars"] / per + PROMPT_OVERHEAD + 600) \
         + batches * (min(full, BATCH_CHARS) / per + PROMPT_OVERHEAD + 1_400) \
-        + repair * (BATCH_CHARS / 2 / per + PROMPT_OVERHEAD + 1_000)
+        + repair * (BATCH_CHARS / 2 / per + PROMPT_OVERHEAD + 1_000) + pictures * IMAGE_TOKENS
     tokens_out = 1_500 + full / 60 + batches * 4_000 + repair * 1_200
     a = 2 + round(batches * 1.5 / PARALLEL) + repair
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings),
