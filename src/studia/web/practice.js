@@ -304,7 +304,6 @@
     setMode(nextExam(r) ? "next" : "weeks");
     drawQuiz(); estimateQuiz();
   }
-  const LANG = () => ({ English: t("English"), Turkish: t("Turkish") });
   function quizCost() {
     const e = Q.est, ai = Q.opts.ai || {};
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Quizzes need ChatGPT or Claude (the offline model is too small for them).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
@@ -315,7 +314,7 @@
     const big = e.main_input + e.main_output >= 40000;        // (a midterm's eight weeks: about 70k)
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${big ? t.html("Uses part of your {ai} plan.", { ai: St.aiName() }) : t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t("About {k} tokens in one request, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
-      <div class="dim sm">${esc(t("Questions in {language}, the language this course is taught in.", { language: LANG()[e.language] || e.language }))}</div></div></div>${more}`;
+      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>${more}`;
   }
   function drawQuiz() {
     const r = Q.opts, courses = S.courses.filter((c) => c.code), e = nextExam(r);
@@ -592,7 +591,8 @@
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
-      <div class="dim sm">${esc(t.n(e.pages, "Up to about {n} cards from {pages} page; cards your deck already has are left out.", "Up to about {n} cards from {pages} pages; cards your deck already has are left out.", { n: e.cards, pages: e.pages }))}</div></div></div>`;
+      <div class="dim sm">${esc(t.n(e.pages, "Up to about {n} cards from {pages} page; cards your deck already has are left out.", "Up to about {n} cards from {pages} pages; cards your deck already has are left out.", { n: e.cards, pages: e.pages }))}</div>
+      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>`;
   }
   function drawMake() {
     const r = M.opts, old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;

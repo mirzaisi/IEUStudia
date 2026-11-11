@@ -76,7 +76,8 @@
     if (!P.files.size && !P.days.size) return `<span class="dim">${t("Pick at least one file or lecture.")}</span>`;
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     const more = (St.effortCostNote ? St.effortCostNote(e, scope()) : "")    // effort.js: a heavy level, a big read
-      + ((e.files_cut || []).length ? `<div class="dim sm">${I("info", "xs")} ${cutNote(e.files_cut)}</div>` : "");
+      + ((e.files_cut || []).length ? `<div class="dim sm">${I("info", "xs")} ${cutNote(e.files_cut)}</div>` : "")
+      + (St.docLangLine ? St.docLangLine(e) : "");                          // settings.js: the language it is written in
     if (sheet()) return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${t.html("Uses part of your {ai} plan.", { ai: St.aiName() })}</b>
         ${t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: fmtK(e.main_input + e.main_output), minutes: e.minutes })}
         <div class="dim sm">${t("If your plan's limit is reached it stops; resume it later and what is written is kept.")}</div></div></div>${more}`;
