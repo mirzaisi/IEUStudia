@@ -344,8 +344,9 @@ class Api(PracticeApi):
                 return
             _save_seen(seen)
         title, text, target = note
-        if is_foreground(self._hwnd):
-            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · ")})
+        if is_foreground(self._hwnd):                     # (with a button it stays long enough to read)
+            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · "),
+                        "action": {"label": t("Open"), "act": "open-target", "data": {"target": target}}})
         else:
             self._notify(title, text, target)
 

@@ -598,7 +598,8 @@ def test_a_reminder_waits_while_nobody_is_at_the_pc(tmp_path, isolated_home, mon
     assert pushed == [] and told == [] and api._remind_waits and agent._load_seen().get("rem", []) == []
     idle[0] = 3.0                                                     # back
     api._remind()
-    assert pushed == [{"type": "toast", "level": "info", "message": "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40."}]
+    assert pushed == [{"type": "toast", "level": "info", "message": "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
+                       "action": {"label": "Open", "act": "open-target", "data": {"target": "calendar:b-asg-3003"}}}]
     assert not api._remind_waits and told == []
 
 

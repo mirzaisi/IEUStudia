@@ -106,7 +106,7 @@
         if (S.view.name === "day") renderDayActions();
         if (S.view.name === "chat" && !$("#chat-input")) renderView();   // Claude availability is now known
         break;
-      case "toast": toast(e.message, e.level); break;
+      case "toast": toast(e.message, e.level, e.action); break;     // (a reminder's: Open)
       case "open": openTarget(e.target); break;
       case "update": onUpdate(e); break;
       case "ai": onAi(e); break;
@@ -2476,6 +2476,7 @@
 
   // ------------------------------------------------------------------ actions
   const A = {
+    "open-target": (el) => { S.navigated = true; openTarget(el.dataset.target); },     // what a reminder is about
     go: (el) => { S.navigated = true; go(el.dataset.view === "course" ? { name: "course", courseId: el.dataset.id, tab: el.dataset.tab || undefined } : { name: el.dataset.view }); },
     back: () => {               // where you came from, scrolled where you were
       const f = S.view.from || { name: "home" };
