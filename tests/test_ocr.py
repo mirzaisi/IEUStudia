@@ -237,7 +237,9 @@ def test_the_self_check_fails_when_reading_doesnt_load_or_reads_wrong(monkeypatc
     assert not got["ok"] and got["status"] == "failed" and got["text"] == "Lccturc 7 0hm"
 
 
-def test_the_apps_selftest_reports_windows_text_reading_and_fails_with_it(tmp_path, monkeypatch):
+def test_the_apps_selftest_reports_windows_text_reading_apart(tmp_path, monkeypatch):
+    """Reported, not part of the self-test's own result: GitHub's build machine may lack Windows' text reading (the
+    release workflow warns), a build on a PC stops on it (scripts/build_release.ps1)."""
     import importlib
     import json
     import sys
@@ -250,7 +252,7 @@ def test_the_apps_selftest_reports_windows_text_reading_and_fails_with_it(tmp_pa
     vad.write_bytes(b"onnx")
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(__file__=str(vad.parent.parent / "x.py")))
     for result, code in (({"ok": True, "status": "skipped", "why": "Windows has no OCR language here"}, 0),
-                         ({"ok": False, "status": "failed", "why": "the words didn't come back"}, 1)):
+                         ({"ok": False, "status": "failed", "why": "the words didn't come back"}, 0)):
         monkeypatch.setattr(ocr, "self_check", lambda: result)
         out = tmp_path / "selftest.json"
         assert app._selftest(str(out)) == code

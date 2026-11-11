@@ -31,6 +31,7 @@ try {
     $ocr = (Get-Content $report -Raw | ConvertFrom-Json).ocr
     Write-Host "Windows' text reading (OCR): $($ocr.status) $($ocr.why) $($ocr.text)"
     if ($p.ExitCode -ne 0) { throw "The self-test of the build failed (see above)." }
+    if (-not $ocr.ok) { throw "Windows' text reading did not work in the build (see above)." }
     # the portable zip unpacked with Windows' Extract All: every file marked as downloaded from the internet
     & "$PSScriptRoot\selftest_marked.ps1" -Dist "build\dist\IEUStudia"
 

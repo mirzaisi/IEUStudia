@@ -301,13 +301,15 @@ def _selftest(out: str) -> int:
         report["ok"] = report["ok"] and vad.is_file()
     except Exception:  # noqa: BLE001
         report["ok"] = False
-    try:                                         # Windows' text reading (the screen timeline): a picture read back
+    # Windows' text reading (the screen timeline): a picture read back. Reported apart from "ok": GitHub's Windows
+    # build machine may lack what a student's Windows has, so the release workflow only warns about it, while a build
+    # on a PC (scripts/build_release.ps1) stops on it
+    try:
         from .ocr import self_check
 
         report["ocr"] = self_check()
     except Exception as exc:  # noqa: BLE001
         report["ocr"] = {"ok": False, "status": "failed", "why": repr(exc)[:300]}
-    report["ok"] = report["ok"] and bool(report["ocr"].get("ok"))
     text = json.dumps(report, indent=1)
     if out:
         Path(out).write_text(text, encoding="utf-8")
