@@ -16,7 +16,7 @@ import requests
 from . import __version__, store
 from .config import Settings, apply_patch, load_settings, save_settings, unreadable as config_unreadable
 from .domain import Course, Recording
-from .i18n import N_, t
+from .i18n import N_, date_long, t
 from .library import Library
 from .log import setup_logging
 from .outputs.mathmd import dollar_math
@@ -29,6 +29,7 @@ log = logging.getLogger("studia")
 RENAME_KEY = "output_renamed"          # library meta: an output folder rename that is not finished yet
 TWINS_KEY = "twin_folders"             # library meta: "1" once the folders of courses sharing a code were put right
 ADOPTED_KEY = "shared_audio_adopted"   # library meta: "1" once an added profile's audio from before 4.0 was moved
+RELINK_KEY = "relink_transcripts"      # library meta: the day a damaged library was replaced (transcripts linked again)
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
 NOTE_SLIDES = 60          # slide pictures that go with a lecture's AI notes at most
@@ -165,6 +166,29 @@ def sweep_audio_cache(lib: Library, keep_audio: bool, days: float = 7.0) -> int:
         except OSError:
             continue
     return n
+
+
+def _good_backup(folder: Path) -> Optional[Path]:
+    """The newest copy in ``backups`` (library-<version>.db, kept before an update) that reads well, opened read-only."""
+    import sqlite3
+
+    try:
+        copies = sorted(folder.glob("library-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for p in copies:
+        try:
+            con = sqlite3.connect(p.as_uri() + "?mode=ro", uri=True)
+            try:
+                ok = con.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            finally:
+                con.close()
+        except (sqlite3.Error, OSError, ValueError):
+            ok = False
+        if ok:
+            return p
+        log.warning("The library copy %s is damaged too", p)
+    return None
 
 
 def _written_at(db: Path) -> float:
@@ -354,7 +378,7 @@ class Services:
                                 "your sections and your IEUStudia folder in Settings. The old file is kept in {folder}.",
                                 folder=str(settings_path().parent)))
         written = _written_at(db_path())                           # (before this start writes it: adopt_shared_audio)
-        self.lib = Library(db_path(), app_version=__version__)    # a new version keeps a copy first
+        self.lib = self._open_library(migrate_output)              # a new version keeps a copy first
         self.lib.index.notes, self.lib.index.note_days = self.notes_for_search, self.days_for_search
         # a command-line run while the app is open (it holds its single-instance lock): the lectures, chats and plans
         # the app is working on, and its files, are its own; nothing of theirs is reset, moved or swept from here
@@ -383,8 +407,9 @@ class Services:
             return
         if migrate_output and not _under_test():  # the app's own (never a command-line run, never a test)
             self.screens.start()
+        self._relink_transcripts()
         self._write_unwritten()
-        self.sync.after_sync = self.move_days
+        self.sync.after_sync = self._after_sync
         try:
             self.move_days()                       # (also those a tray helper's check found)
         except Exception:  # noqa: BLE001 - never stop the start for it
@@ -408,6 +433,81 @@ class Services:
         from .engine.checkpoint import sweep       # lectures stopped mid-transcription and never continued
 
         sweep()
+
+    def _open_library(self, recover: bool) -> Library:
+        """The profile's library. A damaged file (not a lock, a full disk or a read error: those are said as they
+        are) is put aside, and the newest copy kept in backups that reads well takes its place, or a new library when
+        there is none; the first screen says which. Only the app does this (``recover``): it holds the single-instance
+        lock, so the tray helper or a command-line run never restores behind its back."""
+        import shutil
+        import sqlite3
+
+        path = db_path()
+        try:
+            return Library(path, app_version=__version__)
+        except sqlite3.DatabaseError as exc:
+            if not recover or (getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF not in (sqlite3.SQLITE_CORRUPT,
+                                                                                            sqlite3.SQLITE_NOTADB):
+                raise
+            damaged = exc
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        try:
+            for end in ("-shm", "-wal", ""):        # the main file last: an old -wal never meets a new library
+                src = path.with_name(path.name + end)
+                if src.exists():
+                    os.replace(src, path.with_name(f"{path.name}.damaged-{stamp}{end}"))
+        except OSError:
+            log.warning("The damaged library %s could not be put aside", path, exc_info=True)
+            raise damaged from None
+        log.warning("The library %s was damaged (%s): kept as %s.damaged-%s", path, damaged, path.name, stamp)
+        backup = _good_backup(path.parent / "backups")
+        if backup is not None:
+            shutil.copyfile(backup, path)
+            log.info("The library came back from %s", backup)
+        lib = Library(path, app_version=__version__)
+        lib.set_meta(RELINK_KEY, dt.date.today().isoformat())     # transcripts made after the copy: linked again
+        if backup is not None:
+            self.notes.append(t("Your library file was damaged, so IEUStudia went back to the copy it kept on {date}. "
+                                "Chats, practice and plans from after that day may be missing. The damaged file is "
+                                "kept in {folder}.", date=date_long(dt.date.fromtimestamp(backup.stat().st_mtime)),
+                                folder=str(path.parent)))
+        else:
+            self.notes.append(t("Your library file was damaged and there was no copy to go back to, so IEUStudia "
+                                "started a new one. Sync to bring your courses back. The damaged file is kept in "
+                                "{folder}.", folder=str(path.parent)))
+        return lib
+
+    def _relink_transcripts(self) -> None:
+        """After a library came back from a copy (or started anew): the lectures transcribed since are transcribed
+        again in it (their transcripts are files of their own), once a sync brought their recordings back (for a
+        month: syncs that missed a course, a course opened later)."""
+        from .paths import transcripts_dir
+
+        since = self.lib.get_meta(RELINK_KEY) or ""
+        if not since:
+            return
+        try:
+            if (dt.date.today() - dt.date.fromisoformat(since)).days > 30:
+                raise ValueError(since)
+        except ValueError:
+            self.lib.set_meta(RELINK_KEY, "")
+            return
+        done, n = self.lib.transcribed_ids(), 0
+        for f in transcripts_dir().glob("*.json"):
+            did = f.name[:-5]
+            if "." in did or did.startswith("local-") or did in done or self.lib.get_recording(did) is None:
+                continue
+            tr = store.load_transcript(did)
+            if tr is not None:
+                self.lib.save_transcript(tr, f)
+                self.lib.set_status(did, "done")
+                n += 1
+        if n:
+            self.log.info("%d transcribed lectures linked again in the library", n)
+
+    def _after_sync(self) -> None:
+        self._relink_transcripts()
+        self.move_days()
 
     def _write_unwritten(self) -> None:
         """Write the files of transcripts whose files could not be written before (a file was open in another

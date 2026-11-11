@@ -254,7 +254,17 @@
     sp.querySelector(".splash-bar").remove();
     setSplash("");
     sp.insertAdjacentHTML("beforeend", `<div class="splash-error">${esc(msg)}</div>
-      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} ${t("Try again")}</button>${logs ? `<button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button>` : ""}</div>`);
+      <div class="splash-actions"><button class="btn primary" data-act="${logs ? "start-again" : "reload"}">${I("retry", "sm")} ${t("Try again")}</button>${logs ? `<button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button>` : ""}</div>`);
+    if (!logs) return;
+    // Try again starts the app's library again (not only the page); another profile on this PC still opens
+    A["start-again"] = () => call("start_again").then(() => location.reload());
+    call("profiles").then((r) => {
+      const others = r && r.ok ? (r.profiles || []).filter((x) => !x.active) : [];
+      if (!others.length || !sp.isConnected) return;
+      S.profiles = r.profiles;
+      sp.insertAdjacentHTML("beforeend", `<div class="si-others" style="width:min(320px,calc(100% - 32px))"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
+        <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>`);
+    });
   }
 
   // ------------------------------------------------------------------ shell

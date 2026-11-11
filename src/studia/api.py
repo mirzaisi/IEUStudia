@@ -98,6 +98,7 @@ class Api(PracticeApi):
         self._services: Optional[Services] = None
         self._ready = threading.Event()
         self._startup_error = ""
+        self._starter: Optional[Callable[[], None]] = None   # app.py: starts the services (again, after a failure)
         self._window: Any = None
         self._events: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self._sync_lock = threading.Lock()
@@ -209,6 +210,16 @@ class Api(PracticeApi):
     def _startup_failed(self, message: str) -> None:
         self._startup_error = message or t("IEUStudia could not start.")
         self._ready.set()
+
+    @safe
+    def start_again(self) -> dict[str, Any]:
+        """The start-up screen's Try again: a start that failed (the library was locked, the disk was full) runs
+        again, instead of the page asking for the same stored error."""
+        if self._services is None and self._startup_error and self._starter is not None:
+            self._startup_error = ""
+            self._ready.clear()
+            threading.Thread(target=self._starter, name="services-start", daemon=True).start()
+        return {"ok": True}
 
     @property
     def _s(self) -> Services:

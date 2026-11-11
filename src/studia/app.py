@@ -619,6 +619,7 @@ def _main(argv: Optional[list[str]] = None) -> Optional[str]:
         except Exception:  # noqa: BLE001
             log.debug("helper start failed", exc_info=True)
 
+    api._starter = start_services                # (the start-up screen's Try again runs it again: Api.start_again)
     threading.Thread(target=start_services, name="services-start", daemon=True).start()
     watchdog = _start_watchdog(logs_dir())
 
