@@ -424,7 +424,9 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
     from .outputs.mathmd import dollar_math
 
     chat, course = _chat_row(s, chat_id)
-    who = ai.PROVIDER_LABELS.get(ai.provider()) or "AI"
+    msgs = s.lib.chat_messages(chat_id)
+    answers = [m for m in msgs if m.get("role") != "user"]        # the AI that wrote them, not the one chosen now
+    ais = " and ".join(ai.chat_ais(answers))
     days = []
     for key in (chat.get("scope") or {}).get("days") or []:
         try:
@@ -435,7 +437,8 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
             days.append(str(key).split("|")[1] if "|" in str(key) else str(key))
     try:
         summ = s.chat.summary(chat)
-        model = ai.model_label(summ.get("model") or "sonnet", summ.get("effort", ""))
+        model = ai.model_label(summ.get("model") or "sonnet", summ.get("effort", ""),
+                               ai.answered_by(answers[-1]) if answers else "")
     except Exception:  # noqa: BLE001 - the chat's own model name will do
         model = chat.get("model") or ""
     meta = [D.label("Course", course_display(course))]
@@ -444,16 +447,17 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
     if model:
         meta.append(D.label("Model", model + (" · highlights only" if (chat.get("scope") or {}).get("focus") ==
                                                 "highlights" else "")))
-    meta.append([D.R(f"Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.", italic=True)])
+    meta.append([D.R(f"Chat with {ais} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.", italic=True)])
     blocks: list[Any] = []
     texts = []
-    for m in s.lib.chat_messages(chat_id):
+    for m in msgs:
         text = (m.get("text") or "").strip()
         usage = m.get("usage") or {}
         if m.get("role") == "user":
             blocks.append(D.Para([D.R("You")], style="who"))
             blocks += [D.Para([D.R(x.strip())], style="question") for x in text.split("\n\n") if x.strip()]
             continue
+        who = ai.PROVIDER_LABELS.get(ai.answered_by(m)) or "AI"
         found = [notices.markdown(n) for n in (usage.get("notices") or [])]
         if m.get("status") == "error":
             found.append(notices.alert("CAUTION", f"{who} could not answer: {usage.get('error') or 'error'}"))
@@ -465,7 +469,7 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
             md = dollar_math(text) + (" *(stopped)*" if m.get("status") == "stopped" else "")
             blocks.append(D.Markdown(md, top=2))
             texts.append(text)
-    return D.Doc(_chat_title(s, chat), kicker=f"{course.code or course.name} · Chat with {who}", meta=meta,
+    return D.Doc(_chat_title(s, chat), kicker=f"{course.code or course.name} · Chat with {ais}", meta=meta,
                  blocks=blocks, lang="tr" if D.turkish(" ".join(texts)) else "en")
 
 

@@ -1205,7 +1205,7 @@ class ChatService:
                     shown += notices.fresh([notices.notice("codex_model", "info", model=res["model_refused"])], history)
             text = res["text"] or text
             state = "stopped" if res["stopped"] else "done"
-            usage = {**(res["usage"] or {}), **({"sources": sources} if sources else {}),
+            usage = {**(res["usage"] or {}), "ai": made_by, **({"sources": sources} if sources else {}),
                      **({"read": read} if read else {}),
                      **({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, state, usage)
@@ -1215,7 +1215,8 @@ class ChatService:
         except Cancelled:                           # stopped while the pages were read: what was read is kept
             reading = kept(self._reading.pop(cid, None))
             shown += self._refused(reading, history, shown)
-            usage = {"read": {**reading, "stopped": True},**({"notices": shown, "notices_ai": made_by} if shown else {})}
+            usage = {"read": {**reading, "stopped": True}, "ai": made_by,
+                     **({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, "stopped", usage)
             self._drop(cid)                         # it may not have got its first message: start afresh next time
             self._emit(cid, seq, "stopped", text, usage=usage, limits=ai.usage_limits())
@@ -1442,16 +1443,19 @@ class ChatService:
             raise RuntimeError(t("Unknown course."))
         en = self._day_labels(self.lib.get_chat(chat_id) or {}, shown=False)      # the exported file stays English
         days = ", ".join(f"{d['long']} ({d['kind']})" for d in en)
-        who = ai.PROVIDER_LABELS.get(ai.provider()) or "AI"
+        answers = [m for m in v["messages"] if m["role"] != "user"]     # the AI that wrote them, not the one chosen now
+        made_by = ai.answered_by(answers[-1]) if answers else ""
         title = v["title"] or "New chat"         # the heading and the file name stay English
         lines = [f"# {title}", "",
                  f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
-                 f"**Model:** {ai.model_label(v['model'], v.get('effort', ''))}" + (" · highlights only" if v["focus"] == "highlights" else ""),
-                 "", f"*Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
+                 f"**Model:** {ai.model_label(v['model'], v.get('effort', ''), made_by)}" + (" · highlights only" if v["focus"] == "highlights" else ""),
+                 "", f"*Chat with {' and '.join(ai.chat_ais(answers))} in IEUStudia, exported "
+                 f"{dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
         for m in v["messages"]:
             if m["role"] == "user":
                 lines += [f"**You:** {m['text'].strip()}", ""]
             else:              # the app's notices and an error as alert blocks (GitHub and Obsidian draw them)
+                who = ai.PROVIDER_LABELS.get(ai.answered_by(m)) or "AI"
                 notes = [notices.markdown(n) for n in (m["usage"].get("notices") or [])]
                 if m["status"] == "error":
                     notes.append(notices.alert("CAUTION", f"{who} could not answer: {m['usage'].get('error') or 'error'}"))

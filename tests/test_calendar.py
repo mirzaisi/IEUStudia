@@ -602,6 +602,35 @@ def test_a_reminder_waits_while_nobody_is_at_the_pc(tmp_path, isolated_home, mon
     assert not api._remind_waits and told == []
 
 
+def test_a_pc_on_another_time_zone_is_reminded_by_turkeys_clock(tmp_path, isolated_home, monkeypatch):
+    """IEULearn's 15:40 is Turkey's: a PC kept on an exchange student's home time (UTC+1) reminds by Turkey's clock,
+    as the .ics file already did, not two hours late."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="b", title=TITLE, code="EEE 242", name="S")])
+    lib.merge_assignments("b", None, parse_assignments(PANEL, TITLE))
+    told = []
+    monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
+    monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: False)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: 0.0)
+
+    class Abroad(dt.datetime):                     # 13:00 UTC: 14:00 on this PC, 16:00 in Turkey
+        @classmethod
+        def now(cls, tz=None):
+            at = dt.datetime(2026, 11, 17, 13, 0, tzinfo=dt.timezone.utc)
+            return at.astimezone(tz) if tz else (at + dt.timedelta(hours=1)).replace(tzinfo=None)
+
+    monkeypatch.setattr("studia.api.dt.datetime", Abroad)
+    assert calendar_export.istanbul_now() == dt.datetime(2026, 11, 17, 16, 0)
+    api._remind()
+    assert told == [("IEUStudia: a deadline is coming up", "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
+                     "calendar:b-asg-3003")]
+    assert agenda.build(lib, Settings())["today"] == "2026-11-17"
+
+
 def test_the_open_windows_turns_follow_the_wall_clock():
     """The quiet sync and the reminders of a window left open overnight: Windows' waits don't count the hours the PC
     slept, so they look at the wall clock; after waking, a turn that came due comes BACK_S later (Wi-Fi first)."""

@@ -1163,12 +1163,26 @@ def ai_name() -> str:
     return t("The offline model") if p == "local" else PROVIDER_LABELS.get(p) or t("The AI")
 
 
-def model_label(level: str, effort: str = "") -> str:
-    """The chosen AI with the app's model level, e.g. in an exported chat: "Claude Sonnet", "ChatGPT, medium
-    reasoning" (``effort``: the level it reasoned at, "" = the one ``level`` meant)."""
+def answered_by(message: dict[str, Any]) -> str:
+    """The AI that wrote a chat's answer ("claude", "chatgpt"…), as kept with it; the one chosen now for an answer
+    kept before 4.1.0 without it."""
+    usage = message.get("usage") or {}
+    return usage.get("ai") or usage.get("notices_ai") or provider()
+
+
+def chat_ais(messages: list[dict[str, Any]]) -> list[str]:
+    """The AIs that answered in a chat, in order ("Claude", "ChatGPT"): what an exported chat names, not the AI chosen
+    now (a student who switched to ChatGPT exports a chat Claude wrote)."""
+    labels = [PROVIDER_LABELS.get(answered_by(m)) or "AI" for m in messages if m.get("role") != "user"]
+    return list(dict.fromkeys(labels)) or [PROVIDER_LABELS.get(provider()) or "AI"]
+
+
+def model_label(level: str, effort: str = "", p: str = "") -> str:
+    """The AI (``p``, else the chosen one) with the app's model level, e.g. in an exported chat: "Claude Sonnet",
+    "ChatGPT, medium reasoning" (``effort``: the level it reasoned at, "" = the one ``level`` meant)."""
     from .effort import LABELS, LEGACY
 
-    p = provider()
+    p = p or provider()
     if p in ("chatgpt", "codex"):
         return f"ChatGPT, {LABELS.get(effort or LEGACY.get(level, ''), level).lower()} reasoning"
     if p == "claude":

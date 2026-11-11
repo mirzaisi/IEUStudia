@@ -446,7 +446,9 @@ def holiday_items(start: dt.date, end: dt.date) -> list[dict[str, Any]]:
 
 def build(lib: Any, settings: Any, now: Optional[dt.datetime] = None) -> dict[str, Any]:
     """Everything the Calendar page shows: {"items", "courses", "term": {"start", "end"}, "today", "reminders"}."""
-    now = now or dt.datetime.now()
+    from .calendar_export import istanbul_now
+
+    now = now or istanbul_now()                  # (IEULearn's times are Turkey's, whatever zone this PC is set to)
     today = now.date()
     courses = [c for c in lib.courses() if c.code]
     warnings = lib.all_warnings()

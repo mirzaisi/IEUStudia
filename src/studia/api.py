@@ -329,7 +329,7 @@ class Api(PracticeApi):
         from . import appconfig
         from .agenda import reminder_prefs
         from .agent import _load_seen, _save_seen, reminders
-        from .calendar_export import all_events
+        from .calendar_export import all_events, istanbul_now
 
         if not appconfig.load().notify_reminders:
             return
@@ -338,7 +338,7 @@ class Api(PracticeApi):
             return
         with self._remind_lock:                           # two syncs ending together remind once
             seen = _load_seen()
-            note = reminders(all_events(self._s.lib, self._s.settings), dt.datetime.now(), seen,
+            note = reminders(all_events(self._s.lib, self._s.settings), istanbul_now(), seen,
                              reminder_prefs(self._s.lib))
             if note is None:
                 return
