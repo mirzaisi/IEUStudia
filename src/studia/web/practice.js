@@ -199,7 +199,7 @@
     const when = sm.at ? t.date(sm.at.slice(0, 10), "dm") : "";
     return `<div class="st-sum"><div class="st-sum-h">${I("cap", "sm")}<b>${t("Know this for the exam")}</b></div>
       <ol>${sm.items.map((x) => `<li><div class="md">${md(x.point)}</div>${x.why ? `<div class="dim sm">${esc(x.why)}</div>` : ""}${(x.cites || []).length ? `<div class="st-cites">${x.cites.map((id) => citeChip(items, id)).join("")}</div>` : ""}</li>`).join("")}</ol>
-      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
+      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: St.modelLabel ? St.modelLabel(sm.model) : sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
   }
   function stressedHTML(c, p) {
     const s = p.stressed || { weeks: [], not_needed: [], counts: {}, total: 0 };

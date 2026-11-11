@@ -14,9 +14,32 @@ import pytest
 
 from studia import i18n
 from test_chat_page import run as run_chat
+from test_page_feedback import run as run_page
 
 WEB = Path(i18n.__file__).parent / "web"
 node = pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
+TR = json.dumps(i18n.table("tr"), ensure_ascii=False)
+
+
+# ------------------------------------------------------------------ PG-5: the AI's label in the page's language
+@node
+def test_the_ai_that_wrote_a_summary_is_named_in_the_page_s_language(tmp_path):
+    out = run_page(tmp_path, """
+  const labels = ["Claude Haiku, low effort", "Claude Sonnet", "Claude Opus, extra high effort", "ChatGPT, medium reasoning",
+    "ChatGPT, max reasoning", "Offline model", "AI", ""];
+  out.en = labels.map(St.modelLabel);
+  S.digest.data = { todo: [], week: { offset: 0, label: "9 Nov – 15 Nov" }, courses: [] };
+  S.digest.summary = { text: "Week summary", model: "Claude Haiku, low effort", at: "2026-11-11T19:51:09" };
+  S.view = { name: "digest" };
+  t.load({ lang: "tr", table: %s });
+  out.tr = labels.map(St.modelLabel);
+  out.digest = (view().match(/Yapay zeka yazdı \\([^)]*\\)/) || [""])[0];
+""" % TR)
+    assert out["en"] == ["Claude Haiku, low effort", "Claude Sonnet", "Claude Opus, extra high effort", "ChatGPT, medium reasoning",
+                         "ChatGPT, max reasoning", "Offline model", "AI", ""]
+    assert out["tr"] == ["Claude Haiku, akıl yürütme: düşük", "Claude Sonnet", "Claude Opus, akıl yürütme: ekstra yüksek",
+                         "ChatGPT, akıl yürütme: orta", "ChatGPT, akıl yürütme: maksimum", "Çevrimdışı model", "AI", ""]
+    assert out["digest"] == "Yapay zeka yazdı (Claude Haiku, akıl yürütme: düşük)"
 
 
 # ------------------------------------------------------------------ PG-1: a chat's unsent question stays with it
