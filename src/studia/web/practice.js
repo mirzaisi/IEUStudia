@@ -408,6 +408,7 @@
     }
     P.run.quiz = quiz; P.run.attempts = r.attempts || [];
     drawRun();
+    St.onModalClose = () => { if (onTab(quiz.course_id)) renderView(); };     // closed: its row says Continue
   }
   const KINDS = () => ({ mc: t("Multiple choice"), short: t("Short answer"), problem: t("Worked problem") });
   function introHTML(R) {
