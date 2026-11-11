@@ -367,6 +367,7 @@ def test_the_answers_time_limit_counts_only_the_time_the_pc_is_awake(claude, mon
     result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok", "usage": {}})
     claude([sys.executable, "-c", f"import sys, time; sys.stdin.read(); time.sleep(1.5); print({result!r})"])
     real, calls = time.monotonic, []
+    monkeypatch.setattr(osutil.impl(), "awake_time", real)            # (awake the whole time)
 
     def slept():                                                       # 16 minutes asleep right after the start
         calls.append(1)

@@ -126,6 +126,9 @@ def test_a_socks_proxy_is_said_plainly(monkeypatch, var):
     for name in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "all_proxy", "https_proxy", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(var, "socks5://127.0.0.1:9")
+    # what requests raises then, without PySocks (a build machine may resolve proxies its own way: asked directly)
+    socks = requests.exceptions.InvalidSchema("Missing dependencies for SOCKS support.")
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", lambda *a, **k: (_ for _ in ()).throw(socks))
     with pytest.raises(NetworkError) as err:
         net.make_session().get("https://example.invalid/")
     assert str(err.value) == net.proxy_refused()

@@ -5,6 +5,8 @@ can't be saved is kept in the profile's own folder instead of being lost."""
 import datetime as dt
 import pathlib
 
+import sys
+
 import pytest
 
 from studia import ai, paths, store
@@ -73,7 +75,8 @@ def test_an_answer_that_cant_be_saved_is_kept(svc, asked, monkeypatch):
     assert len(asked) == 1
     copies = list((paths.profile_dir() / "Unsaved notes").glob("*.md"))
     assert len(copies) == 1 and "V = IR." in copies[0].read_text(encoding="utf-8")
-    assert str(copies[0]) in str(err.value) and "Windows did not let IEUStudia use" in str(err.value)
+    assert str(copies[0]) in str(err.value)
+    assert ("Windows did not let IEUStudia use" if sys.platform == "win32" else "isn't allowed to use") in str(err.value)
 
 
 def test_notes_are_written_as_before(svc, asked):
