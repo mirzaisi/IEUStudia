@@ -576,11 +576,11 @@ class Helper:
                     log.warning("Helper: check failed", exc_info=True)
             if note is None and self.cfg.notify_reminders and not self.paused:     # one notification at a time
                 from .agenda import reminder_prefs
-                from .calendar_export import all_events
+                from .calendar_export import all_events, istanbul_now
 
                 told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
                 seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
-                note = reminders(all_events(lib, settings), dt.datetime.now(), seen, reminder_prefs(lib))
+                note = reminders(all_events(lib, settings), istanbul_now(), seen, reminder_prefs(lib))
             if note is None and not self.paused:     # a service that changed on its side: said once, while the window
                 note = changed_note()                # is closed (notifications may not come until an update)
             if any(set(v) - known.get(k, set()) for k, v in seen.items()):     # (nothing new: nothing to write)

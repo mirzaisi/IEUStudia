@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import __version__, net, store, views
 from . import search as search_mod
@@ -22,12 +22,14 @@ from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .practice import PRACTICE_KINDS, PracticeApi      # 4.0 Practice: quizzes, flashcards, what was stressed
 from .services import NOTE_KINDS, Services
-from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
-                     reveal, set_clipboard)
+from .osutil import (TaskbarProgress, flash_taskbar, idle_seconds, is_foreground, normal_priority, open_in_browser,
+                     open_path, reveal, set_clipboard)
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
 REMIND_EVERY_S = 10 * 60     # ... and for the reminders that came due (the Calendar page's)
+STEP_S = 30.0                # those two look at the wall clock this often (Windows' waits don't count the PC's sleep)
+AWAY_S = 5 * 60              # no key, mouse or touch this long: nobody is at the PC (a reminder waits until you're back)
 # the page gets its events at most this often (each time all that came, coalesced); a running job reports every 0.25 s,
 # so more often only meant more calls into the window (each one waits for its thread and Python's lock)
 EVENT_GAP_S = 0.25
@@ -45,6 +47,28 @@ def events_script(events: list[dict[str, Any]]) -> str:
         except (TypeError, ValueError):
             log.debug("event not sent: %r", e.get("type"), exc_info=True)
     return _EVENTS_JS % ("[" + ",".join(parts).replace("</", "<\\/") + "]")
+
+
+def turns(interval_s: float, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time,
+          back: Callable[[], bool] = lambda: False) -> Iterator[None]:
+    """A turn every ``interval_s`` by the wall clock: Windows' waits don't count the hours the PC slept, so a window
+    left open overnight would otherwise wait its whole interval after the PC wakes up. A turn that came due while the
+    PC slept comes BACK_S after it woke (Wi-Fi first); one also comes whenever ``back()`` says so."""
+    from .agent import BACK_S
+
+    last = clock()
+    while True:
+        before = clock()
+        sleep(STEP_S)
+        now = clock()
+        if now - last >= interval_s or now < last:         # (or the clock was set back)
+            if now - before > STEP_S + 60:                 # the PC slept
+                sleep(BACK_S)
+                now = clock()
+            last = now
+            yield
+        elif back():
+            yield
 
 
 STALL_S = 20.0               # a sync that said nothing this long, while a request waits as long: it says what for
@@ -127,6 +151,7 @@ class Api(PracticeApi):
         self._notifier: Optional[Any] = None
         self._notify_lock = threading.Lock()
         self._remind_lock = threading.Lock()
+        self._remind_waits = False                      # a reminder came due while nobody was at the PC
         threading.Thread(target=self._dispatch, name="ui-events", daemon=True).start()
         if services is not None:
             self._set_services(services)
@@ -192,12 +217,12 @@ class Api(PracticeApi):
                 log.debug("Update check failed", exc_info=True)
             sleep(3 * 3600)
 
-    def _auto_sync_loop(self) -> None:
+    def _auto_sync_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
         """A quiet sync every AUTO_SYNC_S while the app is open, so new lectures, materials and announcements (and
-        with them the heads-up) show up by themselves. Nothing is downloaded or transcribed, and a failure only
-        shows in the top bar (no sign-in screen popping up while you read)."""
-        while True:
-            time.sleep(AUTO_SYNC_S)
+        with them the heads-up) show up by themselves; soon after the PC wakes up if one came due meanwhile. Nothing
+        is downloaded or transcribed, and a failure only shows in the top bar (no sign-in screen popping up while
+        you read)."""
+        for _ in turns(AUTO_SYNC_S, sleep):
             try:
                 if self._services is None or not self._services.sync.has_credentials():
                     continue
@@ -298,33 +323,38 @@ class Api(PracticeApi):
 
     def _remind(self) -> None:
         """Before a quiz, an exam, an assignment's deadline or your own calendar entry, as the Calendar page sets it:
-        a reminder, once. In the window if you're using it, else as a Windows notification. The tray helper does the
-        same while the window is closed."""
+        a reminder, once. In the window if you're using it, else as a Windows notification. Not while nobody is at
+        the PC (the window may be in front of a screen that turned off): it comes when you're back. The tray helper
+        does the same while the window is closed."""
         from . import appconfig
         from .agenda import reminder_prefs
         from .agent import _load_seen, _save_seen, reminders
-        from .calendar_export import all_events
+        from .calendar_export import all_events, istanbul_now
 
         if not appconfig.load().notify_reminders:
             return
+        self._remind_waits = idle_seconds() > AWAY_S
+        if self._remind_waits:
+            return
         with self._remind_lock:                           # two syncs ending together remind once
             seen = _load_seen()
-            note = reminders(all_events(self._s.lib, self._s.settings), dt.datetime.now(), seen,
+            note = reminders(all_events(self._s.lib, self._s.settings), istanbul_now(), seen,
                              reminder_prefs(self._s.lib))
             if note is None:
                 return
             _save_seen(seen)
         title, text, target = note
-        if is_foreground(self._hwnd):
-            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · ")})
+        if is_foreground(self._hwnd):                     # (with a button it stays long enough to read)
+            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · "),
+                        "action": {"label": t("Open"), "act": "open-target", "data": {"target": target}}})
         else:
             self._notify(title, text, target)
 
     def _remind_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
         """While the app is open, every REMIND_EVERY_S: the reminders that came due meanwhile (a deadline's "3 hours
-        before" doesn't wait for the next sync, half an hour away). From what is on this PC only."""
-        while True:
-            sleep(REMIND_EVERY_S)
+        before" doesn't wait for the next sync, half an hour away), and one that waited for you as soon as you're
+        back. From what is on this PC only."""
+        for _ in turns(REMIND_EVERY_S, sleep, back=lambda: self._remind_waits and idle_seconds() <= AWAY_S):
             try:
                 if self._services is not None:
                     self._remind()

@@ -250,6 +250,45 @@ def test_the_day_an_announcement_gives_for_a_quiz_or_an_exam():
     assert ("Quiz 2", 9, "", "") in plan(table, quiz2, later)
 
 
+def _days(*anns):
+    return [(e["name"], e["date"], e["time"]) for e in assessment_plan(list(anns)) if e["date"]]
+
+
+@pytest.mark.parametrize("title, body, posted, want", [
+    ("Quiz", "Quiz 2 Cuma günü saat 11.30'da yapılacaktır.", "2026-11-02", []),               # not 30 November
+    ("Quiz", "Quiz 2 Cuma günü saat 10.10'da yapılacaktır.", "2026-09-28", []),               # not 10 October
+    ("Quiz", "2. quizimiz 6 Kasım Cuma günü saat 11.30'da yapılacaktır.", "2026-11-02", [("Quiz 2", "2026-11-06", "11:30")]),
+    ("Ara sınav", "Ara sınav 18 Kasım Çarşamba saat 12.20'de yapılacaktır.", "2026-11-02", [("Midterm", "2026-11-18", "12:20")]),
+    ("Quiz", "Quiz 3 13.11 tarihinde yapılacaktır.", "2026-11-02", [("Quiz 3", "2026-11-13", "")]),   # a day with a dot
+    ("Quiz", "Quiz 3 13.11'de yapılacaktır.", "2026-11-02", [("Quiz 3", "2026-11-13", "")]),
+])
+def test_a_time_with_a_dot_is_no_day(title, body, posted, want):
+    assert _days(_ann("x", title, body, posted + "T10:00")) == want
+
+
+def test_a_class_moved_or_cancelled_at_a_time_with_a_dot():
+    changes = lambda title, body: [(c["kind"], c["date"], c["time"])  # noqa: E731
+                                   for c in agenda.schedule_changes([_ann("x", title, body, "2026-11-02T10:00")])]
+    assert changes("Ders iptali", "Bugün saat 11.20'deki dersimiz iptal edilmiştir.") == [("cancelled", "2026-11-02", "")]
+    assert changes("Telafi", "Cuma günkü dersin telafisi Cumartesi saat 12.30'da yapılacaktır.") == []    # not 30 Dec
+    assert changes("Make-up", "The make-up lecture will be held on Saturday at 10.30 in C204.") == []      # not 30 Oct
+    assert changes("Ders iptali", "16.11-20.11 arası dersler iptal edilmiştir.") == [("cancelled", "2026-11-16", ""),
+                                                                                    ("cancelled", "2026-11-20", "")]
+
+
+def test_the_assessments_own_name_is_no_day():
+    # "1. ara" reads as 1 December and "2 may" as 2 May: part of the name, not its day
+    assert _days(_ann("a", "Ara sınav", "1. ara sınav gelecek hafta Çarşamba günü saat 17:30'da yapılacaktır.",
+                      "2026-11-02T10:00")) == []
+    assert _days(_ann("b", "Ara sınav", "1. ara sınavda başarılar.", "2026-11-02T10:00")) == []
+    assert _days(_ann("c", "Ara sınav", "1. ara sınav 25 Kasım Çarşamba günü saat 17:30'da yapılacaktır.",
+                      "2026-11-02T10:00")) == [("Midterm 1", "2026-11-25", "17:30")]
+    assert _days(_ann("d", "Sınav tarihleri", "1. Ara Sınav\n\n25 Kasım 2026\n\n2. Ara Sınav\n\n23 Aralık 2026",
+                      "2026-10-05T10:00")) == [("Midterm 1", "2026-11-25", ""), ("Midterm 2", "2026-12-23", "")]
+    assert _days(_ann("e", "Quiz 3", "Quiz 3 may include a question from the lab sheets.", "2026-11-11T10:00")) == []
+    assert _days(_ann("f", "Quiz", "Quiz 2 may be on Friday.", "2026-11-11T10:00")) == []
+
+
 # ------------------------------------------------------------------ make-up and cancelled classes
 def test_make_up_and_cancelled_classes_from_the_announcements():
     anns = [_ann("r", "Class Rescheduling Announcement", "Our MATH 240 class, originally scheduled for October 28, 2026, has "
@@ -431,6 +470,18 @@ def test_the_calendar_file_holds_deadlines_and_your_entries_with_stable_ids(tmp_
     assert all(len(line.encode("utf-8")) <= 75 for line in text.split("\r\n"))
 
 
+def test_a_dropped_courses_deadlines_are_no_reminders_any_more(tmp_path):
+    """A course that left the IEULearn dashboard (dropped in add-drop week): its deadlines are not on the Calendar page,
+    so they are not reminded or in the .ics either (a reminder opened a Calendar item that wasn't there)."""
+    lib = _term(tmp_path)
+    assert "b-asg-3003" in {e["uid"] for e in calendar_export.all_events(lib, Settings(), NOW.date())}
+    lib.upsert_courses([Course(id="a", title="2026-1 MATH 250 P 3", code="MATH 250", name="Linear Algebra", term="T", section="3"),
+                        Course(id="c", title="2026-1 PSY 430 C 1", code="PSY 430", name="Clinical", term="T", section="1")])
+    events = calendar_export.all_events(lib, Settings(), NOW.date())
+    assert not [e for e in events if e["course_id"] == "b"] and agent.reminders(events, dt.datetime(2026, 11, 17, 16, 0), {}) is None
+    assert not [i for i in agenda.build(lib, Settings(), now=NOW)["items"] if i.get("course_id") == "b"]
+
+
 # ------------------------------------------------------------------ the reminders
 def _deadline(**kw):
     return {"uid": "b-asg-3003", "kind": "assignment", "course": "EEE 242", "course_id": "b", "name": "Lab 3",
@@ -501,6 +552,7 @@ def test_the_open_app_reminds_as_set_and_stays_quiet_when_reminders_are_off(tmp_
     told = []
     monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
     monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: False)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: 0.0)
 
     class Clock(dt.datetime):
         @classmethod
@@ -517,6 +569,96 @@ def test_the_open_app_reminds_as_set_and_stays_quiet_when_reminders_are_off(tmp_
     api._remind()
     assert told == [("IEUStudia: a deadline is coming up", "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
                      "calendar:b-asg-3003")]
+
+
+def test_a_reminder_waits_while_nobody_is_at_the_pc(tmp_path, isolated_home, monkeypatch):
+    """The window in front of a screen that turned off: no 4-second toast to nobody (and then never again), the
+    reminder comes when the student is back."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="b", title=TITLE, code="EEE 242", name="S")])
+    lib.merge_assignments("b", None, parse_assignments(PANEL, TITLE))
+    pushed, told, idle = [], [], [900.0]
+    monkeypatch.setattr(api, "_push", pushed.append)
+    monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
+    monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: True)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: idle[0])
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 17, 16, 0)
+
+    monkeypatch.setattr("studia.api.dt.datetime", Clock)
+    monkeypatch.setattr("studia.calendar_export.dt.date", type("D", (dt.date,), {"today": classmethod(lambda c: dt.date(2026, 11, 17))}))
+    api._remind()
+    assert pushed == [] and told == [] and api._remind_waits and agent._load_seen().get("rem", []) == []
+    idle[0] = 3.0                                                     # back
+    api._remind()
+    assert pushed == [{"type": "toast", "level": "info", "message": "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
+                       "action": {"label": "Open", "act": "open-target", "data": {"target": "calendar:b-asg-3003"}}}]
+    assert not api._remind_waits and told == []
+
+
+def test_a_pc_on_another_time_zone_is_reminded_by_turkeys_clock(tmp_path, isolated_home, monkeypatch):
+    """IEULearn's 15:40 is Turkey's: a PC kept on an exchange student's home time (UTC+1) reminds by Turkey's clock,
+    as the .ics file already did, not two hours late."""
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    lib = api._s.lib
+    lib.upsert_courses([Course(id="b", title=TITLE, code="EEE 242", name="S")])
+    lib.merge_assignments("b", None, parse_assignments(PANEL, TITLE))
+    told = []
+    monkeypatch.setattr(api, "_notify", lambda *a: told.append(a))
+    monkeypatch.setattr("studia.api.is_foreground", lambda hwnd: False)
+    monkeypatch.setattr("studia.api.idle_seconds", lambda: 0.0)
+
+    class Abroad(dt.datetime):                     # 13:00 UTC: 14:00 on this PC, 16:00 in Turkey
+        @classmethod
+        def now(cls, tz=None):
+            at = dt.datetime(2026, 11, 17, 13, 0, tzinfo=dt.timezone.utc)
+            return at.astimezone(tz) if tz else (at + dt.timedelta(hours=1)).replace(tzinfo=None)
+
+    monkeypatch.setattr("studia.api.dt.datetime", Abroad)
+    assert calendar_export.istanbul_now() == dt.datetime(2026, 11, 17, 16, 0)
+    api._remind()
+    assert told == [("IEUStudia: a deadline is coming up", "EEE 242: Lab 3 is due tomorrow (Wed 18 Nov) at 15:40.",
+                     "calendar:b-asg-3003")]
+    assert agenda.build(lib, Settings())["today"] == "2026-11-17"
+
+
+def test_the_open_windows_turns_follow_the_wall_clock():
+    """The quiet sync and the reminders of a window left open overnight: Windows' waits don't count the hours the PC
+    slept, so they look at the wall clock; after waking, a turn that came due comes BACK_S later (Wi-Fi first)."""
+    from studia import api as api_mod
+
+    now, slept, naps = [1000.0], [], {}
+
+    def sleep(s):
+        now[0] += s + naps.pop(len(slept), 0.0)              # (the PC may sleep during this wait)
+        slept.append(s)
+
+    def run(interval, steps, back=lambda: False):
+        got, gen = [], api_mod.turns(interval, sleep, lambda: now[0], back)
+        start = now[0]
+        for _ in range(steps):
+            next(gen)
+            got.append(round(now[0] - start))
+        return got
+
+    assert run(600, 3) == [600, 1200, 1800]                  # every interval
+    slept.clear()
+    naps[2] = 8 * 3600                                        # asleep for 8 hours after a minute: not 29 more minutes
+    assert run(1800, 1) == [8 * 3600 + 3 * 30 + agent.BACK_S] and slept[-1] == agent.BACK_S
+    slept.clear()
+    calls = []
+    back = lambda: calls.append(1) or len(calls) == 3        # noqa: E731 (you're back at the third look)
+    assert run(600, 1, back) == [90]
 
 
 def test_the_calendar_api(tmp_path, isolated_home):

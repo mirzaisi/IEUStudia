@@ -163,10 +163,15 @@ def _passing(exc: BaseException) -> bool:
         ("not a file IEUStudia encrypted", "the keyring's key doesn't open"))
 
 
+_unsaved: dict[str, dict[str, Any]] = {}       # a renewed sign-in this PC couldn't save (a full disk), by profile folder
+
+
 def _load() -> dict[str, Any]:
     """The sign-in kept on this PC ({} when there is none). One this Windows account can't decrypt any more (after a
     Windows password reset, with a profile copied from another PC, a damaged file) is kept aside as UNREADABLE, and
-    status() says to sign in again."""
+    status() says to sign in again. A renewed one that couldn't be saved comes from memory (see _keep)."""
+    if str(_dir()) in _unsaved:
+        return dict(_unsaved[str(_dir())])
     path = _dir() / "chatgpt.bin"
     if not path.is_file():
         return {}
@@ -198,16 +203,29 @@ def _save(rec: dict[str, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(_protect(json.dumps(rec).encode("utf-8")))
     os.replace(tmp, path)
+    _unsaved.pop(str(_dir()), None)
     try:                         # a new sign-in is kept: the old unreadable one says nothing any more (after a later
         (_dir() / UNREADABLE).unlink(missing_ok=True)       # sign-out it would claim a Windows password reset again)
     except OSError:
         pass
 
 
+def _keep(rec: dict[str, Any]) -> None:
+    """Save a renewed sign-in. OpenAI's renewal replaced the refresh token, and the one on file no longer works: when
+    this PC can't save it (a full disk), it is used from memory and saved again with each request until that works,
+    rather than the student having to sign in again after freeing space."""
+    try:
+        _save(rec)
+    except OSError as exc:
+        log.warning("ChatGPT: the renewed sign-in could not be saved (%s); kept in memory until it can be", exc)
+        _unsaved[str(_dir())] = dict(rec)
+
+
 def _forget() -> None:
     """Drop the sign-in kept here without asking OpenAI (its registration isn't accepted any more): the next sign-in
     registers IEUStudia anew."""
     with _lock:
+        _unsaved.pop(str(_dir()), None)
         try:
             (_dir() / "chatgpt.bin").unlink(missing_ok=True)
         except OSError as exc:
@@ -1197,6 +1215,8 @@ def _token(force: bool) -> str:
     after it came makes an expired one look valid)."""
     with _lock:
         rec = _load()
+        if str(_dir()) in _unsaved:                  # a renewal this PC couldn't save: saved now, if it can be
+            _keep(rec)
         if not rec.get("refresh_token"):
             raise RuntimeError(t("ChatGPT is not signed in. Settings → AI → Continue with ChatGPT."))
         if PLAN_SCOPE not in (rec.get("scopes") or []):
@@ -1213,7 +1233,7 @@ def _token(force: bool) -> str:
                 raise health.changed("openai", "signin", f"renewing answered HTTP {exc.status}") from exc
             if exc.code in _TERMINAL:
                 rec.update(access_token="", refresh_token="")
-                _save(rec)
+                _keep(rec)
                 raise RuntimeError(t("Your ChatGPT sign-in has ended. Settings → AI → Continue with ChatGPT.")) from exc
             if exc.status == 429:
                 raise RuntimeError(t("OpenAI is busy right now and didn't renew IEUStudia's access to ChatGPT. Wait a "
@@ -1230,10 +1250,7 @@ def _token(force: bool) -> str:
             # token that did come is kept: the one before it may no longer work)
             if isinstance(tok.get("refresh_token"), str) and tok["refresh_token"]:
                 rec["refresh_token"] = tok["refresh_token"]
-                try:
-                    _save(rec)
-                except OSError:
-                    log.warning("ChatGPT: the renewed refresh token could not be kept", exc_info=True)
+                _keep(rec)
             raise health.changed("openai", "signin", f"the renewal came without an access token ({_fields(tok)})")
         health.ok("openai", "signin")
         rec.update(access_token=tok.get("access_token", ""), refresh_token=tok.get("refresh_token") or rec["refresh_token"],
@@ -1242,14 +1259,7 @@ def _token(force: bool) -> str:
                    saved_at=time.time())
         rec.pop("client_refused", None)              # OpenAI took the registration: an earlier refusal counts no more
         _client_accepted(rec["client_id"])
-        try:
-            _save(rec)
-        except OSError as exc:
-            from .net import plain_error
-
-            log.warning("ChatGPT: the renewed sign-in could not be kept: %s", exc)
-            raise RuntimeError(t("IEUStudia couldn't save ChatGPT's renewed access on this PC. {error}",
-                                 error=plain_error(exc))) from exc
+        _keep(rec)
         return rec["access_token"]
 
 
@@ -1282,6 +1292,7 @@ def sign_out() -> dict[str, Any]:
                 revoked = r.status_code == 200
             except Exception as exc:  # noqa: BLE001 - signing out locally anyway
                 log.info("Revoking the ChatGPT session failed: %s", exc)
+        _unsaved.pop(str(_dir()), None)
         try:
             (_dir() / "chatgpt.bin").unlink(missing_ok=True)
         except OSError:

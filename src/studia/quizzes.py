@@ -413,10 +413,10 @@ def _refs(v: Any) -> list[str]:
 def _json_body(text: str) -> Any:
     """The JSON in an answer: whole, in a ```json fence, or the list or object it starts with after a sentence
     (whichever comes first: "Sure! [{…}] Good luck." is a list)."""
-    from .ai import _tex_backslashes
+    from .ai import JSON_FENCE, _tex_backslashes
 
     body = (text or "").strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", body, re.S)
+    fence = JSON_FENCE.search(body)
     body = fence.group(1).strip() if fence else body
     if "\\" in body:
         body = _tex_backslashes(body)

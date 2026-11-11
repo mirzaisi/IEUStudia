@@ -38,6 +38,12 @@ TPM_RIGHTBUTTON, TPM_RETURNCMD, TPM_NONOTIFY = 0x2, 0x100, 0x80
 WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, PBT_APMRESUMEAUTOMATIC = 0x218, 0x8013, 0x12
 
 
+def _cut(text: str, units: int) -> str:
+    """``text`` cut to what a WCHAR field of ``units`` + 1 holds: Windows counts UTF-16 units, and an emoji takes two
+    ("📢 Quiz 3 hakkında" in an announcement's title made a notification too long, and it was lost)."""
+    return (text or "").encode("utf-16-le")[:2 * units].decode("utf-16-le", "ignore")
+
+
 class GUID(ctypes.Structure):
     _fields_ = [("Data1", wt.DWORD), ("Data2", wt.WORD), ("Data3", wt.WORD), ("Data4", ctypes.c_ubyte * 8)]
 
@@ -131,12 +137,12 @@ class Tray:
     # ---- public (any thread)
     def notify(self, title: str, text: str, payload: Any = None) -> None:
         with self._lock:
-            self._pending.append((title[:63], text[:255], payload))
+            self._pending.append((_cut(title, 63), _cut(text, 255), payload))
         if self.hwnd:
             user32.PostMessageW(self.hwnd, WM_NOTIFY_POST, 0, 0)
 
     def set_tooltip(self, text: str) -> None:
-        self.tooltip = text[:127]
+        self.tooltip = _cut(text, 127)
         if self.hwnd:
             user32.PostMessageW(self.hwnd, WM_TIP_POST, 0, 0)
 
@@ -157,7 +163,7 @@ class Tray:
         d = self._data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP)
         d.uCallbackMessage = WM_TRAY
         d.hIcon = self._icon_small
-        d.szTip = self.tooltip[:127]
+        d.szTip = _cut(self.tooltip, 127)
         shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(d))
         d.uVersion = NOTIFYICON_VERSION_4
         shell32.Shell_NotifyIconW(NIM_SETVERSION, ctypes.byref(d))
@@ -218,7 +224,7 @@ class Tray:
             return 0
         if msg == WM_TIP_POST:
             d = self._data(NIF_TIP | NIF_SHOWTIP)
-            d.szTip = self.tooltip[:127]
+            d.szTip = _cut(self.tooltip, 127)
             shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(d))
             return 0
         if msg == self._taskbar_created and msg:       # Explorer restarted: put the icon back

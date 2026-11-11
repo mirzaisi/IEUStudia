@@ -461,6 +461,22 @@ def test_export_rename_and_delete(env):
     assert env.svc.list() == [] and env.lib.chat_messages(chat["id"]) == []
 
 
+def test_an_exported_chat_names_the_ai_that_answered_not_the_one_chosen_now(env):
+    """Weeks of chatting with Claude, then the student switches to ChatGPT (the Claude plan ended) and exports an old
+    chat: it still says Claude wrote the answers (the file is kept, or handed in)."""
+    from studia import exports
+
+    chat = env.svc.create("c", [DAY1])
+    ask(env, chat["id"], "Summarise")
+    assert env.lib.chat_messages(chat["id"])[-1]["usage"]["ai"] == "claude"
+    appconfig.update({"ai_provider": "chatgpt"})
+    text = env.svc.export(chat["id"]).read_text(encoding="utf-8")
+    assert "**Claude:**" in text and "Chat with Claude in IEUStudia" in text and "**Model:** Claude " in text
+    assert "ChatGPT" not in text
+    doc = exports.copy_text(types.SimpleNamespace(lib=env.lib, chat=env.svc, day=env.svc._s.day), f"chat:{chat['id']}", "")
+    assert "Chat with Claude" in doc and "Claude " in doc and "ChatGPT" not in doc
+
+
 def test_a_chat_without_a_title_or_a_question_is_exported_as_new_chat(env):
     chat = env.svc.create("c", [DAY1])             # its first question could not be sent
     path = env.svc.export(chat["id"])

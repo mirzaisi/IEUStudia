@@ -184,6 +184,23 @@ def test_the_tray_window_reads_the_power_broadcasts():
     assert ev(tray.PBT_APMRESUMEAUTOMATIC, 0) == "resume" and ev(0x4, 0) == ""             # (PBT_APMSUSPEND)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows notifications")
+def test_a_notification_with_emoji_fits_windows_field(tmp_path):
+    """Windows counts UTF-16 units, and an emoji takes two: four announcements with "📢 … 📌" in a title made the text
+    too long for the notification's field, and it was lost (after being marked as told)."""
+    from studia import tray
+
+    t = tray.Tray("IEUStudia", tmp_path / "icon.ico", lambda: [], lambda cmd: None, lambda p: None)
+    text = "\n".join(f"MATH 250: Quiz · 📢 Quiz {n} hakkında önemli duyuru, lütfen okuyun 📌 sınav salonları" for n in range(4))
+    t.notify("📢 " * 40, text + "\n+3 more", "home")
+    t.set_tooltip("IEUStudia · " + "📌" * 100)
+    (title, body, _), = t._pending
+    d = tray.NOTIFYICONDATAW()
+    d.szInfoTitle, d.szInfo, d.szTip = title, body, t.tooltip            # (raised ValueError: too long)
+    assert len(body.encode("utf-16-le")) // 2 == 255 and body.startswith("MATH 250: Quiz · 📢 Quiz 0")
+    assert tray._cut("a📢", 2) == "a" and tray._cut("ab", 255) == "ab"   # never half an emoji
+
+
 # ----------------------------------------------------------------------------- what a check writes
 def _rec(did, course, day, hour=9, name="Lecture"):
     return Recording(delivery_id=did, course_id=course, folder_id="f", folder_path="", name=name,

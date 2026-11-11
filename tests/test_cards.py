@@ -202,6 +202,25 @@ def test_the_ais_cards_in_every_form(text, want):
     assert [(c["q"], c["a"], c["source"]) for c in got] == want
 
 
+@pytest.mark.parametrize("fenced", [False, True])
+def test_a_code_block_on_a_cards_back_keeps_the_whole_set(fenced):
+    deck = {"cards": [{"front": "A for loop that prints 0 to 2?", "back": "```c\nfor (int i = 0; i < 3; i++)\n"
+                       "    printf(\"%d\", i);\n```", "source": "F1 p.4"},
+                      {"front": "do-while?", "back": "Runs its body at least once.", "source": "F1 p.5"}]}
+    text = json.dumps(deck, indent=1)
+    got = cards.read_cards("```json\n" + text + "\n```" if fenced else text)
+    assert [c["q"] for c in got] == ["A for loop that prints 0 to 2?", "do-while?"] and got[0]["a"].startswith("```c\n")
+
+
+def test_parse_json_reads_past_a_code_block_inside_the_json():
+    from studia import ai
+
+    data = {"summary": "Pointers", "example": "```c\nint *p = &x;\n```"}
+    assert ai.parse_json(json.dumps(data)) == data
+    assert ai.parse_json("```json\n" + json.dumps(data) + "\n```") == data
+    assert ai.parse_json('```json {"a": 1}```') == {"a": 1}                  # a fence on one line: its braces
+
+
 def wait_done(lib, pid, timeout=10):
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
