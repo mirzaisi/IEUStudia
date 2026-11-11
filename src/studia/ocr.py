@@ -189,6 +189,41 @@ def _recognize(engine: Any, gray: np.ndarray) -> list[Line]:
     return out
 
 
+CHECK_PICTURE = "assets/ocr-check.png"         # "Lecture 7: Ohm's law and circuits", black on white
+CHECK_WORDS = ("lecture", "ohm", "law", "circuits")
+
+
+def self_check() -> dict[str, Any]:
+    """For the app's --selftest (a release build): Windows' text reading works inside it, from loading pythonnet and
+    the WinRT types to reading a small picture with a few words (as the screen timeline reads a slide). "skipped" on
+    Linux and where Windows has no OCR language; "failed" when something of it doesn't load or the words don't come
+    back. Says nothing on its own: the result is the self-test's."""
+    if sys.platform != "win32":
+        return {"ok": True, "status": "skipped", "why": "Windows' text reading is Windows only"}
+    from pathlib import Path
+
+    try:
+        with _lock:
+            _winrt()
+            engines = _engines()
+    except Exception as exc:  # noqa: BLE001 - said in the report
+        return {"ok": False, "status": "failed", "why": f"it doesn't load: {exc!r}"[:300]}
+    if not engines:
+        return {"ok": True, "status": "skipped", "why": "Windows has no OCR language here"}
+    gray = _gray(str(Path(__file__).parent / CHECK_PICTURE))
+    if gray is None:
+        return {"ok": False, "status": "failed", "why": f"{CHECK_PICTURE} can't be read"}
+    try:
+        lines, engine = read_lines(gray)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "status": "failed", "why": f"reading failed: {exc!r}"[:300]}
+    text = " ".join(ln.text for ln in lines)
+    found = [w for w in CHECK_WORDS if w in text.lower()]
+    ok = len(found) >= len(CHECK_WORDS) - 1          # (one word misread is still Windows reading)
+    return {"ok": ok, "status": "read" if ok else "failed", "engine": engine, "text": text[:200],
+            **({} if ok else {"why": "the words didn't come back"})}
+
+
 def max_side() -> int:
     try:
         return int(_winrt()["OcrEngine"].GetProperty("MaxImageDimension").GetValue(None, None))

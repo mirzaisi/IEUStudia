@@ -37,7 +37,7 @@ from . import aiwait, store
 from .cancel import Cancelled
 from .i18n import N_, t, tn
 from .notices import ALERTS_MD, KINDS
-from .outputs.prompts import STYLE, written_in
+from .outputs.prompts import STYLE, terms_rule, written_in
 from .stressed import chapter_block, for_pack, pack_block      # what the lecturer stressed: the priorities
 
 log = logging.getLogger("studia")
@@ -236,10 +236,10 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
         if rooms[i] < len(full):
             cut.append(x["ref"])
     pack = "\n".join(out)
-    from .quizzes import course_language
+    from .doclang import document_language
 
     return {"pack": pack, "chars": len(pack), "full_chars": full_chars, "files": files, "lectures": lectures, "cut": cut,
-            "language": course_language(d, {"pack": pack}),         # the language the documents are written in
+            **document_language(d, settings, {"pack": pack}),     # the documents' language, and the course's
             "files_cut": files_cut,
             "left_out": [texts[i][0]["ref"] for i in range(len(texts)) if i not in rooms],
             "materials_missing": missing, "days_missing": days_missing,
@@ -250,6 +250,12 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
 
 
 # ------------------------------------------------------------------ outline (AI)
+def _terms(facts: dict[str, Any]) -> str:
+    """" Keep technical terms in English, …" for a pack (a cheatsheet) in another language than the course's."""
+    rule = terms_rule(facts.get("language") or "", facts.get("taught_in") or "")
+    return f" {rule}" if rule else ""
+
+
 def outline_prompt(scope: Any, facts: dict[str, Any]) -> str:
     hard = f"\nThe student finds these hard (explain them with extra care): {scope.difficulties.strip()}" \
         if (scope.difficulties or "").strip() else ""
@@ -268,7 +274,7 @@ Rules:
 - {chapters_range(facts)} chapters in teaching order (what a chapter needs comes before it), following the material's order unless it jumps; a short topic shares a chapter rather than getting its own. Each concept in exactly one chapter's "teaches".
 - "sources": the file pages ([first, last]) and lecture passages (part, from–to as m:ss or h:mm:ss) each chapter is taught from.
 - "figures": up to {MAX_FIGURES} per chapter, only where a picture teaches better than words, never for decoration. "slide": a page listed as having a figure, when that figure (a circuit, graph, diagram or table) is what the chapter explains; it is shown cropped to the picture. "frame": a slide captured from a lecture, "(slide N)" in that lecture part, when it shows board work or a figure the files lack. "diagram": drawn for the pack where the material describes a picture it doesn't show, or one makes an idea clear (a circuit, graph of a function, tree, timeline, block diagram, geometry), described precisely.
-- Use only the references (F…, L…) listed below. Titles in {facts.get('language') or 'English'}.
+- Use only the references (F…, L…) listed below. Titles and captions in {facts.get('language') or 'English'}.{_terms(facts)}
 {pack_block(facts)}
 === COURSE MATERIAL ===
 {facts['pack']}"""
@@ -380,6 +386,7 @@ def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
                 for k in raw.get("concepts") or [] if isinstance(k, dict) and _str(k.get("name"))][:200]
     return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "intro": _str(raw.get("intro"), 800),
             "chapters": chapters, "concepts": concepts, "language": facts.get("language") or "",
+            "taught_in": facts.get("taught_in") or "",
             "uncovered": [k["name"] for k in concepts if k["chapter"] not in ids]}
 
 
@@ -508,7 +515,7 @@ Format (Markdown):
 - Boxes: a line ":::kind Title", the box's text, then a line ":::". Kinds: definition, key (an important result or rule), example (a worked example: the question, then the solution), mistake (a common mistake), check (the closing questions and answers). Only for those, not around every paragraph.
 - A table where the material compares cases or lists values.
 {('- Figures: put each marker [[FIGURE id]] below on a line of its own, right after the paragraph that explains its figure, and refer to the figure in words ("the figure below"):' + chr(10) + figs) if figs else '- No figures in this chapter.'}
-{('The pages of the material with figures are attached as pictures, labelled ' + ', '.join(pictures) + ': read the circuits, values and equations on them.' + chr(10)) if pictures else ''}{written_in(outline.get("language", ""))} Answer with the chapter's Markdown only.
+{('The pages of the material with figures are attached as pictures, labelled ' + ', '.join(pictures) + ': read the circuits, values and equations on them.' + chr(10)) if pictures else ''}{written_in(outline.get("language", ""), outline.get("taught_in", ""))} Answer with the chapter's Markdown only.
 
 === THIS CHAPTER'S COURSE MATERIAL ===
 {material}"""
@@ -553,9 +560,10 @@ def clean_section(md: str, ch: dict[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------ figures (AI draws SVG; slides and frames as they are)
-def figure_prompt(ch: dict[str, Any], md: str) -> str:
+def figure_prompt(ch: dict[str, Any], md: str, outline: Optional[dict[str, Any]] = None) -> str:
     briefs = "\n".join(f"{g['id']}: {g['brief']}" + (f" (caption: {g['caption']})" if g["caption"] else "")
                        for g in ch["figures"] if g["kind"] == "diagram")
+    lang = (outline or {}).get("language") or "English"
     return f"""TASK: Draw the figures of the study pack chapter below as SVG.
 Figures to draw:
 {briefs}
@@ -564,6 +572,8 @@ For each one, answer exactly:
 === FIGURE <id> ===
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 <height>">…</svg>
 Caption: <one short sentence>
+
+Captions in {lang}.{_terms(outline or {})}
 
 Rules: a clean, correct textbook figure that matches the chapter's text, notation and numbers, simple enough to read at a glance; nothing decorative. Only these elements: g, path, line, polyline, polygon, rect, circle, ellipse, text, tspan, defs, marker (for arrowheads). No script, style, image, foreignObject, links or CSS classes. Width 640; height as needed (200–420); 16px clear at the edges. font-family="Segoe UI, Arial, sans-serif", font-size 13–15; no label touches a line or another label; every axis, arrow and part labelled. Lines and text #1f2937 (stroke-width 1.5–2), one accent #1d4ed8 for what the figure is about, #dc2626 only for a contrast or an error; light fills (#eff5ff, #f3f4f6); no background rectangle. Circuits: straight wires at right angles, resistors as zigzags, capacitors as two plates, inductors as loops, sources as circles with + and −, every element's name and value beside it. Graphs: axes with arrowheads, names and a few tick values. Maths in labels as plain Unicode text (θ, ω, x², √, ≤, →, subscripts with <tspan baseline-shift="sub" font-size="11">), not LaTeX.
 
@@ -1219,7 +1229,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         stage("figures", 0.74 + 0.16 * n / max(1, len(todo)),
               t("Drawing the figures of chapter {n} ({model})…", n=chapters.index(ch) + 1, model=shown))
         ids = {g["id"] for g in ch["figures"] if g["kind"] == "diagram"}
-        res = ask_text(figure_prompt(ch, done.get(ch["id"], "")))
+        res = ask_text(figure_prompt(ch, done.get(ch["id"], ""), outline))
         _usage_add(usage, "figures", res)
         for fid, fig in parse_figures(res.get("text") or "", ids).items():
             clean = sanitize_svg(fig["svg"], prefix=f"{fid}-")
@@ -1546,7 +1556,7 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings),
             "main_input": int(tokens_in), "main_output": int(tokens_out), "requests": 1 + n + figures, "chapters": n, "files": len(facts["files"]), "lectures": len(facts["lectures"]),
             "materials_missing": facts["materials_missing"], "days_missing": facts["days_missing"],
-            "files_cut": facts["files_cut"],
+            "files_cut": facts["files_cut"], "language": facts["language"], "taught_in": facts["taught_in"],
             "minutes": t("about {a}–{b} minutes", a=a, b=a * 2)}
 
 

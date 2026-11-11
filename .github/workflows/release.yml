@@ -24,12 +24,15 @@ jobs:
         run: uv run pytest -q
       - name: Build the app (PyInstaller)
         run: uv run pyinstaller packaging/IEUStudia.spec --noconfirm --distpath build/dist --workpath build/work
-      - name: Self-test of the build
+      - name: Self-test of the build (imports, bundled files, Windows' text reading)
         shell: pwsh
         run: |
           $report = Join-Path $PWD "build\selftest.json"
           $p = Start-Process "build\dist\IEUStudia\IEUStudia.exe" -ArgumentList "--selftest", "`"$report`"" -Wait -PassThru
           Get-Content $report
+          $ocr = (Get-Content $report -Raw | ConvertFrom-Json).ocr
+          Write-Host "Windows' text reading (OCR): $($ocr.status) $($ocr.why) $($ocr.text)"
+          if (-not $ocr.ok) { Write-Host "::warning::Windows' text reading did not work in this build machine's self-test: $($ocr.why)" }
           if ($p.ExitCode -ne 0) { throw "self-test failed" }
       - name: Self-test of a copy marked as downloaded from the internet (the portable zip after Extract All)
         shell: pwsh

@@ -16,7 +16,11 @@
   const mdLine = (s) => md(s).replace(/^<p>([\s\S]*)<\/p>$/, "$1");       // one paragraph, inline (beside a label)
   const math = () => { const m = $("#overlay .modal"); if (m && St.renderMath) St.renderMath(m); };
   const score = (x) => t.num(x, x % 1 ? 1 : 0);
-  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, study: null };
+  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, runs: {}, study: null };
+  // a quiz in progress (answered, not finished): P.run is the one open last; another quiz opened meanwhile keeps it
+  // in P.runs, so each one goes on where it was left
+  const runOf = (id) => (P.run && P.run.id === id ? P.run : P.runs[id]) || null;
+  const inProgress = (R) => !!R && !R.saved && R.pos >= 0;
 
   // ------------------------------------------------------------------ data
   let summaryAsked = null;
@@ -40,6 +44,14 @@
     if (onTab(cid)) renderView();
   }
   const onTab = (cid) => S.view.name === "course" && S.view.courseId === cid && S.view.tab === "practice";
+  // a quiz or card set just started: its row (its bar has the plan's id) scrolled into view, if it is drawn
+  const inView = (id) => {
+    const bar = id && [...document.querySelectorAll(".pr-prog[data-id]")].find((b) => b.dataset.id === id);
+    const row = bar && (bar.closest(".pr-quiz") || bar);
+    if (!row || !row.scrollIntoView) return;
+    row.style.scrollMarginBottom = "72px";             // (room for its wait line, which comes a moment later)
+    row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
   const refresh = (cid) => { loadCourse(cid); loadSummary(S.view.name === "practice"); };
   const canAI = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
   const weekSpan = (weeks) => (St.pack ? St.pack.weekSpan(weeks) : (weeks || []).join(", "));
@@ -127,11 +139,11 @@
         <div class="pr-qacts"><button class="btn sm" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>
         <button class="btn ghost icon sm" data-act="qz-delete" data-id="${esc(q.id)}" title="${esc(t("Delete this quiz"))}">${I("x", "sm")}</button></div></div>`;
     }
-    const going = P.run && P.run.id === q.id && !P.run.saved && P.run.pos >= 0;
+    const goingOn = inProgress(runOf(q.id));
     const best = q.best ? `<span class="pr-best ${q.best.score / Math.max(1, q.best.total) >= 0.8 ? "good" : ""}">${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}</span>` : "";
     return `<div class="pr-quiz"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(quizScope(q))} · ${esc(dmw(q.created_at))}</div>
         ${q.tries ? `<div class="pr-tries sm">${best}<span class="dim">${esc(t.n(q.tries, "{n} try", "{n} tries"))}${q.last ? ` · ${esc(t("last: {score} of {total}", { score: score(q.last.score), total: q.last.total }))}` : ""}</span></div>` : ""}</div>
-      <div class="pr-qacts"><button class="btn primary sm" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${going ? t("Continue") : q.tries ? t("Practise again") : t("Practise")}</button>
+      <div class="pr-qacts"><button class="btn primary sm" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${goingOn ? t("Continue") : q.tries ? t("Practise again") : t("Practise")}</button>
         <button class="btn ghost icon sm" data-act="menu-qz" data-id="${esc(q.id)}" data-cid="${esc(q.course_id)}" title="${esc(t("More"))}">${I("more", "sm")}</button></div></div>`;
   }
   function quizzesHTML(c, p) {
@@ -140,12 +152,15 @@
       <button class="btn primary sm" data-act="qz-new" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("Exam-style questions from your files and lectures, written by {ai}", { ai: St.aiName() }) : St.aiHint())}">${I("plus", "sm")} ${t("New quiz")}</button></div>
       ${list ? `<div class="pr-list">${list}</div>` : `<p class="pr-empty">${esc(t("No quizzes yet. Pick the weeks (or the next quiz or midterm) and {ai} writes exam-style questions from your files and lectures, each saying where it comes from. It takes a few minutes.", { ai: St.aiName() }))}</p>`}</div>`;
   }
+  // why a card set failed, in the language of now: cards.py keeps its own reasons as the English words t() looks up,
+  // with {ai} to fill in (any other reason, such as the AI's own, stays as it was said)
+  const setError = (x) => t("Cards from files: {error}", { error: x.error ? t(x.error, { ai: St.aiName() }) : t("failed") });
   function cardsHTML(c, p) {
     const d = p.deck || {};
     const sets = (p.card_sets || []).filter((x) => x.status !== "done");
     const making = sets.map((x) => ["running", "queued"].includes(x.status)
       ? progHTML(x, `<button class="btn ghost sm" data-act="plan-stop" data-id="${esc(x.id)}">${t("Stop")}</button>`) + (St.planWait ? St.planWait(x) : "")
-      : `<div class="pr-prog"><span class="sm ${x.status === "error" ? "err-txt" : "dim"}">${esc(x.status === "error" ? t("Cards from files: {error}", { error: x.error || t("failed") }) : t("Cards from files: stopped"))}</span>
+      : `<div class="pr-prog"><span class="sm ${x.status === "error" ? "err-txt" : "dim"}">${esc(x.status === "error" ? setError(x) : t("Cards from files: stopped"))}</span>
           <button class="btn ghost sm" data-act="plan-resume" data-id="${esc(x.id)}">${t("Resume")}</button><button class="btn ghost icon sm" data-act="fc-set-delete" data-id="${esc(x.id)}" title="${esc(t("Delete"))}">${I("x", "sm")}</button></div>`).join("");
     const lectures = t.n(d.lecture_days || 0, "{n} lecture", "{n} lectures");
     const from = !d.total ? "" : d.lecture_days && d.files ? t("From the flashcards of {lectures} and from files ({files} cards). A few minutes a day is enough.", { lectures, files: d.files })
@@ -188,7 +203,7 @@
     const when = sm.at ? t.date(sm.at.slice(0, 10), "dm") : "";
     return `<div class="st-sum"><div class="st-sum-h">${I("cap", "sm")}<b>${t("Know this for the exam")}</b></div>
       <ol>${sm.items.map((x) => `<li><div class="md">${md(x.point)}</div>${x.why ? `<div class="dim sm">${esc(x.why)}</div>` : ""}${(x.cites || []).length ? `<div class="st-cites">${x.cites.map((id) => citeChip(items, id)).join("")}</div>` : ""}</li>`).join("")}</ol>
-      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
+      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: St.modelLabel ? St.modelLabel(sm.model) : sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
   }
   function stressedHTML(c, p) {
     const s = p.stressed || { weeks: [], not_needed: [], counts: {}, total: 0 };
@@ -208,7 +223,7 @@
     }).join("");
     const nn = s.not_needed.filter((it) => f === "all" || String(it.week == null ? "other" : it.week) === f);
     const ai = St.isChatGPT() && St.effortInline && canAI() ? St.effortInline("st", "chat") : "";
-    const sumBtn = s.total ? `${ai}<button class="btn sm" data-act="st-sum" data-cid="${esc(c.id)}" ${St.aiBtn(canAI() && !P.stressing, true)} title="${esc(canAI() ? t("One short request to {ai}: a ranked list of what to know, each point with the moments it comes from", { ai: St.aiName() }) : St.aiHint())}">${I("ai", "sm")} ${s.summary ? t("Sum it up again") : t("Sum it up with AI")}</button>` : "";
+    const sumBtn = s.total ? `${ai}<button class="btn sm" data-act="st-sum" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true) || (P.stressing === c.id ? "disabled" : P.stressing ? St.whyOff(t("{ai} is still ranking another course's moments. Try again when it's done.", { ai: St.aiName() })) : "")} title="${esc(canAI() ? t("One short request to {ai}: a ranked list of what to know, each point with the moments it comes from", { ai: St.aiName() }) : St.aiHint())}">${I("ai", "sm")} ${s.summary ? t("Sum it up again") : t("Sum it up with AI")}</button>` : "";
     const left = s.untranscribed ? `<div class="note-sm">${I("info", "sm")}<span>${esc(t.n(s.untranscribed, "{n} lecture of yours isn't transcribed yet, so what was said there isn't here.", "{n} lectures of yours aren't transcribed yet, so what was said there isn't here."))}</span></div>` : "";
     return `<div class="card pr-card"><div class="pr-h">${I("star")}<b>${t("What the lecturer stressed")}</b>${s.total ? `<span class="dim">${esc(t.n(s.total, "{n} moment", "{n} moments"))}</span>` : ""}<span class="spacer"></span>${sumBtn}</div>
       <p class="pr-sub">${esc(t("Found in your transcribed lectures, free and without AI: when the lecturer said something is important, a common mistake, or on the exam. Repeats are shown once. Click one to read it in the transcript."))}</p>
@@ -304,7 +319,6 @@
     setMode(nextExam(r) ? "next" : "weeks");
     drawQuiz(); estimateQuiz();
   }
-  const LANG = () => ({ English: t("English"), Turkish: t("Turkish") });
   function quizCost() {
     const e = Q.est, ai = Q.opts.ai || {};
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Quizzes need ChatGPT or Claude (the offline model is too small for them).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
@@ -315,7 +329,7 @@
     const big = e.main_input + e.main_output >= 40000;        // (a midterm's eight weeks: about 70k)
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${big ? t.html("Uses part of your {ai} plan.", { ai: St.aiName() }) : t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t("About {k} tokens in one request, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
-      <div class="dim sm">${esc(t("Questions in {language}, the language this course is taught in.", { language: LANG()[e.language] || e.language }))}</div></div></div>${more}`;
+      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>${more}`;
   }
   function drawQuiz() {
     const r = Q.opts, courses = S.courses.filter((c) => c.code), e = nextExam(r);
@@ -383,14 +397,18 @@
     if (!r.ok) { toast(r.error, "error"); return; }
     const quiz = r.quiz, qs = ((quiz.result || {}).questions) || [];
     if (!qs.length) { toast(t("This quiz has no questions."), "error"); return; }
-    const resume = P.run && P.run.id === id && !P.run.saved && !only;
-    if (!resume) {
+    const kept = runOf(id), resume = kept && !kept.saved && !only;
+    if (P.run && P.run.id !== id && inProgress(P.run)) P.runs[P.run.id] = P.run;     // the one left: kept for its Continue
+    delete P.runs[id];
+    if (resume) P.run = kept;
+    else {
       const pick = only && only.length ? qs.filter((q) => only.includes(q.n)) : qs;
       P.run = { id, cid: quiz.course_id, order: pick.map((q) => qs.indexOf(q)), pos: only && only.length ? 0 : -1, answers: {},
         picked: null, checked: false, text: "", only: only || [], started: new Date().toISOString(), saved: false };
     }
     P.run.quiz = quiz; P.run.attempts = r.attempts || [];
     drawRun();
+    St.onModalClose = () => { if (onTab(quiz.course_id)) renderView(); };     // closed: its row says Continue
   }
   const KINDS = () => ({ mc: t("Multiple choice"), short: t("Short answer"), problem: t("Worked problem") });
   function introHTML(R) {
@@ -592,7 +610,8 @@
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
-      <div class="dim sm">${esc(t.n(e.pages, "Up to about {n} cards from {pages} page; cards your deck already has are left out.", "Up to about {n} cards from {pages} pages; cards your deck already has are left out.", { n: e.cards, pages: e.pages }))}</div></div></div>`;
+      <div class="dim sm">${esc(t.n(e.pages, "Up to about {n} cards from {pages} page; cards your deck already has are left out.", "Up to about {n} cards from {pages} pages; cards your deck already has are left out.", { n: e.cards, pages: e.pages }))}</div>
+      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>`;
   }
   function drawMake() {
     const r = M.opts, old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
@@ -705,7 +724,7 @@
         e.kind === "quiz" ? { label: t("Practise"), act: "qz-play", data: { id: e.id } } : null);
       refresh(e.course_id);
     } else if (e.status === "error") {
-      toast(e.kind === "quiz" ? t("Quiz: {error}", { error: e.error || t("failed") }) : t("Cards from files: {error}", { error: e.error || t("failed") }), "error");
+      toast(e.kind === "quiz" ? t("Quiz: {error}", { error: e.error || t("failed") }) : setError(e), "error");
     }
     if (onTab(e.course_id) || S.view.name === "practice") {
       if (!row && e.status !== "done") loadCourse(e.course_id);
@@ -753,8 +772,10 @@
       closeModal();
       const p = P.course[cid];
       if (p && r.plan && !p.quizzes.some((x) => x.id === r.plan.id)) p.quizzes.unshift({ ...r.plan, weeks: (r.plan.scope || {}).weeks || [], days: (r.plan.scope || {}).days || [], focus: (r.plan.scope || {}).focus || "", questions: (r.plan.scope || {}).questions || 0, tries: 0 });
-      toast(t("Writing your quiz. It takes a few minutes; you can keep using the app."), "success");
+      // no toast: the quiz's own row says it is being written and that the app can be used meanwhile (at 1024×700 the
+      // toast covered the row's Stop button); the row is brought into view instead
       if (onTab(cid)) renderView(); else go({ name: "course", courseId: cid, tab: "practice" });
+      inView(r.plan && r.plan.id);
       loadCourse(cid);
     },
     "qz-play": (el) => playQuiz(el.dataset.id),
@@ -785,6 +806,7 @@
       const r = await call("quiz_delete", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       if (P.run && P.run.id === el.dataset.id) P.run = null;
+      delete P.runs[el.dataset.id];
       Object.values(P.course).forEach((p) => { p.quizzes = (p.quizzes || []).filter((x) => x.id !== el.dataset.id); });
       renderView(); loadSummary(S.view.name === "practice");
     },

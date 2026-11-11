@@ -4,6 +4,7 @@ measured on this PC (never made up), retries in words; requests report to the ru
 import json
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -177,6 +178,50 @@ def test_requests_report_to_the_run_whose_cancel_event_they_carry(speeds):
     assert aiwait.of(cancel) is aiwait.NULL and seen[-1]["phase"] == "send"
 
 
+def test_the_pc_stays_awake_while_any_run_goes_on(speeds, monkeypatch):
+    """A study pack takes half an hour: Windows' idle timer must not put the laptop to sleep meanwhile (it then woke
+    up to "took too long"). One request for all the runs, on at the first and off after the last."""
+    from studia import osutil
+
+    made = []
+
+    class Awake:
+        def __init__(self, reason):
+            made.append(self)
+            self.reason, self.on_ = reason, False
+
+        def on(self):
+            self.on_ = True
+
+        def off(self):
+            self.on_ = False
+
+    monkeypatch.setattr(osutil.impl(), "KeepAwake", Awake)
+    monkeypatch.setattr(aiwait, "_awake", None)
+    monkeypatch.setattr(aiwait, "_awake_n", 0)
+    a, b = threading.Event(), threading.Event()
+    with aiwait.tracking(a, wait_for(speeds)[0]):
+        assert made[0].on_ and made[0].reason == "IEUStudia is working with the AI"
+        with aiwait.tracking(b, wait_for(speeds)[0]):                  # a chat while a pack is written
+            assert made[0].on_
+        assert made[0].on_                                              # the pack still goes on
+    assert not made[0].on_ and len(made) == 1
+    with pytest.raises(RuntimeError):
+        with aiwait.tracking(a, wait_for(speeds)[0]):
+            raise RuntimeError("the run failed")
+    assert not made[0].on_ and aiwait._awake_n == 0
+
+
+def test_one_request_across_a_sleep_doesnt_skew_the_estimates(speeds):
+    """A request that went on across a sleep (8 hours to its first words) counts as at most 3 times as slow: the next
+    answers don't say "about 2 hours left" for a minute's wait."""
+    for _ in range(3):
+        speeds.note("claude", "sonnet", "low", "chat", first=20.0, rate=50.0, chars=2000.0)
+    speeds.note("claude", "sonnet", "low", "chat", first=8 * 3600.0, rate=0.1, chars=2000.0)
+    row = speeds.row("claude", "sonnet", "low", "chat")
+    assert row["first"] == pytest.approx(20 + 0.35 * 40) and row["rate"] == pytest.approx(50 - 0.35 * (50 - 50 / 3), abs=0.01)
+
+
 def test_the_page_hears_steps_at_once_and_the_writing_at_most_twice_a_second(monkeypatch, clock, speeds):
     ticks = iter(range(0, 10_000))
     monkeypatch.setattr(aiwait.time, "monotonic", lambda: next(ticks) * 0.01)       # 10 ms between calls
@@ -312,6 +357,29 @@ def test_claude_s_thinking_text_and_own_retries_are_told(claude, speeds):
     assert (retry["why"], retry["n"], retry["of"], retry["wait"], retry["status"]) == ("overloaded", 2, 11, 2.0, 529)
     assert any(s["phase"] == "think" and s.get("lines") == ["The student wants notes."] for s in seen)
     assert seen[-1]["phase"] == "between" and speeds.row("claude", "sonnet", "low", "notes")["n"] == 1
+
+
+def test_the_answers_time_limit_counts_only_the_time_the_pc_is_awake(claude, monkeypatch):
+    """A laptop whose lid was closed mid-answer: Windows' time.monotonic counts the hours asleep, and the answer then
+    ended at once as "took too long… pick a lower reasoning level". The limit counts the time awake."""
+    from studia import osutil
+
+    result = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "ok", "usage": {}})
+    claude([sys.executable, "-c", f"import sys, time; sys.stdin.read(); time.sleep(1.5); print({result!r})"])
+    real, calls = time.monotonic, []
+    monkeypatch.setattr(osutil.impl(), "awake_time", real)            # (awake the whole time)
+
+    def slept():                                                       # 16 minutes asleep right after the start
+        calls.append(1)
+        return real() + (16 * 60 if len(calls) > 1 else 0)
+
+    monkeypatch.setattr(time, "monotonic", slept)
+    assert ai._claude_one_shot("S", [{"type": "text", "text": "x"}], timeout_s=900)["text"] == "ok"
+    monkeypatch.setattr(time, "monotonic", real)
+    calls.clear()
+    monkeypatch.setattr(osutil.impl(), "awake_time", slept)           # 16 minutes awake: that is too long
+    with pytest.raises(RuntimeError, match="took too long"):
+        ai._claude_one_shot("S", [{"type": "text", "text": "x"}], timeout_s=900)
 
 
 def test_claude_code_is_asked_for_its_thinking_summaries_where_it_can(monkeypatch, tmp_path):

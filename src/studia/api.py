@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import __version__, net, store, views
 from . import search as search_mod
@@ -22,12 +22,14 @@ from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .practice import PRACTICE_KINDS, PracticeApi      # 4.0 Practice: quizzes, flashcards, what was stressed
 from .services import NOTE_KINDS, Services
-from .osutil import (TaskbarProgress, flash_taskbar, is_foreground, normal_priority, open_in_browser, open_path,
-                     reveal, set_clipboard)
+from .osutil import (TaskbarProgress, flash_taskbar, idle_seconds, is_foreground, normal_priority, open_in_browser,
+                     open_path, reveal, set_clipboard)
 
 log = logging.getLogger("studia")
 AUTO_SYNC_S = 30 * 60        # while the app is open: look for new lectures, materials and announcements
 REMIND_EVERY_S = 10 * 60     # ... and for the reminders that came due (the Calendar page's)
+STEP_S = 30.0                # those two look at the wall clock this often (Windows' waits don't count the PC's sleep)
+AWAY_S = 5 * 60              # no key, mouse or touch this long: nobody is at the PC (a reminder waits until you're back)
 # the page gets its events at most this often (each time all that came, coalesced); a running job reports every 0.25 s,
 # so more often only meant more calls into the window (each one waits for its thread and Python's lock)
 EVENT_GAP_S = 0.25
@@ -45,6 +47,28 @@ def events_script(events: list[dict[str, Any]]) -> str:
         except (TypeError, ValueError):
             log.debug("event not sent: %r", e.get("type"), exc_info=True)
     return _EVENTS_JS % ("[" + ",".join(parts).replace("</", "<\\/") + "]")
+
+
+def turns(interval_s: float, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time,
+          back: Callable[[], bool] = lambda: False) -> Iterator[None]:
+    """A turn every ``interval_s`` by the wall clock: Windows' waits don't count the hours the PC slept, so a window
+    left open overnight would otherwise wait its whole interval after the PC wakes up. A turn that came due while the
+    PC slept comes BACK_S after it woke (Wi-Fi first); one also comes whenever ``back()`` says so."""
+    from .agent import BACK_S
+
+    last = clock()
+    while True:
+        before = clock()
+        sleep(STEP_S)
+        now = clock()
+        if now - last >= interval_s or now < last:         # (or the clock was set back)
+            if now - before > STEP_S + 60:                 # the PC slept
+                sleep(BACK_S)
+                now = clock()
+            last = now
+            yield
+        elif back():
+            yield
 
 
 STALL_S = 20.0               # a sync that said nothing this long, while a request waits as long: it says what for
@@ -98,6 +122,7 @@ class Api(PracticeApi):
         self._services: Optional[Services] = None
         self._ready = threading.Event()
         self._startup_error = ""
+        self._starter: Optional[Callable[[], None]] = None   # app.py: starts the services (again, after a failure)
         self._window: Any = None
         self._events: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self._sync_lock = threading.Lock()
@@ -127,6 +152,7 @@ class Api(PracticeApi):
         self._notifier: Optional[Any] = None
         self._notify_lock = threading.Lock()
         self._remind_lock = threading.Lock()
+        self._remind_waits = False                      # a reminder came due while nobody was at the PC
         threading.Thread(target=self._dispatch, name="ui-events", daemon=True).start()
         if services is not None:
             self._set_services(services)
@@ -192,12 +218,12 @@ class Api(PracticeApi):
                 log.debug("Update check failed", exc_info=True)
             sleep(3 * 3600)
 
-    def _auto_sync_loop(self) -> None:
+    def _auto_sync_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
         """A quiet sync every AUTO_SYNC_S while the app is open, so new lectures, materials and announcements (and
-        with them the heads-up) show up by themselves. Nothing is downloaded or transcribed, and a failure only
-        shows in the top bar (no sign-in screen popping up while you read)."""
-        while True:
-            time.sleep(AUTO_SYNC_S)
+        with them the heads-up) show up by themselves; soon after the PC wakes up if one came due meanwhile. Nothing
+        is downloaded or transcribed, and a failure only shows in the top bar (no sign-in screen popping up while
+        you read)."""
+        for _ in turns(AUTO_SYNC_S, sleep):
             try:
                 if self._services is None or not self._services.sync.has_credentials():
                     continue
@@ -209,6 +235,16 @@ class Api(PracticeApi):
     def _startup_failed(self, message: str) -> None:
         self._startup_error = message or t("IEUStudia could not start.")
         self._ready.set()
+
+    @safe
+    def start_again(self) -> dict[str, Any]:
+        """The start-up screen's Try again: a start that failed (the library was locked, the disk was full) runs
+        again, instead of the page asking for the same stored error."""
+        if self._services is None and self._startup_error and self._starter is not None:
+            self._startup_error = ""
+            self._ready.clear()
+            threading.Thread(target=self._starter, name="services-start", daemon=True).start()
+        return {"ok": True}
 
     @property
     def _s(self) -> Services:
@@ -298,33 +334,38 @@ class Api(PracticeApi):
 
     def _remind(self) -> None:
         """Before a quiz, an exam, an assignment's deadline or your own calendar entry, as the Calendar page sets it:
-        a reminder, once. In the window if you're using it, else as a Windows notification. The tray helper does the
-        same while the window is closed."""
+        a reminder, once. In the window if you're using it, else as a Windows notification. Not while nobody is at
+        the PC (the window may be in front of a screen that turned off): it comes when you're back. The tray helper
+        does the same while the window is closed."""
         from . import appconfig
         from .agenda import reminder_prefs
         from .agent import _load_seen, _save_seen, reminders
-        from .calendar_export import all_events
+        from .calendar_export import all_events, istanbul_now
 
         if not appconfig.load().notify_reminders:
             return
+        self._remind_waits = idle_seconds() > AWAY_S
+        if self._remind_waits:
+            return
         with self._remind_lock:                           # two syncs ending together remind once
             seen = _load_seen()
-            note = reminders(all_events(self._s.lib, self._s.settings), dt.datetime.now(), seen,
+            note = reminders(all_events(self._s.lib, self._s.settings), istanbul_now(), seen,
                              reminder_prefs(self._s.lib))
             if note is None:
                 return
             _save_seen(seen)
         title, text, target = note
-        if is_foreground(self._hwnd):
-            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · ")})
+        if is_foreground(self._hwnd):                     # (with a button it stays long enough to read)
+            self._push({"type": "toast", "level": "info", "message": text.replace("\n", " · "),
+                        "action": {"label": t("Open"), "act": "open-target", "data": {"target": target}}})
         else:
             self._notify(title, text, target)
 
     def _remind_loop(self, sleep: Callable[[float], None] = time.sleep) -> None:
         """While the app is open, every REMIND_EVERY_S: the reminders that came due meanwhile (a deadline's "3 hours
-        before" doesn't wait for the next sync, half an hour away). From what is on this PC only."""
-        while True:
-            sleep(REMIND_EVERY_S)
+        before" doesn't wait for the next sync, half an hour away), and one that waited for you as soon as you're
+        back. From what is on this PC only."""
+        for _ in turns(REMIND_EVERY_S, sleep, back=lambda: self._remind_waits and idle_seconds() <= AWAY_S):
             try:
                 if self._services is not None:
                     self._remind()
@@ -704,6 +745,8 @@ class Api(PracticeApi):
                                             "it first.")}
         if self._setup_running:
             return {"ok": False, "error": t("IEUStudia is still downloading what it needs. Update when that's done.")}
+        if self._at_work():                    # the window closes for the update: what the AI writes would stop
+            return {"ok": False, "error": self._at_work_text("update")}
         self._update_running = True
         cancel = self._update_cancel = threading.Event()
 
@@ -724,6 +767,9 @@ class Api(PracticeApi):
                         "A transcription started while the update downloaded. Update when it has finished (the "
                         "download is kept).")})
                     return
+                if self._at_work():                    # the AI was asked meanwhile (or an export): not cut off
+                    self._push({"type": "update", "state": "error", "error": self._at_work_text("update")})
+                    return
                 self._update_installer = path
                 self._push({"type": "update", "state": "installing"})
                 time.sleep(1.5)                        # long enough to read that the window closes now
@@ -731,6 +777,10 @@ class Api(PracticeApi):
                     self._update_installer = None
                     self._push({"type": "update", "state": "error", "error": t(
                         "A transcription started. Update when it has finished (the download is kept).")})
+                    return
+                if self._at_work():
+                    self._update_installer = None
+                    self._push({"type": "update", "state": "error", "error": self._at_work_text("update")})
                     return
                 self._window.destroy()
             except Cancelled:
@@ -939,12 +989,14 @@ class Api(PracticeApi):
 
     @safe
     def storage(self) -> dict[str, Any]:
-        from . import hardware
+        from . import ai_setup, appconfig, hardware
         from .components import catalog, disk_usage
 
         facts = hardware.check()
+        # the Codex CLI IEUStudia installed: its size, and whether the AI chosen uses it (else it can be removed)
+        codex = {"bytes": ai_setup.codex_size(), "in_use": appconfig.load().ai_provider == "codex"}
         return {"ok": True, "usage": disk_usage(Path(self._s.settings.output_dir)), "catalog": catalog(facts),
-                "free_gb": facts["disk"]["data_free_gb"], "data_dir": facts["disk"]["data_dir"]}
+                "free_gb": facts["disk"]["data_free_gb"], "data_dir": facts["disk"]["data_dir"], "codex": codex}
 
     @safe
     def delete_component(self, cid: str) -> dict[str, Any]:
@@ -962,6 +1014,13 @@ class Api(PracticeApi):
             if appconfig.load().ai_provider == "local" and appconfig.load().local_model == key:
                 return {"ok": False, "error": t("That offline model is in use; pick another AI first.")}
             delete_llm(key)
+        elif kind == "codex":                         # the Codex CLI IEUStudia installed (ai_setup.remove_codex)
+            from . import ai_setup, appconfig
+
+            if appconfig.load().ai_provider == "codex":
+                return {"ok": False, "error": t("The Codex CLI is in use: IEUStudia reaches ChatGPT through it. Pick "
+                                                "another AI in Settings → AI first.")}
+            ai_setup.remove_codex()
         else:
             return {"ok": False, "error": t("This part cannot be removed.")}
         return self.storage()
@@ -1058,6 +1117,8 @@ class Api(PracticeApi):
             return {"ok": False, "busy": True, "error": t("IEUStudia is still downloading what it needs."),
                     "ask": t("IEUStudia is still downloading what it needs. Switching stops the download now; you can "
                              "go on with it afterwards from where it stopped.")}
+        if self._at_work() and not force:              # the AI writing, an export being made: the window closes
+            return {"ok": False, "busy": True, "error": self._at_work_text("switch"), "ask": self._at_work_text("switch")}
         acc = accounts.set_active(profile_id)
         if busy:
             self._services.jobs.shutdown()           # what is still waiting is kept for this profile
@@ -1067,6 +1128,37 @@ class Api(PracticeApi):
         timer.daemon = True
         timer.start()
         return {"ok": True, "profile": acc.view(acc.id)}
+
+    def _at_work(self) -> str:
+        """What closing the window would stop, besides transcription: "ai" (an answer, notes, a plan being written:
+        aiwait.running), "export" (an Export for AI chat being made), or ""."""
+        from .aiwait import running
+
+        if self._services is not None and running():
+            return "ai"
+        run = self.__dict__.get("_cexp")
+        return "export" if run is not None and run["running"] else ""
+
+    def _at_work_text(self, why: str) -> str:
+        """Updating (``why`` "update") or switching profiles ("switch", the page's question) while _at_work."""
+        export = self._at_work() == "export"
+        if why == "switch":
+            return (t("An Export for AI chat is still being made. Switching stops it here.") if export else
+                    t("The AI is still writing something you asked for. Switching stops it here."))
+        return (t("An Export for AI chat is still being made. Update when it has finished, or cancel it first.")
+                if export else t("The AI is still writing something you asked for. Update when it has finished, or "
+                                 "stop it first."))
+
+    def _end_export(self, wait: float = 2.0) -> None:
+        """Closing: an Export for AI chat being made stops, and has a moment to take its unfinished zip away (the app
+        then ends at once, and a .zip.tmp of hundreds of MB was left behind)."""
+        run = self.__dict__.get("_cexp")
+        if run is None or not run["running"]:
+            return
+        run["cancel"].set()
+        end = time.monotonic() + wait
+        while run["running"] and time.monotonic() < end:
+            time.sleep(0.05)
 
     def _close_for_restart(self) -> None:
         try:
@@ -2438,11 +2530,10 @@ class Api(PracticeApi):
 
     @safe
     def pack_pdf(self, plan_id: str, how: str = "open") -> dict[str, Any]:
-        """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save") or shown in its
-        folder ("folder"). It is printed again when it is missing."""
+        """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save": Downloads first,
+        ending in .pdf even when a name is typed without it) or shown in its folder ("folder"). It is printed again
+        when it is missing."""
         import shutil
-
-        import webview
 
         from .studypack import make_pdf
 
@@ -2456,13 +2547,15 @@ class Api(PracticeApi):
         if how == "folder":
             reveal(pdf)
         elif how == "save":
-            to = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(Path.home() / "Downloads"),
-                                                 save_filename=pdf.name)
-            to = to[0] if isinstance(to, (list, tuple)) else to
+            # (Downloads, not the course's folder: the pack's own PDF is there, and saving it over itself fails)
+            to = self._save_dialog(Path.home() / "Downloads", pdf.name, ".pdf")
             if not to:
                 return {"ok": True, "saved": ""}
-            shutil.copyfile(pdf, to)
-            return {"ok": True, "saved": str(to)}
+            if not to.lower().endswith(".pdf"):
+                to += ".pdf"
+            if Path(to).resolve() != pdf.resolve():
+                shutil.copyfile(pdf, to)
+            return {"ok": True, "saved": to}
         else:
             open_path(pdf)
         return {"ok": True}

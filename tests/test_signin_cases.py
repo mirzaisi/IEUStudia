@@ -348,6 +348,19 @@ def test_each_courses_problem_is_one_plain_line_naming_the_courses(tmp_path, mon
     assert sync._content_problem(ValueError("bad page")).startswith("IEUStudia couldn't read the course's pages")
 
 
+def test_a_full_disk_while_saving_the_courses_pages_is_said_as_one():
+    """Saving what was read failed on this PC (a full disk, the library busy for long): not "IEULearn's pages may have
+    changed… check for an update"."""
+    import sqlite3
+
+    from studia.sync import SyncService
+
+    assert SyncService._content_problem(sqlite3.OperationalError("database or disk is full")) == \
+        "Your disk is full. Free up some space, then try again."
+    assert SyncService._content_problem(sqlite3.OperationalError("database is locked")) == \
+        "IEUStudia couldn't save the course's pages on this PC. Try again in a minute; if it keeps happening, restart IEUStudia."
+
+
 def test_a_session_that_runs_out_halfway_is_signed_in_again_once_not_the_sign_in_screen(tmp_path, monkeypatch, learn):
     left = {"b": 1}
 

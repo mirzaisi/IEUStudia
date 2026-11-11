@@ -12,9 +12,30 @@ STYLE = ("Write like a good tutor talking to one student: plain, concrete senten
          "hedging or em dashes. Bold only a term where it is defined; a short formula stays in its sentence.")
 
 
-def written_in(language: str = "") -> str:
-    """The language line: the one the course is taught in (English unless told otherwise)."""
-    return f"Write in {language or 'English'}, the language the course is taught in."
+def terms_rule(language: str = "", taught_in: str = "") -> str:
+    """For a document in another language than the course's (doclang.py): its exam terms stay as the exams use them
+    ("" when the two agree)."""
+    lang = language or "English"
+    if not taught_in or taught_in == lang:
+        return ""
+    return f"Keep technical terms in {taught_in}, as the exams use them, with the {lang} meaning in brackets the first time."
+
+
+def written_in(language: str = "", taught_in: str = "") -> str:
+    """The language line: the document's language (doclang.document_language; English unless told otherwise), and the
+    terms rule when the course is taught in another one. In another language than English the headings the prompt
+    names in English are written in it too (Turkish notes came back with "## Check yourself")."""
+    lang = language or "English"
+    rule = terms_rule(lang, taught_in)
+    also = ", headings included" if lang != "English" else ""
+    return f"Write in {lang}{also}. {rule}" if rule else f"Write in {lang}, the language the course is taught in{also}."
+
+
+def in_language(language: str = "", taught_in: str = "") -> str:
+    """As :func:`written_in`, for a sentence that names what to write first: "Write every question … " + this."""
+    lang = language or "English"
+    rule = terms_rule(lang, taught_in)
+    return f"in {lang}. {rule}" if rule else f"in {lang} (the language this course is taught in)."
 
 
 TRANSCRIPT_NOTES = (
@@ -63,12 +84,12 @@ TEMPLATES: dict[str, dict[str, str]] = {          # labels in English; t() to sh
 }
 
 
-def ai_prompt(template: str, language: str = "") -> str:
-    """The instruction for notes of ``template`` kind, in the course's ``language`` ("" for English)."""
+def ai_prompt(template: str, language: str = "", taught_in: str = "") -> str:
+    """The instruction for notes of ``template`` kind, in ``language`` ("" for English; doclang.document_language)."""
     tpl = TEMPLATES.get(template) or TEMPLATES["notes"]
     if not tpl["prompt"]:
         return ""
-    return f"{tpl['prompt']}{TRANSCRIPT_NOTES}\n{STYLE} {written_in(language)}"
+    return f"{tpl['prompt']}{TRANSCRIPT_NOTES}\n{STYLE} {written_in(language, taught_in)}"
 
 
 # The slides sent with study notes: where they are in the transcript, and (notes, exam focus) the ones worth showing.

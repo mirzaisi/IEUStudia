@@ -338,6 +338,38 @@ def is_foreground(hwnd: int) -> bool:
     return bool(hwnd) and ctypes.WinDLL("user32").GetForegroundWindow() == hwnd
 
 
+class _LastInput(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+def idle_seconds() -> float:
+    """Seconds since the last key press, mouse move or touch (0 when Windows can't say). A window in front with the
+    screen turned off is still in front: this tells whether anybody is there."""
+    try:
+        info = _LastInput(ctypes.sizeof(_LastInput), 0)
+        if not ctypes.WinDLL("user32").GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetTickCount.restype = wt.DWORD
+        return ((k32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0     # (the count wraps after 49.7 days)
+    except (AttributeError, OSError):
+        return 0.0
+
+
+def awake_time() -> float:
+    """Seconds by a clock that stops while the PC sleeps (time.monotonic counts the sleep on Windows: a closed lid
+    would make an AI answer "take too long")."""
+    try:
+        t = ctypes.c_ulonglong(0)
+        if ctypes.windll.kernel32.QueryUnbiasedInterruptTime(ctypes.byref(t)):
+            return t.value / 1e7                                     # (in 100 ns)
+    except (AttributeError, OSError):
+        pass
+    import time
+
+    return time.monotonic()
+
+
 def flash_taskbar(hwnd: int) -> None:
     """Flash the taskbar button until the user switches to the window (only when it is in the background)."""
     if not hwnd:

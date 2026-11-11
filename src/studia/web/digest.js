@@ -57,7 +57,7 @@
     // being written: what the AI does now (waits.js), then its words as they come
     const sum = writing ? (g.text ? `<div class="md">${St.mdToHtml(g.text, { streaming: true })}</div>` : "")
       + (g.wait && St.waitHTML && !g.text ? St.waitHTML(g.wait) : `<div class="dim">${SPIN()} ${g.wait && St.waitLine ? St.waitLine(g.wait) : t.html("{ai} is writing…", { ai: St.aiName() })}</div>`)
-      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}), can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
+      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}), can contain mistakes", { model: St.modelLabel ? St.modelLabel(g.summary.model) : g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
           ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">${t("open the Markdown file")}</button>` : ""}</div>` : "";
     const sumTitle = !ai.available ? St.aiHint() : g.running && !writing ? t("Another week's summary is being written") : t("A short written summary by {ai}", { ai: St.aiName() });
     return `<div class="view-inner digest">
@@ -66,7 +66,7 @@
           <button class="btn ghost sm" data-act="dg-week" data-d="0" ${d.week.offset === 0 ? "disabled" : ""}>${t("This week")}</button>
           <button class="btn ghost icon sm" data-act="dg-week" data-d="1" title="${t("Next week")}">${I("chevron-right", "sm")}</button>
           ${ai.available && St.effortInline && St.isChatGPT() ? St.effortInline("dg", "digest") : ""}
-          <button class="btn primary sm" data-act="dg-summary" ${St.aiBtn(ai.available && !g.running)} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
+          <button class="btn primary sm" data-act="dg-summary" ${St.aiBtn(ai.available) || (writing ? "disabled" : g.running ? St.whyOff(t("Another week's summary is being written. Try again when it's done.")) : "")} title="${sumTitle}">${I("ai", "sm")} ${g.summary ? t("Summarize again") : t.html("Summarize with {ai}", { ai: St.aiName() })}</button></div></div>
       ${sum ? `<div class="card dg-summary">${sum}</div>` : ""}
       ${todo ? `<div class="section-title">${I("list-checks")} ${t("To do")}</div><div class="card dg-todos">${todo}</div>` : ""}
       <div class="section-title">${I("book")} ${t("Your courses this week")}</div>

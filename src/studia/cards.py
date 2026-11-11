@@ -42,6 +42,12 @@ SYSTEM = ("You make flashcards for a university student, only from the course ma
           "notation. You answer with the JSON asked for, maths in LaTeX, and never ask questions back.")
 
 
+class Failed(RuntimeError):
+    """A card set that couldn't be made, for a reason of its own. Its message stays with the set (the plan's error is
+    the exception's text) as the English words t() looks up, with {ai} left for the page to fill in: the Practice tab
+    says it in the language of the moment (practice.js), not in the one it was made in."""
+
+
 def norm(text: str) -> str:
     return re.sub(r"[\W_]+", " ", str(text or "").lower()).strip()
 
@@ -320,9 +326,10 @@ def anki_notes(cards: list[dict[str, Any]], code: str) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------ cards from files (AI, a plan of kind "cards")
 def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:
-    """The picked files (studypack.gather, no lectures), the course's language and what the lecturer stressed in
-    these weeks (for the priorities)."""
-    from . import quizzes, stressed, studypack
+    """The picked files (studypack.gather, no lectures), the cards' language (doclang.py) and what the lecturer
+    stressed in these weeks (for the priorities)."""
+    from . import stressed, studypack
+    from .doclang import document_language
     from .views import course_detail
 
     scope.days, scope.picked = [], True
@@ -331,7 +338,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     nos = {w["no"] for w in facts["weeks"]}
     day_week = {day["date"]: w["no"] for w in d.get("weeks") or [] for day in w["days"]}
     lines, _ = stressed.prompt_lines(stressed.ranked(stressed.course_items(lib, course_id), nos, day_week), None, 20)
-    facts.update(language=quizzes.course_language(d, facts), stressed_lines=lines, outcomes=d.get("outcomes_en") or [])
+    facts.update(**document_language(d, settings, facts), stressed_lines=lines, outcomes=d.get("outcomes_en") or [])
     return facts
 
 
@@ -367,9 +374,11 @@ def batches(lib: Any, facts: dict[str, Any], limit: int = BATCH_CHARS) -> list[d
 
 
 def cards_prompt(facts: dict[str, Any], batch: dict[str, Any], most: int, have: list[str]) -> str:
+    from .outputs.prompts import in_language
+
     stressed = facts.get("stressed_lines") or ""
     known = "\n".join(f"- {q}" for q in have[:60])
-    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. Write them in {facts['language']} (the language this course is taught in).
+    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. Write them {in_language(facts['language'], facts.get('taught_in', ''))}
 Answer with one JSON object:
 {{"cards": [{{"front": "a short question or cue", "back": "the answer: short and exact (a formula, a definition, the steps of a method)", "source": "F1 p.3", "topic": "a few words"}}]}}
 Rules:
@@ -438,7 +447,7 @@ def clean_cards(rows: list[dict[str, Any]], facts: dict[str, Any], plan_id: str,
 def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usage: dict[str, Any], model: str,
         cancel: threading.Event) -> None:
     """Make (or resume) the cards of the ``plan``: one request per batch of pages, each saved when it is done."""
-    from .ai import ai_name, one_shot
+    from .ai import one_shot
     from .plans import model_shown
     from .quizzes import source_units
     from .studypack import _level, _usage_add
@@ -463,7 +472,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         s.lib.update_plan(pid, data=data, usage=usage)
     facts = data["gather"]
     if not facts["files"]:
-        raise RuntimeError(t("None of the picked files is on this PC yet. Download them on the course page first."))
+        raise Failed(N_("None of the picked files is on this PC yet. Download them on the course page first."))
     check()
     parts = batches(s.lib, facts)
     written: dict[str, list] = data.setdefault("written", {})
@@ -487,7 +496,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
             _usage_add(usage, "write", again)
             rows = read_cards(again.get("text") or "")
             if not rows:
-                raise RuntimeError(t("{ai}'s answer could not be read (it was not valid JSON). Try again.", ai=ai_name()))
+                raise Failed(N_("{ai}'s answer could not be read (it was not valid JSON). Try again."))
         written[str(i)] = rows[:most]
         s.lib.update_plan(pid, data=data, usage=usage)
         check()
@@ -496,7 +505,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     units = source_units(s.lib, plan["course_id"], {**facts, "lectures": []})
     cards = clean_cards([c for i in sorted(written, key=int) for c in written[i]], facts, pid, seen, units)[:MAX_CARDS]
     if not cards:
-        raise RuntimeError(t("The AI made no cards these files don't already have. Pick other files."))
+        raise Failed(N_("The AI made no cards these files don't already have. Pick other files."))
     names = [f["name"] for f in facts["files"]]
     title = t("Cards from {files}", files=", ".join(names[:3]) + ("…" if len(names) > 3 else ""))
     result = {"kind": "cards", "title": title, "made": dt.date.today().isoformat(), "cards": cards,
@@ -521,4 +530,5 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     return {"main_model": main_model(scope, settings), "effort": _level(scope, settings), "main_input": int(tokens_in),
             "main_output": int(cards * 90 + 300 * len(parts)), "requests": len(parts), "cards": cards,
             "files": len(facts["files"]), "pages": sum(b["pages"] for b in parts),
+            "language": facts["language"], "taught_in": facts.get("taught_in", ""),       # (the dialog's line)
             "materials_missing": facts["materials_missing"], "minutes": t("about {a}–{b} minutes", a=a, b=a * 2 + 1)}

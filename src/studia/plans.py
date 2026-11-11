@@ -380,10 +380,10 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         _, head, full = days[i]
         out.append(head + _excerpt(full, rooms[i]))
     pack = "\n".join(out)
-    from .quizzes import course_language
+    from .doclang import document_language
 
     return {"pack": pack, "chars": len(pack), "materials_used": used, "materials_missing": missing,
-            "language": course_language(d, {"pack": pack}),          # the language the review sheet is written in
+            **document_language(d, settings, {"pack": pack}),       # the plan's (review sheet's) language, the course's
             "materials_left_out": [about for i, (about, _, _) in enumerate(files) if i not in frooms],
             "days_used": [days[i][0] for i in keep], "days_missing": days_missing,
             "days_left_out": [d for i, (d, _, _) in enumerate(days) if i not in rooms],
@@ -807,7 +807,7 @@ Rules:
 - checklist: for every in-scope concept, a plain-language explanation (at most 2 sentences) and how to recognise a question that needs it.
 - notes: per concept, what the student should know about how it is covered (at most 12 words), only when useful.
 - schedule: split the items over the days until the deadline (or over about a week), each day at most ~60 minutes, required items first.
-- Write in {facts.get('language') or 'English'} (the course's language), briefly and plainly, as a tutor would: no filler, no hype, no em dashes. Use only video ids from the list.{prev}
+- Write briefly and plainly, as a tutor would: no filler, no hype, no em dashes. {written_in(facts.get('language', ''), facts.get('taught_in', ''))} Use only video ids from the list.{prev}
 Return JSON: {{"title": "", "summary": "", "items": [{{"n": 1, "video": "VIDEO_ID", "segments": [[0, 0]], "role": "required", "alternative_to": null, "concepts": ["c1"], "why": "", "limits": ""}}], "schedule": [{{"day": "Mon 26 Oct", "items": [1, 2]}}], "notes": [{{"concept": "c1", "note": ""}}], "checklist": [{{"concept": "c1", "explain": "", "recognize": [""]}}], "supplements": [{{"concept": "c3", "text": ""}}], "changes": {{"added": [], "replaced": [], "removed": []}}}}
 
 {_scope_text(scope, facts)}. {deadline} Course: {facts['course']['code']} — {facts['course']['name']}.
@@ -1369,7 +1369,7 @@ The kinds of questions to expect (from the material's examples and the lecturer'
 The traps students fall into on these topics, and how to avoid each.
 ## Last-day checklist
 6–10 checkbox items ("- [ ] …").
-{written_in(facts.get('language', ''))}
+{written_in(facts.get('language', ''), facts.get('taught_in', ''))}
 
 {_scope_text(scope, facts)}
 
@@ -2503,6 +2503,7 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
                 "main_output": 7000, "verify_input": 0, "verify_output": 0, "concepts": 0, "weeks": facts["weeks"],
                 "materials_used": facts["materials_used"], "materials_missing": facts["materials_missing"],
                 "days_used": facts["days_used"], "days_left_out": facts["days_left_out"],
+                "language": facts["language"], "taught_in": facts["taught_in"],       # (the dialog's line)
                 "minutes": t("about 1–3 minutes")}
     n = max(6, min(MAX_CONCEPTS, 4 + 3 * len(facts["weeks"])))
     m = n if not focused(s) or s.extras else max(4, round(n * 0.6))          # the concepts that get videos
@@ -2522,7 +2523,7 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: dict[str, Any]) -> 
             "verify_output": (batches * VERIFY_BATCH * 4 + pairs) * 220 + 60 * m, "concepts": n,
             "weeks": facts["weeks"], "materials_used": facts["materials_used"],
             "materials_missing": facts["materials_missing"], "days_used": facts["days_used"],
-            "days_left_out": facts["days_left_out"],
+            "days_left_out": facts["days_left_out"], "language": facts["language"], "taught_in": facts["taught_in"],
             # measured on three weeks of 20 concepts each (ChatGPT, medium): 12–19 minutes, of which listening and the
             # more searches 4–9
             "minutes": t("about 10–20 minutes")}

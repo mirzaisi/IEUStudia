@@ -29,7 +29,6 @@
   "Add another account or sign out": "Başka bir hesap ekle ya da çıkış yap",
   "Settings": "Ayarlar",
   "New recordings": "Yeni kayıtlar",
-  "Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB": "Dersler NVIDIA ekran kartında yazıya dökülüyor: {name} · {mb} MB",
   "Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.": "NVIDIA'dan bir kerelik bir indirme yaparsan NVIDIA ekran kartın çok daha hızlı yazıya dökebilir: Ayarlar → Hakkında → Kurulumu tekrarla.",
   "Graphics card not set up": "Ekran kartı kurulumu eksik",
   "Sync failed: retry": "Eşitlenemedi, tekrar dene",

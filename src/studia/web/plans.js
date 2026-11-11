@@ -381,7 +381,8 @@
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Plans, review sheets and study packs need ChatGPT or Claude (the offline model is too small).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     return `<div>${t.html("<b>≈{k} tokens</b> from your {ai} plan", { k: fmtK(e.main_input + (e.verify_input || 0)), ai: St.aiName() })} · ${t("{files} and {lectures} read", { files: t.n(e.materials_used.length, "{n} file", "{n} files"), lectures: t.n(e.days_used.length, "{n} lecture", "{n} lectures") })}${e.minutes ? ` · ${esc(e.minutes)}` : ""}</div>
-      ${St.effortCostNote ? St.effortCostNote(e, D.scope) : ""}<div class="dim sm">${I("info", "xs")} ${t("Runs in the background. AI can make mistakes: the plan shows the caption quotes it relied on.")}</div>`;
+      ${St.effortCostNote ? St.effortCostNote(e, D.scope) : ""}<div class="dim sm">${I("info", "xs")} ${t("Runs in the background. AI can make mistakes: the plan shows the caption quotes it relied on.")}</div>
+      ${St.docLangLine ? St.docLangLine(e) : ""}`;
   }
   function drawDialog() {
     const r = D.opts, sc = D.scope, courses = S.courses.filter((c) => c.code);

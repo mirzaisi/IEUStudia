@@ -1,18 +1,20 @@
 """Chat with Claude: material, one process per conversation, streaming, stop, restarts, errors (fake CLI)."""
 
+import dataclasses as dc
 import datetime as dt
 import json
 import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import types
 from pathlib import Path
 
 import pytest
 
-from studia import ai, appconfig, chat as chat_mod, store
+from studia import ai, appconfig, chat as chat_mod, i18n, store
 from studia.chat import ChatService, replay_text
 from studia.config import Settings
 from studia.domain import Course, Recording, Segment, Transcript
@@ -242,6 +244,64 @@ def test_slides_go_with_the_first_message_only(env):
     assert ask(env, chat["id"], "q2")["text"].startswith("Answer 2 (images 0")
 
 
+def test_a_chats_material_is_built_once_until_what_it_is_made_of_changes(env):
+    builds = []
+    real = ChatService._build
+    env.mp.setattr(ChatService, "_build", lambda self, *a: builds.append(a[0]) or real(self, *a))
+    shots = env.tmp / "slides"
+    shots.mkdir()
+    for name in ("s1.jpg", "s2.jpg"):
+        (shots / name).write_bytes(b"jpg")
+    store.save_slides("r0", [Slide(1, 0.0, 8.0, "slides/s1.jpg", str(shots / "s1.jpg")),
+                             Slide(2, 8.0, 20.0, "slides/s2.jpg", str(shots / "s2.jpg"))])
+    days = [DAY1, DAY2]
+    first = env.svc.context("c", days, "course", True)
+    assert env.svc.context("c", days, "course", True) is first and len(builds) == 1      # opened again: kept
+    chat = env.svc.create("c", days, "course", True)
+    env.svc.view(chat["id"])
+    env.svc.view(chat["id"])
+    assert len(builds) == 3                    # made with Sonnet; the chat itself (its own files go too) once for both
+    env.svc.context("c", days, "course", True, model="opus")                    # other settings: built for them
+    assert len(builds) == 4 and env.svc.context("c", days, "course", True) is first
+    # what it is made of changes: a lecture transcribed again, a slide picture deleted, another language
+    t = store.load_transcript("r2")
+    store.save_transcript(dc.replace(t, segments=t.segments + [Segment(20, 25, "Transcribed again.", "en", 0.9)]))
+    again = env.svc.context("c", days, "course", True)
+    assert len(builds) == 5 and "Transcribed again." in again["system"] and again["slides_total"] == 2
+    (shots / "s2.jpg").unlink()
+    assert env.svc.context("c", days, "course", True)["slides_total"] == 1 and len(builds) == 6
+    i18n.set_language("tr")
+    try:
+        env.svc.context("c", days, "course", True)
+    finally:
+        i18n.set_language("en")
+    assert len(builds) == 7
+    env.lib.set_hidden("r1", True)                 # a part hidden on the course page
+    env.svc.context("c", days, "course", True)
+    assert len(builds) == 8
+
+
+def test_one_chat_asked_for_twice_at_once_is_built_once(env):
+    builds, gate = [], threading.Event()
+    real = ChatService._build
+
+    def slow(self, *a):
+        builds.append(1)
+        gate.wait(5)
+        return real(self, *a)
+
+    env.mp.setattr(ChatService, "_build", slow)
+    got = []
+    runs = [threading.Thread(target=lambda: got.append(env.svc.context("c", [DAY1, DAY2]))) for _ in range(2)]
+    for th in runs:
+        th.start()
+    time.sleep(0.3)
+    gate.set()
+    for th in runs:
+        th.join(10)
+    assert len(builds) == 1 and len(got) == 2 and got[0]["system"] == got[1]["system"]
+
+
 def test_chatgpt_gets_the_labelled_slides_and_the_conversation_with_every_question(env):
     img = env.tmp / "s1.jpg"
     img.write_bytes(b"jpg")
@@ -459,6 +519,22 @@ def test_export_rename_and_delete(env):
     assert "**You:** Summarise" in text and "**Claude:**" in text and "Tuesday, 13 October 2026" in text
     env.svc.delete(chat["id"])
     assert env.svc.list() == [] and env.lib.chat_messages(chat["id"]) == []
+
+
+def test_an_exported_chat_names_the_ai_that_answered_not_the_one_chosen_now(env):
+    """Weeks of chatting with Claude, then the student switches to ChatGPT (the Claude plan ended) and exports an old
+    chat: it still says Claude wrote the answers (the file is kept, or handed in)."""
+    from studia import exports
+
+    chat = env.svc.create("c", [DAY1])
+    ask(env, chat["id"], "Summarise")
+    assert env.lib.chat_messages(chat["id"])[-1]["usage"]["ai"] == "claude"
+    appconfig.update({"ai_provider": "chatgpt"})
+    text = env.svc.export(chat["id"]).read_text(encoding="utf-8")
+    assert "**Claude:**" in text and "Chat with Claude in IEUStudia" in text and "**Model:** Claude " in text
+    assert "ChatGPT" not in text
+    doc = exports.copy_text(types.SimpleNamespace(lib=env.lib, chat=env.svc, day=env.svc._s.day), f"chat:{chat['id']}", "")
+    assert "Chat with Claude" in doc and "Claude " in doc and "ChatGPT" not in doc
 
 
 def test_a_chat_without_a_title_or_a_question_is_exported_as_new_chat(env):

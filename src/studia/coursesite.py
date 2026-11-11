@@ -38,6 +38,7 @@ _DATE = re.compile(
     r"|\b(?P<dd>\d{1,2})\.?\s*(?P<dm>[^\W\d_]{3,})\.?(?:,?\s+(?P<dy>\d{4}))?"         # 23 Eyl, 23 Sep 2026
     r"|\b(?P<mm>[^\W\d_]{3,})\.?\s+(?P<md>\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(?P<my>\d{4}))?")   # Sep 23, Sep 23, 2026
 _CLOCK = re.compile(r"\s*,?\s*(?:at\s+|saat\s+)?(\d{1,2})[:.](\d{2})(?::\d{2})?(?:\s*([AaPp])\.?[Mm]\.?)?")
+_AT = re.compile(r"(?:\bsaat(?:i)?|\bat|@)\s*:?\s*$", re.I)      # what comes before a time: "saat 10.10", "at 10.10"
 _undated: set[str] = set()          # courses whose unit plan had a subtitle without a date in it (said once in the log)
 
 
@@ -64,14 +65,18 @@ def _in_term(month: int, year: int, semester: int) -> int:
 def _date_of(m: re.Match, year: int, semester: int, us: bool = False) -> Optional[dt.date]:
     """The date one match of _DATE stands for (None when it is no date: "Hafta 1"). ``us``: a date in numbers is
     month first (9/23/2026, as English IEULearn may write it next to an AM/PM time); day first otherwise, unless the
-    second number can't be a month."""
+    second number can't be a month in a date with a slash. With a dot it is day.month as written: "11.30" and "saat
+    10.10" are times (Turkish writes them with a dot), not 30 November or 10 October."""
     g = m.groupdict()
     explicit: Optional[int] = None
     if g["iy"]:
         explicit, month, day = int(g["iy"]), int(g["im"]), int(g["id"])
     elif g["na"]:
         day, month = int(g["na"]), int(g["nb"])
-        if (us and day <= 12) or month > 12:
+        dot = m.group(0)[len(g["na"])] == "."
+        if dot and not g["ny"] and _AT.search(m.string, max(0, m.start() - 10), m.start()):
+            return None
+        if (us and day <= 12) or (month > 12 and not dot):
             day, month = month, day
         if g["ny"]:
             explicit = int(g["ny"]) + (2000 if len(g["ny"]) == 2 else 0)

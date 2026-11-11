@@ -106,6 +106,29 @@ def test_claude_json_in_a_fence():
     assert prob["source"]["part"] == 2 and prob["source"]["t"] == 300
 
 
+CODE_QUIZ = {"title": "Loops in C", "questions": [
+    {"type": "mc", "question": "What does this print?\n```c\nfor (int i = 0; i < 3; i++)\n    printf(\"%d\", i);\n```",
+     "options": ["012", "123", "0123", "3"], "answer": "A", "source": "F1 p.4"},
+    {"type": "mc", "question": "Which loop always runs its body at least once?", "options": ["do-while", "while", "for",
+     "none"], "answer": "A", "source": "F1 p.5"}]}
+
+
+@pytest.mark.parametrize("text", [json.dumps(CODE_QUIZ), "```json\n" + json.dumps(CODE_QUIZ, indent=1) + "\n```",
+                                  "Here is your quiz.\n\n```json\n" + json.dumps(CODE_QUIZ) + "\n```\nGood luck!"])
+def test_a_code_block_inside_a_question_is_part_of_it(text):
+    """A programming course's "What does this print?" holds a ``` block inside the JSON: the fence around the answer
+    is the one on lines of its own (the inner one cut the answer down to the code, and the quiz was unreadable)."""
+    q = quizzes.clean_quiz(quizzes.read_answer(text), FACTS)["questions"]
+    assert len(q) == 2 and "```c\nfor (int i = 0" in q[0]["q"]
+
+
+def test_an_interval_in_a_markdown_quiz_stays_markdown():
+    text = ("## Quiz\n\n**1. X is uniform on [0, 1]. What is E[X]?**\nA) 0\nB) 1/2\nC) 1\nD) 2\n**Answer: B**\n\n"
+            "**2. What is P(X < 1/4)?**\nA) 1/4\nB) 1/2\nC) 3/4\nD) 1\n**Answer: A**")
+    q = quizzes.clean_quiz(quizzes.read_answer(text), FACTS)["questions"]
+    assert [x["answer"] for x in q] == [1, 0] and "[0, 1]" in q[0]["q"]
+
+
 def test_chatgpt_grouped_by_kind_with_option_objects_and_indexes():
     q = quizzes.clean_quiz(quizzes.read_answer(CHATGPT), FACTS)["questions"]
     assert [x["type"] for x in q] == ["mc", "mc", "short", "problem"]

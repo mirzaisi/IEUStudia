@@ -21,6 +21,13 @@ from .config import Settings
 ISTANBUL = dt.timezone(dt.timedelta(hours=3))      # IEULearn's times (Turkey keeps UTC+3 all year)
 
 
+def istanbul_now() -> dt.datetime:
+    """The time in Turkey now, as IEULearn and Panopto write theirs (wall-clock times without a zone): what the
+    deadlines, exams and reminders are measured against. A PC kept on another time zone (an exchange student's home
+    time) would otherwise remind hours off."""
+    return dt.datetime.now(ISTANBUL).replace(tzinfo=None)
+
+
 def _course(lib: Any, settings: Settings, course: Any, cv: Optional[dict[str, Any]] = None,
             today: Optional[dt.date] = None) -> dict[str, Any]:
     """The part of views.course_detail that assessment_events reads (the same weeks, dates and class days), without
@@ -57,7 +64,7 @@ def _course(lib: Any, settings: Settings, course: Any, cv: Optional[dict[str, An
     if first and (cv is not None or any(e["kind"] == "quiz" for e in plan)):
         if cv is None:
             cv = views.course_view(course, lib.recordings(course.id), settings, {}, {}, set())
-        times = views.class_times(cv["days"], today or dt.date.today())
+        times = views.class_times(cv["days"], today or istanbul_now().date())
     weeks = []
     for n in sorted(dates):
         topic_en, topic_tr = (en_weeks.get(n) or {}).get("subject", ""), tr_topics.get(n, "")
@@ -71,7 +78,7 @@ def _course(lib: Any, settings: Settings, course: Any, cv: Optional[dict[str, An
 
 def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None) -> list[dict[str, Any]]:
     """The assessments still ahead (this week included), soonest first."""
-    since = (today or dt.date.today()).isoformat()
+    since = (today or istanbul_now().date()).isoformat()
     out: list[dict[str, Any]] = []
     for c in lib.courses():
         d = _course(lib, settings, c)
@@ -124,12 +131,13 @@ def deadline_events(lib: Any, today: dt.date | None = None) -> list[dict[str, An
     """IEULearn's assignments still to send (due today or later) and the student's own entries from today on."""
     from .agenda import exam_like
 
-    since = (today or dt.date.today()).isoformat()
+    since = (today or istanbul_now().date()).isoformat()
     codes = {c.id: c.code for c in lib.courses(True)}
-    out: list[dict[str, Any]] = []
+    active = {c.id for c in lib.courses()}       # a course that left the dashboard (dropped): no reminders, as the
+    out: list[dict[str, Any]] = []               # Calendar page they would open doesn't show it either
     for a in lib.assignments():
         day, time = a["due"][:10], a["due"][11:16]
-        if not day or day < since or a["done"] or a["course_id"] not in codes:
+        if not day or day < since or a["done"] or a["course_id"] not in active:
             continue
         out.append({"uid": f"{a['course_id']}-asg-{a['asg_id']}", "kind": "assignment", "course": codes[a["course_id"]],
                     "course_id": a["course_id"], "name": a["title"], "start": day, "end": day, "date": day, "time": time,

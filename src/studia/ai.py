@@ -676,10 +676,15 @@ def _tex_backslashes(body: str) -> str:
     return "".join(out) + body[i:]
 
 
+# the fence around an answer, on lines of its own: a ``` inside the JSON (a code block in a quiz question, written
+# "…\n```c\n…" in its string) never starts a line, as a JSON string holds no line breaks
+JSON_FENCE = re.compile(r"^[ \t]*```(?:json)?[ \t\r]*\n(.*?)\n[ \t]*```[ \t\r]*$", re.S | re.M)
+
+
 def parse_json(text: str) -> Any:
     """The JSON value in an answer (also inside a ```json fence or surrounded by a sentence); None if there is none."""
     body = (text or "").strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", body, re.S)
+    fence = JSON_FENCE.search(body)
     if fence:
         body = fence.group(1).strip()
     if "\\" in body:
@@ -779,6 +784,14 @@ class _FlagRefused(Exception):
     """Claude Code turned down --thinking-display: the request is asked again without it."""
 
 
+def _awake() -> float:
+    """The answer's time limit counts the time the PC is awake: a laptop whose lid was closed mid-answer doesn't wake up
+    to "took too long… pick a lower reasoning level" (time.monotonic counts the sleep on Windows)."""
+    from .osutil import awake_time
+
+    return awake_time()
+
+
 def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                  cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]], timeout_s: float,
                  think: bool, wait: Any) -> dict[str, Any]:
@@ -791,7 +804,7 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
         sp = Path(work) / "system.txt"
         sp.write_text(system_prompt, encoding="utf-8")
-        started = time.monotonic()
+        started = _awake()
         try:
             proc = subprocess.Popen(_command(model, effort, sp, partial=True), cwd=work, stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=_NO_WINDOW, env=env)
@@ -810,7 +823,7 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
 
         def killer() -> None:
             while not killer_stop.wait(0.5):
-                if (cancel is not None and cancel.is_set()) or time.monotonic() - started > timeout_s:
+                if (cancel is not None and cancel.is_set()) or _awake() - started > timeout_s:
                     if not (cancel is not None and cancel.is_set()):
                         timed_out.append(True)
                     proc.kill()
@@ -865,7 +878,7 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
         "text": result.get("result") or "".join(text_parts),
         "usage": usage_of(result),
         "cost_usd": result.get("total_cost_usd"),
-        "seconds": round(time.monotonic() - started, 1),
+        "seconds": round(_awake() - started, 1),
         "model": model,
     }
 
@@ -965,7 +978,7 @@ class ClaudeSession:
         with self._turn:
             if not self.alive():
                 raise self._died()
-            started = time.monotonic()
+            started = _awake()
             line = (json.dumps({"type": "user", "message": {"role": "user", "content": turn_blocks(content)}},
                                ensure_ascii=False) + "\n").encode("utf-8")      # (made once: a first message is MBs)
             wait.begin(len(line), _pictures(content), provider="claude", model=self.model, level=self.effort)
@@ -991,7 +1004,7 @@ class ClaudeSession:
                         self.kill()               # 20 lines and not one IEUStudia reads: not waited for to the end
                         raise health.changed("claude", "answers", f"a chat's turn printed only kinds IEUStudia "
                                                                   f"doesn't know: {_kinds(kinds)}")
-                now = time.monotonic()
+                now = _awake()
                 if interrupted_at is None and ((stop is not None and stop.is_set()) or now - started > timeout_s):
                     timed_out = not (stop is not None and stop.is_set())
                     interrupted_at = now
@@ -1150,12 +1163,26 @@ def ai_name() -> str:
     return t("The offline model") if p == "local" else PROVIDER_LABELS.get(p) or t("The AI")
 
 
-def model_label(level: str, effort: str = "") -> str:
-    """The chosen AI with the app's model level, e.g. in an exported chat: "Claude Sonnet", "ChatGPT, medium
-    reasoning" (``effort``: the level it reasoned at, "" = the one ``level`` meant)."""
+def answered_by(message: dict[str, Any]) -> str:
+    """The AI that wrote a chat's answer ("claude", "chatgpt"…), as kept with it; the one chosen now for an answer
+    kept before 4.1.0 without it."""
+    usage = message.get("usage") or {}
+    return usage.get("ai") or usage.get("notices_ai") or provider()
+
+
+def chat_ais(messages: list[dict[str, Any]]) -> list[str]:
+    """The AIs that answered in a chat, in order ("Claude", "ChatGPT"): what an exported chat names, not the AI chosen
+    now (a student who switched to ChatGPT exports a chat Claude wrote)."""
+    labels = [PROVIDER_LABELS.get(answered_by(m)) or "AI" for m in messages if m.get("role") != "user"]
+    return list(dict.fromkeys(labels)) or [PROVIDER_LABELS.get(provider()) or "AI"]
+
+
+def model_label(level: str, effort: str = "", p: str = "") -> str:
+    """The AI (``p``, else the chosen one) with the app's model level, e.g. in an exported chat: "Claude Sonnet",
+    "ChatGPT, medium reasoning" (``effort``: the level it reasoned at, "" = the one ``level`` meant)."""
     from .effort import LABELS, LEGACY
 
-    p = provider()
+    p = p or provider()
     if p in ("chatgpt", "codex"):
         return f"ChatGPT, {LABELS.get(effort or LEGACY.get(level, ''), level).lower()} reasoning"
     if p == "claude":
@@ -1530,7 +1557,7 @@ def _codex_once(system_prompt: str, content: list[dict[str, Any]], model: str, e
 def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]],
                timeout_s: float, wait: Any) -> dict[str, Any]:
-    started = time.monotonic()
+    started = _awake()
     with tempfile.TemporaryDirectory(prefix="studia-codex-") as tmp:
         work = Path(tmp)
         prompt, images = _codex_text(system_prompt, content, work)
@@ -1551,7 +1578,7 @@ def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, ef
 
         def killer() -> None:
             while not stop.wait(0.5):
-                if (cancel is not None and cancel.is_set()) or time.monotonic() - started > timeout_s:
+                if (cancel is not None and cancel.is_set()) or _awake() - started > timeout_s:
                     if not (cancel is not None and cancel.is_set()):
                         timed_out.append(True)
                     proc.kill()
@@ -1632,7 +1659,7 @@ def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, ef
             log.warning("The Codex CLI ended with %s and said nothing: %s", proc.returncode, err[-800:])
         raise _codex_failure(last)
     health.ok("codex", "answers")
-    return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(time.monotonic() - started, 1),
+    return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(_awake() - started, 1),
             "model": _codex_model() or "Codex's default model"}
 
 

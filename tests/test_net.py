@@ -117,3 +117,33 @@ def test_a_server_that_doesnt_answer_fails_in_seconds_not_a_minute():
     plain = net.plain_session()
     assert plain.get_adapter("https://example.com/").max_retries.total == 0
     assert not isinstance(plain, net._TimeoutSession)                 # as requests.Session(): the caller's timeouts
+
+
+@pytest.mark.parametrize("var", ["ALL_PROXY", "HTTPS_PROXY"])
+def test_a_socks_proxy_is_said_plainly(monkeypatch, var):
+    """A SOCKS proxy set on the PC (by a VPN or proxy tool): every connection said "Missing dependencies for SOCKS
+    support." in English. Nothing is sent: requests stops before it connects."""
+    for name in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "all_proxy", "https_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(var, "socks5://127.0.0.1:9")
+    # what requests raises then, without PySocks (a build machine may resolve proxies its own way: asked directly)
+    socks = requests.exceptions.InvalidSchema("Missing dependencies for SOCKS support.")
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", lambda *a, **k: (_ for _ in ()).throw(socks))
+    with pytest.raises(NetworkError) as err:
+        net.make_session().get("https://example.invalid/")
+    assert str(err.value) == net.proxy_refused()
+    with pytest.raises(requests.exceptions.InvalidSchema) as raw:
+        net.plain_session().get("https://example.invalid/", timeout=5)
+    assert plain_error(raw.value) == net.proxy_refused()
+
+
+@pytest.mark.parametrize("var", ["REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"])
+def test_a_certificate_bundle_variable_naming_a_missing_file_is_left_out(monkeypatch, tmp_path, var):
+    monkeypatch.setenv(var, str(tmp_path / "gone" / "ca.pem"))      # left by a program since removed
+    s = net.make_session()
+    assert s.merge_environment_settings("https://learn.ieu.edu.tr/", {}, None, None, None)["verify"] is True
+    ca = tmp_path / "company-ca.pem"                                  # one that is there is used as before
+    ca.write_text("x")
+    monkeypatch.setenv(var, str(ca))
+    s = net.plain_session()
+    assert s.merge_environment_settings("https://learn.ieu.edu.tr/", {}, None, None, None)["verify"] == str(ca)

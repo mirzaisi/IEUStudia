@@ -32,6 +32,7 @@ LINES = 3                     # thinking lines kept for the page
 LINE_CHARS = 110
 MIN_WRITE_S = 3.0             # the pace of the writing counts once it has gone on this long
 EMA = 0.35                    # how much one new measurement moves the speeds kept
+SLOWER = 3.0                  # ... a measurement counts as at most this many times slower than the speed kept
 SPEEDS_FILE = "ai-speeds.json"
 _now = time.time            # (tests set the clock)
 
@@ -123,7 +124,10 @@ class Speeds:
             row = data["rows"].setdefault(self.key(provider, model, level, kind), {})
             for k, v in measured.items():
                 if v and v > 0:
-                    row[k] = round(v if not row.get(k) else row[k] + EMA * (v - row[k]), 3)
+                    old = row.get(k)
+                    if old and int(row.get("n") or 0) >= 2:    # one request across a sleep (or a clock set forward)
+                        v = min(v, old * SLOWER) if k == "first" else max(v, old / SLOWER) if k == "rate" else v
+                    row[k] = round(v if not old else old + EMA * (v - old), 3)
             row["n"] = int(row.get("n") or 0) + 1
             if len(data["rows"]) > 400:           # the oldest kinds go (a key that is no longer used)
                 for k in list(data["rows"])[:len(data["rows"]) - 400]:
@@ -507,14 +511,37 @@ def running() -> list[str]:
         return [str(getattr(w, "where", "") or "") for w in list(_waits.values())]
 
 
+_awake: Any = None            # one "keep the PC awake" request (osutil.KeepAwake) for all the runs going on
+_awake_n = 0
+_awake_lock = threading.Lock()
+
+
+def _stay_awake(on: bool) -> None:
+    """While at least one run goes on, Windows' idle timer doesn't put the PC to sleep: a study pack takes half an
+    hour, and a laptop left alone meanwhile would wake up to a run that "took too long"."""
+    global _awake, _awake_n
+    with _awake_lock:
+        _awake_n = max(0, _awake_n + (1 if on else -1))
+        try:
+            if _awake is None:
+                from .osutil import KeepAwake
+
+                _awake = KeepAwake("IEUStudia is working with the AI")
+            (_awake.on if _awake_n else _awake.off)()
+        except Exception:  # noqa: BLE001 - the run goes on without it
+            log.debug("keeping the PC awake failed", exc_info=True)
+
+
 @contextlib.contextmanager
 def tracking(cancel: threading.Event, wait: Wait) -> Iterator[Wait]:
-    """Requests made with ``cancel`` report to ``wait`` while this lasts."""
+    """Requests made with ``cancel`` report to ``wait`` while this lasts (and the PC stays awake)."""
     with _reg:
         _waits[cancel] = wait
+    _stay_awake(True)
     try:
         yield wait
     finally:
+        _stay_awake(False)
         with _reg:
             if _waits.get(cancel) is wait:
                 del _waits[cancel]

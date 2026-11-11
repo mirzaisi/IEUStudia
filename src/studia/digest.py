@@ -10,6 +10,7 @@ import re
 from typing import Any, Optional
 
 from . import store
+from .doclang import for_courses, taught_in
 from .i18n import N_, date_short, day_month, t
 from .outputs.common import MONTHS, WEEKDAYS_SHORT, kind_label, long_date
 from .outputs.highlights import excerpt
@@ -189,7 +190,7 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                         "week": {"no": week["no"], "topic": week["topic_en"] or week["topic_tr"] or
                                  " · ".join(u["title"] for u in week["units"])} if week else None,
                         "lectures": lectures, "new_files": new_files, "announcements": anns, "coming": coming,
-                        "said": said})
+                        "said": said, "taught_in": taught_in(d)})
     for c in courses:
         for e in c["coming"]:
             if e["this_week"] and not e["done"]:
@@ -201,12 +202,18 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
     # what has a day first: a quiz or an exam this week, then the assignments to send (soonest first), then the rest
     todo.sort(key=lambda x: (0, "") if x["kind"] == "prepare" else (1, x["due"]) if x["kind"] == "assignment" else (2, ""))
     return {"week": {"start": mon.isoformat(), "end": sun.isoformat(), "offset": offset,
-                     "label": f"{day_month(mon)} – {day_month(sun)} {sun.year}"}, "courses": courses, "todo": todo[:30]}
+                     "label": f"{day_month(mon)} – {day_month(sun)} {sun.year}"}, "courses": courses, "todo": todo[:30],
+            **for_courses([c["taught_in"] for c in courses], settings)}    # the summary's language (doclang.py)
 
 
 def digest_prompt(digest: dict[str, Any]) -> str:
-    """For Claude: the week as facts, asking for a short plain summary and a plan for the next days (in English
-    whatever language the page shows)."""
+    """For Claude: the week as facts, asking for a short plain summary and a plan for the next days (in the language
+    of study documents, doclang.for_courses: English unless the courses or the setting say otherwise; never the
+    language the page shows)."""
+    from .outputs.prompts import terms_rule
+
+    lang = digest.get("language") or "English"
+    rule = terms_rule(lang, digest.get("taught_in") or "")
     lines = [f"WEEK: {_range_en(digest['week'])}"]
     for c in digest["courses"]:
         lines.append(f"\nCOURSE {c['code']}: {c['name']}{_whose(c)}"
@@ -237,7 +244,7 @@ def digest_prompt(digest: dict[str, Any]) -> str:
             "notes would: first 2–3 sentences on the week as a whole, then per course one or two bullets on what was covered "
             "and what matters next (quizzes, deadlines, what the lecturer stressed), then the 3–6 things to do in the "
             "next days, most urgent first. Use only these facts. Plain words; no greetings, sign-offs, hype or em "
-            "dashes.\n\n=== THE WEEK ===\n\n" + "\n".join(lines))
+            f"dashes. Write in {lang}." + (f" {rule}" if rule else "") + "\n\n=== THE WEEK ===\n\n" + "\n".join(lines))
 
 
 def digest_markdown(digest: dict[str, Any], summary: str = "") -> str:

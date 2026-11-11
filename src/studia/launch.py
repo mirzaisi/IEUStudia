@@ -5,6 +5,7 @@ install (``pythonw -m studia.app``). Also the "start with Windows" registry entr
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -135,3 +136,23 @@ def set_startup(on: bool) -> bool:
             log.warning("Could not turn IEUStudia on in Windows' Startup apps (%s)", exc)
             return False
     return startup_enabled() == on
+
+
+def refresh_startup() -> None:
+    """The Run entry follows this copy of IEUStudia: one written by a copy in another folder (an earlier portable zip
+    since deleted or kept, or the zip before the installer) would start that one at sign-in, or nothing. Only a
+    release does it (from source, or with STUDIA_HOME, the entry is not this copy's to take), only when the entry is
+    there and names another program, and Windows' own switch for it is left as the student set it."""
+    if sys.platform != "win32" or not frozen() or os.environ.get("STUDIA_HOME", "").strip():
+        return
+    import winreg
+
+    want = _quote(app_command("--agent", "--at-login"))
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as k:
+            have = winreg.QueryValueEx(k, RUN_VALUE)[0]
+            if have and have != want:
+                winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ, want)
+                log.info("Start with Windows now starts %s", sys.executable)
+    except OSError:
+        pass

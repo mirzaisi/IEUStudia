@@ -216,6 +216,7 @@ class PracticeApi:
         (meta "stressed-ai:<course>") and sent back as "stressed" events."""
         from . import net, quizzes, stressed
         from .ai import ai_name, ask_json, model_label
+        from .doclang import document_language
         from .effort import resolve
         from .views import course_detail
 
@@ -243,8 +244,9 @@ class PracticeApi:
             los = "; ".join(f"LO{n}" + (f": {outcomes[n - 1]}" if 0 < n <= len(outcomes) else "") for n in nxt["los"])
             focus = f"The next assessment is {nxt['name']} (week {nxt['week']})" + (f", covering {los}" if los else "") + \
                 ": rank what it covers higher."
-        prompt = stressed.summary_prompt({"code": d["code"], "name": d["display_name"]}, lines,
-                                         quizzes.course_language(d), focus)
+        lang = document_language(d, self._s.settings)
+        prompt = stressed.summary_prompt({"code": d["code"], "name": d["display_name"]}, lines, lang["language"], focus,
+                                         lang["taught_in"])
         cancel = threading.Event()
         self._ai_cancel = cancel
         model = getattr(self._s.settings, "ai_model", "") or "sonnet"
@@ -281,6 +283,7 @@ class PracticeApi:
         announced assessments with the weeks they cover (the next one first), and the AI."""
         from . import quizzes, studypack
         from .ai import claude_info
+        from .doclang import document_language
         from .views import course_detail
 
         d = course_detail(self._s.lib, self._s.settings, course_id)
@@ -288,7 +291,7 @@ class PracticeApi:
             return {"ok": False, "error": t("This course is no longer in your list.")}
         opts = studypack.options(self._s.lib, self._s.settings, course_id)
         return {"ok": True, **opts, "assessments": quizzes.assessments(d), "quant": quizzes.quantitative(d),
-                "language": quizzes.course_language(d), "ai": claude_info(),
+                **document_language(d, self._s.settings), "ai": claude_info(),
                 "model": self._s.settings.plan_model or self._s.settings.ai_model}
 
     @_safe

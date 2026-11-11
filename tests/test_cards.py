@@ -4,6 +4,7 @@ cards a day, every student's reviews kept in their own profile's library, the AI
 them, the whole run with a fake AI, and the notes an Anki deck gets."""
 
 import datetime as dt
+import inspect
 import json
 import time
 import types
@@ -201,6 +202,25 @@ def test_the_ais_cards_in_every_form(text, want):
     assert [(c["q"], c["a"], c["source"]) for c in got] == want
 
 
+@pytest.mark.parametrize("fenced", [False, True])
+def test_a_code_block_on_a_cards_back_keeps_the_whole_set(fenced):
+    deck = {"cards": [{"front": "A for loop that prints 0 to 2?", "back": "```c\nfor (int i = 0; i < 3; i++)\n"
+                       "    printf(\"%d\", i);\n```", "source": "F1 p.4"},
+                      {"front": "do-while?", "back": "Runs its body at least once.", "source": "F1 p.5"}]}
+    text = json.dumps(deck, indent=1)
+    got = cards.read_cards("```json\n" + text + "\n```" if fenced else text)
+    assert [c["q"] for c in got] == ["A for loop that prints 0 to 2?", "do-while?"] and got[0]["a"].startswith("```c\n")
+
+
+def test_parse_json_reads_past_a_code_block_inside_the_json():
+    from studia import ai
+
+    data = {"summary": "Pointers", "example": "```c\nint *p = &x;\n```"}
+    assert ai.parse_json(json.dumps(data)) == data
+    assert ai.parse_json("```json\n" + json.dumps(data) + "\n```") == data
+    assert ai.parse_json('```json {"a": 1}```') == {"a": 1}                  # a fence on one line: its braces
+
+
 def wait_done(lib, pid, timeout=10):
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
@@ -241,6 +261,26 @@ def test_cards_from_files_with_a_fake_ai(env):
     assert r["title"] == "Cards from Week01.pdf"
     deck = cards.deck(env.svc, "c")
     assert len(deck) == 4 and {c["origin"] for c in deck} == {"lecture", "files"}
+
+
+def test_a_card_set_s_own_failure_is_kept_in_the_words_t_looks_up(env):
+    """Made while IEUStudia speaks Turkish, its reason stays as the English words (the key of t()), so the Practice tab
+    says it in the language of the moment (practice.js), not in the one it was made in (4.1.0)."""
+    from studia import i18n
+
+    runner = PlanRunner(env.svc, ask_text=lambda *a, **k: {"text": "{}"})
+    pid = runner.create("c", {"kind": "cards", "weeks": [1], "files": ["r1"], "picked": True})   # r1: not on this PC
+    i18n.set_language("tr")
+    try:
+        runner.start(pid)
+        p = wait_done(env.lib, pid)
+    finally:
+        i18n.set_language("en")
+    assert p["status"] == "error"
+    assert p["error"] == "None of the picked files is on this PC yet. Download them on the course page first."
+    assert p["error"] in i18n.table("tr")                          # (the page has its Turkish)
+    src = inspect.getsource(cards.run)
+    assert "raise RuntimeError(" not in src and src.count("raise Failed(N_(") == 3
 
 
 def test_anki_notes_carry_the_source_and_tags(env):

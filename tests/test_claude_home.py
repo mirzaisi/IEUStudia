@@ -55,6 +55,7 @@ def test_claude_code_under_home_is_found(pc):
     assert info["available"] and os.path.normcase(info["path"]) == os.path.normcase(str(exe))
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the user folder is %HOME% elsewhere")
 def test_the_folder_claude_install_named_is_remembered(pc):
     home, other = pc
     _put(other / ".local" / "bin")
@@ -76,6 +77,7 @@ def test_the_build_is_handed_over_where_claude_install_looks(pc):
     assert ai_setup.claude_versions_dir() == other / ".local" / "share" / "claude" / "versions"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the user folder is %HOME% elsewhere")
 def test_copy_details_say_where_claude_code_was_looked_for_without_the_users_folder(pc):
     home, other = pc
     _put(other / ".local" / "bin")

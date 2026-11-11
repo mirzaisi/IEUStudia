@@ -1,0 +1,15 @@
+{
+  "_unit": "4.1.0: interface leftovers of 4.0 (one Export menu on the course page, the top bar at 1024 px, Settings' section links, why a greyed-out button can't be used, labels for screen readers, the quiz row's Stop, card set errors in the language of now, a lecture Panopto replaced, removing the Codex CLI)",
+  "One zip for ChatGPT with the weeks you pick: transcripts, screens, files and announcements": "Seçtiğin haftalarla ChatGPT için tek bir zip: ders metinleri, ekranlar, dosyalar ve duyurular",
+  "Transcribes on the graphics card ({name}): much faster than on the processor.": "Dersler ekran kartında ({name}) yazıya dökülüyor: işlemcide olduğundan çok daha hızlı.",
+  "Transcribe a lecture of this course first: then you can ask {ai} about it.": "Önce bu dersin bir kaydını yazıya dök: sonra onun hakkında {ai} ile sohbet edebilirsin.",
+  "{ai} is still writing for another lecture. Try again when it's done.": "{ai} şu an başka bir ders için yazıyor. O bitince yeniden dene.",
+  "Another week's summary is being written. Try again when it's done.": "Başka bir haftanın özeti yazılıyor. O bitince yeniden dene.",
+  "{ai} is still ranking another course's moments. Try again when it's done.": "{ai} şu an başka bir dersin vurgulanan anlarını sıralıyor. O bitince yeniden dene.",
+  "Replaced on Panopto": "Panopto'da değiştirildi",
+  "Panopto put a new copy of this recording in its place. This transcript is of the old copy; once the new copy is transcribed, the lecture's page shows that one.": "Panopto bu kaydın yerine yeni bir kopya koydu. Bu ders metni eski kopyanın; yeni kopya yazıya dökülünce dersin sayfası onu gösterir.",
+  "IEUStudia installed it for ChatGPT through the Codex CLI, which you don't use now. If you choose that again, IEUStudia installs it again.": "IEUStudia bunu Codex CLI üzerinden ChatGPT için kurmuştu, ama şu an onu kullanmıyorsun. Onu yeniden seçersen IEUStudia tekrar kurar.",
+  "The Codex CLI is being installed right now. Cancel that first, or wait until it is done.": "Codex CLI şu an kuruluyor. Önce bunu iptal et ya da bitmesini bekle.",
+  "The Codex CLI is still running, so it can't be removed now. Close IEUStudia and open it again, then try once more.": "Codex CLI hâlâ çalışıyor, bu yüzden şu an kaldırılamıyor. IEUStudia'yı kapatıp yeniden aç, sonra bir kez daha dene.",
+  "The Codex CLI is in use: IEUStudia reaches ChatGPT through it. Pick another AI in Settings → AI first.": "Codex CLI kullanılıyor: IEUStudia ChatGPT'ye onun üzerinden ulaşıyor. Önce Ayarlar → Yapay zeka bölümünden başka bir yapay zeka seç."
+}

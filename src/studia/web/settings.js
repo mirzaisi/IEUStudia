@@ -1,4 +1,5 @@
-/* IEUStudia — Settings: what students set up beyond the basics, each with a good default. Practice (how many questions a
+/* IEUStudia — Settings: what students set up beyond the basics, each with a good default. The language of study
+ * documents (and each document dialog's line naming it), Practice (how many questions a
  * new quiz starts with, new flashcards a day), when the reminders come and how often the background checks look,
  * and "Back to the defaults" for each group (config.GROUPS says what each puts back; never the speech model, the
  * folder, the AI service, the language or running in the background). The other cards are app.js's and setup.js's;
@@ -27,7 +28,8 @@
   function changed(group) {
     const d = ((S.setDefaults || {}).defaults || {})[group];
     if (!d) return false;
-    return Object.entries(d).some(([where, keys]) => Object.entries(keys).some(([k, v]) => !same(now(where)[k], v)));
+    // (a setting the page has no value for yet is as its default)
+    return Object.entries(d).some(([where, keys]) => Object.entries(keys).some(([k, v]) => k in now(where) && !same(now(where)[k], v)));
   }
   St.setChanged = changed;          // (the tests)
   // the button in a card's heading: only when something there differs from the default
@@ -41,7 +43,7 @@
   const WHAT = () => ({
     transcription: t("Transcribe with: Automatic. Capture slides: on. Ask before closing: on. Recordings shorter than 1 minute are hidden. Your speech model stays as it is."),
     files: t("Subtitles: on. Keep downloaded audio: off. Your folder stays where it is."),
-    ai: t("The models and reasoning levels go back to the recommended ones. Your AI service stays connected."),
+    ai: `${t("The models and reasoning levels go back to the recommended ones. Your AI service stays connected.")} ${t("Study documents go back to the course's language.")}`,
     practice: t("A new quiz starts with 10 questions, and up to 20 new flashcards a day."),
     notifications: t("New lectures, announcements and reminders: on. New files: off. Checks every 30 minutes. Reminders 2 days before a quiz or exam, and 1 day and 3 hours before a deadline. Running in the background stays as it is."),
     appearance: t("Theme: as Windows. Reading text: Normal. The language stays as it is."),
@@ -49,7 +51,27 @@
 
   // ---- Practice
   const QUIZ_SIZES = [5, 10, 15, 20], PER_DAY = [10, 20, 30, 50];
-  const row = (title, d, ctl) => `<div class="set-row"><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
+  const row = (title, d, ctl, id) => `<div class="set-row"${id ? ` id="${id}"` : ""}><div class="txt"><div class="t">${title}</div><div class="d">${d}</div></div>${ctl}</div>`;
+
+  // ---- AI: the language of study documents (doclang.py): the course's own (the default), English or Turkish. Only
+  // with ChatGPT or Claude (the offline model writes English); chats answer in the language you write in.
+  const LANG_NAME = () => ({ English: t("English"), Turkish: t("Turkish") });
+  St.docLangRow = () => {
+    const p = (S.system.ai || {}).provider || ((S.boot || {}).app || {}).ai_provider;
+    if (!["chatgpt", "claude", "codex"].includes(p)) return "";
+    const v = (S.settings || {}).doc_language || "course";
+    const opts = [["course", t("The course's language")], ["en", t("English")], ["tr", t("Turkish")]];
+    return row(t("Language of study documents"), t("Notes, quizzes, cards, study packs and the other documents the AI writes. Exam terms stay in the course's language either way."),
+      `<div class="seg">${opts.map(([k, l]) => `<button class="${v === k ? "on" : ""}" data-act="set" data-key="doc_language" data-val="${k}" aria-pressed="${v === k}">${esc(l)}</button>`).join("")}</div>`, "set-doclang");
+  };
+  // each document dialog's quiet line: the language its estimate says the AI will write in ("" before the estimate)
+  St.docLangLine = (e) => {
+    if (!e || !e.language) return "";
+    const L = LANG_NAME(), lang = L[e.language] || e.language;
+    const say = e.taught_in && e.taught_in !== e.language ? t("Written in {language}, exam terms in {course}", { language: lang, course: L[e.taught_in] || e.taught_in })
+      : t("Written in {language}", { language: lang });
+    return `<div class="dim sm doclang-line">${I("globe", "xs")} ${esc(say)} · <button type="button" class="link" data-act="doclang-settings">${t("change in Settings")}</button></div>`;
+  };
   St.practiceCard = () => {
     const s = S.settings || {}, q = +s.quiz_questions || 10, per = +s.cards_per_day || 20;
     const days = PER_DAY.includes(per) ? PER_DAY : [...PER_DAY, per].sort((a, b) => a - b);
@@ -95,6 +117,12 @@
   };
 
   Object.assign(A, {
+    // from a document dialog's line: Settings → AI, at the row (the dialog closes; nothing has started)
+    "doclang-settings": () => {
+      St.closeModal();
+      St.go({ name: "settings" });
+      setTimeout(() => { const r = document.getElementById("set-doclang") || document.getElementById("set-ai"); if (r) r.scrollIntoView({ block: "center" }); }, 60);
+    },
     "set-reset": async (el) => {
       const g = el.dataset.group;
       if (!(await St.ask({ title: t("Back to the defaults for {group}?", { group: NAME()[g] || g }), text: WHAT()[g] || "", ok: t("Back to the defaults") }))) return;
@@ -126,7 +154,7 @@
   St.mocks.settings_defaults = () => ({ ok: true, reminders: { exams: 2, due_days: 1, due_hours: 3 }, defaults: {
     transcription: { settings: { device: "auto", capture_slides: true, ask_before_closing: true, min_duration_s: 60 } },
     files: { settings: { write_srt: true, keep_audio: false } },
-    ai: { settings: { ai_model: "sonnet", plan_model: "", verify_model: "haiku", ai_model_light: "haiku", ai_effort: {} } },
+    ai: { settings: { ai_model: "sonnet", plan_model: "", verify_model: "haiku", ai_model_light: "haiku", ai_effort: {}, doc_language: "course" } },
     practice: { settings: { quiz_questions: 10, cards_per_day: 20 } },
     notifications: { app: { notify_recordings: true, notify_announcements: true, notify_materials: false, notify_reminders: true, sync_minutes: 30 },
       reminders: { exams: 2, due_days: 1, due_hours: 3 } },

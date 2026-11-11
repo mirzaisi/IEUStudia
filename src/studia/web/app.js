@@ -27,7 +27,7 @@
     sync: { running: false, message: "", error: "" }, engine: null,
     day: null, dayFind: "", ai: { running: false, text: "", dayKey: null },
     lib: null, search: { q: "", res: null, course: "", kind: "", busy: false, items: [] }, signin: { busy: false, error: "" },
-    chat: { list: null, id: null, data: null, draft: null, input: "", sending: false, scroll: null }, limits: {},
+    chat: { list: null, id: null, data: null, draft: null, input: "", inputs: {}, sending: false, scroll: null }, limits: {},   // inputs: each chat's unsent question
     update: {},      // a new version: updates.status(), plus state/done/total/error while it downloads
   };
   let REAL = false;
@@ -106,7 +106,7 @@
         if (S.view.name === "day") renderDayActions();
         if (S.view.name === "chat" && !$("#chat-input")) renderView();   // Claude availability is now known
         break;
-      case "toast": toast(e.message, e.level); break;
+      case "toast": toast(e.message, e.level, e.action); break;     // (a reminder's: Open)
       case "open": openTarget(e.target); break;
       case "update": onUpdate(e); break;
       case "ai": onAi(e); break;
@@ -254,7 +254,17 @@
     sp.querySelector(".splash-bar").remove();
     setSplash("");
     sp.insertAdjacentHTML("beforeend", `<div class="splash-error">${esc(msg)}</div>
-      <div class="splash-actions"><button class="btn primary" data-act="reload">${I("retry", "sm")} ${t("Try again")}</button>${logs ? `<button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button>` : ""}</div>`);
+      <div class="splash-actions"><button class="btn primary" data-act="${logs ? "start-again" : "reload"}">${I("retry", "sm")} ${t("Try again")}</button>${logs ? `<button class="btn" data-act="logs">${I("terminal", "sm")} ${t("Open logs")}</button>` : ""}</div>`);
+    if (!logs) return;
+    // Try again starts the app's library again (not only the page); another profile on this PC still opens
+    A["start-again"] = () => call("start_again").then(() => location.reload());
+    call("profiles").then((r) => {
+      const others = r && r.ok ? (r.profiles || []).filter((x) => !x.active) : [];
+      if (!others.length || !sp.isConnected) return;
+      S.profiles = r.profiles;
+      sp.insertAdjacentHTML("beforeend", `<div class="si-others" style="width:min(320px,calc(100% - 32px))"><div class="lbl">${t("Or open another profile on this PC")}</div>${others.map((x) => `<button type="button" class="si-prof" data-act="profile-switch" data-id="${esc(x.id)}">
+        <span class="avatar">${esc(initials(x.name || x.username))}</span><span class="who"><b>${esc(x.name || x.username)}</b><span>${esc(x.student_number || x.username)}</span></span>${I("chevron-right", "sm")}</button>`).join("")}</div>`);
+    });
   }
 
   // ------------------------------------------------------------------ shell
@@ -306,7 +316,8 @@
       const n = dim ? 0 : courseNew(c);
       const badge = n ? `<span class="count new" title="${t("New recordings, materials and announcements")}">${n}</span>` : "";
       const sub = courseSub(c);
-      return `<button class="nav-item ${active ? "active" : ""} ${dim ? "earlier" : ""}" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${esc(c.code + " — " + sub)}">
+      const twin = S.courses.filter((x) => x.code === c.code).length > 1;      // (its second line tells them apart)
+      return `<button class="nav-item ${active ? "active" : ""} ${dim ? "earlier" : ""} ${twin ? "twin" : ""}" data-act="go" data-view="course" data-id="${esc(c.id)}" title="${esc(c.code + " — " + sub)}">
         <span class="label"><span class="code">${esc(c.code)}</span><span class="sub">${esc(sub)}</span></span>${badge}</button>`;
     };
     h += S.courses.map((c) => item(c, false)).join("");
@@ -314,11 +325,12 @@
     // the Study group stays in view at the bottom when many courses make the list scroll; "Ask ChatGPT" once the AI is
     // known (the start-up snapshot names the one chosen now), a quiet bar until then, never a name that then changes
     const askLabel = aiKnown() ? t.html("Ask {ai}", { ai: aiName() }) : `<span class="skel ai-skel" aria-hidden="true"></span>`;
-    h += `<div class="nav-study"><div class="nav-section">${t("Study")}</div>
+    h += `<div class="nav-study"><button class="nav-more" data-act="nav-more" hidden>${I("chevron-down", "sm")}<span></span></button><div class="nav-section">${t("Study")}</div>
       <button class="nav-item ${v.name === "chat" ? "active" : ""}" data-act="go" data-view="chat">${I("chat")}<span class="label"><span class="code">${askLabel}</span></span></button>
       ${Studia.navExtra ? Studia.navExtra(v) : ""}
       <button class="nav-item ${v.name === "library" ? "active" : ""}" data-act="go" data-view="library">${I("search")}<span class="label"><span class="code">${t("Search")}</span></span></button></div>`;
     nav.innerHTML = h;
+    navMore();
     const p = S.profile || {};
     const others = S.profiles.filter((x) => !x.active).length;
     $("#sfoot").innerHTML = `
@@ -329,6 +341,22 @@
       <button class="btn ghost icon ${v.name === "settings" ? "on" : ""}" data-act="go" data-view="settings" title="${t("Settings")}">${I("settings")}</button>`;
   }
 
+  // courses hidden under the Study group (a short window, many courses): its top edge says how many; a click shows them
+  function navMore() {
+    const nav = $("#nav");
+    if (!nav || !nav.querySelector) return;               // (a page without the sidebar's real elements)
+    const study = nav.querySelector(".nav-study"), more = study && study.querySelector && study.querySelector(".nav-more");
+    if (!more || !study.getBoundingClientRect) return;
+    const top = study.getBoundingClientRect().top;
+    const under = [...nav.querySelectorAll(".nav-item[data-view=course]")].filter((b) => b.getBoundingClientRect().bottom > top + 2);
+    if (under.length) more.lastElementChild.textContent = t.n(under.length, "{n} more course", "{n} more courses");
+    if (more.hidden === under.length > 0) {          // shown or hidden: counted again where the group sticks then
+      more.hidden = !under.length;
+      (window.requestAnimationFrame || setTimeout)(() => navMore());
+    }
+  }
+  if (typeof document.addEventListener === "function") document.addEventListener("scroll", (e) => { if (e.target && e.target.id === "nav") navMore(); }, true);
+  if (typeof window.addEventListener === "function") window.addEventListener("resize", () => navMore());
   function revealCourse() {   // the course just opened is not left hidden under the sidebar's Study group
     const nav = $("#nav"), on = nav && nav.querySelector(".nav-item.active[data-view=course]"), study = nav && nav.querySelector(".nav-study");
     if (on && study) { const over = on.getBoundingClientRect().bottom - study.getBoundingClientRect().top; if (over > 0) nav.scrollTop += over + 8; }
@@ -350,7 +378,8 @@
   function renderTop() {
     const top = $("#top"); if (!top) return;
     const g = S.system.gpu;
-    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok" title="${t.html("Lectures are transcribed on your NVIDIA graphics card: {name} · {mb} MB", { name: g.name, mb: g.vram_mb })}"><span class="dot"></span>GPU · ${esc((g.name || "").replace(/NVIDIA GeForce /i, "").replace(/ Laptop GPU/i, ""))}</span>`
+    // the graphics card transcribes: a short plain chip (all is normal, so it gives way in a narrow window: styles.css)
+    const gpu = g == null ? "" : gpuUsed(g) ? `<span class="chip ok gpu-chip" title="${t.html("Transcribes on the graphics card ({name}): much faster than on the processor.", { name: g.name })}"><span class="dot"></span>${t("Graphics card")}</span>`
       : gpuFits(g) && !g.libraries && S.settings.device !== "cpu" ? `<span class="chip" title="${t("Your NVIDIA graphics card could transcribe much faster after a one-time download from NVIDIA: Settings → About → Run setup again.")}"><span class="dot"></span>${t("Graphics card not set up")}</span>` : "";
     // waiting for the connection (for the recordings, or the files and announcements after them): a short label (the
     // reason is on Home and in the tooltip) and a way to stop waiting
@@ -398,14 +427,20 @@
   // a box being typed in when the page is drawn again in the background (a lecture's stage, a file that came in, a
   // plan's step, a service's state): it keeps the focus and the caret (the next keys went nowhere)
   const TYPING = "input[type=search],input[type=text],input:not([type]),textarea";
+  // a button that had the focus keeps it too when the same page is drawn again (after a dialog, or an event): else
+  // the keyboard starts again at the top of the window
+  let drawn = "";
+  const viewKey = (v) => [v.name, v.courseId || "", v.tab || "", v.chatId || "", v.planId || "", v.dayKey || ""].join("|");
   function renderView() {
     const el = $("#view"); if (!el) return;
-    const v = S.view;
+    const v = S.view, same = drawn === viewKey(v);
     let again = "", caret = null;
     try {
       const a = document.activeElement;
       if (a && el.contains(a) && a.matches(TYPING)) { again = focusKey(a); caret = [a.selectionStart, a.selectionEnd]; }
+      else if (a && el.contains(a) && same) again = focusKey(a);    // a button: the same one after the page is drawn again
     } catch (e) { /* nothing focused that keeps a caret */ }
+    drawn = viewKey(v);
     if (Studia.views[v.name]) el.innerHTML = Studia.views[v.name](v);   // home, course pages, plans (course.js …)
     else if (v.name === "course") el.innerHTML = courseHTML(findCourse(v.courseId));
     else if (v.name === "new") el.innerHTML = newHTML();
@@ -419,7 +454,7 @@
     const box = again ? el.querySelector(again) : null;      // (before the hooks: one that moves the focus on purpose wins)
     if (box && box !== document.activeElement) {
       box.focus({ preventScroll: true });
-      try { box.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not every kind of box has a caret */ }
+      if (caret) try { box.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not every kind of box has a caret */ }
     }
     if (Studia.after[v.name]) Studia.after[v.name](v);
     if (Studia.views[v.name] && Studia.renderMath) Studia.renderMath(el);   // formulas in plans, review sheets, study packs, course pages
@@ -431,7 +466,7 @@
     if (S.view.name === "day" && view.name !== "day") S.day = null;
     // ticked recordings belong to the page they were ticked on (another course's "Transcribe 2 selected" queued these)
     if (view.name !== S.view.name || view.courseId !== S.view.courseId) S.selected.clear();
-    if (view.name === "chat" && view.chatId) { S.chat.id = view.chatId; S.chat.draft = null; }
+    if (view.name === "chat" && view.chatId) { switchInput(view.chatId); S.chat.id = view.chatId; S.chat.draft = null; }
     S.view = view;
     $("#view").scrollTo({ top: 0, behavior: "instant" });   // before rendering (an after-hook may scroll elsewhere); not animated
     renderSidebar(); renderTop(); renderView();
@@ -493,7 +528,7 @@
       <span class="part">${r.part ? t("Part {n}", { n: r.part }) : "—"}</span>
       <span class="time">${esc(r.time)}–${esc(r.end_time)}</span>
       <span class="dur">${fmtDur(r.duration_s)}</span>
-      <span class="state">${statusHTML(r)}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
+      <span class="state">${statusHTML(r)}${Studia.replacedTag ? Studia.replacedTag(r) : ""}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
       <span class="acts">${acts}</span></div>`;
   }
   function updateRow(r) {
@@ -712,7 +747,7 @@
     h += `<div id="notes-slot">${notesHTML()}</div><div id="marks-slot">${marksHTML()}</div>`;
     h += `<div id="hl-slot">${highlightsHTML()}</div>`;
     for (const p of d.parts) {
-      h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>
+      h += `<div class="part-h" id="part-${p.index}"><h2>${t("Part {n}", { n: p.index })}</h2><span class="rng">${esc(p.time_range)}${p.slides ? ` · ${t.n(p.slides, "{n} slide", "{n} slides")}` : ""}</span>${Studia.replacedTag ? Studia.replacedTag(p) : ""}
         <span style="flex:1"></span>${screensAgainHTML(d, p)}${d.parts.length > 1 && Studia.player && Studia.player.partBtn ? Studia.player.partBtn(p) : ""}<button class="btn ghost sm" data-act="url" data-url="${esc(p.viewer_url)}">${I(Studia.player && Studia.player.partBtn ? "external" : "play", "sm")} ${t("Watch")}</button></div>`;
       if (!p.paragraphs.length) { h += `<div class="empty" style="padding:20px">${p.status === "done" ? t("No speech was recognised in this part.") : p.status === "live" ? t("Being recorded. It can be transcribed once Panopto has finished it.") : t("Not transcribed yet.")}</div>`; continue; }
       if (screensOnly(d)) { h += screensOnlyHTML(p); continue; }
@@ -855,7 +890,7 @@
       ${Studia.exportBtn ? Studia.exportBtn("day", d.day_key, false, !hasText) : ""}
       ${Studia.player && Studia.player.btn ? Studia.player.btn(!d.parts.length) : ""}
       <button class="btn grad sm" data-act="ask-day" ${aiBtn(hasText && ai.available)} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
-      <button class="btn sm" data-act="claude" ${aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
+      <button class="btn sm" data-act="claude" ${hasText && ai.available && S.ai.running && S.ai.dayKey !== d.day_key ? whyOff(t("{ai} is still writing for another lecture. Try again when it's done.", { ai: aiName() })) : aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
       <span class="spacer"></span>
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
@@ -1391,6 +1426,7 @@
       <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}${rb("ai")}</h3>
         ${Studia.settingsAI ? Studia.settingsAI() : ""}
         ${Studia.aiLevelsHTML ? Studia.aiLevelsHTML(sys, s) : ""}
+        ${Studia.docLangRow ? Studia.docLangRow() : ""}
       </div>
       ${Studia.practiceCard ? Studia.practiceCard() : ""}
       ${Studia.settingsMore ? Studia.settingsMore() : ""}</div>`;
@@ -1437,6 +1473,9 @@
     const ai = S.system.ai || {};
     return !ai.available || (plans && ai.can_plans === false) ? `aria-disabled="true" data-ai-off="${plans ? "plans" : "any"}"` : "disabled";
   }
+  // a button that can't be used now for another reason than the AI, which nothing on the page shows: greyed out the
+  // same way, and a click says ``why`` (a disabled one said it only in its tooltip, or not at all)
+  const whyOff = (why) => (why ? `aria-disabled="true" data-why="${esc(why)}"` : "");
   async function aiOffAsk(plans) {
     const ai = S.system.ai || {};
     const text = plans && ai.available ? t("This needs ChatGPT or Claude: the offline model is too small for it. You can choose one in Settings → AI.")
@@ -1636,7 +1675,7 @@
   async function openChat(id) {
     if (S.qpOpen) closePane();     // a chat in the sidebar
     if (id !== S.chat.id) S.chat.scroll = null;
-    S.chat.id = id; S.chat.draft = null;
+    switchInput(id); S.chat.id = id; S.chat.draft = null;
     if (S.view.name !== "chat" || S.view.chatId !== id) { S.view = { name: "chat", chatId: id }; renderSidebar(); renderTop(); }
     if (!$("#chat-main")) renderView(); else renderChatMain();
     const r = await call("chat_get", id);
@@ -1650,9 +1689,17 @@
     if (r.chat.limits && Object.keys(r.chat.limits).length) S.limits = r.chat.limits;
     if (S.view.name === "chat") { renderChatMain(); restoreChatScroll(); focusComposer(); }
   }
-  function startDraft(d) {
+  // a question typed and not sent stays with its chat: another chat, or a new one, starts with its own (a new chat's
+  // goes with it, except when its lectures are changed: same: true)
+  function switchInput(next, same) {
+    if (same) return;
+    if (S.chat.id) S.chat.inputs[S.chat.id] = S.chat.input;
+    S.chat.input = (next && S.chat.inputs[next]) || "";
+  }
+  function startDraft(d, same) {
     if (S.qpOpen) closePane();
     const inChat = S.view.name === "chat" && $("#chat-main");
+    switchInput(null, same && !S.chat.id && !!S.chat.draft);
     S.chat.draft = { tokens: 0, slidesTotal: 0, ...d }; S.chat.id = null; S.chat.data = null; S.chat.scroll = null;
     S.view = { name: "chat" };          // never keep an older chat's id: Back would reopen it instead of this draft
     renderSidebar(); renderTop();
@@ -1705,7 +1752,9 @@
     const r = await call("chat_send", id, text);
     S.chat.sending = false;
     if (!r.ok) { toast(r.error, "error"); if (S.view.name === "chat" && S.chat.id === id) { renderChatHead(); renderComposerBtn(); } return; }
-    if (S.chat.input.trim() === text) S.chat.input = "";          // sent: but keep anything typed meanwhile
+    // sent: but keep anything typed meanwhile (in another chat by now: its box, not this one's, is the one shown)
+    if (S.chat.id === id && S.chat.input.trim() === text) S.chat.input = "";
+    else if ((S.chat.inputs[id] || "").trim() === text) delete S.chat.inputs[id];
     const ta = $("#chat-input");
     if (ta && ta.value.trim() === text) { ta.value = ""; autosize(ta); }
     const c = S.chat.data;
@@ -1865,7 +1914,7 @@
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
           labels: list.map((d, i) => ({ key: d.day_key, n: i + 1, label: d.label, kind: d.kind_label, long: d.label })),
           focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "",
-          read_all: st.read, uploads: (preset && preset.uploads) || "" });        // Change…: the files already added stay with the new chat
+          read_all: st.read, uploads: (preset && preset.uploads) || "" }, !!preset && preset === S.chat.draft);   // Change…: the files added and the question typed stay with the new chat
       },
     };
     await load();
@@ -2266,6 +2315,13 @@
   let modalFrom = null;            // what had the focus before a dialog opened: it gets it back
   const focusKey = (el) => el && el.dataset && el.dataset.act      // the same control after the dialog is drawn again
     ? Object.entries(el.dataset).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())}="${CSS.escape(v)}"]`).join("") : "";
+  // the control a dialog or a menu was opened with gets the focus back; drawn again meanwhile (the page behind changed,
+  // e.g. a calendar entry added): the new one that does the same
+  function refocus(el) {
+    const key = focusKey(el), to = el && el.isConnected ? el : key ? $(key) : null;
+    if (to) to.focus({ preventScroll: true });
+    return to;
+  }
   function modal(html) {
     const old = $("#overlay .modal"), inside = !!old && old.contains(document.activeElement);
     const again = inside ? focusKey(document.activeElement) : "";
@@ -2279,7 +2335,7 @@
   function closeModal() {
     const had = $("#overlay").innerHTML;
     $("#overlay").innerHTML = "";
-    if (had && modalFrom && modalFrom.isConnected) modalFrom.focus({ preventScroll: true });
+    if (had) refocus(modalFrom);
     modalFrom = null;
     const hook = Studia.onModalClose; Studia.onModalClose = null;   // a dialog waiting for an answer: closed = "no"
     if (hook) hook();
@@ -2391,19 +2447,40 @@
            <button class="btn" data-act="modal-close">${t("Later")}</button>
            ${u.can_install ? `<button class="btn primary" data-act="update-go">${I("download", "sm")} ${u.state === "error" ? t("Try again") : t("Update now")}</button>` : ""}`}</div></div>`);
   }
+  // a menu under its button; the focus goes to its first item (a ring only after a key: a click shows none), so the
+  // keyboard can use it as the Export menu (menuKey)
   function menu(anchor, items) {
     closeMenu();
     const r = anchor.getBoundingClientRect();
     const m = document.createElement("div");
-    m.className = "menu"; m.id = "menu";
-    m.innerHTML = items.map((it) => it === "-" ? "<hr>" : `<button data-menu="${it.id}">${it.icon ? I(it.icon) : ""}<span>${esc(it.label)}${it.desc ? `<span class="d">${esc(it.desc)}</span>` : ""}</span></button>`).join("");
+    m.className = "menu"; m.id = "menu"; m.tabIndex = -1; m.setAttribute("role", "menu"); m._opener = anchor;
+    m.innerHTML = items.map((it) => it === "-" ? "<hr>" : `<button role="menuitem" data-menu="${it.id}">${it.icon ? I(it.icon) : ""}<span>${esc(it.label)}${it.desc ? `<span class="d">${esc(it.desc)}</span>` : ""}</span></button>`).join("");
     document.body.appendChild(m);
     const w = m.offsetWidth, hgt = m.offsetHeight;
     m.style.left = Math.min(window.innerWidth - w - 8, r.left) + "px";
     m.style.top = (r.bottom + hgt + 8 > window.innerHeight ? r.top - hgt - 6 : r.bottom + 6) + "px";
     m.onclick = (e) => { const b = e.target.closest("[data-menu]"); if (b) { closeMenu(); const it = items.find((x) => x.id === b.dataset.menu); it && it.run(); } };
+    (m.querySelector("[data-menu]") || m).focus({ preventScroll: true });
   }
   function closeMenu() { const m = $("#menu"); if (m) m.remove(); }
+  // keys in an open menu (the Export menu's too): arrows, Home and End move in it; Escape closes it and goes back to
+  // its button, as Shift+Tab before its first item does; Tab after its last item closes it and goes on after the button
+  function menuKey(e) {
+    const m = $("#menu"), at = document.activeElement;
+    if (!m || !at || !m.contains(at)) return false;
+    const items = [...m.querySelectorAll("button:not(:disabled), input:not(:disabled)")].filter((b) => b.offsetParent !== null);
+    const i = items.indexOf(at);
+    const to = (k) => { e.preventDefault(); const b = items[(k + items.length) % items.length]; if (b) b.focus(); return true; };
+    if (e.key === "ArrowDown") return to(i + 1);
+    if (e.key === "ArrowUp") return to(i < 0 ? -1 : i - 1);
+    if (e.key === "Home") return to(0);
+    if (e.key === "End") return to(-1);
+    if (!(e.key === "Escape" || (e.key === "Tab" && (e.shiftKey ? i <= 0 : i === items.length - 1)))) return false;
+    closeMenu();
+    const back = refocus(m._opener);                                       // (drawn again since: the new one)
+    if (e.key !== "Tab" || e.shiftKey || !back) e.preventDefault();        // Tab: the browser goes on from the button
+    return true;
+  }
 
   const NOTE_KINDS = () => [["notes", t("Study notes")], ["exam", t("Exam focus")], ["flashcards", t("Flashcards")]];
   const levelLabel = (v) => { const row = modelsFor().find(([k]) => k === v); return row ? row[1] : v; };   // "Sonnet", "Standard"
@@ -2475,7 +2552,9 @@
 
   // ------------------------------------------------------------------ actions
   const A = {
+    "open-target": (el) => { S.navigated = true; openTarget(el.dataset.target); },     // what a reminder is about
     go: (el) => { S.navigated = true; go(el.dataset.view === "course" ? { name: "course", courseId: el.dataset.id, tab: el.dataset.tab || undefined } : { name: el.dataset.view }); },
+    "nav-more": () => { const nav = $("#nav"); if (nav) nav.scrollTo({ top: nav.scrollHeight, behavior: "smooth" }); },   // the courses under the Study group
     back: () => {               // where you came from, scrolled where you were
       const f = S.view.from || { name: "home" };
       go({ ...f, jumpWeek: false });
@@ -2683,6 +2762,7 @@
         if (!(await Studia.ask({ title: t("Delete this chat?"), text: t("This cannot be undone."), ok: t("Delete"), danger: true }))) return;
         const r = await call("chat_delete", S.chat.data.id);
         if (!r.ok) { toast(r.error, "error"); return; }
+        delete S.chat.inputs[S.chat.id]; S.chat.input = "";
         S.chat.id = null; S.chat.data = null; S.view = { name: "chat" }; renderChatMain(); loadChats();
       } },
     ]),
@@ -2773,7 +2853,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
-    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn });
+    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn, whyOff });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -2822,6 +2902,7 @@
     if (el.tagName === "SELECT" || el.tagName === "OPTION") return;
     if (el.tagName === "INPUT" && el.type !== "button" && !["sel", "sel-day", "set-bool", "cl-slides", "cp-day", "cp-slides", "draft-slides", "pd-week", "plan-mark", "cu-pick", "cu-mats", "rd-read", ...(Studia.inputActs || [])].includes(el.dataset.act)) return;
     if (el.dataset.aiOff) { aiOffAsk(el.dataset.aiOff === "plans"); return; }        // an AI button without its AI (aiBtn)
+    if (el.dataset.why) { toast(el.dataset.why, "info"); return; }                   // greyed out for another reason (whyOff)
     const fn = A[el.dataset.act];
     if (fn && !el.disabled) fn(el, e);
   });
@@ -2942,6 +3023,7 @@
   document.addEventListener("keydown", (e) => {
     if (askKey(e)) { e.stopImmediatePropagation(); return; }     // a question is open: Enter, Escape and Tab are its own
     capsLock(e);
+    if (menuKey(e)) return;                                      // in an open menu: its keys
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.target && e.target.id === "chat-input") { e.preventDefault(); sendChat(); return; }
     if (e.key === "Enter" && e.target && ["si-user", "aa-user"].includes(e.target.id)) {    // on to the password first
       const pass = $(e.target.id === "si-user" ? "#si-pass" : "#aa-pass");

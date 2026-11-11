@@ -134,6 +134,18 @@
     const slot = document.getElementById(`eff-note-${ctx}`); if (slot) slot.innerHTML = noteHTML(ctx);
   };
   St.effortName = name;
+  // the AI saved with what it wrote (ai.model_label, in English for the exported files: "Claude Haiku, low effort",
+  // "ChatGPT, medium reasoning", "Offline model"), said in the page's language
+  const LEVEL_OF = { low: "low", medium: "medium", high: "high", "extra high": "xhigh", max: "max", "thinking off": "off", "thinking on": "on" };
+  const lower = (s) => s.toLocaleLowerCase(t.lang() === "tr" ? "tr" : "en");
+  St.modelLabel = (label) => {
+    const s = String(label || "");
+    let m = /^ChatGPT, (.+) reasoning$/.exec(s);
+    if (m && LEVEL_OF[m[1]]) return t("ChatGPT, {level} reasoning", { level: lower(name(LEVEL_OF[m[1]])) });
+    m = /^Claude (\w+), (.+) effort$/.exec(s);
+    if (m && LEVEL_OF[m[2]]) return t("Claude {model}, {level} effort", { model: m[1], level: lower(name(LEVEL_OF[m[2]])) });
+    return s === "Offline model" ? t("Offline model") : s;
+  };
   // notes about a large request, for the dialogs to show with their estimate
   St.effortBig = {
     chat: (tokens, whole) => [tokens >= BIG_CHAT ? t("That is a lot to read: about {k} tokens with your first question (a long lecture is about 10k). Fewer days or Highlights only use less.", { k: St.fmtK(tokens) }) : "",

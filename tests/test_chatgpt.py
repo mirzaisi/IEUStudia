@@ -525,6 +525,31 @@ def test_tokens_are_refreshed_and_an_ended_sign_in_is_forgotten(openai):
     assert chatgpt.status()["ended"] and chatgpt.status()["registered"]       # the set-up says it ended
 
 
+def test_a_renewal_this_pc_cant_save_is_used_from_memory_until_it_can(openai, monkeypatch):
+    """A full disk when the hourly renewal comes: OpenAI replaced the refresh token, and the one on file no longer
+    works. The renewed sign-in goes on from memory and is saved once there is space (it was dropped, and after freeing
+    space the student had to sign in again)."""
+    _sign_in(openai)
+    rec = chatgpt._load()
+    rec["expires_at"] = 0
+    chatgpt._save(rec)
+    real_save = chatgpt._save
+
+    def full(r):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(chatgpt, "_save", full)
+    assert chatgpt.access_token() == "at-2" and chatgpt.signed_in()          # the request goes on
+    assert chatgpt._load()["refresh_token"] == "rt-2" and chatgpt.access_token() == "at-2"
+    monkeypatch.setattr(chatgpt, "_save", real_save)                         # space again
+    assert chatgpt.access_token() == "at-2" and not chatgpt._unsaved
+    assert chatgpt._load()["refresh_token"] == "rt-2"                        # (from the file now)
+    renewals = [c[2]["refresh_token"] for c in openai.calls if c[0] == "POST" and c[2].get("grant_type") == "refresh_token"]
+    assert renewals == ["rt-1"]
+    chatgpt.sign_out()
+    assert not chatgpt.signed_in()
+
+
 def test_answers_stream_and_errors_are_explained(openai, monkeypatch):
     from studia import aierrors
 

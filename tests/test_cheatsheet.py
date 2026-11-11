@@ -314,6 +314,107 @@ def test_the_estimate_shows_the_cost_up_front(env):  # noqa: F811
     assert estimate(env.lib, env.svc.settings, "c", {"kind": "sheet", "weeks": [1]})["requests"] == 3
 
 
+# ------------------------------------------------------------------ the pages that are pictures (EE slides' formulas)
+def _slides_file(env, pages, pictures=None):  # noqa: F811
+    """Week01.pdf with these pages' text, as gathered (``pictures``: the pages with a picture; None: unknown)."""
+    env.lib.set_material_text("r1", pages)
+    f = {"ref": "F1", "id": "r1", "name": "Week01.pdf", "pdf": True, "path": str(env.tmp / "Week01.pdf"),
+         "pages": len(pages)}
+    return {"files": [f if pictures is None else {**f, "pictures": pictures}], "lectures": [], "span": "week 1"}
+
+
+def _topic(tid, a, b):
+    return {"id": tid, "title": tid, "items": ["x"], "sources": {"files": [{"ref": "F1", "pages": [a, b]}], "lectures": []}}
+
+
+def test_pages_whose_text_says_little_go_as_pictures_best_first(env):  # noqa: F811
+    words = "The Thevenin equivalent of a one-port network is found by turning off the independent sources. " * 3
+    facts = _slides_file(env, ["Solution of second order systems",          # 1: its title only: all formulas
+                               words,                                       # 2: its text says it
+                               "Example 4", "Example 4 (cont.)",            # 3, 4: a worked example, last
+                               "Underdamped system R < 4L/C roots are complex conjugates of each other here",  # 5
+                               "Phasors", "Phasors",                        # 6, 7: one slide built up: its last page
+                               "",                                          # 8: no picture on it
+                               "Impedance"], pictures=[1, 2, 3, 4, 5, 6, 7, 9])
+    got = cs.sheet_pictures(env.lib, facts, [_topic("t1", 1, 9)], most=8)
+    assert [label for label, _ in got] == ["[F1 p.1]", "[F1 p.3]", "[F1 p.4]", "[F1 p.5]", "[F1 p.7]", "[F1 p.9]"]
+    assert all(path == env.tmp / "page.jpg" for _, path in got) and ("Week01.pdf", 2) not in env.rendered
+    few = cs.sheet_pictures(env.lib, facts, [_topic("t1", 1, 9)], most=3)
+    assert [label for label, _ in few] == ["[F1 p.1]", "[F1 p.7]", "[F1 p.9]"]        # title-only slides first
+    assert cs.sheet_pictures(env.lib, facts, [_topic("t1", 1, 9)], most=0) == []
+
+
+def test_each_topic_of_a_request_gets_its_share_of_the_pictures(env):  # noqa: F811
+    facts = _slides_file(env, [f"Slide {n}" for n in range(1, 13)])
+    got = [label for label, _ in cs.sheet_pictures(env.lib, facts, [_topic("t1", 1, 10), _topic("t2", 11, 12)], most=6)]
+    assert got == ["[F1 p.2]", "[F1 p.4]", "[F1 p.7]", "[F1 p.9]", "[F1 p.11]", "[F1 p.12]"]     # spread over t1's
+    shared = [label for label, _ in cs.sheet_pictures(env.lib, facts, [_topic("t1", 1, 3), _topic("t2", 2, 4)], most=8)]
+    assert shared == ["[F1 p.1]", "[F1 p.2]", "[F1 p.3]", "[F1 p.4]"]                # a page two topics share: once
+
+
+def test_a_topic_taught_only_in_class_gets_its_captured_slides(env):  # noqa: F811
+    from studia import store
+    from studia.slides import Slide
+
+    shots = env.tmp / "shots"
+    shots.mkdir()
+    for n in (1, 2, 3):
+        (shots / f"{n}.jpg").write_bytes(b"jpg")
+    store.save_slides("r", [Slide(1, 0.0, 100.0, "s/1.jpg", str(shots / "1.jpg")),
+                            Slide(2, 100.0, 300.0, "s/2.jpg", str(shots / "2.jpg")),
+                            Slide(3, 900.0, 1000.0, "s/3.jpg", str(shots / "3.jpg")),
+                            Slide(2, 300.0, 400.0, "s/2.jpg", str(shots / "2.jpg"))])        # shown again
+    store.save_screens("r", {"v": 1, "screens": {"1": {"title": "", "text": "Kirchhoff's laws in words. " * 12},
+                                                 "2": {"title": "", "text": "v = L di/dt"}}})
+    facts = {"files": [], "lectures": [{"ref": "L1", "parts": [{"part": 1, "delivery_id": "r", "slides": 3}]}]}
+    topic = {"id": "t1", "sources": {"files": [], "lectures": [{"ref": "L1", "part": 1, "from": 50, "to": 600}]}}
+    got = cs.sheet_pictures(env.lib, facts, [topic], most=8)
+    assert got == [("[L1 part 1, slide 2]", shots / "2.jpg")]          # its screen text is short; 1 says it in words
+
+
+def test_the_entries_are_written_with_the_pictures_of_their_pages(env, monkeypatch):  # noqa: F811
+    from studia import ai
+
+    monkeypatch.setattr(ai, "image_block", lambda p: {"type": "image", "source": {"data": str(p)}})
+    monkeypatch.setattr(ai, "provider", lambda: "claude")
+    log, given = [], []
+    real = fake_ai(log)
+
+    def ask(system, prompt, **kw):
+        if prompt.startswith(("TASK: Write the entries", "TASK: These items")):
+            given.append([b["text"] for b in kw.get("pictures") or [] if b["type"] == "text"])
+        return real(system, prompt, **kw)
+
+    runner = PlanRunner(env.svc, ask=ask)
+    pid = runner.create("c", {"kind": "sheet", "weeks": [1], "files": ["r1"]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    entries = [p for k, p in log if k.startswith("entries")]
+    assert len(entries) == 2 and all("attached as pictures, labelled [F1 p.1], [F1 p.2]" in p for p in entries)
+    assert given == [["[F1 p.1]", "[F1 p.2]"]] * 2 + [["[F1 p.2]"]]          # the repair: its topic's page
+    # an AI that doesn't read pictures gets none
+    monkeypatch.setattr(ai, "provider", lambda: "local")
+    log.clear(), given.clear()
+    pid = runner.create("c", {"kind": "sheet", "weeks": [1], "files": ["r1"]})
+    runner.start(pid)
+    assert wait_done(env.lib, pid)["status"] == "done"
+    assert given == [[], [], []] and not any("attached as pictures" in p for _, p in log)
+
+
+def test_asking_with_pictures_sends_them_after_the_task_and_asks_again_for_json(monkeypatch):
+    from studia import ai
+
+    sent = []
+    answers = iter(["Sure, here it is", '{"topics": []}'])
+    monkeypatch.setattr(ai, "one_shot", lambda system, content, *a, **k: sent.append(content)
+                        or {"text": next(answers), "usage": {"input_tokens": 10}})
+    pics = [{"type": "text", "text": "[F1 p.3]"}, {"type": "image", "source": {}}]
+    data, res = cs.ask_with_pictures("TASK: Write", pics, model="sonnet", effort="low", cancel=None)
+    assert data == {"topics": []} and res["usage"]["input_tokens"] == 20
+    assert [b["type"] for b in sent[0]] == ["text", "text", "image"] and sent[0][1:] == pics
+    assert sent[1][0]["text"].endswith("Reply with the JSON object only.") and sent[1][1:] == pics
+
+
 # ------------------------------------------------------------------ on paper (Edge, as the app prints it)
 def printed(tmp_path, sheet, entries, name="s"):
     import pypdfium2 as pdfium

@@ -1,0 +1,10 @@
+{
+  "_unit": "4.1.0: the language of study documents (Settings → AI) and the line each document dialog shows about it",
+  "Language of study documents": "Çalışma belgelerinin dili",
+  "Notes, quizzes, cards, study packs and the other documents the AI writes. Exam terms stay in the course's language either way.": "Notlar, deneme sınavları, kartlar, konu anlatımları ve yapay zekanın yazdığı diğer belgeler. Sınav terimleri her durumda dersin dilinde kalır.",
+  "The course's language": "Dersin dili",
+  "Written in {language}": "{language} yazılır",
+  "Written in {language}, exam terms in {course}": "{language} yazılır, sınav terimleri {course}",
+  "change in Settings": "Ayarlar'dan değiştir",
+  "Study documents go back to the course's language.": "Çalışma belgeleri yine dersin dilinde yazılır."
+}

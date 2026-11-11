@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +27,7 @@ from . import ai, aiwait, appconfig, chatfiles, chatlimits, chatread, chatslides
 from .cancel import Cancelled
 from .catchup import no_sound
 from .domain import Course, Recording
-from .i18n import date_long, date_short, t, tn
+from .i18n import date_long, date_short, language, t, tn
 from .knowledge import course_brief, retrieve
 from .outputs.ai_copy import SCREEN_LINES, compact_day, part_lines
 from .outputs.common import course_display, kind_label, long_date, time_range
@@ -52,6 +53,7 @@ FOCUS = ("full", "highlights", "course")      # course: every lecture's full tra
 EMIT_EVERY_S = 0.08
 SAVE_EVERY_S = 3.0
 READING_SAVE_S = 5.0              # how far "Read everything" got, kept with the answer (said after a restart)
+BUILT_KEEP = 6                    # chats' material kept once built (context): a whole course's is a few MB of text
 
 
 LEVEL_NAMES = (*effort.LEVELS, *effort.LOCAL_LEVELS)
@@ -232,6 +234,45 @@ def kept(reading: Optional[dict[str, Any]]) -> dict[str, Any]:
     return {k: v for k, v in (reading or {}).items() if k not in ("parts", "eta", "at", "started")}
 
 
+def _file_stamp(path: Any) -> Optional[tuple[int, int]]:
+    """A file's modified time and size, None when it isn't there."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _folder_stamp(path: str) -> Optional[int]:
+    """A folder's modified time (it follows every file made, deleted or renamed in it), None when it isn't there.
+    (Its size, on Windows, is not the same from one look to the next.)"""
+    try:
+        return os.stat(path).st_mtime_ns
+    except (OSError, ValueError):
+        return None
+
+
+_picture_dirs: dict[str, tuple[Any, tuple[str, ...]]] = {}     # a slide index -> (its stamp, its pictures' folders)
+
+
+def _pictures_stamp(index: Path, stamp: Any) -> tuple[Any, ...]:
+    """The folders of a lecture's slide pictures as they are now (their index is read again only when it changed): a
+    picture deleted while its index stays the same changes its folder's time."""
+    if stamp is None:
+        return ()
+    hit = _picture_dirs.get(str(index))
+    if hit is None or hit[0] != stamp:
+        from .slides import load_index
+
+        hit = _picture_dirs[str(index)] = (stamp, tuple(sorted({os.path.dirname(s.path) for s in load_index(index)
+                                                                 if s.path})))
+    return tuple(_folder_stamp(d) for d in hit[1])
+
+
+_MATERIAL_KEYS = ("resource_id", "unit_id", "position", "title", "file_name", "ext", "local_path", "size", "pages",
+                  "text_status", "downloaded_at", "gone")
+
+
 def _clean_stale_workdirs(max_age_s: float = 12 * 3600) -> None:
     """Remove Claude work folders left behind by a crash (they hold a copy of the transcripts)."""
     now = time.time()
@@ -251,6 +292,10 @@ class ChatService:
         self._running: dict[str, threading.Event] = {}      # chat id -> stop event of the answer being written
         self._reading: dict[str, dict[str, Any]] = {}      # chat id -> how far "Read everything" got for that answer
         self._closing: list[threading.Thread] = []
+        # each chat's material as built (context), with what it was built from (_stamp) and the pages it reads first
+        self._built: "OrderedDict[str, tuple[tuple[Any, ...], dict[str, Any], list[Any]]]" = OrderedDict()
+        self._built_lock = threading.Lock()
+        self._gates = [threading.Lock() for _ in range(8)]   # one chat's material asked twice at once: built once
         try:
             ai.restore_limits(json.loads(self.lib.get_meta("claude_limits") or "{}"))
         except ValueError:
@@ -300,7 +345,73 @@ class ChatService:
         ``model``: Claude's model (its window and the pictures it takes: chatlimits); ``read_all``: "Read everything"
         (None: on for the whole course or many files). All the text of the chosen files goes when the window holds it;
         pictures as many as the AI takes, the rest read in batches first when "Read everything" is on (``read``).
-        ``parts``: what each piece adds, for "What this chat sees"."""
+        ``parts``: what each piece adds, for "What this chat sees".
+
+        Built once and kept while what it is built from stays the same (_stamp): opening the chat again, "What this
+        chat sees" and its next question reuse it (a whole course took seconds to build each time)."""
+        send_n = chatslides.normalize(send)
+        key = json.dumps([course_id, list(day_keys), focus, bool(slides), send_n, uploads, model, read_all],
+                         sort_keys=True, default=str)
+        brief = course_brief(self.lib, self._s.settings, course_id)
+        stamp = self._stamp(course_id, day_keys, send_n, uploads, model, brief)
+        with self._gates[hash(key) % len(self._gates)]:
+            with self._built_lock:
+                hit = self._built.get(key)
+            if hit is not None and hit[0] == stamp:
+                ctx, (leftover, dirs, seen) = hit[1], hit[2]
+                now = tuple(_folder_stamp(d) for d in dirs)
+                if now != seen:      # "Read everything" kept notes of pages since: what is left to read is counted again
+                    ctx = {**ctx, "read": {**ctx["read"],
+                                           **chatread.estimate(leftover, ctx["lim"], per=ai.chars_per_token())}}
+            else:
+                ctx, (leftover, dirs, now) = self._build(course_id, day_keys, focus, slides, send, uploads, model,
+                                                         read_all, brief)
+            with self._built_lock:
+                self._built[key] = (stamp, ctx, (leftover, dirs, now))
+                self._built.move_to_end(key)
+                while len(self._built) > BUILT_KEEP:
+                    self._built.popitem(last=False)
+        return ctx
+
+    def _stamp(self, course_id: str, day_keys: list[str], send: dict[str, Any], uploads: str, model: str,
+               brief: str) -> tuple[Any, ...]:
+        """What a chat's material is built from, found without reading a transcript or a file: the AI and its limits,
+        the language, each class day's recordings with the times of their transcripts, slide pictures and screen
+        timelines, the course's slide files (when some go), the student's files and the course's info."""
+        p = ai.provider()
+        st = self._s.settings
+        out: list[Any] = [p, repr(chatlimits.of(p, model or st.ai_model)), language(), st.min_duration_s, brief,
+                          MAX_CONTEXT_TOKENS]
+        for key in day_keys:
+            try:
+                course, recs = self._s.day(key)
+            except KeyError:
+                out.append(key)
+                continue
+            out.append((course.id, course.code, course.name, course.title, course.folder))
+            for r in recs:
+                files = tuple(_file_stamp(where(r.delivery_id))
+                              for where in (store.transcript_path, store.slides_path, store.screens_path))
+                out.append((r.delivery_id, r.name, r.start, r.duration_s, r.kind, r.section_tag, r.duplicate_of,
+                            r.hidden, r.live, files, _pictures_stamp(store.slides_path(r.delivery_id), files[1])))
+                if files[0] is None:          # not transcribed: whether the student is told (no sound, too short)
+                    out.append(self._skipped(r))
+        if send["mode"] != "none":
+            units = self.lib.units(course_id)
+            out.append((json.dumps(units, sort_keys=True, default=str), chatslides.first_week_day(self.lib, course_id, units)))
+            out += [tuple(m.get(k) for k in _MATERIAL_KEYS) + (_file_stamp(m.get("local_path") or ""),)
+                    for m in self.lib.materials(course_id)]
+        if uploads:
+            for m in chatfiles.listing(uploads):
+                box = chatfiles.folder(uploads) / str(m.get("id"))
+                out.append((json.dumps(m, sort_keys=True, default=str),)
+                           + tuple(_file_stamp(box / f) for f in ("text.json", "picture.jpg", f"original.{m.get('ext')}")))
+        return tuple(out)
+
+    def _build(self, course_id: str, day_keys: list[str], focus: str, slides: bool, send: Any, uploads: str,
+               model: str, read_all: Optional[bool], brief: str) -> tuple[dict[str, Any], tuple[Any, ...]]:
+        """The chat's material (context), and the pages that don't go whole (read in batches when "Read everything" is
+        on) with the folders their notes are kept in and those folders' times when what is read of them was counted."""
         multi = len(day_keys) > 1
         loaded: list[tuple[int, str, Course, list[Recording], dict, dict, str]] = []   # each day with its text
         images: list[tuple[str, Path]] = []        # every slide image available, whether attached or not
@@ -346,7 +457,6 @@ class ChatService:
                                tokens=ai.IMAGE_TOKENS, bytes=chatslides.VIDEO_IMAGE_BYTES * 4 // 3, priority=1,
                                source=str(path))
                  for i, (label, path) in enumerate(images[:captured], start=1)] if can_pics else []
-        brief = course_brief(self.lib, self._s.settings, course_id)
         n_files = (len(cs["files"]) if cs else 0) + (len(cf["files"]) if cf else 0)
         read_on = chatread.default_on(read_all, focus, n_files, p)
         everything = (cs["pages"] if cs else []) + shots + (cf["pages"] if cf else [])
@@ -474,6 +584,9 @@ class ChatService:
         if squeezed:          # all the files' text is cut and their notes still don't fit whole: they are shortened
             less = min(notes_tokens, tokens - limit)            # to the room left (fit_notes); what is over without
             notes_tokens, tokens = notes_tokens - less, tokens - less     # them still is (the chat is too big)
+        # where the notes of the pages read first are kept, as it is before what was read of them is counted
+        dirs = tuple(sorted({str(chatread._base(x)) for x in leftover}))
+        seen = tuple(_folder_stamp(d) for d in dirs)
         read = {"on": read_on, "auto": read_all is None, "pages": len(leftover),
                 "total": len(everything) + len(lecture_pages), "lectures": len(lecture_pages),
                 "lecture_days": sum(1 for d in day_parts if d["as"] == "notes"),
@@ -518,7 +631,7 @@ class ChatService:
                 + ([notices.notice("lectures_highlights", n=sum(1 for d in day_parts if d["as"] == "highlights"))]
                    if focus == "course" and not local and any(d["as"] == "highlights" for d in day_parts) else []),
                 "upload_text": chatfiles.local_text(up) if up and up["local"] else "",
-                "upload_passages": up["passages"] if up and up["local"] else []}
+                "upload_passages": up["passages"] if up and up["local"] else []}, (leftover, dirs, seen)
 
     @staticmethod
     def _lecture_forms(loaded: list[tuple], focus: str, room: int, reading: bool, per: float) -> dict[str, str]:
@@ -1205,7 +1318,7 @@ class ChatService:
                     shown += notices.fresh([notices.notice("codex_model", "info", model=res["model_refused"])], history)
             text = res["text"] or text
             state = "stopped" if res["stopped"] else "done"
-            usage = {**(res["usage"] or {}), **({"sources": sources} if sources else {}),
+            usage = {**(res["usage"] or {}), "ai": made_by, **({"sources": sources} if sources else {}),
                      **({"read": read} if read else {}),
                      **({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, state, usage)
@@ -1215,7 +1328,8 @@ class ChatService:
         except Cancelled:                           # stopped while the pages were read: what was read is kept
             reading = kept(self._reading.pop(cid, None))
             shown += self._refused(reading, history, shown)
-            usage = {"read": {**reading, "stopped": True},**({"notices": shown, "notices_ai": made_by} if shown else {})}
+            usage = {"read": {**reading, "stopped": True}, "ai": made_by,
+                     **({"notices": shown, "notices_ai": made_by} if shown else {})}
             self.lib.update_chat_message(cid, seq, text, "stopped", usage)
             self._drop(cid)                         # it may not have got its first message: start afresh next time
             self._emit(cid, seq, "stopped", text, usage=usage, limits=ai.usage_limits())
@@ -1442,16 +1556,19 @@ class ChatService:
             raise RuntimeError(t("Unknown course."))
         en = self._day_labels(self.lib.get_chat(chat_id) or {}, shown=False)      # the exported file stays English
         days = ", ".join(f"{d['long']} ({d['kind']})" for d in en)
-        who = ai.PROVIDER_LABELS.get(ai.provider()) or "AI"
+        answers = [m for m in v["messages"] if m["role"] != "user"]     # the AI that wrote them, not the one chosen now
+        made_by = ai.answered_by(answers[-1]) if answers else ""
         title = v["title"] or "New chat"         # the heading and the file name stay English
         lines = [f"# {title}", "",
                  f"**Course:** {v['course_name']}  ", f"**Class days:** {days}  ",
-                 f"**Model:** {ai.model_label(v['model'], v.get('effort', ''))}" + (" · highlights only" if v["focus"] == "highlights" else ""),
-                 "", f"*Chat with {who} in IEUStudia, exported {dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
+                 f"**Model:** {ai.model_label(v['model'], v.get('effort', ''), made_by)}" + (" · highlights only" if v["focus"] == "highlights" else ""),
+                 "", f"*Chat with {' and '.join(ai.chat_ais(answers))} in IEUStudia, exported "
+                 f"{dt.datetime.now():%Y-%m-%d %H:%M}.*", "", "---", ""]
         for m in v["messages"]:
             if m["role"] == "user":
                 lines += [f"**You:** {m['text'].strip()}", ""]
             else:              # the app's notices and an error as alert blocks (GitHub and Obsidian draw them)
+                who = ai.PROVIDER_LABELS.get(ai.answered_by(m)) or "AI"
                 notes = [notices.markdown(n) for n in (m["usage"].get("notices") or [])]
                 if m["status"] == "error":
                     notes.append(notices.alert("CAUTION", f"{who} could not answer: {m['usage'].get('error') or 'error'}"))

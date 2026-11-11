@@ -188,3 +188,78 @@ def test_reading_a_slide_never_holds_up_the_app(tmp_path):
         other.join()
     assert "voltage" in " ".join(ln.text for ln in lines).lower()
     assert max(gaps) < 0.15, f"the other thread waited {max(gaps) * 1000:.0f} ms"
+
+
+# ----------------------------------------------------------------------------- the release build's self-test
+def test_the_self_tests_picture_is_in_the_app_and_opens():
+    from pathlib import Path
+
+    gray = ocr._gray(str(Path(ocr.__file__).parent / ocr.CHECK_PICTURE))
+    assert gray is not None and gray.shape == (120, 760) and gray.min() < 60 and gray.max() > 240
+
+
+def test_the_self_check_is_skipped_on_linux_and_without_an_ocr_language(monkeypatch):
+    monkeypatch.setattr(ocr, "_state", {})
+    monkeypatch.setattr(ocr.sys, "platform", "linux")
+    assert ocr.self_check() == {"ok": True, "status": "skipped", "why": "Windows' text reading is Windows only"}
+    monkeypatch.setattr(ocr.sys, "platform", "win32")
+    monkeypatch.setattr(ocr, "_winrt", lambda: {})
+    monkeypatch.setattr(ocr, "_engines", lambda: [])                   # Windows without an OCR language
+    got = ocr.self_check()
+    assert got["ok"] and got["status"] == "skipped" and "no OCR language" in got["why"]
+
+
+def test_the_self_check_fails_when_reading_doesnt_load_or_reads_wrong(monkeypatch):
+    monkeypatch.setattr(ocr, "_state", {})
+    monkeypatch.setattr(ocr.sys, "platform", "win32")
+
+    def broken():
+        raise RuntimeError("System.Runtime.WindowsRuntime not found")
+
+    monkeypatch.setattr(ocr, "_winrt", broken)
+    got = ocr.self_check()
+    assert not got["ok"] and got["status"] == "failed" and "WindowsRuntime" in got["why"]
+    monkeypatch.setattr(ocr, "_winrt", lambda: {})
+    monkeypatch.setattr(ocr, "_engines", lambda: [("en-US", object())])
+    read = []
+
+    def lines(text):
+        def fake(gray):
+            read.append(gray.shape)
+            return [L(text, 10, 10)], "windows en-US"
+        return fake
+
+    monkeypatch.setattr(ocr, "read_lines", lines("Lecture 7: Ohm's 1aw and circuits"))     # one word misread: fine
+    got = ocr.self_check()
+    assert got["ok"] and got["status"] == "read" and got["engine"] == "windows en-US" and read == [(120, 760)]
+    monkeypatch.setattr(ocr, "read_lines", lines("Lccturc 7 0hm"))
+    got = ocr.self_check()
+    assert not got["ok"] and got["status"] == "failed" and got["text"] == "Lccturc 7 0hm"
+
+
+def test_the_apps_selftest_reports_windows_text_reading_apart(tmp_path, monkeypatch):
+    """Reported, not part of the self-test's own result: GitHub's build machine may lack Windows' text reading (the
+    release workflow warns), a build on a PC stops on it (scripts/build_release.ps1)."""
+    import importlib
+    import json
+    import sys
+
+    from studia import app
+
+    monkeypatch.setattr(importlib, "import_module", lambda name: types.SimpleNamespace(__version__="ok"))
+    vad = tmp_path / "faster_whisper" / "assets" / "silero_vad_v6.onnx"          # (the speech detector's model)
+    vad.parent.mkdir(parents=True)
+    vad.write_bytes(b"onnx")
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(__file__=str(vad.parent.parent / "x.py")))
+    for result, code in (({"ok": True, "status": "skipped", "why": "Windows has no OCR language here"}, 0),
+                         ({"ok": False, "status": "failed", "why": "the words didn't come back"}, 0)):
+        monkeypatch.setattr(ocr, "self_check", lambda: result)
+        out = tmp_path / "selftest.json"
+        assert app._selftest(str(out)) == code
+        assert json.loads(out.read_text(encoding="utf-8"))["ocr"] == result
+
+
+@pytest.mark.skipif(not ocr.available(), reason="Windows OCR isn't here")
+def test_the_self_check_reads_its_picture_on_this_pc():
+    got = ocr.self_check()
+    assert got["ok"] and got["status"] == "read" and "circuits" in got["text"].lower()
