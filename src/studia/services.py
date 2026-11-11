@@ -741,6 +741,9 @@ class Services:
             return
         stem = day_stem(target, rec.start.date(), rec.kind)
         moved: dict[str, tuple[str, str]] = {}           # old path -> (image, path): a slide shown twice is one file
+        # a picture another lecture still shows (before 4.0 they were named by the start minute only, so two lectures
+        # of a day that start in the same minute share them) is copied: that lecture keeps its own
+        shared = _shown_elsewhere({s.path for s in slides if s.path}, rec.delivery_id)
         try:
             for s in slides:
                 if s.path in moved:
@@ -758,7 +761,12 @@ class Services:
                     name = f"{rec.delivery_id[:8]}-{name}"
                     dest = dest.with_name(name)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(src, dest)                    # (one held by another program: the move is tried again)
+                if s.path in shared:
+                    import shutil
+
+                    shutil.copy2(src, dest)
+                else:
+                    os.replace(src, dest)                # (one held by another program: the move is tried again)
                 key = s.path
                 moved[key] = (f"slides/{stem}/{name}", str(dest))
                 s.image, s.path = moved[key]
