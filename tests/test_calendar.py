@@ -250,6 +250,45 @@ def test_the_day_an_announcement_gives_for_a_quiz_or_an_exam():
     assert ("Quiz 2", 9, "", "") in plan(table, quiz2, later)
 
 
+def _days(*anns):
+    return [(e["name"], e["date"], e["time"]) for e in assessment_plan(list(anns)) if e["date"]]
+
+
+@pytest.mark.parametrize("title, body, posted, want", [
+    ("Quiz", "Quiz 2 Cuma günü saat 11.30'da yapılacaktır.", "2026-11-02", []),               # not 30 November
+    ("Quiz", "Quiz 2 Cuma günü saat 10.10'da yapılacaktır.", "2026-09-28", []),               # not 10 October
+    ("Quiz", "2. quizimiz 6 Kasım Cuma günü saat 11.30'da yapılacaktır.", "2026-11-02", [("Quiz 2", "2026-11-06", "11:30")]),
+    ("Ara sınav", "Ara sınav 18 Kasım Çarşamba saat 12.20'de yapılacaktır.", "2026-11-02", [("Midterm", "2026-11-18", "12:20")]),
+    ("Quiz", "Quiz 3 13.11 tarihinde yapılacaktır.", "2026-11-02", [("Quiz 3", "2026-11-13", "")]),   # a day with a dot
+    ("Quiz", "Quiz 3 13.11'de yapılacaktır.", "2026-11-02", [("Quiz 3", "2026-11-13", "")]),
+])
+def test_a_time_with_a_dot_is_no_day(title, body, posted, want):
+    assert _days(_ann("x", title, body, posted + "T10:00")) == want
+
+
+def test_a_class_moved_or_cancelled_at_a_time_with_a_dot():
+    changes = lambda title, body: [(c["kind"], c["date"], c["time"])  # noqa: E731
+                                   for c in agenda.schedule_changes([_ann("x", title, body, "2026-11-02T10:00")])]
+    assert changes("Ders iptali", "Bugün saat 11.20'deki dersimiz iptal edilmiştir.") == [("cancelled", "2026-11-02", "")]
+    assert changes("Telafi", "Cuma günkü dersin telafisi Cumartesi saat 12.30'da yapılacaktır.") == []    # not 30 Dec
+    assert changes("Make-up", "The make-up lecture will be held on Saturday at 10.30 in C204.") == []      # not 30 Oct
+    assert changes("Ders iptali", "16.11-20.11 arası dersler iptal edilmiştir.") == [("cancelled", "2026-11-16", ""),
+                                                                                    ("cancelled", "2026-11-20", "")]
+
+
+def test_the_assessments_own_name_is_no_day():
+    # "1. ara" reads as 1 December and "2 may" as 2 May: part of the name, not its day
+    assert _days(_ann("a", "Ara sınav", "1. ara sınav gelecek hafta Çarşamba günü saat 17:30'da yapılacaktır.",
+                      "2026-11-02T10:00")) == []
+    assert _days(_ann("b", "Ara sınav", "1. ara sınavda başarılar.", "2026-11-02T10:00")) == []
+    assert _days(_ann("c", "Ara sınav", "1. ara sınav 25 Kasım Çarşamba günü saat 17:30'da yapılacaktır.",
+                      "2026-11-02T10:00")) == [("Midterm 1", "2026-11-25", "17:30")]
+    assert _days(_ann("d", "Sınav tarihleri", "1. Ara Sınav\n\n25 Kasım 2026\n\n2. Ara Sınav\n\n23 Aralık 2026",
+                      "2026-10-05T10:00")) == [("Midterm 1", "2026-11-25", ""), ("Midterm 2", "2026-12-23", "")]
+    assert _days(_ann("e", "Quiz 3", "Quiz 3 may include a question from the lab sheets.", "2026-11-11T10:00")) == []
+    assert _days(_ann("f", "Quiz", "Quiz 2 may be on Friday.", "2026-11-11T10:00")) == []
+
+
 # ------------------------------------------------------------------ make-up and cancelled classes
 def test_make_up_and_cancelled_classes_from_the_announcements():
     anns = [_ann("r", "Class Rescheduling Announcement", "Our MATH 240 class, originally scheduled for October 28, 2026, has "

@@ -346,6 +346,8 @@ def _held_on(text: str, near: tuple[int, int], posted: str) -> tuple[str, str]:
     for m in date_matches(text):
         if not (near[1] - 40 <= m.start() <= near[1] + 80 or near[0] - 40 <= m.end() <= near[0]):
             continue
+        if m.start() < near[1] and m.end() > near[0]:          # part of the name: "1. ara sınav", "Quiz 2 may be"
+            continue
         d = _date_of(m, ref.year, 1)
         if d is None:
             continue
