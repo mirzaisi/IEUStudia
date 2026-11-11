@@ -30,6 +30,7 @@ RENAME_KEY = "output_renamed"          # library meta: an output folder rename t
 TWINS_KEY = "twin_folders"             # library meta: "1" once the folders of courses sharing a code were put right
 ADOPTED_KEY = "shared_audio_adopted"   # library meta: "1" once an added profile's audio from before 4.0 was moved
 RELINK_KEY = "relink_transcripts"      # library meta: the day a damaged library was replaced (transcripts linked again)
+MOVE_KEY = "output_moving"             # library meta: an output folder change whose copy isn't finished ({"from", "to"})
 # AI notes: the end of the file name (English), and the label shown (t() it there)
 NOTE_KINDS = {"notes": N_("Study notes"), "exam": N_("Exam focus"), "flashcards": N_("Flashcards")}
 NOTE_SLIDES = 60          # slide pictures that go with a lecture's AI notes at most
@@ -409,6 +410,7 @@ class Services:
             self.lib.reset_interrupted()
         if migrate_output:
             self._migrate_output_root()
+            self._finish_move()
         self.sync = SyncService(self.lib, lambda: self.settings, self.log)
         from .chat import ChatService
         from .jobs import JobManager
@@ -784,19 +786,56 @@ class Services:
         """Copy the app's folders (course folders with transcripts, slides, materials, packs and notes; weekly
         digests) to a new output folder and point the stored paths there. The old folder is left untouched. Returns
         the number of folders copied."""
+        import json
         import shutil
 
         old_root, new_root = Path(old_root), Path(new_root)
         if not old_root.exists() or old_root.resolve() == new_root.resolve():
             return 0
+
+        def copy(src: str, dst: str) -> str:            # what a copy cut off before got across is not copied again
+            try:
+                if os.path.getsize(dst) == os.path.getsize(src):
+                    return dst
+            except OSError:
+                pass
+            return shutil.copy2(src, dst)
+
+        # noted until it is done: IEUStudia closed in the middle, the next start goes on with it (_finish_move)
+        self.lib.set_meta(MOVE_KEY, json.dumps({"from": str(old_root), "to": str(new_root)}, ensure_ascii=False))
         copied = 0
         for name in sorted(self._app_folders()):
             src = old_root / name
             if src.is_dir() and not new_root.resolve().is_relative_to(src.resolve()):
-                shutil.copytree(src, new_root / name, dirs_exist_ok=True)
+                shutil.copytree(src, new_root / name, dirs_exist_ok=True, copy_function=copy)
                 copied += 1
         self.rebase_output_paths(old_root, new_root)
+        self.lib.set_meta(MOVE_KEY, "")
         return copied
+
+    def _finish_move(self) -> None:
+        """A change of the output folder whose copy IEUStudia was closed in the middle of: it goes on now, before
+        anything is written in the new folder (the files of courses not copied yet seemed gone, and their paths still
+        named the old folder). One the student changed again since is let go; an old folder that isn't there (a drive
+        not plugged in) waits for the next start."""
+        import json
+
+        try:
+            begun = json.loads(self.lib.get_meta(MOVE_KEY) or "{}")
+        except ValueError:
+            begun = {}
+        if not begun.get("to"):
+            return
+        if Path(begun["to"]) != Path(self.settings.output_dir):
+            self.lib.set_meta(MOVE_KEY, "")
+            return
+        if not Path(begun["from"]).is_dir():
+            return
+        try:
+            n = self.relocate_outputs(Path(begun["from"]), Path(begun["to"]))
+            self.log.info("The copy to the new output folder went on: %d folders", n)
+        except OSError:
+            self.log.warning("Going on with the copy to the new output folder failed", exc_info=True)
 
     def move_days(self) -> int:
         """Transcribed lectures whose class day changed (Panopto's date was when the recording was uploaded, and the
