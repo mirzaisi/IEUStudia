@@ -259,6 +259,16 @@ def start_install(which: str, emit: Emit) -> dict[str, Any]:
             ai._failed.clear()                     # a copy that didn't start before is asked again: it may be new now
             if not _installed(which):
                 ai._failed.clear()                 # (the next look asks again, not only in 5 minutes)
+                info = ai.claude_cli_info() if which == "claude" else ai.codex_cli_info()
+                why = str((info.get("problem") or {}).get("error") or "")
+                if why:                            # found, but it doesn't start: why (it didn't answer, blocked...)
+                    raise Plain(Retold(lambda w=why: t(
+                        "Claude Code was installed, but it doesn't start ({error}). Wait a minute and click Try "
+                        "again; if it still doesn't start, restore Claude Code in your antivirus or restart the PC.",
+                        error=retell(w)) if which == "claude" else t(
+                        "The Codex CLI was installed, but it doesn't start ({error}). Wait a minute and click Try "
+                        "again; if it still doesn't start, restore the Codex CLI in your antivirus or restart the PC.",
+                        error=retell(w))))
                 raise Plain(Retold(lambda: t(
                     "Claude Code was installed, but it doesn't start yet: your antivirus may still be checking it (or "
                     "put it in quarantine). Wait a minute: this list looks again by itself. If it stays like this, "
@@ -533,11 +543,111 @@ def _claude_setup_command(exe: str) -> list[str]:
     return [exe, "install", "latest"]
 
 
+def _claude_home() -> Path:
+    """The folder Claude Code's own set-up counts as "home" for its launcher and builds: %HOME% when that is set
+    (some programs set it on Windows: Git tools, R, Emacs, a school's lab image), else the user folder. Its sign-in
+    and settings stay in the user folder (~\\.claude), but ``claude install`` puts the launcher in %HOME%\\.local\\bin
+    while its message still names the user folder's (Claude Code 2.1.322): IEUStudia looked only there, found
+    nothing and said the install didn't start."""
+    home = os.environ.get("HOME", "").strip()
+    return Path(home) if home and os.path.isabs(home) else Path.home()
+
+
 def claude_versions_dir() -> Path:
     """Where Claude Code keeps its builds, one file per version named by it: $XDG_DATA_HOME/claude/versions, which is
-    ~/.local/share/claude/versions unless that variable is set (on Windows too)."""
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    ~/.local/share/claude/versions unless that variable is set (on Windows too; ~ being %HOME% when it is set)."""
+    base = os.environ.get("XDG_DATA_HOME") or str(_claude_home() / ".local" / "share")
     return Path(base) / "claude" / "versions"
+
+
+def _private(path: str) -> str:
+    """A path with the user folder (often the student's name) and %HOME% written as their variable names."""
+    out = str(path or "")
+    for var, value in (("%USERPROFILE%", str(Path.home())), ("%HOME%", os.environ.get("HOME", ""))):
+        if value and len(value) > 3:
+            out = re.sub(re.escape(value), var.replace("\\", "\\\\"), out, flags=re.I)
+    return out
+
+
+def setup_report() -> list[str]:
+    """Settings → Services → Copy details: where IEUStudia looks for Claude Code and the Codex CLI and what it found,
+    and how their last install here ended, in English and with no personal folder name in it."""
+    from . import ai
+
+    lines = ["AI programs:"]
+    home = os.environ.get("HOME", "")
+    if home:
+        lines.append("- HOME is set" + ("" if os.path.normcase(os.path.normpath(home)) ==
+                                         os.path.normcase(str(Path.home())) else ", not the user folder"))
+    for which, info_of, name in (("claude", ai.claude_cli_info, "Claude Code"), ("codex", ai.codex_cli_info, "Codex CLI")):
+        try:
+            info = info_of()
+        except Exception as exc:  # noqa: BLE001 - the report says it instead
+            lines.append(f"- {name}: could not be looked for ({exc.__class__.__name__})")
+            continue
+        if info.get("available"):
+            state = f"{info.get('version')} at {_private(info.get('path', ''))}"
+        elif info.get("too_old"):
+            state = f"too old: {info['too_old'].get('version')} at {_private(info['too_old'].get('path', ''))}"
+        elif info.get("problem"):
+            p = info["problem"]
+            state = f"doesn't start at {_private(p.get('path', ''))}: {_private(str(p.get('error', '')))[:200]}"
+        else:
+            state = "not found"
+        lines.append(f"- {name}: {state}")
+        j = job(which)
+        if j.get("state"):
+            when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(j["started"])) if j.get("started") else "?"
+            lines.append(f"    install started {when}: {j['state']}")
+        if which == "claude":
+            lines.append("    looked in: " + "; ".join(_private(d) for d in claude_bin_dirs()))
+    return lines
+
+
+CLAUDE_LOCATION = "claude-location.txt"        # in tools_dir(): where the last `claude install` put the launcher
+
+
+def claude_bin_dirs() -> list[str]:
+    """Every folder Claude Code's own set-up may have put claude.exe in: the one its last install said (kept by
+    :func:`_remember_location`), %XDG_BIN_HOME%, %HOME%\\.local\\bin and the user folder's .local\\bin."""
+    out: list[str] = []
+    try:
+        said = (tools_dir() / CLAUDE_LOCATION).read_text(encoding="utf-8").strip()
+        if said:
+            out.append(said)
+    except OSError:
+        pass
+    if os.environ.get("XDG_BIN_HOME"):
+        out.append(os.environ["XDG_BIN_HOME"])
+    out += [str(_claude_home() / ".local" / "bin"), str(Path.home() / ".local" / "bin")]
+    return list(dict.fromkeys(os.path.normpath(x) for x in out if x))
+
+
+# what `claude install` prints: "Location: C:\...\claude.exe", and (when the folder isn't on PATH) "Native installation
+# exists but C:\...\bin is not in your PATH" - the second names the folder it really used, so it is read first
+_SAID_DIR = re.compile(r"installation exists but (.+?) is not in your PATH", re.I)
+_SAID_EXE = re.compile(r"^Location:\s*(.+?\.exe)\s*$", re.I | re.M)
+
+
+def _remember_location(lines: Sequence[str]) -> str:
+    """The folder of claude.exe from ``claude install``'s output that holds it (kept for :func:`claude_bin_dirs`);
+    "" when the output names none that has it."""
+    text = "\n".join(lines)
+    said = [m.group(1).strip().strip('"') for m in _SAID_DIR.finditer(text)]
+    said += [os.path.dirname(m.group(1).strip().strip('"')) for m in _SAID_EXE.finditer(text)]
+    name = "claude.exe" if sys.platform == "win32" else "claude"
+    for folder in said:
+        if os.path.isfile(os.path.join(folder, name)):
+            try:
+                tools_dir().mkdir(parents=True, exist_ok=True)
+                (tools_dir() / CLAUDE_LOCATION).write_text(folder, encoding="utf-8")
+            except OSError:
+                pass
+            log.info("Claude Code's launcher is in %s", folder)
+            return folder
+    if said:
+        log.warning("Claude Code said it is in %s, but no %s is there", " / ".join(said), name)
+    return ""
 
 
 def _hand_over(exe: Path, version: str) -> bool:
@@ -598,8 +708,9 @@ def _install_claude(emit: Emit, cancel: threading.Event) -> None:
              t("Setting up Claude Code: it downloads itself once more, which can take several minutes on a slow "
                "connection…"))
     # kept until it is set up: after a Cancel or a failure here, the next try starts from this step, not the download
-    _run_logged(_claude_setup_command(str(exe)), "claude", emit, timeout_s=SETUP_LIMIT_S, cancel=cancel,
-                label=label, env=claude_env())   # (Linux: IEUStudia's own Claude profile)
+    lines = _run_logged(_claude_setup_command(str(exe)), "claude", emit, timeout_s=SETUP_LIMIT_S, cancel=cancel,
+                        label=label, env=claude_env())   # (Linux: IEUStudia's own Claude profile)
+    _remember_location(lines)
     for _ in range(3):                                   # Windows may hold the file for a moment after it ran
         try:
             exe.unlink(missing_ok=True)

@@ -375,6 +375,12 @@ def details() -> str:
             if p.get("detail"):
                 line += f": {scrub(str(p['detail']))}"
             lines.append(line)
+    try:                                       # Claude Code and the Codex CLI: found where, and how their install ended
+        from .ai_setup import setup_report
+
+        lines += setup_report()
+    except Exception:  # noqa: BLE001 - the services' part is sent anyway
+        logging.getLogger("studia").warning("The AI programs couldn't be added to the details", exc_info=True)
     return "\n".join(lines)
 
 

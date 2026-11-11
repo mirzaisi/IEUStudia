@@ -92,15 +92,19 @@ def _npm_folders() -> list[str]:
 
 def _candidates() -> list[str]:
     env = os.environ
+    from .ai_setup import claude_bin_dirs
+
     c = [os.path.join(npm, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe") for npm in _npm_folders()]
-    c += [os.path.join(env.get("USERPROFILE", ""), ".local", "bin", "claude.exe"),       # Anthropic's installer
-          os.path.join(env.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links", "claude.exe"),   # winget
+    # Anthropic's installer: the user folder's .local\bin, or %HOME%'s when that is set (where it really puts it)
+    c += [os.path.join(d, "claude.exe") for d in claude_bin_dirs()]
+    c += [os.path.join(env.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links", "claude.exe"),   # winget
           shutil.which("claude.exe") or ""]
     c += sorted(glob.glob(os.path.join(env.get("USERPROFILE", ""), ".vscode", "extensions",
                                        "anthropic.claude-code-*", "resources", "native-binary", "claude.exe")),
                 reverse=True)
     if sys.platform != "win32":                  # Linux: the native installer's ~/.local/bin, npm, PATH
         home = os.path.expanduser("~")
+        c += [os.path.join(d, "claude") for d in claude_bin_dirs()]
         c += [os.path.join(home, ".local", "bin", "claude"), os.path.join(home, ".claude", "local", "claude"),
               shutil.which("claude") or ""]
     return list(dict.fromkeys(p for p in c if p and os.path.isfile(p)))

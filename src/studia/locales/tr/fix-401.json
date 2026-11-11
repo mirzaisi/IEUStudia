@@ -1,0 +1,5 @@
+{
+  "_unit": "4.0.1: Claude Code found where its own set-up really puts it (%HOME% when that is set), and why a found copy doesn't start",
+  "Claude Code was installed, but it doesn't start ({error}). Wait a minute and click Try again; if it still doesn't start, restore Claude Code in your antivirus or restart the PC.": "Claude Code kuruldu ama açılmıyor ({error}). Bir dakika bekle ve Tekrar dene'ye tıkla; yine açılmazsa Claude Code'u antivirüsünden geri yükle ya da bilgisayarı yeniden başlat.",
+  "The Codex CLI was installed, but it doesn't start ({error}). Wait a minute and click Try again; if it still doesn't start, restore the Codex CLI in your antivirus or restart the PC.": "Codex CLI kuruldu ama açılmıyor ({error}). Bir dakika bekle ve Tekrar dene'ye tıkla; yine açılmazsa Codex CLI'ı antivirüsünden geri yükle ya da bilgisayarı yeniden başlat."
+}
