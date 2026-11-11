@@ -120,6 +120,29 @@ def test_a_checkpoint_of_other_settings_or_audio_is_started_again(monkeypatch):
     assert passages(e) == 40
 
 
+def test_an_update_between_closing_and_resume_keeps_the_checkpoint(monkeypatch):
+    import studia
+
+    from studia.engine import core
+
+    e = _engine(monkeypatch)
+    with pytest.raises(Cancelled):
+        _run(e, stop_after=2)
+    done = passages(e)
+    monkeypatch.setattr(studia, "__version__", "99.0.0")        # updated, then Resume: the same passages
+    monkeypatch.setattr(tr, "__version__", "99.0.0", raising=False)
+    e = _engine(monkeypatch)
+    _run(e)
+    assert passages(e) == 40 - done
+    e = _engine(monkeypatch)
+    with pytest.raises(Cancelled):
+        _run(e, stop_after=1, did="r2")
+    monkeypatch.setitem(core.PROMPTS, "en", "Good morning.")       # another prompt: its passages differ
+    e = _engine(monkeypatch)
+    _run(e, did="r2")
+    assert passages(e) == 40
+
+
 def test_a_line_cut_short_by_a_power_cut_is_dropped(monkeypatch):
     whole, _ = _run(_engine(monkeypatch), did="other")
     e = _engine(monkeypatch)

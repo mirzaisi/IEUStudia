@@ -15,7 +15,6 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from .. import __version__
 from ..cancel import Cancelled, check
 from ..domain import Segment, Transcript
 from ..i18n import num, t, tn
@@ -374,17 +373,20 @@ class Engine:
 
     def _checkpoint(self, delivery_id: str, audio: np.ndarray, units: list[Unit], gain: float) -> Optional[Any]:
         """The lecture's checkpoint (engine/checkpoint.py), keyed by everything that changes its passages; the
-        decoding options join the key in _decode_units. None without a recording to tie it to."""
+        decoding options join the key in _decode_units. None without a recording to tie it to. Not IEUStudia's
+        version: updating between closing and Resume kept nothing of a lecture half done (ENGINE_VERSION goes up with
+        a change to the passages, and the prompts are in the key)."""
         if not delivery_id or not units:
             return None
         from . import checkpoint
+        from .core import PROMPTS
 
         try:
             t0 = time.monotonic()
             ct2 = sys.modules.get("ctranslate2")
             key = checkpoint.make_key(
                 v=checkpoint.VERSION, id=delivery_id, audio=checkpoint.audio_digest(audio), gain=gain,
-                units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, app=__version__,
+                units=[(u.start, u.end) for u in units], model=self.model_name, engine=ENGINE_VERSION, prompts=PROMPTS,
                 device=self._device, compute=self._compute, languages=list(self._languages()),
                 card_workers=CARD_REPLICAS if self._device == "cuda" else 1,     # (how the card's batches run)
                 ct2=getattr(ct2, "__version__", ""),       # the processor's threads, or the graphics card itself
