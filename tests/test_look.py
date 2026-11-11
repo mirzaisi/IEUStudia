@@ -19,7 +19,7 @@ from studia.outputs.docx import picture_size
 def test_every_document_prompt_asks_for_the_house_style_in_the_courses_language():
     for kind in ("notes", "exam", "flashcards"):
         p = prompts.ai_prompt(kind, "Turkish")
-        assert prompts.STYLE in p and "Write in Turkish, the language the course is taught in." in p
+        assert prompts.STYLE in p and "Write in Turkish, the language the course is taught in, headings included." in p
     assert "Write in English" in prompts.ai_prompt("notes") and prompts.ai_prompt("plain") == ""
     assert prompts.STYLE in studypack.SYSTEM and prompts.STYLE in plans.SYSTEM_PREP
     facts = {"span": "week 3", "pack": "", "files": [], "lectures": [], "stressed": [], "language": "Turkish",

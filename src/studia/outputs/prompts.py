@@ -23,10 +23,12 @@ def terms_rule(language: str = "", taught_in: str = "") -> str:
 
 def written_in(language: str = "", taught_in: str = "") -> str:
     """The language line: the document's language (doclang.document_language; English unless told otherwise), and the
-    terms rule when the course is taught in another one."""
+    terms rule when the course is taught in another one. In another language than English the headings the prompt
+    names in English are written in it too (Turkish notes came back with "## Check yourself")."""
     lang = language or "English"
     rule = terms_rule(lang, taught_in)
-    return f"Write in {lang}. {rule}" if rule else f"Write in {lang}, the language the course is taught in."
+    also = ", headings included" if lang != "English" else ""
+    return f"Write in {lang}{also}. {rule}" if rule else f"Write in {lang}, the language the course is taught in{also}."
 
 
 def in_language(language: str = "", taught_in: str = "") -> str:

@@ -57,9 +57,11 @@ def test_the_digest_takes_the_language_most_of_its_courses_are_taught_in():
 def test_every_document_prompt_asks_for_its_language_and_keeps_the_exam_terms():
     same, other = {"language": "English", "taught_in": "English"}, {"language": "Turkish", "taught_in": "English"}
     assert prompts.terms_rule("English", "English") == "" and prompts.terms_rule("Turkish", "") == ""
-    assert prompts.written_in("Turkish", "English") == f"Write in Turkish. {RULE_TR}"
+    # (the headings the prompt names in English too: Turkish notes came back with "## Check yourself")
+    assert prompts.written_in("Turkish", "English") == f"Write in Turkish, headings included. {RULE_TR}"
     assert prompts.written_in("English", "Turkish") == f"Write in English. {RULE_EN}"
-    assert prompts.written_in("Turkish", "Turkish") == "Write in Turkish, the language the course is taught in."
+    assert prompts.written_in("Turkish", "Turkish") == "Write in Turkish, the language the course is taught in, headings included."
+    assert prompts.written_in("English", "English") == "Write in English, the language the course is taught in."
     for kind in ("notes", "exam", "flashcards"):
         assert prompts.ai_prompt(kind, **other).count(RULE_TR) == 1
         assert "Keep technical terms" not in prompts.ai_prompt(kind, **same)
@@ -183,7 +185,7 @@ def test_each_kind_of_document_gets_the_chosen_language(api, monkeypatch):
     monkeypatch.setattr(ai, "run_claude", lambda prompt, text, images, **k: asked.append(prompt) or
                         {"text": "## Ohm\n\nNot.", "usage": {}, "model": "m"})
     api._s.ai_notes(DAY, "notes", False, "sonnet")
-    assert f"Write in Turkish. {RULE_TR}" in asked[-1]
+    assert f"Write in Turkish, headings included. {RULE_TR}" in asked[-1]
 
     # "Sum it up with AI"
     monkeypatch.setattr(practice, "_ai_ready", lambda: None)
