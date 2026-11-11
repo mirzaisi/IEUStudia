@@ -21,6 +21,49 @@ node = pytest.mark.skipif(not shutil.which("node"), reason="node is not installe
 TR = json.dumps(i18n.table("tr"), ensure_ascii=False)
 
 
+# ------------------------------------------------------------------ PG-4: another quiz keeps one in progress
+def run_practice(tmp_path, body):
+    """practice.js in node with test_practice_page.py's stand-in for app.js, running ``body``."""
+    from test_practice_page import SCRIPT
+
+    head = SCRIPT.split("(async () => {")[0] % {"i18n": json.dumps(str(WEB / "i18n.js")), "practice": json.dumps(str(WEB / "practice.js"))}
+    script = tmp_path / "practice.js"
+    script.write_text(head + "(async () => {\n" + body + "\n  process.stdout.write(JSON.stringify(out), () => process.exit(0));\n"
+                      "})().catch((e) => { console.error(e); process.exit(1); });\n", encoding="utf-8")
+    r = subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+@node
+def test_opening_another_quiz_keeps_the_answers_of_the_one_in_progress(tmp_path):
+    out = run_practice(tmp_path, """
+  ANSWERS.quiz_get = (id) => ({ ok: true, quiz: { ...QUIZ, id }, attempts: [] });
+  const two = { ...COURSE, quizzes: [{ ...COURSE.quizzes[0], tries: 0, best: null, last: null }, { ...COURSE.quizzes[0], id: "q3", title: "Random variables", tries: 0, best: null, last: null }] };
+  ANSWERS.practice_course = () => two;
+  S.view = { name: "course", courseId: "c1", tab: "practice" };
+  await St.practice.load("c1"); await tick();
+  const buttons = () => { const h = St.practice.tab(S.courses[0]); return [...h.matchAll(/data-act="qz-play" data-id="(\\w+)">\\[play\\] ([^<]+)</g)].map((m) => m[1] + ": " + m[2].trim()); };
+  A["qz-play"]({ dataset: { id: "q1" } }); await tick();
+  A["qz-start"](); A["qz-pick"]({ dataset: { i: "0" } }); A["qz-check"](); A["qz-next"]();
+  St.closeModal();
+  out.before = buttons();
+  A["qz-play"]({ dataset: { id: "q3" } }); await tick();          // another quiz: only its intro, then closed
+  out.other = shown.html.includes("qz-start");
+  St.closeModal();
+  out.after = buttons();
+  A["qz-play"]({ dataset: { id: "q1" } }); await tick();
+  out.back = { id: St.S.practice.run.id, pos: St.S.practice.run.pos, answers: Object.keys(St.S.practice.run.answers) };
+  A["qz-play"]({ dataset: { id: "q3" } }); await tick(); A["qz-start"](); St.closeModal();
+  out.both = buttons();
+""")
+    assert out["before"] == ["q1: Continue", "q3: Practise"]
+    assert out["other"] is True
+    assert out["after"] == ["q1: Continue", "q3: Practise"]
+    assert out["back"] == {"id": "q1", "pos": 1, "answers": ["1"]}
+    assert out["both"] == ["q1: Continue", "q3: Continue"]
+
+
 # ------------------------------------------------------------------ PG-5: the AI's label in the page's language
 @node
 def test_the_ai_that_wrote_a_summary_is_named_in_the_page_s_language(tmp_path):
