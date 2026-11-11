@@ -463,6 +463,8 @@ class Services:
             self._finish_rename(Path(begun["from"]), Path(begun["to"]))
             return
         old = Path(self.settings.output_dir)
+        if self._follow_moved_documents(old):
+            return
         new = renamed_output_path(old)
         if new is None or not old.parent.is_dir():
             return
@@ -483,6 +485,31 @@ class Services:
             self.log.warning("Could not rename %s to %s", old, new, exc_info=True)
             return
         self._finish_rename(old, new)
+
+    def _follow_moved_documents(self, old: Path) -> bool:
+        """Windows moved the Documents folder after the set-up (OneDrive's "Back up your folders", or Location in
+        its Properties), and the output folder in it went along: the app follows it there, says so once and returns
+        True. Only a folder in the user's own local Documents counts, which is the one such a move takes away: a
+        folder the student chose elsewhere (a USB stick that isn't plugged in) is waited for, as before."""
+        from .paths import documents_dir
+
+        docs, local = documents_dir(), Path.home() / "Documents"
+        if old.parent != local or docs == local:
+            return False
+        new, apps = docs / old.name, self._app_folders()
+
+        def holds(folder: Path) -> bool:
+            return any((folder / n).is_dir() for n in apps)
+        if not new.is_dir() or holds(old) or not (holds(new) or not old.exists()):
+            return False
+        try:
+            old.rmdir()                         # the empty folder an earlier start made again (never one with files)
+        except OSError:
+            pass
+        self._finish_rename(old, new)
+        self.notes.append(t("Your Documents folder moved (for example to OneDrive), and your IEUStudia files went "
+                            "with it. IEUStudia now uses {folder}.", folder=str(new)))
+        return True
 
     def _finish_rename(self, old: Path, new: Path) -> None:
         self.rebase_output_paths(old, new)

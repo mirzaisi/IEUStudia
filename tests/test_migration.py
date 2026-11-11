@@ -143,7 +143,9 @@ def _seed(out, elsewhere):
     files = {"pdf": out / "MATH 240" / "Materials" / "Week 1" / "notes.pdf",
              "plan": out / "MATH 240" / "Study plans" / "plan.md",
              "digest": out / "Weekly digests" / "2026-10-19 weekly digest.md",
-             "slide": out / "MATH 240" / "slides" / "day" / "s1.jpg", "other": elsewhere / "other.pdf"}
+             "slide": out / "MATH 240" / "slides" / "day" / "s1.jpg", "other": elsewhere / "other.pdf",
+             "pack": out / "MATH 240" / "Study packs" / "Week 3.html",
+             "packpdf": out / "MATH 240" / "Study packs" / "Week 3.pdf"}
     for f in files.values():
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
@@ -155,6 +157,8 @@ def _seed(out, elsewhere):
     lib.set_material_file("m2", str(files["other"]), 1, "u")
     lib.create_plan("p1", "c", {})
     lib.update_plan("p1", result={"file": str(files["plan"]), "items": [1]})
+    lib.create_plan("p2", "c", {"kind": "pack"})
+    lib.update_plan("p2", result={"kind": "pack", "file": str(files["pack"]), "pdf": str(files["packpdf"])})
     lib.set_meta("digest:2026-10-19", json.dumps({"text": "The week", "file": str(files["digest"])}))
     lib.close()
     save_index(paths.transcripts_dir() / "r1.slides.json", [Slide(1, 0, 5, "slides/day/s1.jpg", str(files["slide"]))])
@@ -165,7 +169,8 @@ def _seed(out, elsewhere):
 def _stored(s):
     return {"pdf": s.lib.get_material("m1")["local_path"], "other": s.lib.get_material("m2")["local_path"],
             "plan": s.lib.plan("p1")["result"]["file"], "digest": json.loads(s.lib.get_meta("digest:2026-10-19"))["file"],
-            "slide": load_index(paths.transcripts_dir() / "r1.slides.json")[0].path}
+            "slide": load_index(paths.transcripts_dir() / "r1.slides.json")[0].path,
+            "pack": s.lib.plan("p2")["result"]["file"], "packpdf": s.lib.plan("p2")["result"]["pdf"]}
 
 
 def _close(s):
@@ -208,7 +213,7 @@ def test_output_folder_is_renamed_and_the_stored_paths_follow(tmp_path, monkeypa
         assert s.settings.output_dir == str(new) and load_settings().output_dir == str(new)
         assert not old.exists() and (new / "MATH 240" / "Materials" / "Week 1" / "notes.pdf").is_file()
         stored = _stored(s)
-        for key in ("pdf", "plan", "digest", "slide"):
+        for key in ("pdf", "plan", "digest", "slide", "pack", "packpdf"):      # a pack's PDF too (DATA-4)
             assert stored[key] == str(new / files[key].relative_to(old)), key
         assert stored["other"] == str(files["other"]) and s.lib.plan("p1")["result"]["items"] == [1]
     finally:
@@ -329,5 +334,83 @@ def test_output_folder_in_use_is_renamed_on_a_later_start(tmp_path, monkeypatch)
     s = Services()
     try:
         assert s.settings.output_dir == str(new) and _stored(s)["pdf"] == str(new / files["pdf"].relative_to(old))
+    finally:
+        _close(s)
+
+
+def _user_home(tmp_path, monkeypatch):
+    """The user's own folder (Path.home(): USERPROFILE on Windows, HOME elsewhere) in the test's folder; its
+    Documents is where Windows' folder backup moves Documents from."""
+    home = tmp_path / "user"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    (home / "Documents").mkdir(parents=True)
+    return home / "Documents"
+
+
+@pytest.mark.parametrize("made_again", [False, True])
+def test_the_output_folder_follows_documents_moved_to_onedrive(tmp_path, monkeypatch, made_again):
+    _real_mode(tmp_path, monkeypatch)                     # documents_dir(): tmp/docs, as OneDrive\Belgeler would be
+    local = _user_home(tmp_path, monkeypatch)
+    old, new = local / "IEUStudia", tmp_path / "docs" / "IEUStudia"
+    files = _seed(old, tmp_path / "elsewhere")
+    new.parent.mkdir()
+    os.replace(old, new)                                  # OneDrive backup moved Documents' contents
+    (local / "Where are my files.lnk").write_bytes(b"x")
+    if made_again:
+        old.mkdir()                                       # 4.0.1 made the old folder again, empty
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(new) and load_settings().output_dir == str(new)
+        assert s.output_root == new and not old.exists()
+        stored = _stored(s)
+        for key in ("pdf", "plan", "digest", "slide", "pack", "packpdf"):
+            assert stored[key] == str(new / files[key].relative_to(old)), key
+        assert stored["other"] == str(files["other"])
+        assert len(s.notes) == 1 and "Documents folder moved" in s.notes[0] and str(new) in s.notes[0]
+    finally:
+        _close(s)
+    s = Services()                                        # said once
+    try:
+        assert s.settings.output_dir == str(new) and s.notes == []
+    finally:
+        _close(s)
+
+
+def test_a_folder_chosen_elsewhere_is_waited_for_even_with_a_copy_in_documents(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    _user_home(tmp_path, monkeypatch)
+    usb, stale = tmp_path / "usb" / "IEUStudia", tmp_path / "docs" / "IEUStudia"
+    _seed(stale, tmp_path / "elsewhere")                 # the copy Settings → Change… left behind
+    save_settings(Settings(output_dir=str(usb)))          # the stick is not plugged in
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(usb) and s.notes == []
+    finally:
+        _close(s)
+
+
+def test_documents_that_did_not_move_change_nothing(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    local = _user_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(paths, "documents_dir", lambda: local)
+    _seed(tmp_path / "docs" / "IEUStudia", tmp_path / "elsewhere")
+    save_settings(Settings(output_dir=str(local / "IEUStudia")))     # not made yet (nothing written)
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(local / "IEUStudia") and s.notes == []
+    finally:
+        _close(s)
+
+
+def test_a_folder_with_the_apps_files_in_the_old_documents_is_kept(tmp_path, monkeypatch):
+    _real_mode(tmp_path, monkeypatch)
+    local = _user_home(tmp_path, monkeypatch)
+    _seed(tmp_path / "docs" / "IEUStudia", tmp_path / "elsewhere")
+    (local / "IEUStudia" / "MATH 240").mkdir(parents=True)          # files are written there still: the student's choice
+    save_settings(Settings(output_dir=str(local / "IEUStudia")))
+    s = Services()
+    try:
+        assert s.settings.output_dir == str(local / "IEUStudia") and s.notes == []
     finally:
         _close(s)

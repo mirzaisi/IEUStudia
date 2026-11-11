@@ -276,13 +276,15 @@ class Library:
     def rebase_paths(self, moved: Callable[[str], Optional[str]]) -> None:
         """Change the file paths kept here (downloaded materials, plan files, saved weekly digests) after the output
         folder moved: ``moved`` returns a path's new value, or None to keep it."""
-        def moved_file(blob: str) -> Optional[str]:         # a JSON object with the path in "file"
+        def moved_file(blob: str) -> Optional[str]:         # a JSON object with the path in "file" (and a PDF's in "pdf")
             try:
                 d = json.loads(blob or "{}")
             except ValueError:
                 return None
-            new = moved(str(d.get("file") or "")) if isinstance(d, dict) else None
-            return json.dumps({**d, "file": new}, ensure_ascii=False) if new else None
+            if not isinstance(d, dict):
+                return None
+            new = {k: v for k in ("file", "pdf") if d.get(k) and (v := moved(str(d[k])))}
+            return json.dumps({**d, **new}, ensure_ascii=False) if new else None
 
         with self._lock:
             for rid, path in self.db.execute("SELECT resource_id, local_path FROM materials WHERE local_path<>''").fetchall():
