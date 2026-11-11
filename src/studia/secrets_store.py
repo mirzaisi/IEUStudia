@@ -154,7 +154,10 @@ def _load_for_new(folder: Optional[Path] = None) -> dict[str, Any]:
 def _save(data: dict[str, Any], folder: Optional[Path] = None) -> None:
     path = _file(folder)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")          # each process its own
-    tmp.write_bytes(protect(json.dumps(data).encode("utf-8")))
+    with open(tmp, "wb") as f:       # on the disk before the swap: a power cut soon after (it is written at each sync)
+        f.write(protect(json.dumps(data).encode("utf-8")))      # could leave it with its size but only zeros in it
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 

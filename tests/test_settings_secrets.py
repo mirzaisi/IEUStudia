@@ -127,3 +127,16 @@ def test_a_refusal_belongs_to_the_password_that_was_refused():
     d["password"] = "new-password"
     secrets_store._save(d)
     assert not secrets_store.rejected() and secrets_store.get_credentials() == ("student", "new-password")
+
+
+def test_secrets_are_on_the_disk_before_they_take_the_old_files_place(monkeypatch):
+    """Rewritten at every sync (the cookies): without the flush, a power cut soon after could leave secrets.bin with
+    its size but only zeros, and the student typing the password again."""
+    import os
+
+    seen = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(secrets_store.os, "fsync", lambda fd: seen.append("fsync") or real_fsync(fd))
+    monkeypatch.setattr(secrets_store.os, "replace", lambda a, b: seen.append("replace") or real_replace(a, b))
+    secrets_store.save_cookies([{"name": "PHPSESSID", "value": "v", "domain": "learn.ieu.edu.tr", "path": "/"}])
+    assert seen == ["fsync", "replace"] and secrets_store.load_cookies()[0]["value"] == "v"
