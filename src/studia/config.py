@@ -43,6 +43,7 @@ class Settings:
     verify_model: str = "haiku"        # checking video captions against the course (many small requests)
     ai_model_light: str = "haiku"      # weekly digest
     ai_effort: dict[str, str] = dc.field(default_factory=dict)   # reasoning level per "provider.use" (effort.py)
+    doc_language: str = "course"       # study documents in: "course" (its own language) | "en" | "tr" (doclang.py)
     quiz_questions: int = 10           # a new practice quiz starts with this many questions (QUIZ_SIZES)
     cards_per_day: int = 20            # new flashcards a day per course at most (CARDS_PER_DAY; cards.py)
     export_prefs: dict[str, Any] = dc.field(default_factory=dict)   # the Export menu's last format per place (exports.py)
@@ -99,6 +100,10 @@ def _from_dict(raw: dict[str, Any]) -> Settings:
     from .effort import clean, migrate         # settings saved before reasoning levels: the levels they meant
 
     s.ai_effort = {**migrate(raw), **clean(s.ai_effort)}
+    from .doclang import CHOICES, DEFAULT
+
+    if s.doc_language not in CHOICES:
+        s.doc_language = DEFAULT
     s.parallel_downloads = max(1, min(4, s.parallel_downloads))
     s.text_size = max(90, min(130, s.text_size))
     if s.quiz_questions not in QUIZ_SIZES:
@@ -166,7 +171,7 @@ def apply_patch(settings: Settings, patch: dict[str, Any]) -> Settings:
 GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     "transcription": {"settings": ("device", "capture_slides", "ask_before_closing", "min_duration_s")},
     "files": {"settings": ("write_srt", "keep_audio")},
-    "ai": {"settings": ("ai_model", "plan_model", "verify_model", "ai_model_light", "ai_effort")},
+    "ai": {"settings": ("ai_model", "plan_model", "verify_model", "ai_model_light", "ai_effort", "doc_language")},
     "practice": {"settings": ("quiz_questions", "cards_per_day")},
     "notifications": {"app": ("notify_recordings", "notify_announcements", "notify_materials", "notify_reminders",
                               "sync_minutes"),

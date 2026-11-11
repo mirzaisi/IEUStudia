@@ -65,6 +65,8 @@ def _norm(s: Any) -> str:
 
 # ------------------------------------------------------------------ topics (AI)
 def topics_prompt(facts: dict[str, Any]) -> str:
+    from .studypack import _terms
+
     return f"""TASK: List everything that belongs on a cheatsheet for the course material below ({facts['span']}): a compact reference a student uses to revise and to solve the course's problems.
 Answer with one JSON object:
 {{"title": "a short title naming the topics (not the course code)",
@@ -74,7 +76,7 @@ Rules:
 - "items": EVERYTHING the material requires the student to know or use, each named in a few words: every formula (also the derived forms and special cases the material uses), definition, key concept, theorem, law, rule or property, unit, constant and conversion, standard method or procedure, and the conditions that decide which one applies. Nothing the material requires may be left out; nothing outside the material is added, nor what every student of the course already knows (basic algebra, SI prefixes). Each item once, in the topic where the material teaches it.
 - Topics in the course's order (by week, then in the material's order), 2–25 of them, each with 2–30 items.
 - "sources": the file pages ([first, last]) and lecture passages (part, from–to as m:ss or h:mm:ss) each topic is taught in. Use only the references (F…, L…) listed below.
-- Titles and items in {facts.get('language') or 'English'}.
+- Titles and items in {facts.get('language') or 'English'}.{_terms(facts)}
 
 === COURSE MATERIAL ===
 {facts['pack']}"""
@@ -103,7 +105,7 @@ def clean_topics(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
     if not topics:
         raise RuntimeError(t("The AI found nothing to put on the cheatsheet. Try again."))
     return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "topics": topics,
-            "language": facts.get("language") or ""}
+            "language": facts.get("language") or "", "taught_in": facts.get("taught_in") or ""}
 
 
 # ------------------------------------------------------------------ entries (AI)
@@ -186,7 +188,7 @@ def entries_prompt(sheet: dict[str, Any], topics: list[dict[str, Any]], mat: str
                 + "\n".join(f"{tp['id']} · {tp['title']}: {'; '.join(tp['items'])}" for tp in topics)
                 + "\nEvery item must be in an entry of its topic. Add what else of these topics' material a student "
                   "needs to solve its problems (a formula, special case, condition, unit or shortcut the list missed).")
-    return (f"{head}\n{_FORMAT}\n- {written_in(sheet.get('language', ''))}\n\n"
+    return (f"{head}\n{_FORMAT}\n- {written_in(sheet.get('language', ''), sheet.get('taught_in', ''))}\n\n"
             f"=== THE COURSE MATERIAL OF THESE TOPICS ===\n{mat}")
 
 
@@ -721,4 +723,5 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
             "main_input": int(tokens_in), "main_output": int(tokens_out), "requests": 1 + batches + repair, "chapters": batches, "files": len(facts["files"]),
             "lectures": len(facts["lectures"]), "materials_missing": facts["materials_missing"],
             "days_missing": facts["days_missing"], "files_cut": facts["files_cut"],
+            "language": facts["language"], "taught_in": facts["taught_in"],       # (the dialog's line)
             "minutes": t("about {a}–{b} minutes", a=a, b=a * 2)}

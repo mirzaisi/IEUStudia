@@ -1391,6 +1391,7 @@
       <div class="card set-card" id="set-ai"><h3>${t("AI (optional)")}${rb("ai")}</h3>
         ${Studia.settingsAI ? Studia.settingsAI() : ""}
         ${Studia.aiLevelsHTML ? Studia.aiLevelsHTML(sys, s) : ""}
+        ${Studia.docLangRow ? Studia.docLangRow() : ""}
       </div>
       ${Studia.practiceCard ? Studia.practiceCard() : ""}
       ${Studia.settingsMore ? Studia.settingsMore() : ""}</div>`;
