@@ -27,7 +27,7 @@
     sync: { running: false, message: "", error: "" }, engine: null,
     day: null, dayFind: "", ai: { running: false, text: "", dayKey: null },
     lib: null, search: { q: "", res: null, course: "", kind: "", busy: false, items: [] }, signin: { busy: false, error: "" },
-    chat: { list: null, id: null, data: null, draft: null, input: "", sending: false, scroll: null }, limits: {},
+    chat: { list: null, id: null, data: null, draft: null, input: "", inputs: {}, sending: false, scroll: null }, limits: {},   // inputs: each chat's unsent question
     update: {},      // a new version: updates.status(), plus state/done/total/error while it downloads
   };
   let REAL = false;
@@ -432,7 +432,7 @@
     if (S.view.name === "day" && view.name !== "day") S.day = null;
     // ticked recordings belong to the page they were ticked on (another course's "Transcribe 2 selected" queued these)
     if (view.name !== S.view.name || view.courseId !== S.view.courseId) S.selected.clear();
-    if (view.name === "chat" && view.chatId) { S.chat.id = view.chatId; S.chat.draft = null; }
+    if (view.name === "chat" && view.chatId) { switchInput(view.chatId); S.chat.id = view.chatId; S.chat.draft = null; }
     S.view = view;
     $("#view").scrollTo({ top: 0, behavior: "instant" });   // before rendering (an after-hook may scroll elsewhere); not animated
     renderSidebar(); renderTop(); renderView();
@@ -1641,7 +1641,7 @@
   async function openChat(id) {
     if (S.qpOpen) closePane();     // a chat in the sidebar
     if (id !== S.chat.id) S.chat.scroll = null;
-    S.chat.id = id; S.chat.draft = null;
+    switchInput(id); S.chat.id = id; S.chat.draft = null;
     if (S.view.name !== "chat" || S.view.chatId !== id) { S.view = { name: "chat", chatId: id }; renderSidebar(); renderTop(); }
     if (!$("#chat-main")) renderView(); else renderChatMain();
     const r = await call("chat_get", id);
@@ -1655,9 +1655,17 @@
     if (r.chat.limits && Object.keys(r.chat.limits).length) S.limits = r.chat.limits;
     if (S.view.name === "chat") { renderChatMain(); restoreChatScroll(); focusComposer(); }
   }
-  function startDraft(d) {
+  // a question typed and not sent stays with its chat: another chat, or a new one, starts with its own (a new chat's
+  // goes with it, except when its lectures are changed: same: true)
+  function switchInput(next, same) {
+    if (same) return;
+    if (S.chat.id) S.chat.inputs[S.chat.id] = S.chat.input;
+    S.chat.input = (next && S.chat.inputs[next]) || "";
+  }
+  function startDraft(d, same) {
     if (S.qpOpen) closePane();
     const inChat = S.view.name === "chat" && $("#chat-main");
+    switchInput(null, same && !S.chat.id && !!S.chat.draft);
     S.chat.draft = { tokens: 0, slidesTotal: 0, ...d }; S.chat.id = null; S.chat.data = null; S.chat.scroll = null;
     S.view = { name: "chat" };          // never keep an older chat's id: Back would reopen it instead of this draft
     renderSidebar(); renderTop();
@@ -1710,7 +1718,9 @@
     const r = await call("chat_send", id, text);
     S.chat.sending = false;
     if (!r.ok) { toast(r.error, "error"); if (S.view.name === "chat" && S.chat.id === id) { renderChatHead(); renderComposerBtn(); } return; }
-    if (S.chat.input.trim() === text) S.chat.input = "";          // sent: but keep anything typed meanwhile
+    // sent: but keep anything typed meanwhile (in another chat by now: its box, not this one's, is the one shown)
+    if (S.chat.id === id && S.chat.input.trim() === text) S.chat.input = "";
+    else if ((S.chat.inputs[id] || "").trim() === text) delete S.chat.inputs[id];
     const ta = $("#chat-input");
     if (ta && ta.value.trim() === text) { ta.value = ""; autosize(ta); }
     const c = S.chat.data;
@@ -1870,7 +1880,7 @@
         startDraft({ course_id: st.course, course_code: course.code, days: list.map((d) => d.day_key),
           labels: list.map((d, i) => ({ key: d.day_key, n: i + 1, label: d.label, kind: d.kind_label, long: d.label })),
           focus: st.focus, slides: st.slides && slideCount() > 0, model: st.model, effort: Studia.effortPick ? Studia.effortPick("cp") : "",
-          read_all: st.read, uploads: (preset && preset.uploads) || "" });        // Change…: the files already added stay with the new chat
+          read_all: st.read, uploads: (preset && preset.uploads) || "" }, !!preset && preset === S.chat.draft);   // Change…: the files added and the question typed stay with the new chat
       },
     };
     await load();
@@ -2688,6 +2698,7 @@
         if (!(await Studia.ask({ title: t("Delete this chat?"), text: t("This cannot be undone."), ok: t("Delete"), danger: true }))) return;
         const r = await call("chat_delete", S.chat.data.id);
         if (!r.ok) { toast(r.error, "error"); return; }
+        delete S.chat.inputs[S.chat.id]; S.chat.input = "";
         S.chat.id = null; S.chat.data = null; S.view = { name: "chat" }; renderChatMain(); loadChats();
       } },
     ]),
