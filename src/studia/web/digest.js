@@ -57,7 +57,7 @@
     // being written: what the AI does now (waits.js), then its words as they come
     const sum = writing ? (g.text ? `<div class="md">${St.mdToHtml(g.text, { streaming: true })}</div>` : "")
       + (g.wait && St.waitHTML && !g.text ? St.waitHTML(g.wait) : `<div class="dim">${SPIN()} ${g.wait && St.waitLine ? St.waitLine(g.wait) : t.html("{ai} is writing…", { ai: St.aiName() })}</div>`)
-      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}), can contain mistakes", { model: g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
+      : g.summary ? `<div class="md">${St.mdToHtml(g.summary.text)}</div><div class="dim sm">${t.html("Written by AI ({model}), can contain mistakes", { model: St.modelLabel ? St.modelLabel(g.summary.model) : g.summary.model || "" })} · ${esc((g.summary.at || "").replace("T", " "))}
           ${g.summary.file ? ` · <button class="link" data-act="dg-file" data-path="${esc(g.summary.file)}">${t("open the Markdown file")}</button>` : ""}</div>` : "";
     const sumTitle = !ai.available ? St.aiHint() : g.running && !writing ? t("Another week's summary is being written") : t("A short written summary by {ai}", { ai: St.aiName() });
     return `<div class="view-inner digest">

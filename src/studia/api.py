@@ -2477,11 +2477,10 @@ class Api(PracticeApi):
 
     @safe
     def pack_pdf(self, plan_id: str, how: str = "open") -> dict[str, Any]:
-        """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save") or shown in its
-        folder ("folder"). It is printed again when it is missing."""
+        """The study pack as a PDF: opened (``how`` "open"), saved where the student picks ("save": Downloads first,
+        ending in .pdf even when a name is typed without it) or shown in its folder ("folder"). It is printed again
+        when it is missing."""
         import shutil
-
-        import webview
 
         from .studypack import make_pdf
 
@@ -2495,13 +2494,15 @@ class Api(PracticeApi):
         if how == "folder":
             reveal(pdf)
         elif how == "save":
-            to = self._window.create_file_dialog(webview.SAVE_DIALOG, directory=str(Path.home() / "Downloads"),
-                                                 save_filename=pdf.name)
-            to = to[0] if isinstance(to, (list, tuple)) else to
+            # (Downloads, not the course's folder: the pack's own PDF is there, and saving it over itself fails)
+            to = self._save_dialog(Path.home() / "Downloads", pdf.name, ".pdf")
             if not to:
                 return {"ok": True, "saved": ""}
-            shutil.copyfile(pdf, to)
-            return {"ok": True, "saved": str(to)}
+            if not to.lower().endswith(".pdf"):
+                to += ".pdf"
+            if Path(to).resolve() != pdf.resolve():
+                shutil.copyfile(pdf, to)
+            return {"ok": True, "saved": to}
         else:
             open_path(pdf)
         return {"ok": True}

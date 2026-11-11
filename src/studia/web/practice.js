@@ -16,7 +16,11 @@
   const mdLine = (s) => md(s).replace(/^<p>([\s\S]*)<\/p>$/, "$1");       // one paragraph, inline (beside a label)
   const math = () => { const m = $("#overlay .modal"); if (m && St.renderMath) St.renderMath(m); };
   const score = (x) => t.num(x, x % 1 ? 1 : 0);
-  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, study: null };
+  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, runs: {}, study: null };
+  // a quiz in progress (answered, not finished): P.run is the one open last; another quiz opened meanwhile keeps it
+  // in P.runs, so each one goes on where it was left
+  const runOf = (id) => (P.run && P.run.id === id ? P.run : P.runs[id]) || null;
+  const inProgress = (R) => !!R && !R.saved && R.pos >= 0;
 
   // ------------------------------------------------------------------ data
   let summaryAsked = null;
@@ -135,11 +139,11 @@
         <div class="pr-qacts"><button class="btn sm" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>
         <button class="btn ghost icon sm" data-act="qz-delete" data-id="${esc(q.id)}" title="${esc(t("Delete this quiz"))}">${I("x", "sm")}</button></div></div>`;
     }
-    const going = P.run && P.run.id === q.id && !P.run.saved && P.run.pos >= 0;
+    const goingOn = inProgress(runOf(q.id));
     const best = q.best ? `<span class="pr-best ${q.best.score / Math.max(1, q.best.total) >= 0.8 ? "good" : ""}">${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}</span>` : "";
     return `<div class="pr-quiz"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(quizScope(q))} · ${esc(dmw(q.created_at))}</div>
         ${q.tries ? `<div class="pr-tries sm">${best}<span class="dim">${esc(t.n(q.tries, "{n} try", "{n} tries"))}${q.last ? ` · ${esc(t("last: {score} of {total}", { score: score(q.last.score), total: q.last.total }))}` : ""}</span></div>` : ""}</div>
-      <div class="pr-qacts"><button class="btn primary sm" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${going ? t("Continue") : q.tries ? t("Practise again") : t("Practise")}</button>
+      <div class="pr-qacts"><button class="btn primary sm" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${goingOn ? t("Continue") : q.tries ? t("Practise again") : t("Practise")}</button>
         <button class="btn ghost icon sm" data-act="menu-qz" data-id="${esc(q.id)}" data-cid="${esc(q.course_id)}" title="${esc(t("More"))}">${I("more", "sm")}</button></div></div>`;
   }
   function quizzesHTML(c, p) {
@@ -199,7 +203,7 @@
     const when = sm.at ? t.date(sm.at.slice(0, 10), "dm") : "";
     return `<div class="st-sum"><div class="st-sum-h">${I("cap", "sm")}<b>${t("Know this for the exam")}</b></div>
       <ol>${sm.items.map((x) => `<li><div class="md">${md(x.point)}</div>${x.why ? `<div class="dim sm">${esc(x.why)}</div>` : ""}${(x.cites || []).length ? `<div class="st-cites">${x.cites.map((id) => citeChip(items, id)).join("")}</div>` : ""}</li>`).join("")}</ol>
-      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
+      <div class="dim sm">${esc(t("Written by AI ({model}) from the quotes below: check it against them.", { model: St.modelLabel ? St.modelLabel(sm.model) : sm.model || "" }))} ${esc(when)}${sm.new ? ` · ${esc(t.n(sm.new, "{n} new moment since: sum it up again to add it.", "{n} new moments since: sum it up again to add them."))}` : ""}</div></div>`;
   }
   function stressedHTML(c, p) {
     const s = p.stressed || { weeks: [], not_needed: [], counts: {}, total: 0 };
@@ -393,14 +397,18 @@
     if (!r.ok) { toast(r.error, "error"); return; }
     const quiz = r.quiz, qs = ((quiz.result || {}).questions) || [];
     if (!qs.length) { toast(t("This quiz has no questions."), "error"); return; }
-    const resume = P.run && P.run.id === id && !P.run.saved && !only;
-    if (!resume) {
+    const kept = runOf(id), resume = kept && !kept.saved && !only;
+    if (P.run && P.run.id !== id && inProgress(P.run)) P.runs[P.run.id] = P.run;     // the one left: kept for its Continue
+    delete P.runs[id];
+    if (resume) P.run = kept;
+    else {
       const pick = only && only.length ? qs.filter((q) => only.includes(q.n)) : qs;
       P.run = { id, cid: quiz.course_id, order: pick.map((q) => qs.indexOf(q)), pos: only && only.length ? 0 : -1, answers: {},
         picked: null, checked: false, text: "", only: only || [], started: new Date().toISOString(), saved: false };
     }
     P.run.quiz = quiz; P.run.attempts = r.attempts || [];
     drawRun();
+    St.onModalClose = () => { if (onTab(quiz.course_id)) renderView(); };     // closed: its row says Continue
   }
   const KINDS = () => ({ mc: t("Multiple choice"), short: t("Short answer"), problem: t("Worked problem") });
   function introHTML(R) {
@@ -798,6 +806,7 @@
       const r = await call("quiz_delete", el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       if (P.run && P.run.id === el.dataset.id) P.run = null;
+      delete P.runs[el.dataset.id];
       Object.values(P.course).forEach((p) => { p.quizzes = (p.quizzes || []).filter((x) => x.id !== el.dataset.id); });
       renderView(); loadSummary(S.view.name === "practice");
     },

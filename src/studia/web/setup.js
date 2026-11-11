@@ -1097,7 +1097,9 @@
     const use = st ? Object.entries({ speech_models: t("Speech models"), gpu_libraries: t("NVIDIA graphics card files"), offline_ai: t("Offline AI model"), ai_tools: t("Codex CLI (for ChatGPT)"), library: t("Library and transcripts"), cache: t("Temporary files"), your_files: t("Your files (IEUStudia folder)") })
       .filter(([k]) => st.usage[k]).map(([k, l]) => `<div class="su-row"><span class="grow">${l}</span><b>${bytes(st.usage[k])}</b></div>`).join("") : St.skeleton();
     // (plain text: the row shows it escaped, and the question before removing it names it)
-    const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t("Speech model “{name}”", { name: m.label }), m.size_mb]),
+    // (a speech model only in the shared Hugging Face folder, another program's download: used from there, never removed)
+    const shared = st ? st.catalog.speech.filter((m) => m.ready && m.own === false) : [];
+    const removable = st ? [...st.catalog.speech.filter((m) => m.ready && m.own !== false && m.id !== S.settings.model).map((m) => [`speech:${m.id}`, t("Speech model “{name}”", { name: m.label }), m.size_mb]),
       ...st.catalog.llm.filter((m) => m.ready && !(app.ai_provider === "local" && app.local_model === m.id)).map((m) => [`llm:${m.id}`, t("Offline model “{name}”", { name: m.label }), m.size_mb]),
       // the Codex CLI IEUStudia installed, when the AI chosen isn't ChatGPT through it (api.py's storage: codex)
       ...(st.codex && st.codex.bytes > 0 && !st.codex.in_use && app.ai_provider !== "codex" ? [["codex", t("Codex CLI (for ChatGPT)"), st.codex.bytes / 1048576,
@@ -1117,7 +1119,8 @@
         ${St.reminderRows ? St.reminderRows() : ""}</div>
       <div class="card set-card" id="set-storage"><h3>${t("Storage")}</h3>${use}
         ${St.screensReadingRow ? St.screensReadingRow() : ""}
-        ${removable.map(([id, l, mb, about]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}"${about ? ` data-about="${esc(about)}"` : ""}>${I("x", "sm")} ${t("Remove")}</button>`)).join("")}</div>
+        ${removable.map(([id, l, mb, about]) => row(esc(l), t("{size} · not in use", { size: gb(mb) }), `<button class="btn ghost sm danger" data-act="del-component" data-id="${esc(id)}" data-name="${esc(l)}"${about ? ` data-about="${esc(about)}"` : ""}>${I("x", "sm")} ${t("Remove")}</button>`)).join("")}
+        ${shared.map((m) => row(esc(t("Speech model “{name}”", { name: m.label })), t("{size} · in another program's folder (Hugging Face): IEUStudia uses it from there and doesn't remove it", { size: gb(m.size_mb) }), "")).join("")}</div>
       <div class="card set-card" id="set-about"><h3>${t("About")}</h3>
         ${row(`IEUStudia ${esc((S.boot || {}).version || "")}`, t("Free and open source (MIT License). Lectures are transcribed on this PC. AI runs only through the service you chose, and only when you ask."),
           `<div style="display:flex;gap:6px"><button class="btn ghost sm" data-act="logs">${I("terminal", "sm")} ${t("Logs")}</button><button class="btn sm" data-act="setup-again">${I("refresh", "sm")} ${t("Run setup again")}</button></div>`)}

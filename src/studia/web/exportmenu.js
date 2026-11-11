@@ -125,7 +125,7 @@
     M = { place: where, id, anchor: el, weeks: null, lectures: 0, notes: false, failed: "" };
     if (!D || !D.createElement) return;
     const m = D.createElement("div");
-    m.className = "menu xp-menu"; m.id = "menu"; m.tabIndex = -1;
+    m.className = "menu xp-menu"; m.id = "menu"; m.tabIndex = -1; m._opener = el;     // (Escape: back to it, app.js menuKey)
     if (m.setAttribute) m.setAttribute("role", "menu");
     D.body.appendChild(m);
     draw();
