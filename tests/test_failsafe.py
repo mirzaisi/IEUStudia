@@ -450,7 +450,15 @@ def test_a_camera_stream_download_goes_on_from_its_last_segment(tmp_path, monkey
     p.download(panopto.MediaSource("hls", "https://x/master.m3u8"), dest, lambda d, t: None)
     assert fetched == [3, 4, 5]
     assert dest.read_bytes() == b"".join(bytes([65 + k]) * 1000 for k in range(6))
-    assert not dest.with_name("r1.mp4.hls.json").exists()
+    marker = json.loads(dest.with_name("r1.mp4.hls.json").read_text(encoding="utf-8"))
+    assert marker["done"] and marker["size"] == 6000                # kept: the stream isn't fetched again (TP-5)
+    fetched.clear()
+    playlist = playlist.replace("token=b", "token=c")
+    assert p.download(panopto.MediaSource("hls", "https://x/master.m3u8"), dest, lambda d, t: None) == dest
+    assert fetched == [] and dest.stat().st_size == 6000
+    dest.write_bytes(b"x" * 10)                                      # another file under its name now: fetched again
+    p.download(panopto.MediaSource("hls", "https://x/master.m3u8"), dest, lambda d, t: None)
+    assert fetched == [0, 1, 2, 3, 4, 5] and dest.stat().st_size == 6000
 
 
 def test_a_camera_stream_s_segments_are_on_the_disk_before_its_marker_says_so(tmp_path, monkeypatch):
@@ -477,7 +485,10 @@ def test_a_camera_stream_s_segments_are_on_the_disk_before_its_marker_says_so(tm
     dest = tmp_path / "r1.mp4"
     panopto.Panopto(session).download(panopto.MediaSource("hls", "https://x/master.m3u8"), dest, lambda d, t: None)
     # each segment: the data synced, then the marker written whole (a file of its own, synced, put in place)
-    assert [x for x in seen if x[0] == "marker"] == [("marker", 1000), ("marker", 2000), ("marker", 3000)]
+    # (and once all is there, the marker says so: kept with the file)
+    assert [x for x in seen if x[0] == "marker"] == [("marker", 1000), ("marker", 2000), ("marker", 3000),
+                                                      ("marker", 3000)]
     for k in (1, 2, 3):
         assert seen.index(("fsync", k * 1000)) < seen.index(("marker", k * 1000))
-    assert dest.stat().st_size == 3000 and not dest.with_name("r1.mp4.hls.json").exists()
+    assert dest.stat().st_size == 3000
+    assert json.loads(dest.with_name("r1.mp4.hls.json").read_text(encoding="utf-8"))["done"] is True
