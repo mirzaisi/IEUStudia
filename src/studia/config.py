@@ -44,7 +44,7 @@ class Settings:
     ai_model_light: str = "haiku"      # weekly digest
     ai_effort: dict[str, str] = dc.field(default_factory=dict)   # reasoning level per "provider.use" (effort.py)
     doc_language: str = "course"       # study documents in: "course" (its own language) | "en" | "tr" (doclang.py)
-    quiz_questions: int = 10          # a new practice quiz starts with this many questions (QUIZ_SIZES)
+    quiz_questions: int = 10           # a new practice quiz starts with this many questions (QUIZ_SIZES)
     cards_per_day: int = 20            # new flashcards a day per course at most (CARDS_PER_DAY; cards.py)
     export_prefs: dict[str, Any] = dc.field(default_factory=dict)   # the Export menu's last format per place (exports.py)
     course_prefs: dict[str, CoursePrefs] = dc.field(default_factory=dict)
