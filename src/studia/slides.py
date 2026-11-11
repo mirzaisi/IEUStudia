@@ -330,7 +330,9 @@ def save_jpeg(frame: av.VideoFrame, path: Path, max_width: int = 1600) -> None:
             out.mux(pkt)
         for pkt in st.encode(None):
             out.mux(pkt)
-    tmp.replace(path)
+    from .store import _swap_in       # a sync client, a viewer or an antivirus holding the old picture for a moment
+
+    _swap_in(tmp, path)
 
 
 # ----------------------------------------------------------------------------- extraction
@@ -661,7 +663,9 @@ def save_index(path: Path, slides: list[Slide]) -> None:
         f.write(json.dumps([dc.asdict(s) for s in slides], ensure_ascii=False, indent=1))
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    from .store import _swap_in       # (held for a moment by another program: tried again)
+
+    _swap_in(tmp, path)
 
 
 def load_index(path: Path) -> list[Slide]:
