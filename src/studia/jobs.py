@@ -852,18 +852,25 @@ class JobManager:
                 elif stage in ("failed", "processing"):
                     b["failed"] += 1
             if current and not self._closing and job.local_path is None:
-                self._forget(job.id)          # done, failed, not ready, or cancelled: no longer waiting
-        status = ""
+                try:
+                    self._forget(job.id)      # done, failed, not ready, or cancelled: no longer waiting
+                except Exception:  # noqa: BLE001 - a full disk, a library locked for long: see below
+                    self.log.warning("Taking %s off the stored queue failed", job.id, exc_info=True)
+        status, why = "", ""
         if job.local_path is None and current:
             if stage == "cancelled":
                 status = job.prev_status if job.prev_status in ("done", "available") else "available"
-                self.lib.set_status(job.id, status)
             elif stage == "failed" and job.prev_status == "done":
                 status = "done"               # transcribing it again failed: the earlier transcript is still there
-                self.lib.set_status(job.id, status)
             elif stage in _STATUS:
-                status = _STATUS[stage]
-                self.lib.set_status(job.id, status, error)
+                status, why = _STATUS[stage], error
+            # a full disk or a library locked for long is logged, and the lecture still leaves the queue: raised here,
+            # it ended the worker's thread, and every later lecture waited for good (and the PC never slept)
+            try:
+                if status:
+                    self.lib.set_status(job.id, status, why)
+            except Exception:  # noqa: BLE001
+                self.log.warning("Saving how %s ended (%s) failed", job.id, status, exc_info=True)
         job.stage = stage
         if not current:   # a newer job for the same recording owns the UI row and the status
             return
@@ -950,8 +957,8 @@ class JobManager:
                 self.log.error("Preparing %s failed", job.id, exc_info=error)
                 if job.local_path is None and _no_sound(error):
                     # Panopto has no stream with sound: the page knows it by this code, not by the (translated) text
-                    self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(error)}])
                     job.no_sound = True
+                    self._warn_no_sound(job, str(error))
                 self._finish(job, "failed", plain_error(error))
             else:
                 raise error
@@ -1190,9 +1197,17 @@ class JobManager:
 
     def _no_speech(self, job: Job, exc: NoSpeech) -> None:
         if job.local_path is None:
-            self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": str(exc)}])
             job.no_sound = True
+            self._warn_no_sound(job, str(exc))
         self._finish(job, "failed", str(exc))
+
+    def _warn_no_sound(self, job: Job, message: str) -> None:
+        """The lecture's "no speech" warning (the page knows it by its code). A library write that fails (a full disk)
+        is logged: the lecture still ends (_finish), and the worker's thread goes on."""
+        try:
+            self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": message}])
+        except Exception:  # noqa: BLE001
+            self.log.warning("Saving the no-speech note of %s failed", job.id, exc_info=True)
 
     # ------------------------------------------------------------------ GPU side
     @staticmethod
