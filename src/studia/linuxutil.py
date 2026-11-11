@@ -268,6 +268,10 @@ def idle_seconds() -> float:
     return 0.0                                   # unknown under Wayland: somebody is there
 
 
+def awake_time() -> float:
+    return time.monotonic()                      # (Linux's leaves out the time suspended)
+
+
 def flash_taskbar(hwnd: int) -> None:
     pass
 

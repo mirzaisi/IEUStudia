@@ -470,6 +470,18 @@ def test_the_calendar_file_holds_deadlines_and_your_entries_with_stable_ids(tmp_
     assert all(len(line.encode("utf-8")) <= 75 for line in text.split("\r\n"))
 
 
+def test_a_dropped_courses_deadlines_are_no_reminders_any_more(tmp_path):
+    """A course that left the IEULearn dashboard (dropped in add-drop week): its deadlines are not on the Calendar page,
+    so they are not reminded or in the .ics either (a reminder opened a Calendar item that wasn't there)."""
+    lib = _term(tmp_path)
+    assert "b-asg-3003" in {e["uid"] for e in calendar_export.all_events(lib, Settings(), NOW.date())}
+    lib.upsert_courses([Course(id="a", title="2026-1 MATH 250 P 3", code="MATH 250", name="Linear Algebra", term="T", section="3"),
+                        Course(id="c", title="2026-1 PSY 430 C 1", code="PSY 430", name="Clinical", term="T", section="1")])
+    events = calendar_export.all_events(lib, Settings(), NOW.date())
+    assert not [e for e in events if e["course_id"] == "b"] and agent.reminders(events, dt.datetime(2026, 11, 17, 16, 0), {}) is None
+    assert not [i for i in agenda.build(lib, Settings(), now=NOW)["items"] if i.get("course_id") == "b"]
+
+
 # ------------------------------------------------------------------ the reminders
 def _deadline(**kw):
     return {"uid": "b-asg-3003", "kind": "assignment", "course": "EEE 242", "course_id": "b", "name": "Lab 3",

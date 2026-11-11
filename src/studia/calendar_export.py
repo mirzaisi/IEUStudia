@@ -126,10 +126,11 @@ def deadline_events(lib: Any, today: dt.date | None = None) -> list[dict[str, An
 
     since = (today or dt.date.today()).isoformat()
     codes = {c.id: c.code for c in lib.courses(True)}
-    out: list[dict[str, Any]] = []
+    active = {c.id for c in lib.courses()}       # a course that left the dashboard (dropped): no reminders, as the
+    out: list[dict[str, Any]] = []               # Calendar page they would open doesn't show it either
     for a in lib.assignments():
         day, time = a["due"][:10], a["due"][11:16]
-        if not day or day < since or a["done"] or a["course_id"] not in codes:
+        if not day or day < since or a["done"] or a["course_id"] not in active:
             continue
         out.append({"uid": f"{a['course_id']}-asg-{a['asg_id']}", "kind": "assignment", "course": codes[a["course_id"]],
                     "course_id": a["course_id"], "name": a["title"], "start": day, "end": day, "date": day, "time": time,

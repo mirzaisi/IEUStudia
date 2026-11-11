@@ -6,8 +6,10 @@ import contextlib
 import copy
 import dataclasses as dc
 import datetime as dt
+import errno
 import json
 import logging
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -784,6 +786,11 @@ class SyncService:
             return plain_error(exc)
         if isinstance(exc, (requests.RequestException, OSError)):
             return plain_error(exc)
+        if isinstance(exc, sqlite3.Error):           # saving on this PC failed, not reading IEULearn
+            if "full" in str(exc).lower():           # "database or disk is full"
+                return plain_error(OSError(errno.ENOSPC, str(exc)))
+            return t("IEUStudia couldn't save the course's pages on this PC. Try again in a minute; if it keeps "
+                     "happening, restart IEUStudia.")
         return t("IEUStudia couldn't read the course's pages (IEULearn's pages may have changed). If it stays like "
                  "this, check for an IEUStudia update in Settings → About.")
 
