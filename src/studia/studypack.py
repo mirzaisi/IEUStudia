@@ -35,7 +35,8 @@ from urllib.parse import quote
 
 from . import aiwait, store
 from .cancel import Cancelled
-from .doclang import WORDS_TR, code, date_text, day_text, first_upper, language_of, weeks_text, word, writing_in
+from .doclang import (WORDS_TR, code, date_text, day_text, first_upper, language_of, span_title, word, writing,
+                      writing_in)
 from .i18n import N_, t, tn
 from .notices import ALERTS_MD, KINDS
 from .outputs.prompts import STYLE, terms_rule, written_in
@@ -385,7 +386,7 @@ def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
     ids = {c["id"] for c in chapters}
     concepts = [{"name": _str(k.get("name"), 160), "chapter": idmap.get(str(k.get("chapter", "")), "")}
                 for k in raw.get("concepts") or [] if isinstance(k, dict) and _str(k.get("name"))][:200]
-    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "intro": _str(raw.get("intro"), 800),
+    return {"title": _str(raw.get("title"), 140) or span_title(facts), "intro": _str(raw.get("intro"), 800),
             "chapters": chapters, "concepts": concepts, "language": facts.get("language") or "",
             "taught_in": facts.get("taught_in") or "",
             "uncovered": [k["name"] for k in concepts if k["chapter"] not in ids]}
@@ -736,8 +737,10 @@ ALERT_LABELS = {"note": "Note", "tip": "Tip", "important": "Important", "warning
 ALERT_SIGNS = {"note": "i", "tip": "✓", "important": "★", "warning": "!", "caution": "×"}
 BOXES = {"definition": "Definition", "key": "Key idea", "example": "Example", "mistake": "Common mistake",
          "check": "Check yourself", "note": "Note", "theorem": "Key idea", "tip": "Note", "warning": "Common mistake"}
-# a Turkish box's title that says its label again (":::example Örnek 4", ":::example Çözümlü örnek: RC devresi")
+# a Turkish box's title that says its label again (":::example Örnek 4", ":::example Çözümlü örnek: RC devresi"),
+# taken off only before a number, a letter's label, a colon or nothing (_LABEL_END)
 _BOX_WORDS_TR = {WORDS_TR[x].lower() for x in set(BOXES.values())} | {"çözümlü örnek", "örnek soru"}
+_LABEL_END = re.compile(r"\s*(?:$|[:.–—-]|\d|[A-ZÇĞİÖŞÜ](?:$|[\s:.,)–—-]))")
 _MATH = re.compile(r"\$\$.+?\$\$|\\\[.+?\\\]|\\\(.+?\\\)|(?<![\\$\w])\$(?=\S)[^$\n]+?(?<=\S)\$(?!\d)", re.S)
 
 
@@ -791,17 +794,24 @@ _PICTURE = re.compile(r"!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*\)")      # (output
 
 def box_head(kind: str, title: str) -> tuple[str, str]:
     """A box's label and title without saying the same twice: ":::check Check" is "Check yourself", ":::example
-    Example 4" is "Example 4", ":::example Worked example: RC discharge" is "Example · RC discharge"."""
-    label, title = word(BOXES.get(kind, BOXES["note"])), " ".join((title or "").split())
-    words = {label.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
-             "definition", "key idea", "key result", "note"} | _BOX_WORDS_TR
-    for w in sorted(words, key=len, reverse=True):
-        if title.lower().startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()):
+    Example 4" is "Example 4", ":::example Worked example: RC discharge" is "Example · RC discharge". In a Turkish
+    document (doclang.writing_in) its label is Turkish, and so are the words taken off a title ("Örnek 4: RC devresi"
+    is "Örnek 4 · RC devresi"), but only when a number, a colon or nothing comes after them: "Örnek uzay", "Tanım
+    kümesi" or "Not ortalaması" are terms, kept whole."""
+    english = BOXES.get(kind, BOXES["note"])
+    label, title = word(english), " ".join((title or "").split())
+    words = {english.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
+             "definition", "key idea", "key result", "note"}
+    turkish = (_BOX_WORDS_TR | {label.lower()}) - words if writing() == "tr" else set()
+    low = title.lower()
+    for w in sorted(words | turkish, key=len, reverse=True):
+        if low.startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()) \
+                and (w not in turkish or _LABEL_END.match(title[len(w):])):
             rest = title[len(w):].strip(" :.-–—")
             num = re.match(r"(\d+(?:\.\d+)*[a-z]?|[A-Z])(?:$|[\s:.,)–—-]+)", rest)   # "Example 4", "Example 2.3: …"
             if num:
                 label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.-–—")
-            return label, rest[:1].upper() + rest[1:]
+            return label, first_upper(rest)
     return label, title
 
 
@@ -979,8 +989,10 @@ CSS_FILE = Path(__file__).resolve().parent / "web" / "studypack.css"
 # How a pack's document is drawn: raised when the code draws it differently (md_html, document_body), as the
 # stylesheet's own changes are seen by itself. A finished pack laid out with another is laid out again from its
 # saved data, no AI, before its PDF is opened or saved (make_pdf).
-LAYOUT = 3           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
-                     # 3 (4.0): lectures named by their day, pictures on a line of their own
+LAYOUT = 4           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
+                     # 3 (4.0): lectures named by their day, pictures on a line of their own;
+                     # 4 (4.1.2): the words IEUStudia writes and the dates in the pack's language, <html lang>
+                     # (doclang.writing_in)
 
 
 def layout() -> str:
@@ -1381,9 +1393,8 @@ def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, 
     """What the cover says, in the pack's language: its weeks and the day it was made."""
     made = made or dt.date.today()
     language = language_of(facts)
-    with writing_in(language) as lang:
-        span = facts["span"].capitalize() if lang == "en" else first_upper(weeks_text(facts.get("weeks") or []))
-        return {"course": facts["course"]["code"], "span": span, "files": facts["files"],
+    with writing_in(language):
+        return {"course": facts["course"]["code"], "span": span_title(facts), "files": facts["files"],
                 "lectures": facts["lectures"], "date": date_text(made), "language": language}
 
 

@@ -200,6 +200,15 @@ def first_upper(s: str) -> str:
     return head + s[1:]
 
 
+def span_title(facts: dict[str, Any]) -> str:
+    """A document's weeks as its cover line, and as its title when the AI gave none ("Weeks 4–6" / "4–6. haftalar"),
+    in its language (:func:`language_of`)."""
+    with writing_in(language_of(facts)) as lang:
+        if lang == "en" and facts.get("span"):
+            return str(facts["span"]).capitalize()          # (as before)
+        return first_upper(weeks_text(facts.get("weeks") or []))
+
+
 def language_of(facts: dict[str, Any]) -> str:
     """The language a study pack's or a cheatsheet's text is in: the one its facts were gathered with (4.1), else
     (one made before) the course's as told from the material (taught_in)."""

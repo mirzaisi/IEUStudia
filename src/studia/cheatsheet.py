@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from . import aiwait
 from .cancel import Cancelled
-from .doclang import code, date_text, day_text, first_upper, language_of, weeks_text, word, writing_in
+from .doclang import code, date_text, day_text, language_of, span_title, word, writing_in
 from .i18n import N_, t, tn
 from .notices import ALERTS_JSON
 from .outputs.prompts import written_in
@@ -106,7 +106,7 @@ def clean_topics(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
                            "sources": clean_sources(x.get("sources"), facts)})
     if not topics:
         raise RuntimeError(t("The AI found nothing to put on the cheatsheet. Try again."))
-    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "topics": topics,
+    return {"title": _str(raw.get("title"), 140) or span_title(facts), "topics": topics,
             "language": facts.get("language") or "", "taught_in": facts.get("taught_in") or ""}
 
 
@@ -500,8 +500,10 @@ FIT_JS = ("(function(){function fit(){document.querySelectorAll('.cs-doc .cs-tex
 # How a sheet is drawn: raised when the code draws it differently (entry_html, document_body), as changes of the
 # stylesheet and of FIT_JS are seen by themselves. A finished sheet laid out with another is laid out again from its
 # saved data, no AI, before its PDF is opened or saved (studypack.make_pdf).
-LAYOUT = 3           # 2 (4.0): conditions keep their names, wide formulas are broken over lines instead of cut;
-                     # 3 (4.0): a formula keeps the punctuation after it on its line
+LAYOUT = 4           # 2 (4.0): conditions keep their names, wide formulas are broken over lines instead of cut;
+                     # 3 (4.0): a formula keeps the punctuation after it on its line;
+                     # 4 (4.1.2): the words IEUStudia writes and the dates in the sheet's language, <html lang>
+                     # (doclang.writing_in)
 
 
 def layout() -> str:
@@ -620,9 +622,8 @@ def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, 
     """What the title line says, in the sheet's language: its weeks and the day it was made."""
     c = facts["course"]
     language = language_of(facts)
-    with writing_in(language) as lang:
-        span = facts["span"].capitalize() if lang == "en" else first_upper(weeks_text(facts.get("weeks") or []))
-        return {"course": " · ".join(x for x in (c.get("code"), c.get("name")) if x), "span": span,
+    with writing_in(language):
+        return {"course": " · ".join(x for x in (c.get("code"), c.get("name")) if x), "span": span_title(facts),
                 "files": facts["files"], "lectures": facts["lectures"], "date": date_text(made or dt.date.today()),
                 "language": language}
 

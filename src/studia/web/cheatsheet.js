@@ -61,7 +61,7 @@
     const doc = S.packDoc[p.id];
     const topics = (r.topics || []).map((x, i) => `<button type="button" data-act="pk-goto" data-to="${esc(x.id)}"><span class="pk-n">${i + 1}</span><span>${esc(x.title)}</span></button>`).join("");
     return h + notesHTML(r) + (topics ? `<div class="cs-topics">${topics}</div>` : "")
-      + `<div class="card cs-paper"><article class="cs-doc" id="cs-doc" lang="en">${doc != null ? doc : skeleton()}</article></div></div>`;
+      + `<div class="card cs-paper"><article class="cs-doc" id="cs-doc" lang="${St.pack.docLang(p.id)}">${doc != null ? doc : skeleton()}</article></div></div>`;
   }
 
   // ------------------------------------------------------------------ wiring (after plans.js and studypack.js)

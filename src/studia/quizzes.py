@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .cancel import Cancelled
-from .doclang import date_text, day_text, document_language, taught_in, weeks_text, word, writing, writing_in
+from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
+                      writing_in)
 from .i18n import N_, t, tn
 from .outputs.prompts import in_language
 
@@ -951,7 +952,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     quiz = clean_quiz(raw, facts, units, seed=pid)
     if not quiz["questions"]:
         raise RuntimeError(t("The AI's questions could not be used (no question had a clear right answer). Try again."))
-    title = quiz["title"] or facts["span"].capitalize()
+    title = quiz["title"] or span_title(facts)
     result = {"kind": "quiz", "title": title, "made": dt.date.today().isoformat(), "language": facts["language"],
               "questions": quiz["questions"], "topics": quiz["topics"], "coverage": coverage(quiz, facts),
               "course": facts["course"], "asked": n}

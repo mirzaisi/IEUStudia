@@ -154,3 +154,52 @@ def test_copy_for_ai_asks_for_the_notes_in_the_language_the_apps_own_notes_use()
     assert "Write in Turkish, the language the course is taught in, headings included." in text
     assert seen and "[00:15] [TR]" in seen[0]
     assert "Write in English" in build_ai_text("notes", COURSE, days)          # (no setting known: as before)
+
+
+def test_a_box_title_keeps_a_word_that_is_only_like_a_label():
+    """English boxes as before: "Not converting mA to A" is a mistake's title, not the Turkish "Not" (Note). In a
+    Turkish document the Turkish label is taken off a title only before a number, a letter, a colon or nothing:
+    "Örnek uzay" (sample space) and "Tanım kümesi" (domain) are terms."""
+    bh = studypack.box_head
+    assert bh("mistake", "Not converting mA to A") == ("Common mistake", "Not converting mA to A")
+    assert bh("note", "Not all matrices are invertible") == ("Note", "Not all matrices are invertible")
+    assert bh("example", "Example 4: RC discharge") == ("Example 4", "RC discharge")
+    assert bh("check", "Check") == ("Check yourself", "")
+    with doclang.writing_in("Turkish"):
+        assert bh("definition", "Örnek uzay") == ("Tanım", "Örnek uzay")
+        assert bh("key", "Tanım kümesi ve değer kümesi") == ("Ana fikir", "Tanım kümesi ve değer kümesi")
+        assert bh("definition", "Not ortalaması") == ("Tanım", "Not ortalaması")
+        assert bh("mistake", "Not converting mA to A") == ("Sık yapılan hata", "Not converting mA to A")
+        assert bh("example", "Örnek 4: RC devresi") == ("Örnek 4", "RC devresi")
+        assert bh("example", "Örnek A: iki zar") == ("Örnek A", "İki zar")
+        assert bh("example", "Çözümlü örnek: integral alma") == ("Örnek", "İntegral alma")
+        assert bh("note", "Not: birimler SI") == ("Not", "Birimler SI")
+        assert bh("example", "Example 2: iki zar") == ("Örnek 2", "İki zar")     # (the AI's English label too)
+    md = ":::mistake Not converting mA to A\nx\n:::\n"
+    assert "**Common mistake · Not converting mA to A**" in D.to_markdown(D.Doc(title="N", blocks=D.read_markdown(md)))
+
+
+def test_a_documents_weeks_as_its_title_are_in_its_language():
+    facts = {"span": "week 3, weeks 5–7", "weeks": [{"no": 3}, {"no": 5}, {"no": 6}, {"no": 7}]}
+    assert doclang.span_title({**facts, "language": "English"}) == "Week 3, weeks 5–7"
+    assert doclang.span_title({**facts, "language": "Turkish"}) == "3. hafta, 5–7. haftalar"
+    assert doclang.span_title({"span": "all weeks so far", "weeks": [], "language": "Turkish"}) == \
+        "Şimdiye kadarki bütün haftalar"
+    raw = {"title": "", "intro": "", "chapters": [{"title": "Olasılık"}]}
+    got = studypack.clean_outline(raw, {**facts, "files": [], "lectures": [], "language": "Turkish"})
+    assert got["title"] == "3. hafta, 5–7. haftalar"                        # (the AI gave none)
+
+
+def test_the_pack_page_is_told_the_documents_language(monkeypatch):
+    from studia.api import Api
+    from studia.services import Services
+
+    api = Api(Services())
+    plans = {"tr": {"id": "tr", "scope": {"kind": "pack"}, "data": {"gather": {"language": "Turkish"}}},
+             "old": {"id": "old", "scope": {"kind": "sheet"}, "data": {"gather": {"pack": "Ohm's law and circuits."}}},
+             "none": {"id": "none", "scope": {"kind": "pack"}, "data": None}}
+    monkeypatch.setattr(api._s.lib, "plan", lambda pid: plans.get(pid))
+    monkeypatch.setattr(studypack, "shown_body", lambda s, p: "<p>x</p>")
+    assert api.pack_doc("tr") == {"ok": True, "html": "<p>x</p>", "lang": "tr"}
+    assert api.pack_doc("old")["lang"] == "en" and api.pack_doc("none")["lang"] == "en"
+    assert api.pack_doc("gone")["ok"] is False

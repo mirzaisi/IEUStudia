@@ -2517,13 +2517,16 @@ class Api(PracticeApi):
 
     @safe
     def pack_doc(self, plan_id: str) -> dict[str, Any]:
-        """The study pack's document for its page (the same HTML as its file)."""
+        """The study pack's (or cheatsheet's) document for its page (the same HTML as its file), and its language's
+        code for the page's lang (its capitals: a Turkish "Kendini sına" box is "KENDİNİ SINA")."""
+        from .doclang import code, language_of
         from .studypack import shown_body
 
         p = self._s.lib.plan(plan_id)
         if p is None:
             return {"ok": False, "error": t("This plan no longer exists.")}
-        return {"ok": True, "html": shown_body(self._s, p)}
+        facts = (p.get("data") or {}).get("gather") if isinstance(p.get("data"), dict) else None
+        return {"ok": True, "html": shown_body(self._s, p), "lang": code(language_of(facts or {}))}
 
     _pdf_lock = threading.Lock()
 
