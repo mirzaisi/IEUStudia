@@ -210,6 +210,6 @@ def span_title(facts: dict[str, Any]) -> str:
 
 
 def language_of(facts: dict[str, Any]) -> str:
-    """The language a study pack's or a cheatsheet's text is in: the one its facts were gathered with (4.1), else
-    (one made before) the course's as told from the material (taught_in)."""
-    return (facts or {}).get("language") or taught_in({}, facts)
+    """The language a study pack's or a cheatsheet's text is in: the one its facts were gathered with (since 4.0),
+    else English (one made with 3.x: its prompts had no language and asked in English)."""
+    return (facts or {}).get("language") or "English"

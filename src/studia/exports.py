@@ -412,7 +412,8 @@ def course_doc(s: Any, course_id: str, what: str, notes: bool) -> D.Doc:
             for kind, name in NOTE_NAMES.items():
                 md = _notes_md(s, d.key, kind)
                 if md:
-                    blocks += [D.Para([D.R(name)], style="who"), D.Markdown(md, top=2, base=_notes_dir(s, d.key, kind))]
+                    blocks += [D.Para([D.R(name)], style="who"),             # (its boxes in its own language)
+                               D.Markdown(md, top=2, base=_notes_dir(s, d.key, kind), lang="tr" if D.turkish(md) else "en")]
     title = f"{course.code or course.name} · {label}"
     return D.Doc(title, kicker="Lectures and notes" if notes else "Lectures",
                  subtitle=" · ".join(x for x in (topic, f"made with IEUStudia on {long_date(dt.date.today())}") if x),

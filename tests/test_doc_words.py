@@ -78,13 +78,17 @@ def test_an_english_study_pack_reads_as_before():
     assert '<html lang="en">' in studypack.document_html(body, "T")
 
 
-def test_a_pack_made_before_the_setting_takes_its_language_from_its_material():
-    facts = {**_pack_facts(None), "pack": "Bu derste olasılık dağılımlarını, koşullu olasılığı ve çarpım kuralını "
-                                          "gördük; örnekleri çözdük."}
+def test_a_pack_made_with_3x_stays_english_whatever_its_lectures_were_in():
+    """3.x gathered no language and its prompts asked in English: laid out again (layout 4), such a pack keeps its
+    English words even when its lectures were mostly in Turkish."""
+    facts = {**_pack_facts(None), "pack": "[00:10] [TR] Bu derste olasılık dağılımlarını gördük.\n"
+                                          "[01:10] [TR] Koşullu olasılık ve çarpım kuralı."}
     del facts["language"]
-    assert studypack.meta_of(facts, dt.date(2026, 11, 12))["language"] == "Turkish"
+    meta = studypack.meta_of(facts, dt.date(2026, 11, 12))
+    assert meta["language"] == "English" and meta["span"] == "Weeks 4–6" and meta["date"] == "12 Nov 2026"
     assert studypack._source(facts | {"files": [{"ref": "F1", "name": "H.pdf"}]},
-                             {"kind": "slide", "ref": "F1", "page": 4}) == "H.pdf, sayfa 4"
+                             {"kind": "slide", "ref": "F1", "page": 4}) == "H.pdf, page 4"
+    assert cheatsheet.meta_of({**facts, "course": {"code": "EEE 215"}})["language"] == "English"
 
 
 def test_a_turkish_cheatsheet_has_its_title_line_and_entry_tags_in_turkish():
@@ -175,8 +179,27 @@ def test_a_box_title_keeps_a_word_that_is_only_like_a_label():
         assert bh("example", "Çözümlü örnek: integral alma") == ("Örnek", "İntegral alma")
         assert bh("note", "Not: birimler SI") == ("Not", "Birimler SI")
         assert bh("example", "Example 2: iki zar") == ("Örnek 2", "İki zar")     # (the AI's English label too)
+    assert bh("mistake", "Check the sign of the current") == ("Common mistake", "Check the sign of the current")
+    assert bh("example", "Note that i is small") == ("Example", "Note that i is small")
+    assert bh("mistake", "Mistake in the sign") == ("Common mistake", "In the sign")          # (its own: as before)
+    assert bh("example", "Worked example: RC discharge") == ("Example", "RC discharge")
+    assert bh("example", "Example (RC discharge)") == ("Example", "(RC discharge)")
+    with doclang.writing_in("Turkish"):
+        assert bh("example", "Örnek (RC devresi)") == ("Örnek", "(RC devresi)")
+        assert bh("example", "Örnek, RC devresi") == ("Örnek", "RC devresi")
     md = ":::mistake Not converting mA to A\nx\n:::\n"
     assert "**Common mistake · Not converting mA to A**" in D.to_markdown(D.Doc(title="N", blocks=D.read_markdown(md)))
+
+
+def test_turkish_notes_in_an_english_export_keep_their_own_box_labels():
+    """A week's or the whole course's export (exports.course_doc) is an English document; each lecture's notes in it
+    are drawn in their own language (D.Markdown.lang)."""
+    md = ":::definition Direnç\nBir elemanın akıma karşı koyması.\n:::\n"
+    doc = D.Doc(title="EEE 215 · Week 4", blocks=[D.Markdown(md, lang="tr"), D.Markdown(md)], lang="en")
+    html = D.to_html(doc)
+    assert html.count("<b>Tanım</b>") == 1 and html.count("<b>Definition</b>") == 1
+    text = D.to_text(doc)
+    assert "Tanım: Direnç" in text and "Definition: Direnç" in text
 
 
 def test_a_documents_weeks_as_its_title_are_in_its_language():

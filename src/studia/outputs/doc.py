@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
-from ..doclang import word, writing_in
+from ..doclang import word, writing, writing_in
 from .common import md_escape, md_link
 from .figures import IMAGE_LINE, caption_parts, image_html, linked_images, local_image
 
@@ -105,6 +105,7 @@ class Markdown:
     md: str
     top: int = 2                      # the level its "#" headings get in this document
     base: str = ""                    # the folder its pictures are linked from (study notes': the lecture's slides)
+    lang: str = ""                    # its own language ("tr", "en") when the document's may differ: its boxes' labels
 
     def blocks(self) -> list[Any]:
         return read_markdown(self.md, self.top, self.base)
@@ -967,7 +968,8 @@ def _text_blocks(blocks: Iterable[Any], pad: str = "") -> list[str]:
     lines: list[str] = []
     for b in blocks:
         if isinstance(b, Markdown):
-            lines += _text_blocks(b.blocks(), pad)
+            with writing_in(b.lang or writing()):
+                lines += _text_blocks(b.blocks(), pad)
         elif isinstance(b, Heading):
             text = _runs_text(b.runs)
             if lines and lines[-1]:
@@ -1148,7 +1150,8 @@ def _html_blocks(blocks: Iterable[Any]) -> str:
         elif isinstance(b, Code):
             out.append(f"<pre><code>{_esc(b.text)}</code></pre>")
         elif isinstance(b, Markdown):
-            out.append(md_html(b.md, image=lambda alt, src, base=b.base: image_html(alt, src, base)))
+            with writing_in(b.lang or writing()):
+                out.append(md_html(b.md, image=lambda alt, src, base=b.base: image_html(alt, src, base)))
     return "".join(out)
 
 

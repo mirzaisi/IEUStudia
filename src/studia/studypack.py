@@ -740,7 +740,7 @@ BOXES = {"definition": "Definition", "key": "Key idea", "example": "Example", "m
 # a Turkish box's title that says its label again (":::example Örnek 4", ":::example Çözümlü örnek: RC devresi"),
 # taken off only before a number, a letter's label, a colon or nothing (_LABEL_END)
 _BOX_WORDS_TR = {WORDS_TR[x].lower() for x in set(BOXES.values())} | {"çözümlü örnek", "örnek soru"}
-_LABEL_END = re.compile(r"\s*(?:$|[:.–—-]|\d|[A-ZÇĞİÖŞÜ](?:$|[\s:.,)–—-]))")
+_LABEL_END = re.compile(r"\s*(?:$|[:.,(–—-]|\d|[A-ZÇĞİÖŞÜ](?:$|[\s:.,)–—-]))")
 _MATH = re.compile(r"\$\$.+?\$\$|\\\[.+?\\\]|\\\(.+?\\\)|(?<![\\$\w])\$(?=\S)[^$\n]+?(?<=\S)\$(?!\d)", re.S)
 
 
@@ -802,15 +802,18 @@ def box_head(kind: str, title: str) -> tuple[str, str]:
     label, title = word(english), " ".join((title or "").split())
     words = {english.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
              "definition", "key idea", "key result", "note"}
+    # taken off whatever follows: the box's own label and kind, and the labels of two words; another box's single word
+    # ("Check the sign" in a mistake box) or a Turkish one only as a label (_LABEL_END)
+    loose = {english.lower(), kind} | {w for w in words if " " in w}
     turkish = (_BOX_WORDS_TR | {label.lower()}) - words if writing() == "tr" else set()
     low = title.lower()
     for w in sorted(words | turkish, key=len, reverse=True):
         if low.startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()) \
-                and (w not in turkish or _LABEL_END.match(title[len(w):])):
-            rest = title[len(w):].strip(" :.-–—")
+                and (w in loose or _LABEL_END.match(title[len(w):])):
+            rest = title[len(w):].strip(" :.,-–—")
             num = re.match(r"(\d+(?:\.\d+)*[a-z]?|[A-Z])(?:$|[\s:.,)–—-]+)", rest)   # "Example 4", "Example 2.3: …"
             if num:
-                label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.-–—")
+                label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.,-–—")
             return label, first_upper(rest)
     return label, title
 

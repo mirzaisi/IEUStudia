@@ -165,7 +165,10 @@ class _Writer:
         out: list[str] = []
         for b in blocks:
             if isinstance(b, D.Markdown):
-                out += self.blocks(b.blocks(), ind, box)
+                from ..doclang import writing, writing_in
+
+                with writing_in(b.lang or writing()):
+                    out += self.blocks(b.blocks(), ind, box)
             elif isinstance(b, D.Heading):
                 out.append(self.p(self.runs(b.runs), f"Heading{max(1, min(4, b.level))}", page=b.page, box=box,
                                   ind=ind))
