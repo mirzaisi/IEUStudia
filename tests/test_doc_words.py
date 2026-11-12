@@ -200,6 +200,9 @@ def test_turkish_notes_in_an_english_export_keep_their_own_box_labels():
     assert html.count("<b>Tanım</b>") == 1 and html.count("<b>Definition</b>") == 1
     text = D.to_text(doc)
     assert "Tanım: Direnç" in text and "Definition: Direnç" in text
+    chat = D.Doc(title="Sohbet", lang="tr", blocks=[D.Markdown("> [!WARNING]\n> The AI got only the first part.", lang="en"),
+                                                       D.Markdown("> [!TIP]\n> Birimleri yaz.")])
+    assert "Warning" in D.to_text(chat) and "İpucu" in D.to_text(chat)     # (an exported chat's app notices: English)
 
 
 def test_a_documents_weeks_as_its_title_are_in_its_language():

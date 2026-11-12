@@ -467,7 +467,7 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
         if not text and not found:
             continue
         blocks.append(D.Para([D.R(who)], style="who"))
-        blocks += [D.Markdown(x, top=2) for x in found]
+        blocks += [D.Markdown(x, top=2, lang="en") for x in found]      # (the app's notices: English, labels too)
         if text:
             md = dollar_math(text) + (" *(stopped)*" if m.get("status") == "stopped" else "")
             blocks.append(D.Markdown(md, top=2))
