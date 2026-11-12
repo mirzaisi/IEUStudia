@@ -102,6 +102,15 @@ def same_username(a: str, b: str) -> bool:
     return (a or "").strip().translate(fold).casefold() == (b or "").strip().translate(fold).casefold()
 
 
+def _presets_in_language(presets: list[Any]) -> list[Any]:
+    """The speech models of a saved look at this PC (_system_info's "presets") with their names and descriptions in
+    the language shown now."""
+    from .engine.models import MODEL_PRESETS
+
+    return [{**p, "label": t(MODEL_PRESETS[p["id"]]["label"]), "description": t(MODEL_PRESETS[p["id"]]["description"])}
+            if isinstance(p, dict) and p.get("id") in MODEL_PRESETS else p for p in presets]
+
+
 def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     def wrapper(self: "Api", *args: Any, **kwargs: Any) -> Any:
@@ -551,6 +560,10 @@ class Api(PracticeApi):
         ai_now = chosen_now((cached_system or {}).get("ai"))
         if ai_now is not None:
             cached_system = {**(cached_system or {}), "ai": ai_now}
+        if isinstance(cached_system, dict) and isinstance(cached_system.get("presets"), list):
+            # the speech models' names in the language now: the last look was saved in the one shown then (after a
+            # language switch the page reloads before the next look, and Settings kept the old names)
+            cached_system["presets"] = _presets_in_language(cached_system["presets"])
         target, self._open_target = self._open_target, ""
         notes, self._s.notes = list(getattr(self._s, "notes", [])), []    # told once, not at every reload
         return {
@@ -1867,7 +1880,7 @@ class Api(PracticeApi):
         else:
             course, recs = self._s.day(scope)
             days = [(recs, store.load_transcripts([r.delivery_id for r in recs]))]
-        text = build_ai_text(template, course, days)
+        text = build_ai_text(template, course, days, lang=lambda body: self._s.doc_language(course, body))
         if not text.strip():
             return {"ok": False, "error": t("Nothing transcribed yet.")}
         from .ai import text_tokens

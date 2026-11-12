@@ -373,7 +373,9 @@ def pack_text(s: Any, key: str) -> str:
     from .outputs.ai_copy import build_ai_text
 
     course, recs, _, trans, slides = _load(s, key)
-    return build_ai_text("notes", course, [(recs, trans)], slides)
+    lang = getattr(s, "doc_language", None)          # (the notes' language, as the app's own notes: Settings → AI)
+    return build_ai_text("notes", course, [(recs, trans)], slides,
+                         lang=(lambda body: lang(course, body)) if lang else None)
 
 
 # ------------------------------------------------------------------ a week or the whole course

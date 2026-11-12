@@ -185,7 +185,7 @@ class _Writer:
                 out.append(self.p("", "Rule", bottom="D9D9D9"))
             elif isinstance(b, D.Box):
                 colours = BOX_COLOURS.get(b.kind, BOX_COLOURS["note"])
-                name = D.BOX_LABELS.get(b.kind, "")
+                name = D.box_label(b.kind)
                 title = D.plain(b.title)
                 if name:
                     head = self.r(name, bold=True)
@@ -458,5 +458,8 @@ class _Writer:
 
 
 def docx_bytes(doc: D.Doc, now: Optional[dt.datetime] = None) -> bytes:
-    """The document as a Word file (its bytes)."""
-    return _Writer(doc).package(now)
+    """The document as a Word file (its bytes); its boxes' labels in its language."""
+    from ..doclang import writing_in
+
+    with writing_in(doc.lang):
+        return _Writer(doc).package(now)

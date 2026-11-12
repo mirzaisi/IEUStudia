@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
+from ..doclang import word, writing_in
 from .common import md_escape, md_link
 from .figures import IMAGE_LINE, caption_parts, image_html, linked_images, local_image
 
@@ -139,6 +140,13 @@ _STUDY_BOXES = {"definition": "definition", "key": "key", "example": "example", 
 ALERTS = ("note", "tip", "important", "warning", "caution")
 
 
+def box_label(kind: str) -> str:
+    """A box's label ("Definition", "Example"...) in the language of the document being drawn (doclang.writing_in:
+    the document's `lang`)."""
+    label = BOX_LABELS.get(kind, "")
+    return word(label) if label else ""
+
+
 def plain(runs: Iterable[Run]) -> str:
     """The runs' text, formulas as readable text."""
     return "".join(math_text(r.text).replace("\n", "; ") if r.math else r.text for r in runs)
@@ -221,7 +229,7 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], top: int, base: 
             from ..studypack import box_head
 
             label, title = box_head(m.group(1).lower(), m.group(2))
-            number = label[len(BOX_LABELS[_STUDY_BOXES[m.group(1).lower()]]):].strip()     # "Example 4": "4"
+            number = label[len(box_label(_STUDY_BOXES[m.group(1).lower()])):].strip()     # "Example 4": "4"
             if number:
                 title = f"{number}: {title}" if title else number
             out.append(Box(_STUDY_BOXES[m.group(1).lower()], _runs(title, keep),
@@ -272,7 +280,7 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], top: int, base: 
             m = re.fullmatch(r"\[!(\w+)\]\s*(.*)", inner[0].strip())
             if m and m.group(1).lower() in ALERTS:
                 kind = m.group(1).lower()
-                title = _runs(m.group(2), keep) if m.group(2) else [Run(BOX_LABELS[kind])]
+                title = _runs(m.group(2), keep) if m.group(2) else []          # (its label, when it is drawn)
                 out.append(Box(kind, title, _blocks(inner[1:], keep, code, top, base)))
             else:
                 out.append(Box("quote", [], _blocks(inner, keep, code, top, base)))
@@ -910,9 +918,9 @@ def _md_blocks(blocks: Iterable[Any], quote: str = "") -> list[str]:
         elif isinstance(b, Box):
             title = _runs_md(b.title) if b.title else ""
             if b.kind in ALERTS:
-                head = f"[!{b.kind.upper()}]" + (f" {title}" if title and plain(b.title) != BOX_LABELS[b.kind] else "")
+                head = f"[!{b.kind.upper()}]" + (f" {title}" if title and plain(b.title) != box_label(b.kind) else "")
             else:
-                head = f"**{BOX_LABELS[b.kind]}{' · ' + title if title else ''}**" if b.kind != "quote" else ""
+                head = f"**{box_label(b.kind)}{' · ' + title if title else ''}**" if b.kind != "quote" else ""
             inner = ([head] if head else []) + _md_blocks(b.blocks)
             while inner and not inner[-1]:
                 inner.pop()
@@ -927,6 +935,11 @@ def _md_blocks(blocks: Iterable[Any], quote: str = "") -> list[str]:
 
 
 def to_markdown(doc: Doc) -> str:
+    with writing_in(doc.lang):
+        return _to_markdown(doc)
+
+
+def _to_markdown(doc: Doc) -> str:
     lines = [f"# {md_escape(doc.title)}", ""]
     under = " · ".join(x for x in (doc.kicker, doc.subtitle) if x)
     if under:
@@ -979,7 +992,7 @@ def _text_blocks(blocks: Iterable[Any], pad: str = "") -> list[str]:
         elif isinstance(b, Rule):
             lines += [pad + "----------", ""]
         elif isinstance(b, Box):
-            head = BOX_LABELS.get(b.kind, "")
+            head = box_label(b.kind)
             title = _runs_text(b.title)
             if title and title != head:
                 head = f"{head}: {title}" if head else title
@@ -995,6 +1008,11 @@ def _text_blocks(blocks: Iterable[Any], pad: str = "") -> list[str]:
 
 
 def to_text(doc: Doc) -> str:
+    with writing_in(doc.lang):
+        return _to_text(doc)
+
+
+def _to_text(doc: Doc) -> str:
     lines = [doc.title, "=" * min(72, len(doc.title))]
     under = " · ".join(x for x in (doc.kicker, doc.subtitle) if x)
     if under:
@@ -1117,13 +1135,13 @@ def _html_blocks(blocks: Iterable[Any]) -> str:
             elif b.kind in ALERTS:
                 from ..studypack import ALERT_SIGNS
 
-                title = _runs_html(b.title) if b.title else BOX_LABELS[b.kind]
+                title = _runs_html(b.title) if b.title else box_label(b.kind)
                 out.append(f'<div class="sp-alert sp-alert-{b.kind}" role="note"><div class="sp-alert-h">'
                            f'<span class="sp-alert-i" aria-hidden="true">{ALERT_SIGNS[b.kind]}</span><b>{title}</b>'
                            f"</div>{inner}</div>")
             else:
                 title = _runs_html(b.title)
-                out.append(f'<div class="sp-box sp-{b.kind}"><div class="sp-box-h"><b>{BOX_LABELS[b.kind]}</b>'
+                out.append(f'<div class="sp-box sp-{b.kind}"><div class="sp-box-h"><b>{box_label(b.kind)}</b>'
                            f'{" · " + title if title else ""}</div>{inner}</div>')
         elif isinstance(b, Math):
             out.append(f'<div class="sp-math">$${_esc(b.tex)}$$</div>')
@@ -1134,7 +1152,7 @@ def _html_blocks(blocks: Iterable[Any]) -> str:
     return "".join(out)
 
 
-def to_html(doc: Doc) -> str:
+def _to_html(doc: Doc) -> str:
     """The document as a page to print: the study pack's stylesheet (the app's document look), and KaTeX for the
     formulas, from the app's own files (the page is printed where it is made, then thrown away)."""
     from ..studypack import CSS_FILE
@@ -1148,3 +1166,9 @@ def to_html(doc: Doc) -> str:
     return (f'<!doctype html><html lang="{_esc(doc.lang)}"><head><meta charset="utf-8"><title>{_esc(doc.title)}'
             f"</title><style>{css}</style></head><body class=\"sp-page\"><article class=\"sp-doc xp\">{cover}"
             f"{_html_blocks(doc.blocks)}</article>{katex_tags(None)}</body></html>")
+
+
+def to_html(doc: Doc) -> str:
+    """The document as a page to print (_to_html), its boxes' labels in its language."""
+    with writing_in(doc.lang):
+        return _to_html(doc)

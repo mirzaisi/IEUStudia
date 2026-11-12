@@ -1220,7 +1220,8 @@ class Services:
         if not trans:
             raise RuntimeError(t("Transcribe this class day first."))
         slides = {i: store.load_slides(i) for i in ids}
-        return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides)
+        return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides,
+                             lang=lambda text: self.doc_language(course, text))
 
     def ai_inputs(self, day_key: str, include_slides: bool,
                   screens: str = "full") -> tuple[str, list[tuple[str, Path]], Course, list[Recording]]:
@@ -1245,12 +1246,20 @@ class Services:
                         images.append((f"[Part {p.index}, slide {s.index}]", Path(s.path)))
         return text, images, course, recs
 
+    def doc_language(self, course: Optional[Course], text: str) -> dict[str, str]:
+        """The language the AI writes a lecture's notes in (doclang.document_language): Settings → AI, else the
+        course's, as its quizzes and packs (the syllabus', else what ``text``, the lecture, is mostly in)."""
+        from .doclang import document_language
+
+        info = self.lib.course_info(course.id) if course is not None and getattr(self, "lib", None) else {}
+        return document_language({"syllabus": (info or {}).get("syllabus")}, getattr(self, "settings", None),
+                                 {"pack": text})
+
     def ai_notes(self, day_key: str, template: str, include_slides: bool, model: str,
                  cancel: Optional[threading.Event] = None, on_text: Optional[Callable[[str], None]] = None,
                  effort: str = "") -> Path:
         from .ai import PLAN_AIS, PROVIDER_LABELS, provider, run_claude
         from .outputs.figures import note_slides_for, place_slides
-        from .doclang import document_language
         from .outputs.prompts import ai_prompt, slides_note
 
         reads_images = provider() in PLAN_AIS
@@ -1259,10 +1268,7 @@ class Services:
                                                     "titles" if provider() == "local" else "full")
         if not text:
             raise RuntimeError(t("Transcribe this class day first."))
-        info = self.lib.course_info(course.id) if course is not None and getattr(self, "lib", None) else {}
-        # (the language: Settings → AI, else the course's, as its quizzes and packs: the syllabus', else the lecture's)
-        prompt = ai_prompt(template, **document_language({"syllabus": (info or {}).get("syllabus")},
-                                                         getattr(self, "settings", None), {"pack": text}))
+        prompt = ai_prompt(template, **self.doc_language(course, text))
         sent = note_slides(images)
         if include_slides and sent:          # the slides, and (notes, exam focus) the ones to show beside the text
             prompt += slides_note(len(sent), len(images), figures=template != "flashcards")
