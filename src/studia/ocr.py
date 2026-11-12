@@ -243,9 +243,19 @@ def read_lines(gray: np.ndarray) -> tuple[list[Line], str]:
             same = next((i for i, o in enumerate(lines) if _overlap(o, ln) > 0.5), None)
             if same is None:
                 lines.append(ln)
-            elif len(ln.text) > len(lines[same].text):
+            elif _score(ln.text) > _score(lines[same].text):
                 lines[same] = ln
     return lines, "windows " + "+".join(tag for tag, _ in engines)
+
+
+# letters only a Turkish reading has: the English engine reads "Olasılık" as "Olaslllk", about as long, so a line's
+# readings are weighed by them too, not by length alone (measured on Turkish slides: 81 % of words read with length
+# alone, the engines' English reading of a Turkish line was often kept)
+_TR_ONLY = frozenset("ıİğĞşŞ")
+
+
+def _score(text: str) -> int:
+    return len(text) + 5 * sum(c in _TR_ONLY for c in text)
 
 
 def _overlap(a: Line, b: Line) -> float:

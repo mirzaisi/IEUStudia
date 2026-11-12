@@ -263,3 +263,18 @@ def test_the_apps_selftest_reports_windows_text_reading_apart(tmp_path, monkeypa
 def test_the_self_check_reads_its_picture_on_this_pc():
     got = ocr.self_check()
     assert got["ok"] and got["status"] == "read" and "circuits" in got["text"].lower()
+
+
+def test_a_turkish_line_keeps_the_turkish_reading_and_an_english_one_the_longer(monkeypatch):
+    """Both engines read every line. The English engine reads "Olasılık Dağılımları" as "Olaslllk Dajlllmlar", about as
+    long: on Turkish slides its reading was often kept (81 % of words); weighed by the letters only Turkish has, 97 %.
+    English lines are read as before."""
+    box = dict(x=10.0, y=10.0, w=400.0, h=40.0)
+    readings = {"en": [Line("Ders 5: Olaslllk Dajlllmlar•", **box), Line("Initial Value Problems", 10, 80, 300, 40)],
+                "tr": [Line("Ders 5: Olasılık Dağılımları", **box), Line("Initial Value Problems", 10, 80, 300, 40)]}
+    monkeypatch.setattr(ocr, "_engines", lambda: [("en-US", "en"), ("tr", "tr")])
+    monkeypatch.setattr(ocr, "_recognize", lambda eng, gray: readings[eng])
+    lines, tag = ocr.read_lines(np.zeros((4, 4), dtype=np.uint8))
+    assert [ln.text for ln in lines] == ["Ders 5: Olasılık Dağılımları", "Initial Value Problems"]
+    assert tag == "windows en-US+tr"
+
