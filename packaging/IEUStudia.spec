@@ -34,7 +34,8 @@ for pkg in ("studia", "faster_whisper", "pypdfium2_raw", "pypdfium2", "onnxrunti
 binaries = []
 for pkg in ("ctranslate2", "pypdfium2_raw", "onnxruntime", "av"):
     binaries += collect_dynamic_libs(pkg)
-hiddenimports = collect_submodules("studia") + ["clr", "webview.platforms.winforms", "webview.platforms.edgechromium"]
+hiddenimports = collect_submodules("studia") + ["clr", "webview.platforms.winforms", "webview.platforms.edgechromium",
+                                               "threadpoolctl"]       # (imported where it is used: engine/transcriber.py)
 
 a = Analysis(
     [str(Path(SPECPATH) / "launcher.py")],

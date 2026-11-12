@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 import datetime as dt
 import logging
@@ -43,7 +44,8 @@ log = logging.getLogger("studia")
 def cpu_threads() -> int:
     """CTranslate2's threads on the processor: all but two logical processors, at most 8. On a 20-thread laptop i7,
     18 threads were slower than 8 while the PC was in use and took ~45 % more processor time; the transcripts are the
-    same (checked on four lectures). NumPy's own threads are left alone: one thread for the features changed them."""
+    same (checked on four lectures). NumPy's own threads are left alone here: one thread for the features changed them
+    (on the graphics card they are one: _blas_in_this_thread)."""
     return max(1, min((os.cpu_count() or 4) - 2, 8))
 
 
@@ -63,6 +65,28 @@ def _drive_card_here() -> None:
         from ..osutil import drive_card
 
         drive_card([threading.get_native_id()])
+
+
+_blas: Any = None                     # threadpoolctl's view of NumPy's BLAS (OpenBLAS), made once
+
+
+def _blas_in_this_thread() -> Any:
+    """A context in which NumPy's BLAS does its work in the calling thread alone, for a batch's features on the
+    graphics card. Its helper threads run at the process's below-normal priority while IEUStudia transcribes, and the
+    features' one matrix product waited for them: with other programs busy (a browser, a build, another app's work),
+    the card sat idle and a lecture took 5-14x as long (owner's RTX 4070 Laptop, 12 Nov 2026: decode 119-160 s
+    against 23-29 s for a 7.5-minute test lecture; in the app 2.4-3.1x realtime against ~20x the week before). On the
+    processor (CPU transcription) NumPy's threads are left as they are: there the whole app runs below normal alike,
+    and one thread changed the features in the last bit."""
+    global _blas
+    try:
+        if _blas is None:
+            from threadpoolctl import ThreadpoolController
+
+            _blas = ThreadpoolController()
+        return _blas.limit(limits=1, user_api="blas")
+    except Exception:  # noqa: BLE001 - only speed: without it, as before
+        return contextlib.nullcontext()
 
 
 def _ai_on_gpu() -> bool:
@@ -339,6 +363,14 @@ class Engine:
             return 4                     # batch 8 needs ~3.4 GB: more than a 4 GB card has to spare
         return 16 if vram >= 7500 else 8
 
+    def _features(self, audio: np.ndarray, units: Sequence[Unit]) -> np.ndarray:
+        """A batch's log-Mel features: on the graphics card with NumPy's BLAS in this (raised) thread alone
+        (_blas_in_this_thread), on the processor as before."""
+        if self._device != "cuda":
+            return self._decoder.features(audio, units)
+        with _blas_in_this_thread():
+            return self._decoder.features(audio, units)
+
     def _encode_generate(self, audio: np.ndarray, batch: list[Unit], langs_per_pass: list[list[str]],
                          opts: DecodeOptions, feats: Optional[np.ndarray] = None,
                          priors: Optional[list] = None) -> list[list[Decoded]]:
@@ -348,7 +380,7 @@ class Engine:
         dec = self._decoder
         assert dec is not None
         try:
-            enc = dec.encode(dec.features(audio, batch) if feats is None else feats)
+            enc = dec.encode(self._features(audio, batch) if feats is None else feats)
             lid = dec.language_prior(enc, self._languages()) if priors is not None else []
             passes = [dec.generate(enc, batch, langs, opts) for langs in langs_per_pass]
         except RuntimeError as exc:
@@ -465,7 +497,7 @@ class Engine:
                 nxt = None
                 if ahead is not None and i + size < n:
                     nidx = order[i + size:i + 2 * size]
-                    nxt = (nidx, ahead.submit(self._decoder.features, audio, [units[j] for j in nidx]))
+                    nxt = (nidx, ahead.submit(self._features, audio, [units[j] for j in nidx]))
                 got: Optional[list] = [] if lid else None
                 passes = self._encode_generate(audio, batch, [[lang] * len(batch) for lang in langs], opts, feats,
                                                priors=got)

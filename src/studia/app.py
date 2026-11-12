@@ -278,7 +278,8 @@ def _selftest(out: str) -> int:
     gui = ("webview.platforms.winforms", "studia.tray", "studia.splash") if WINDOWS else \
         ("webview.platforms.qt", "studia.linuxutil", "studia.linux_secrets")
     for mod in ("numpy", "requests", "av", "ctranslate2", "faster_whisper", "onnxruntime", "tokenizers", "pypdfium2",
-                "yt_dlp", "truststore", "webview", "studia.services", "studia.agent", "studia.local_llm", *gui):
+                "yt_dlp", "truststore", "threadpoolctl", "webview", "studia.services", "studia.agent", "studia.local_llm",
+                *gui):
         try:
             m = importlib.import_module(mod)
             report["modules"][mod] = str(getattr(m, "__version__", "ok"))
