@@ -1221,7 +1221,7 @@ class Services:
             raise RuntimeError(t("Transcribe this class day first."))
         slides = {i: store.load_slides(i) for i in ids}
         return build_ai_pack(self.output_root, course, self.lib.courses(True), recs, trans, slides,
-                             lang=lambda text: self.doc_language(course, text))
+                             lang=lambda text: Services.doc_language(self, course, text))
 
     def ai_inputs(self, day_key: str, include_slides: bool,
                   screens: str = "full") -> tuple[str, list[tuple[str, Path]], Course, list[Recording]]:
@@ -1268,7 +1268,7 @@ class Services:
                                                     "titles" if provider() == "local" else "full")
         if not text:
             raise RuntimeError(t("Transcribe this class day first."))
-        prompt = ai_prompt(template, **self.doc_language(course, text))
+        prompt = ai_prompt(template, **Services.doc_language(self, course, text))      # (a stand-in self in tests too)
         sent = note_slides(images)
         if include_slides and sent:          # the slides, and (notes, exam focus) the ones to show beside the text
             prompt += slides_note(len(sent), len(images), figures=template != "flashcards")
