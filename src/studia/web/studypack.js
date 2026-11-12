@@ -20,6 +20,8 @@
   const cutNote = (cut) => t.html("Too long for one request, so the AI plans from the first pages of these files only: {files}. Pick fewer weeks so it sees every page.",
     { files: cut.map((f) => (f.seen ? t("{name} (pages 1–{seen} of {pages})", { name: f.name, seen: f.seen, pages: f.pages }) : f.name)).join(", ") });
   S.packDoc = {};            // the document's HTML by plan id (it is big: asked for once)
+  S.packLang = {};           // and its language ("en", "tr"), for its lang: CSS capitals a Turkish label with İ
+  const docLang = (id) => S.packLang[id] || "en";
   S.pkPdf = {};              // a PDF being made or opened, by plan id: which button was pressed
   let P = null;              // the dialog's state
   // Save PDF…, Open PDF and Show in folder (a study pack's page, a cheatsheet's, a review sheet's Open PDF). An old
@@ -198,7 +200,7 @@
     const doc = S.packDoc[p.id];
     const toc = (r.chapters || []).map((ch, i) => `<li><button type="button" data-act="pk-goto" data-to="${esc(ch.id)}"><span class="pk-n">${i + 1}</span><span>${esc(ch.title)}</span></button></li>`).join("");
     return h + notesHTML(r) + `<div class="pk-layout"><aside class="pk-toc card"><div class="pk-toc-h">${t("Contents")}</div><ol>${toc}</ol></aside>
-      <div class="card pk-paper"><article class="sp-doc" id="pk-doc" lang="en">${doc != null ? doc : skeleton()}</article></div></div></div>`;
+      <div class="card pk-paper"><article class="sp-doc" id="pk-doc" lang="${docLang(p.id)}">${doc != null ? doc : skeleton()}</article></div></div></div>`;
   }
   const loading = new Set();
   async function loadDoc(id) {
@@ -208,6 +210,7 @@
     loading.delete(id);
     if (!r.ok) { toast(r.error, "error"); return; }
     S.packDoc[id] = r.html || `<p class="dim">${t("The document is empty.")}</p>`;
+    S.packLang[id] = r.lang === "tr" ? "tr" : "en";
     if (S.view.name === "plan" && S.view.planId === id) renderView();
   }
 
@@ -270,7 +273,7 @@
       if (PDF_BTN()[b.dataset.how]) b.innerHTML = pdfLabel(id, b.dataset.how);
     });
   }
-  St.pack = { stateHTML, weekSpan, loadDoc, cutNote, pdfActs, pdfBtn };       // for cheatsheet.js and plans.js
+  St.pack = { stateHTML, weekSpan, loadDoc, docLang, cutNote, pdfActs, pdfBtn };       // for cheatsheet.js and plans.js
 
   Object.assign(A, {
     "pack-new": (el) => packDialog(el && el.dataset.id, el && el.dataset.kind),

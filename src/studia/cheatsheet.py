@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from . import aiwait
 from .cancel import Cancelled
+from .doclang import code, date_text, day_text, language_of, span_title, word, writing_in
 from .i18n import N_, t, tn
 from .notices import ALERTS_JSON
 from .outputs.prompts import written_in
@@ -105,7 +106,7 @@ def clean_topics(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
                            "sources": clean_sources(x.get("sources"), facts)})
     if not topics:
         raise RuntimeError(t("The AI found nothing to put on the cheatsheet. Try again."))
-    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "topics": topics,
+    return {"title": _str(raw.get("title"), 140) or span_title(facts), "topics": topics,
             "language": facts.get("language") or "", "taught_in": facts.get("taught_in") or ""}
 
 
@@ -499,8 +500,10 @@ FIT_JS = ("(function(){function fit(){document.querySelectorAll('.cs-doc .cs-tex
 # How a sheet is drawn: raised when the code draws it differently (entry_html, document_body), as changes of the
 # stylesheet and of FIT_JS are seen by themselves. A finished sheet laid out with another is laid out again from its
 # saved data, no AI, before its PDF is opened or saved (studypack.make_pdf).
-LAYOUT = 3           # 2 (4.0): conditions keep their names, wide formulas are broken over lines instead of cut;
-                     # 3 (4.0): a formula keeps the punctuation after it on its line
+LAYOUT = 4           # 2 (4.0): conditions keep their names, wide formulas are broken over lines instead of cut;
+                     # 3 (4.0): a formula keeps the punctuation after it on its line;
+                     # 4 (4.1.2): the words IEUStudia writes and the dates in the sheet's language, <html lang>
+                     # (doclang.writing_in)
 
 
 def layout() -> str:
@@ -542,7 +545,7 @@ def _condition(when: str) -> str:
 def entry_html(e: dict[str, Any], explained: Optional[set[str]] = None) -> str:
     """One entry: its kind (not for a formula), name, formula (in the line when it is short), text, symbols and
     conditions. A symbol already ``explained`` (by an entry before it in its topic) is not explained again."""
-    tag = TAGS.get(e["kind"])
+    tag = word(TAGS[e["kind"]]) if e["kind"] in TAGS else None
     explained = set() if explained is None else explained
     where = [w for w in e["where"] if re.sub(r"\s+", "", w["sym"]) not in explained]
     explained.update(re.sub(r"\s+", "", w["sym"]) for w in where)
@@ -559,35 +562,36 @@ def entry_html(e: dict[str, Any], explained: Optional[set[str]] = None) -> str:
         out.append('<div class="cs-w">' + " · ".join(f'<span>\\({_esc(w["sym"])}\\) {_rich(w["means"])}</span>'
                                                       for w in where) + "</div>")
     if when:
-        out.append(f'<div class="cs-if"><b>if</b> {_rich(when)}</div>')
+        out.append(f'<div class="cs-if"><b>{word("if")}</b> {_rich(when)}</div>')
     return "".join(out) + "</div>"
-
-
-def _day(iso: str) -> str:
-    try:
-        return f"{dt.date.fromisoformat(iso[:10]):%d %b}".lstrip("0")
-    except ValueError:
-        return iso
 
 
 def material_line(meta: dict[str, Any]) -> str:
     """What the sheet was made from, short: the weeks, the files (the first few by name) and the lectures' dates."""
     files = [f["name"] for f in meta.get("files") or []]
-    days = [_day(x["date"]) for x in meta.get("lectures") or []]
+    days = [day_text(x["date"]) for x in meta.get("lectures") or []]
     parts = [meta["span"]]
     if files:
-        parts.append(", ".join(files[:5]) + (f" and {len(files) - 5} more files" if len(files) > 5 else ""))
+        names = ", ".join(files[:5])
+        parts.append(word("{list} and {n} more files", list=names, n=len(files) - 5) if len(files) > 5 else names)
     if days:
-        parts.append(("lecture " if len(days) == 1 else "lectures ") + ", ".join(days[:8])
-                     + (f" and {len(days) - 8} more" if len(days) > 8 else ""))
+        names = ", ".join(days[:8])
+        names = word("{list} and {n} more", list=names, n=len(days) - 8) if len(days) > 8 else names
+        parts.append(word("lecture {list}" if len(days) == 1 else "lectures {list}", list=names))
     return " · ".join(parts)
 
 
 def document_body(sheet: dict[str, Any], entries: dict[str, list], meta: dict[str, Any]) -> str:
     """The sheet: a title line (course, title, material, date), then its topics in order, each a heading and its
-    entries (a heading is kept with its first entry: never alone at the foot of a column)."""
+    entries (a heading is kept with its first entry: never alone at the foot of a column). The words IEUStudia writes
+    in it are in the sheet's language (``meta["language"]``, doclang.writing_in)."""
+    with writing_in(meta.get("language", "")):
+        return _document_body(sheet, entries, meta)
+
+
+def _document_body(sheet: dict[str, Any], entries: dict[str, list], meta: dict[str, Any]) -> str:
     out = [f'<header class="cs-head"><div class="cs-title"><span class="cs-course">{_esc(meta["course"])}</span>'
-           f'<span class="cs-kind">Cheatsheet</span><b>{_esc(sheet["title"])}</b></div>'
+           f'<span class="cs-kind">{word("Cheatsheet")}</span><b>{_esc(sheet["title"])}</b></div>'
            f'<div class="cs-meta">{_esc(material_line(meta))} · {_esc(meta["date"])}</div></header><div class="cs-cols">']
     n = 0
     for tp in sheet["topics"]:
@@ -602,23 +606,26 @@ def document_body(sheet: dict[str, Any], entries: dict[str, list], meta: dict[st
     return "".join(out) + "</div>"
 
 
-def document_html(body: str, title: str, folder: Optional[Path] = None) -> str:
+def document_html(body: str, title: str, folder: Optional[Path] = None, language: str = "") -> str:
     """The sheet as a page of its own (the file and the PDF): A4 in three columns, KaTeX (a copy in ``folder``, the
     kept file's, so it works anywhere; else the app's), and formulas too wide for their column made smaller (the page
-    is laid out at the PDF's width, so what fits on screen fits on paper)."""
+    is laid out at the PDF's width, so what fits on screen fits on paper). ``language``: the sheet's."""
     from .outputs.mathmd import katex_tags
 
     css = CSS_FILE.read_text(encoding="utf-8")
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
+    return (f'<!doctype html><html lang="{code(language)}"><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
             f'<style>{css}</style></head><body class="cs-page"><article class="cs-doc">{body}</article>'
             f"{katex_tags(folder)}<script>{FIT_JS}</script></body></html>")
 
 
 def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, Any]:
+    """What the title line says, in the sheet's language: its weeks and the day it was made."""
     c = facts["course"]
-    return {"course": " · ".join(x for x in (c.get("code"), c.get("name")) if x), "span": facts["span"].capitalize(),
-            "files": facts["files"], "lectures": facts["lectures"],
-            "date": f"{made or dt.date.today():%d %b %Y}".lstrip("0")}
+    language = language_of(facts)
+    with writing_in(language):
+        return {"course": " · ".join(x for x in (c.get("code"), c.get("name")) if x), "span": span_title(facts),
+                "files": facts["files"], "lectures": facts["lectures"], "date": date_text(made or dt.date.today()),
+                "language": language}
 
 
 def files_for(s: Any, plan: dict[str, Any], title: str, data: Optional[dict[str, Any]] = None) -> tuple[Path, Path]:
@@ -658,8 +665,9 @@ def assemble(s: Any, plan: dict[str, Any], sheet: dict[str, Any], facts: dict[st
     made = made or dt.date.today()
     html_path, pdf_path = files_for(s, plan, sheet["title"], data)
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    _write(html_path, document_html(document_body(sheet, entries, meta_of(facts, made)), sheet["title"],
-                                    html_path.parent))
+    meta = meta_of(facts, made)
+    _write(html_path, document_html(document_body(sheet, entries, meta), sheet["title"], html_path.parent,
+                                    meta["language"]))
     pdf_ok = False
     try:
         pdf_ok = _print_to(html_path, pdf_path) and pdf_path.is_file()

@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .domain import Course, Recording
 from .outputs.ai_copy import compact_day
@@ -74,8 +74,11 @@ def html_to_pdf(html_path: Path, pdf_path: Path, timeout: int = 180) -> bool:
         cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-pdf-header-footer",
                f"--user-data-dir={profile}", f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()]
         try:
+            # at a normal program's priority: started below normal while the app transcribes, Edge's print failed
+            # after the 180 s time-out (23 s at normal; winutil._NORMAL)
             subprocess.run(cmd, capture_output=True, timeout=timeout,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                           | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0))
         except subprocess.TimeoutExpired:
             log.warning("PDF rendering timed out")
             return False
@@ -156,9 +159,10 @@ def render_pack_html(course: Course, recordings: Sequence[Recording], transcript
 
 
 def build_ai_pack(output_root: Path, course: Course, all_courses: Sequence[Course], recordings: Sequence[Recording],
-                  transcripts: Mapping[str, Any], slides: Optional[Mapping[str, Sequence[Any]]] = None
-                  ) -> dict[str, Path]:
-    """Write ``<course>/AI packs/<day> - AI pack.pdf`` and ``... .zip``; return their paths."""
+                  transcripts: Mapping[str, Any], slides: Optional[Mapping[str, Sequence[Any]]] = None,
+                  lang: Optional[Callable[[str], dict[str, str]]] = None) -> dict[str, Path]:
+    """Write ``<course>/AI packs/<day> - AI pack.pdf`` and ``... .zip``; return their paths. ``lang``: the language
+    its PROMPT.md asks the notes in, from the lecture's text (Services.doc_language); English without it."""
     recs = sorted(recordings, key=lambda r: r.start)
     slides = slides or {}
     stem = day_stem(course, recs[0].start.date(), recs[0].kind)
@@ -183,7 +187,7 @@ def build_ai_pack(output_root: Path, course: Course, all_courses: Sequence[Cours
         refs = "\n".join(f"- {name}" for name in sorted(set(image_for.values())))
         (stage / "transcript.md").write_text(
             text + (f"\n\n## Slide images\n(slide N = slides/<part>-NN.jpg)\n{refs}\n" if refs else "\n"), encoding="utf-8")
-        (stage / "PROMPT.md").write_bytes((ai_prompt("notes") + "\n").encode("utf-8"))
+        (stage / "PROMPT.md").write_bytes((ai_prompt("notes", **(lang(text) if lang else {})) + "\n").encode("utf-8"))
         tmp_zip = zip_path.with_name(zip_path.name + ".tmp")
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as z:
             if pdf_ok:

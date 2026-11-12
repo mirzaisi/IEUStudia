@@ -278,7 +278,8 @@ def _selftest(out: str) -> int:
     gui = ("webview.platforms.winforms", "studia.tray", "studia.splash") if WINDOWS else \
         ("webview.platforms.qt", "studia.linuxutil", "studia.linux_secrets")
     for mod in ("numpy", "requests", "av", "ctranslate2", "faster_whisper", "onnxruntime", "tokenizers", "pypdfium2",
-                "yt_dlp", "truststore", "webview", "studia.services", "studia.agent", "studia.local_llm", *gui):
+                "yt_dlp", "truststore", "threadpoolctl", "webview", "studia.services", "studia.agent", "studia.local_llm",
+                *gui):
         try:
             m = importlib.import_module(mod)
             report["modules"][mod] = str(getattr(m, "__version__", "ok"))
@@ -300,6 +301,20 @@ def _selftest(out: str) -> int:
         report["files"]["faster_whisper/assets/silero_vad_v6.onnx"] = vad.is_file()
         report["ok"] = report["ok"] and vad.is_file()
     except Exception:  # noqa: BLE001
+        report["ok"] = False
+    # NumPy's BLAS as threadpoolctl finds it in the bundle: a batch's features on the graphics card run with one of its
+    # threads (engine/transcriber.py _blas_in_this_thread); found, and limited to 1 inside, or that does nothing
+    try:
+        from threadpoolctl import threadpool_info, threadpool_limits
+
+        blas = [x for x in threadpool_info() if x.get("user_api") == "blas"]
+        with threadpool_limits(limits=1, user_api="blas"):
+            one = [x["num_threads"] for x in threadpool_info() if x.get("user_api") == "blas"]
+        report["blas"] = {"libraries": [f"{x.get('internal_api')} {x.get('version')}" for x in blas],
+                          "threads": [x["num_threads"] for x in blas], "limited": one}
+        report["ok"] = report["ok"] and bool(blas) and all(n == 1 for n in one)
+    except Exception as exc:  # noqa: BLE001
+        report["blas"] = {"why": repr(exc)[:300]}
         report["ok"] = False
     # Windows' text reading (the screen timeline): a picture read back. Reported apart from "ok": GitHub's Windows
     # build machine may lack what a student's Windows has, so the release workflow only warns about it, while a build

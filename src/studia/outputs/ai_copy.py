@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from ..domain import Course, Recording
 from .common import course_display, format_ts, kind_label, lang_tag, long_date, time_range
@@ -127,9 +127,13 @@ def part_lines(p: Any, only_starred: bool = False, screens: str = "full") -> lis
 
 
 def build_ai_text(template: str, course: Course, days: Sequence[tuple[Sequence[Recording], Any]],
-                  slides: Optional[Any] = None) -> str:
+                  slides: Optional[Any] = None, lang: Optional[Callable[[str], dict[str, str]]] = None) -> str:
+    """"Copy for AI" and the AI pack: the prompt, then the lectures as compact text. ``lang``: the language the AI is
+    asked to write in, from the lectures' text (Services.doc_language, as the app's own notes); English without it."""
     body = "\n\n".join(t for t in (compact_day(course, recs, trans, slides) for recs, trans in days) if t)
-    prompt = ai_prompt(template)
+    prompt = ai_prompt(template, **(lang(body) if lang and body else {}))
     if not prompt:
         return body
+    if "\n[Screen " in body:
+        prompt += f"\n\n{SCREEN_LINES}"
     return f"{prompt}\n\n=== LECTURE TRANSCRIPT ===\n\n{body}\n"

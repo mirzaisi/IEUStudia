@@ -7,12 +7,19 @@ quizzes and cards, "Sum it up with AI" (practice.py) and, over its courses, the 
 (:func:`for_courses`). Chats are not documents: they answer in the language the student asks in.
 
 A document in another language than the course's keeps the course's technical terms as its exams use them, with the
-meaning beside them the first time (outputs/prompts.py's ``terms_rule`` says so in one sentence)."""
+meaning beside them the first time (outputs/prompts.py's ``terms_rule`` says so in one sentence).
+
+The few words IEUStudia itself writes into a document (a study pack's cover and contents, the boxes' and figures'
+labels, a cheatsheet's or a practice quiz's headings, their dates) are in the document's language too: drawn inside
+:func:`writing_in`, :func:`word` gives them in it (they are written in English in the code)."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import datetime as dt
 import re
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 CHOICES = ("course", "en", "tr")           # the setting's values (config.Settings.doc_language)
 DEFAULT = "course"
@@ -56,3 +63,153 @@ def for_courses(languages: Iterable[str], settings: Any = None) -> dict[str, str
     langs = [x for x in languages if x]
     course = "Turkish" if langs and langs.count("Turkish") > len(langs) / 2 else "English"
     return {"language": NAMES.get(choice(settings), course), "taught_in": course}
+
+
+# ------------------------------------------------------------------ the words IEUStudia writes into a document
+# English in the code; Turkish here (the app's own Turkish where it has the word: "Konu anlatımı", "Formül kâğıdı")
+WORDS_TR = {
+    # a study pack's cover and contents (studypack.py), a practice quiz's (quizzes.py)
+    "Study pack": "Konu anlatımı",
+    "Practice quiz": "Deneme sınavı",
+    "Cheatsheet": "Formül kâğıdı",
+    "made with IEUStudia on {date}": "IEUStudia ile {date} tarihinde hazırlandı",
+    "Files: {list}": "Dosyalar: {list}",
+    "Lectures: {list}": "Dersler: {list}",
+    "Written by AI from your course material: check anything that looks wrong against your slides and lectures.":
+        "Ders materyalinden yapay zeka yazdı: yanlış görünen her şeyi slaytlarına ve derslerine bakarak kontrol et.",
+    "The answers are at the end.": "Cevaplar sonda.",
+    "Contents": "İçindekiler",
+    # boxes and alerts in the AI's Markdown (studypack.md_html, outputs/doc.py)
+    "Definition": "Tanım",
+    "Key idea": "Ana fikir",
+    "Example": "Örnek",
+    "Common mistake": "Sık yapılan hata",
+    "Check yourself": "Kendini sına",
+    "Note": "Not",
+    "Tip": "İpucu",
+    "Important": "Önemli",
+    "Warning": "Uyarı",
+    "Caution": "Dikkat",
+    # figures
+    "Figure {n}.": "Şekil {n}.",
+    "Lecture slide": "Ders slaytı",
+    "Course slide": "Ders dosyasından slayt",
+    "{name}, page {page}": "{name}, sayfa {page}",
+    "lecture of {date}, part {part}, slide {slide}": "{date} dersi, {part}. bölüm, slayt {slide}",
+    # weeks
+    "week {n}": "{n}. hafta",
+    "weeks {a}–{b}": "{a}–{b}. haftalar",
+    "all weeks so far": "şimdiye kadarki bütün haftalar",
+    # a cheatsheet's entries and its line about what it was made from (cheatsheet.py)
+    "Def": "Tanım",
+    "Rule": "Kural",
+    "Method": "Yöntem",
+    "Unit": "Birim",
+    "Idea": "Fikir",
+    "if": "koşul",
+    "{list} and {n} more files": "{list} ve {n} dosya daha",
+    "lecture {list}": "ders: {list}",
+    "lectures {list}": "dersler: {list}",
+    "{list} and {n} more": "{list} ve {n} tane daha",
+    # a practice quiz (quizzes.py)
+    "{n} questions on {span}": "{span} konularından {n} soru",
+    "for {name}": "{name} için",
+    "Left out: {list}": "Dışarıda kalanlar: {list}",
+    "files not on the PC: {list}": "bilgisayarda olmayan dosyalar: {list}",
+    "lectures not transcribed: {list}": "yazıya dökülmemiş dersler: {list}",
+    "no question on: {list}": "soru çıkmayan konular: {list}",
+    "From {source}": "Kaynak: {source}",
+    "Lecture {date}, part {part}, {ts}": "{date} dersi, {part}. bölüm, {ts}",
+    "Questions": "Sorular",
+    "Answers": "Cevaplar",
+    "Answer:": "Cevap:",
+}
+_MONTHS = {"en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+           "tr": ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")}
+_PH = re.compile(r"\{(\w+)\}")
+_writing: contextvars.ContextVar[str] = contextvars.ContextVar("studia_doc_language", default="en")
+
+
+def code(language: str = "") -> str:
+    """ "tr" for Turkish ("Turkish", "tr"), else "en": a document's language as its <html lang> gives it."""
+    return "tr" if str(language or "").strip().lower() in ("tr", "turkish", "türkçe") else "en"
+
+
+@contextlib.contextmanager
+def writing_in(language: str = "") -> Iterator[str]:
+    """While a document in ``language`` ("Turkish"/"tr"; anything else is English) is drawn, :func:`word`,
+    :func:`date_text`, :func:`day_text` and :func:`weeks_text` give its words in it. Gives its code ("en", "tr")."""
+    lang = code(language)
+    token = _writing.set(lang)
+    try:
+        yield lang
+    finally:
+        _writing.reset(token)
+
+
+def writing() -> str:
+    """The language of the document being drawn ("en" outside :func:`writing_in`)."""
+    return _writing.get()
+
+
+def word(text: str, /, **params: Any) -> str:
+    """One of the words IEUStudia writes into a document (``WORDS_TR``'s English), in the document's language, its
+    {placeholders} filled."""
+    s = WORDS_TR.get(text, text) if _writing.get() == "tr" else text
+    return _PH.sub(lambda m: str(params[m.group(1)]) if m.group(1) in params else m.group(0), s) if params else s
+
+
+def day_text(d: Any) -> str:
+    """ "14 Oct" / "14 Eki" (an ISO date as text too; text that isn't one comes back as it is)."""
+    try:
+        d = d if isinstance(d, dt.date) else dt.date.fromisoformat(str(d)[:10])
+    except ValueError:
+        return str(d)
+    return f"{d.day} {_MONTHS[_writing.get()][d.month - 1]}"
+
+
+def date_text(d: Any) -> str:
+    """ "12 Nov 2026" / "12 Kas 2026"."""
+    try:
+        d = d if isinstance(d, dt.date) else dt.date.fromisoformat(str(d)[:10])
+    except ValueError:
+        return str(d)
+    return f"{day_text(d)} {d.year}"
+
+
+def weeks_text(weeks: Iterable[Any]) -> str:
+    """ "week 3, weeks 5–7" / "3. hafta, 5–7. haftalar" ("all weeks so far" without any): the week numbers, or
+    the {"no": …} of a study pack's or a quiz's facts."""
+    nums = [int(w["no"] if isinstance(w, dict) else w) for w in weeks]
+    if not nums:
+        return word("all weeks so far")
+    runs: list[list[int]] = []
+    for w in nums:
+        if runs and w == runs[-1][1] + 1:
+            runs[-1][1] = w
+        else:
+            runs.append([w, w])
+    return ", ".join(word("week {n}", n=a) if a == b else word("weeks {a}–{b}", a=a, b=b) for a, b in runs)
+
+
+def first_upper(s: str) -> str:
+    """The first letter a capital (Turkish "i" is "İ"); the rest as it is (str.capitalize lowers it)."""
+    if not s:
+        return s
+    head = "İ" if s[0] == "i" and _writing.get() == "tr" else s[0].upper()
+    return head + s[1:]
+
+
+def span_title(facts: dict[str, Any]) -> str:
+    """A document's weeks as its cover line, and as its title when the AI gave none ("Weeks 4–6" / "4–6. haftalar"),
+    in its language (:func:`language_of`)."""
+    with writing_in(language_of(facts)) as lang:
+        if lang == "en" and facts.get("span"):
+            return str(facts["span"]).capitalize()          # (as before)
+        return first_upper(weeks_text(facts.get("weeks") or []))
+
+
+def language_of(facts: dict[str, Any]) -> str:
+    """The language a study pack's or a cheatsheet's text is in: the one its facts were gathered with (since 4.0),
+    else English (one made with 3.x: its prompts had no language and asked in English)."""
+    return (facts or {}).get("language") or "English"

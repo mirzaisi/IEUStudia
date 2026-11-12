@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses as dc
 import datetime as dt
 import logging
@@ -11,7 +12,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -43,7 +44,8 @@ log = logging.getLogger("studia")
 def cpu_threads() -> int:
     """CTranslate2's threads on the processor: all but two logical processors, at most 8. On a 20-thread laptop i7,
     18 threads were slower than 8 while the PC was in use and took ~45 % more processor time; the transcripts are the
-    same (checked on four lectures). NumPy's own threads are left alone: one thread for the features changed them."""
+    same (checked on four lectures). NumPy's own threads are left alone here: one thread for the features changed them
+    (on the graphics card they are one: _blas_in_this_thread)."""
     return max(1, min((os.cpu_count() or 4) - 2, 8))
 
 
@@ -63,6 +65,69 @@ def _drive_card_here() -> None:
         from ..osutil import drive_card
 
         drive_card([threading.get_native_id()])
+
+
+_blas: Any = None                     # threadpoolctl's view of NumPy's BLAS (OpenBLAS), made once
+_blas_lock = threading.Lock()
+_blas_users = 0                       # threads inside _blas_in_this_thread now
+_blas_saved: list[tuple[Any, int]] = []   # each BLAS library and its thread count before the first of them came in
+
+
+def _blas_set(lib: Any, n: int) -> None:
+    # OpenBLAS's own setter: threadpoolctl's set_num_threads lets only the thread that set a limit change it again, so
+    # a restore from the other thread (the features thread and the transcribe thread overlap) would be skipped
+    getattr(lib, "_real_set_num_threads", lib.set_num_threads)(n)
+
+
+@contextlib.contextmanager
+def _blas_in_this_thread() -> Iterator[None]:
+    """A context in which NumPy's BLAS does its work in the calling thread alone, for a batch's features on the
+    graphics card. Its helper threads run at the process's below-normal priority while IEUStudia transcribes, and the
+    features' one matrix product waited for them: with other programs busy (a browser, a build, another app's work),
+    the card sat idle and a lecture took 5-14x as long (owner's RTX 4070 Laptop, 12 Nov 2026: decode 119-160 s
+    against 23-29 s for a 7.5-minute test lecture; in the app 2.4-3.1x realtime against ~20x the week before). On the
+    processor (CPU transcription) NumPy's threads are left as they are: there the whole app runs below normal alike,
+    and one thread changed the features in the last bit.
+    BLAS's thread count is the process's: the first thread in sets 1 and the last one out puts back what it was, so
+    the transcribe thread's batch and the features thread's next one overlapping (every lecture's first batch) can't
+    leave it at 1 for the rest of the session (a later transcription on the processor then wouldn't be as before)."""
+    global _blas, _blas_users, _blas_saved
+    entered = False
+    try:
+        with _blas_lock:
+            if _blas is None:
+                from threadpoolctl import ThreadpoolController
+
+                _blas = ThreadpoolController()
+            if _blas_users == 0:
+                libs = [c for c in _blas.lib_controllers if getattr(c, "user_api", "") == "blas"]
+                _blas_saved = [(c, int(c.get_num_threads())) for c in libs]
+                try:
+                    for c, _ in _blas_saved:
+                        _blas_set(c, 1)
+                except Exception:
+                    for c, n in _blas_saved:          # (as it was: none of it half done)
+                        with contextlib.suppress(Exception):
+                            _blas_set(c, n)
+                    _blas_saved = []
+                    raise
+            _blas_users += 1
+            entered = True
+    except Exception:  # noqa: BLE001 - only speed: without it, as before
+        log.debug("BLAS's threads could not be limited", exc_info=True)
+    try:
+        yield
+    finally:
+        if entered:
+            with _blas_lock:
+                _blas_users -= 1
+                if _blas_users == 0:
+                    for c, n in _blas_saved:
+                        try:
+                            _blas_set(c, n)
+                        except Exception:  # noqa: BLE001
+                            log.debug("BLAS's threads could not be put back", exc_info=True)
+                    _blas_saved = []
 
 
 def _ai_on_gpu() -> bool:
@@ -339,6 +404,14 @@ class Engine:
             return 4                     # batch 8 needs ~3.4 GB: more than a 4 GB card has to spare
         return 16 if vram >= 7500 else 8
 
+    def _features(self, audio: np.ndarray, units: Sequence[Unit]) -> np.ndarray:
+        """A batch's log-Mel features: on the graphics card with NumPy's BLAS in this (raised) thread alone
+        (_blas_in_this_thread), on the processor as before."""
+        if self._device != "cuda":
+            return self._decoder.features(audio, units)
+        with _blas_in_this_thread():
+            return self._decoder.features(audio, units)
+
     def _encode_generate(self, audio: np.ndarray, batch: list[Unit], langs_per_pass: list[list[str]],
                          opts: DecodeOptions, feats: Optional[np.ndarray] = None,
                          priors: Optional[list] = None) -> list[list[Decoded]]:
@@ -348,7 +421,7 @@ class Engine:
         dec = self._decoder
         assert dec is not None
         try:
-            enc = dec.encode(dec.features(audio, batch) if feats is None else feats)
+            enc = dec.encode(self._features(audio, batch) if feats is None else feats)
             lid = dec.language_prior(enc, self._languages()) if priors is not None else []
             passes = [dec.generate(enc, batch, langs, opts) for langs in langs_per_pass]
         except RuntimeError as exc:
@@ -465,7 +538,7 @@ class Engine:
                 nxt = None
                 if ahead is not None and i + size < n:
                     nidx = order[i + size:i + 2 * size]
-                    nxt = (nidx, ahead.submit(self._decoder.features, audio, [units[j] for j in nidx]))
+                    nxt = (nidx, ahead.submit(self._features, audio, [units[j] for j in nidx]))
                 got: Optional[list] = [] if lid else None
                 passes = self._encode_generate(audio, batch, [[lang] * len(batch) for lang in langs], opts, feats,
                                                priors=got)

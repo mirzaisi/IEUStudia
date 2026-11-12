@@ -278,3 +278,19 @@ def test_a_turkish_line_keeps_the_turkish_reading_and_an_english_one_the_longer(
     assert [ln.text for ln in lines] == ["Ders 5: Olasılık Dağılımları", "Initial Value Problems"]
     assert tag == "windows en-US+tr"
 
+
+
+@pytest.mark.parametrize("own, have, want", [
+    ("en-US", ["en-US", "tr"], ["en-US", "tr"]),                 # an English Windows with Turkish added (as before)
+    ("tr-TR", ["tr-TR", "en-US"], ["en-US", "tr-TR"]),           # a Turkish Windows with English: English first
+    ("tr-TR", ["tr-TR"], ["tr-TR"]),                             # a Turkish Windows alone
+    ("en-GB", ["en-GB", "en-US", "tr"], ["en-GB", "tr"]),        # the student's own English, not another one too
+    ("de-DE", ["de-DE", "en-GB", "en-US"], ["en-US", "de-DE"]),  # another language: English, then it
+    (None, ["fr-FR", "tr"], ["tr"]),                             # no engine for the student's languages
+    (None, [], []),
+])
+def test_the_engines_read_english_first_then_the_students_own_then_turkish(own, have, want):
+    """On test slides, English then Turkish read 100 % of the English words and 97 % of the Turkish ones; a Turkish
+    Windows' reader alone 98 % of the English ones, and Turkish then English the same: where two engines read a line
+    equally well the first one's reading stays."""
+    assert ocr._order(own, have) == want

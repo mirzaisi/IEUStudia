@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .cancel import Cancelled
-from .doclang import document_language, taught_in
+from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
+                      writing_in)
 from .i18n import N_, t, tn
 from .outputs.prompts import in_language
 
@@ -951,7 +952,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     quiz = clean_quiz(raw, facts, units, seed=pid)
     if not quiz["questions"]:
         raise RuntimeError(t("The AI's questions could not be used (no question had a clear right answer). Try again."))
-    title = quiz["title"] or facts["span"].capitalize()
+    title = quiz["title"] or span_title(facts)
     result = {"kind": "quiz", "title": title, "made": dt.date.today().isoformat(), "language": facts["language"],
               "questions": quiz["questions"], "topics": quiz["topics"], "coverage": coverage(quiz, facts),
               "course": facts["course"], "asked": n}
@@ -1008,11 +1009,12 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
 
 # ------------------------------------------------------------------ the printed quiz (the study pack's look)
 def _src_text(src: Optional[dict[str, Any]]) -> str:
+    """Where a question comes from, in the quiz's language (doclang.writing_in)."""
     if not src:
         return ""
     if src["kind"] == "file":
-        return f"{src['name']}, page {src['page']}"
-    return f"Lecture {src['date']}, part {src['part']}, {src['ts']}"
+        return word("{name}, page {page}", name=src["name"], page=src["page"])
+    return word("Lecture {date}, part {part}, {ts}", date=day_text(src["date"]), part=src["part"], ts=src["ts"])
 
 
 def _line(md: str) -> str:
@@ -1025,34 +1027,38 @@ def _line(md: str) -> str:
 
 def document_body(plan: dict[str, Any]) -> str:
     """The quiz as a document: a cover with what it covers, the questions (room to answer), then the answers with
-    every explanation, on pages of their own."""
+    every explanation, on pages of their own. The words IEUStudia writes in it are in the quiz's language."""
+    with writing_in((plan.get("result") or {}).get("language", "")):
+        return _document_body(plan)
+
+
+def _document_body(plan: dict[str, Any]) -> str:
     from .studypack import md_html
 
     r = plan.get("result") or {}
     cov = r.get("coverage") or {}
     esc = lambda s: html.escape(str(s or ""), quote=False)       # noqa: E731
     course = (r.get("course") or {}).get("code", "")
-    made = r.get("made") or (plan.get("created_at") or "")[:10]
-    try:
-        made = f"{dt.date.fromisoformat(made):%d %b %Y}"
-    except ValueError:
-        pass
-    covers = [f"{len(r.get('questions') or [])} questions on {esc(cov.get('span') or '')}"]
+    made = date_text(r.get("made") or (plan.get("created_at") or "")[:10])
+    span = (cov.get("span") or "") if writing() == "en" else weeks_text(cov.get("weeks") or [])
+    covers = [esc(word("{n} questions on {span}", n=len(r.get("questions") or []), span=span))]
     if cov.get("focus") and cov["focus"].get("name"):
-        covers.append(f"for {esc(cov['focus']['name'])}")
+        covers.append(esc(word("for {name}", name=cov["focus"]["name"])))
     left = []
     if cov.get("materials_missing"):
-        left.append("files not on the PC: " + esc(", ".join(cov["materials_missing"])))
+        left.append(esc(word("files not on the PC: {list}", list=", ".join(cov["materials_missing"]))))
     if cov.get("days_missing"):
-        left.append("lectures not transcribed: " + esc(", ".join(cov["days_missing"])))
+        left.append(esc(word("lectures not transcribed: {list}", list=", ".join(cov["days_missing"]))))
     if cov.get("topics_missing"):
-        left.append("no question on: " + esc(", ".join(cov["topics_missing"])))
-    out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(course)} · Practice quiz</div>'
-           f'<h1>{esc(r.get("title") or plan.get("title") or "Practice quiz")}</h1>'
-           f'<div class="sp-sub">{" ".join(covers)} · made with IEUStudia on {esc(made)}</div>'
-           + (f'<div class="sp-sources">Left out: {"; ".join(left)}</div>' if left else "")
-           + '<div class="sp-sources">Written by AI from your course material: check anything that looks wrong '
-             'against your slides and lectures. The answers are at the end.</div></header>']
+        left.append(esc(word("no question on: {list}", list=", ".join(cov["topics_missing"]))))
+    quiz = word("Practice quiz")
+    out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(course)} · {quiz}</div>'
+           f'<h1>{esc(r.get("title") or plan.get("title") or quiz)}</h1>'
+           f'<div class="sp-sub">{" ".join(covers)} · {esc(word("made with IEUStudia on {date}", date=made))}</div>'
+           + (f'<div class="sp-sources">{word("Left out: {list}", list="; ".join(left))}</div>' if left else "")
+           + '<div class="sp-sources">' + esc(word("Written by AI from your course material: check anything that "
+                                                   "looks wrong against your slides and lectures.")) + " "
+           + esc(word("The answers are at the end.")) + "</div></header>"]
     qs = r.get("questions") or []
     body = []
     for q in qs:
@@ -1063,9 +1069,9 @@ def document_body(plan: dict[str, Any]) -> str:
             part.append(f'<div class="qz-space {"big" if q["type"] == "problem" else ""}"></div>')
         src = _src_text(q.get("source"))
         if src:
-            part.append(f'<div class="sp-src">From {esc(src)}</div>')
+            part.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
         body.append("".join(part) + "</div></div>")
-    out.append(f'<section class="sp-ch qz-part"><h2>Questions</h2>{"".join(body)}</section>')
+    out.append(f'<section class="sp-ch qz-part"><h2>{word("Questions")}</h2>{"".join(body)}</section>')
     keys = []
     for q in qs:
         bits = [f'<div class="qz-q"><div class="qz-n">{q["n"]}</div><div class="qz-body">']
@@ -1080,7 +1086,7 @@ def document_body(plan: dict[str, Any]) -> str:
         elif q["type"] == "problem":
             bits.append('<ol class="qz-steps">' + "".join(f"<li>{_line(x)}</li>" for x in q.get("steps") or []) + "</ol>")
             if q.get("model"):
-                bits.append(f'<p><b>Answer:</b> {_line(q["model"])}</p>')
+                bits.append(f'<p><b>{word("Answer:")}</b> {_line(q["model"])}</p>')
         else:
             bits.append(md_html(q.get("model") or ""))
             if q.get("points"):
@@ -1088,7 +1094,7 @@ def document_body(plan: dict[str, Any]) -> str:
             if q.get("why"):
                 bits.append(md_html(q["why"]))
         keys.append("".join(bits) + "</div></div>")
-    out.append(f'<section class="sp-ch qz-part"><h2>Answers</h2>{"".join(keys)}</section>')
+    out.append(f'<section class="sp-ch qz-part"><h2>{word("Answers")}</h2>{"".join(keys)}</section>')
     return "".join(out)
 
 
@@ -1133,8 +1139,9 @@ def make_pdf(s: Any, plan: dict[str, Any]) -> Optional[Path]:
         return None
     html_path, pdf_path = files_for(s, plan)
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    page = document_html(document_body(plan), (plan.get("result") or {}).get("title") or "Practice quiz",
-                         html_path.parent).replace("</style>", QUIZ_CSS + "</style>", 1)
+    result = plan.get("result") or {}
+    page = document_html(document_body(plan), result.get("title") or "Practice quiz", html_path.parent,
+                         result.get("language", "")).replace("</style>", QUIZ_CSS + "</style>", 1)
     _write(html_path, page)
     s.lib.update_plan(plan["id"], data=plan.get("data") or {},
                       result={**(plan.get("result") or {}), "file": str(html_path)})

@@ -520,9 +520,13 @@ def test_a_formula_or_code_line_wider_than_the_page_goes_on_the_next_line_on_pap
         doc.close()
 
 
-def test_the_pages_keep_the_documents_english_casing_and_name_a_class_day_once():
+def test_the_pages_keep_the_documents_casing_and_name_a_class_day_once():
+    """The document's own language, not the app's: an English "Definition" isn't uppercased as Turkish
+    ("DEFİNİTİON") in a Turkish window, and a Turkish "Kendini sına" is "KENDİNİ SINA" (api.pack_doc's lang)."""
     web = Path(studypack.__file__).parent / "web"
     pack, sheet = ((web / f).read_text(encoding="utf-8") for f in ("studypack.js", "cheatsheet.js"))
-    assert '<article class="sp-doc" id="pk-doc" lang="en">' in pack       # "Definition" not uppercased as Turkish
-    assert '<article class="cs-doc" id="cs-doc" lang="en">' in sheet
+    assert '<article class="sp-doc" id="pk-doc" lang="${docLang(p.id)}">' in pack
+    assert '<article class="cs-doc" id="cs-doc" lang="${St.pack.docLang(p.id)}">' in sheet
+    assert 'const docLang = (id) => S.packLang[id] || "en";' in pack            # (English until it is known)
+    assert 'S.packLang[id] = r.lang === "tr" ? "tr" : "en";' in pack
     assert 't("lecture")' not in pack and 'd.ready ? t("transcribed")' in pack   # "Lecture · transcribed"

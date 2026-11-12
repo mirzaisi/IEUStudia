@@ -35,6 +35,8 @@ from urllib.parse import quote
 
 from . import aiwait, store
 from .cancel import Cancelled
+from .doclang import (WORDS_TR, code, date_text, day_text, first_upper, language_of, span_title, word, writing,
+                      writing_in)
 from .i18n import N_, t, tn
 from .notices import ALERTS_MD, KINDS
 from .outputs.prompts import STYLE, terms_rule, written_in
@@ -384,7 +386,7 @@ def clean_outline(raw: Any, facts: dict[str, Any]) -> dict[str, Any]:
     ids = {c["id"] for c in chapters}
     concepts = [{"name": _str(k.get("name"), 160), "chapter": idmap.get(str(k.get("chapter", "")), "")}
                 for k in raw.get("concepts") or [] if isinstance(k, dict) and _str(k.get("name"))][:200]
-    return {"title": _str(raw.get("title"), 140) or facts["span"].capitalize(), "intro": _str(raw.get("intro"), 800),
+    return {"title": _str(raw.get("title"), 140) or span_title(facts), "intro": _str(raw.get("intro"), 800),
             "chapters": chapters, "concepts": concepts, "language": facts.get("language") or "",
             "taught_in": facts.get("taught_in") or "",
             "uncovered": [k["name"] for k in concepts if k["chapter"] not in ids]}
@@ -735,6 +737,10 @@ ALERT_LABELS = {"note": "Note", "tip": "Tip", "important": "Important", "warning
 ALERT_SIGNS = {"note": "i", "tip": "✓", "important": "★", "warning": "!", "caution": "×"}
 BOXES = {"definition": "Definition", "key": "Key idea", "example": "Example", "mistake": "Common mistake",
          "check": "Check yourself", "note": "Note", "theorem": "Key idea", "tip": "Note", "warning": "Common mistake"}
+# a Turkish box's title that says its label again (":::example Örnek 4", ":::example Çözümlü örnek: RC devresi"),
+# taken off only before a number, a letter's label, a colon or nothing (_LABEL_END)
+_BOX_WORDS_TR = {WORDS_TR[x].lower() for x in set(BOXES.values())} | {"çözümlü örnek", "örnek soru"}
+_LABEL_END = re.compile(r"\s*(?:$|[:.,(–—-]|\d|[A-ZÇĞİÖŞÜ](?:$|[\s:.,)–—-]))")
 _MATH = re.compile(r"\$\$.+?\$\$|\\\[.+?\\\]|\\\(.+?\\\)|(?<![\\$\w])\$(?=\S)[^$\n]+?(?<=\S)\$(?!\d)", re.S)
 
 
@@ -788,17 +794,27 @@ _PICTURE = re.compile(r"!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?\s*\)")      # (output
 
 def box_head(kind: str, title: str) -> tuple[str, str]:
     """A box's label and title without saying the same twice: ":::check Check" is "Check yourself", ":::example
-    Example 4" is "Example 4", ":::example Worked example: RC discharge" is "Example · RC discharge"."""
-    label, title = BOXES.get(kind, BOXES["note"]), " ".join((title or "").split())
-    words = {label.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
+    Example 4" is "Example 4", ":::example Worked example: RC discharge" is "Example · RC discharge". In a Turkish
+    document (doclang.writing_in) its label is Turkish, and so are the words taken off a title ("Örnek 4: RC devresi"
+    is "Örnek 4 · RC devresi"), but only when a number, a colon or nothing comes after them: "Örnek uzay", "Tanım
+    kümesi" or "Not ortalaması" are terms, kept whole."""
+    english = BOXES.get(kind, BOXES["note"])
+    label, title = word(english), " ".join((title or "").split())
+    words = {english.lower(), kind, "worked example", "example", "check yourself", "check", "common mistake", "mistake",
              "definition", "key idea", "key result", "note"}
-    for w in sorted(words, key=len, reverse=True):
-        if title.lower().startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()):
-            rest = title[len(w):].strip(" :.-–—")
+    # taken off whatever follows: the box's own label and kind, and the labels of two words; another box's single word
+    # ("Check the sign" in a mistake box) or a Turkish one only as a label (_LABEL_END)
+    loose = {english.lower(), kind} | {w for w in words if " " in w}
+    turkish = (_BOX_WORDS_TR | {label.lower()}) - words if writing() == "tr" else set()
+    low = title.lower()
+    for w in sorted(words | turkish, key=len, reverse=True):
+        if low.startswith(w) and (len(title) == len(w) or not title[len(w)].isalnum()) \
+                and (w in loose or _LABEL_END.match(title[len(w):])):
+            rest = title[len(w):].strip(" :.,-–—")
             num = re.match(r"(\d+(?:\.\d+)*[a-z]?|[A-Z])(?:$|[\s:.,)–—-]+)", rest)   # "Example 4", "Example 2.3: …"
             if num:
-                label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.-–—")
-            return label, rest[:1].upper() + rest[1:]
+                label, rest = f"{label} {num.group(1)}", rest[num.end():].strip(" :.,-–—")
+            return label, first_upper(rest)
     return label, title
 
 
@@ -881,7 +897,7 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
             m = re.fullmatch(r"\[!(\w+)\]\s*(.*)", inner[0].strip())
             if m and m.group(1).lower() in KINDS:          # "> [!WARNING]": an alert box (notices.py)
                 kind = m.group(1).lower()
-                title = _inline(m.group(2), keep) if m.group(2) else ALERT_LABELS[kind]
+                title = _inline(m.group(2), keep) if m.group(2) else word(ALERT_LABELS[kind])
                 out.append(f'<div class="sp-alert sp-alert-{kind}" role="note"><div class="sp-alert-h">'
                            f'<span class="sp-alert-i" aria-hidden="true">{ALERT_SIGNS[kind]}</span><b>{title}</b></div>'
                            f'{_blocks(inner[1:], keep, code, figure)}</div>')
@@ -976,8 +992,10 @@ CSS_FILE = Path(__file__).resolve().parent / "web" / "studypack.css"
 # How a pack's document is drawn: raised when the code draws it differently (md_html, document_body), as the
 # stylesheet's own changes are seen by itself. A finished pack laid out with another is laid out again from its
 # saved data, no AI, before its PDF is opened or saved (make_pdf).
-LAYOUT = 3           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
-                     # 3 (4.0): lectures named by their day, pictures on a line of their own
+LAYOUT = 4           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
+                     # 3 (4.0): lectures named by their day, pictures on a line of their own;
+                     # 4 (4.1.2): the words IEUStudia writes and the dates in the pack's language, <html lang>
+                     # (doclang.writing_in)
 
 
 def layout() -> str:
@@ -990,37 +1008,43 @@ def figure_html(fig: dict[str, Any], number: str, src: Callable[[str], str]) -> 
     if fig.get("svg"):
         body = fig["svg"]
     elif fig.get("image"):
-        what = "Lecture slide" if fig["kind"] == "frame" else "Course slide"
+        what = word("Lecture slide" if fig["kind"] == "frame" else "Course slide")
         body = f'<img src="{html.escape(src(fig["image"]))}" alt="{what}">'
         cap = f"{cap} <span class=\"sp-src\">({html.escape(fig.get('source', ''), quote=False)})</span>" \
             if fig.get("source") else cap
     else:
         return ""
-    return (f'<figure class="sp-fig sp-{fig["kind"]}">{body}<figcaption><b>Figure {number}.</b> {cap}</figcaption>'
-            "</figure>")
+    return (f'<figure class="sp-fig sp-{fig["kind"]}">{body}<figcaption><b>{word("Figure {n}.", n=number)}</b> {cap}'
+            "</figcaption></figure>")
 
 
 def document_body(outline: dict[str, Any], sections: dict[str, str], figures: dict[str, dict[str, Any]],
                   meta: dict[str, Any], src: Callable[[str], str], pages: Optional[dict[str, int]] = None) -> str:
-    """The pack's body: cover, contents (with page numbers once they are known: ``pages``) and the chapters."""
+    """The pack's body: cover, contents (with page numbers once they are known: ``pages``) and the chapters; the
+    words IEUStudia writes in it in the pack's language (``meta["language"]``, doclang.writing_in)."""
+    with writing_in(meta.get("language", "")):
+        return _document_body(outline, sections, figures, meta, src, pages)
+
+
+def _document_body(outline: dict[str, Any], sections: dict[str, str], figures: dict[str, dict[str, Any]],
+                   meta: dict[str, Any], src: Callable[[str], str], pages: Optional[dict[str, int]] = None) -> str:
     esc = lambda s: html.escape(str(s or ""), quote=False)       # noqa: E731
     sources = []
     if meta.get("files"):
-        sources.append("Files: " + ", ".join(esc(f["name"]) for f in meta["files"]))
+        sources.append(word("Files: {list}", list=", ".join(esc(f["name"]) for f in meta["files"])))
     if meta.get("lectures"):
-        from .cheatsheet import _day
-
-        sources.append("Lectures: " + ", ".join(esc(_day(x["date"])) for x in meta["lectures"]))
-    out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(meta["course"])} · Study pack</div>'
-           f'<h1>{esc(outline["title"])}</h1><div class="sp-sub">{esc(meta["span"])} · made with IEUStudia on '
-           f'{esc(meta["date"])}</div>' + (f'<p class="sp-intro">{_inline(outline["intro"], [])}</p>' if outline.get("intro") else "")
+        sources.append(word("Lectures: {list}", list=", ".join(esc(day_text(x["date"])) for x in meta["lectures"])))
+    out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(meta["course"])} · {word("Study pack")}</div>'
+           f'<h1>{esc(outline["title"])}</h1><div class="sp-sub">{esc(meta["span"])} · '
+           f'{esc(word("made with IEUStudia on {date}", date=meta["date"]))}</div>'
+           + (f'<p class="sp-intro">{_inline(outline["intro"], [])}</p>' if outline.get("intro") else "")
            + "".join(f'<div class="sp-sources">{s}</div>' for s in sources)
-           + '<div class="sp-sources">Written by AI from your course material: check anything that looks wrong '
-             'against your slides and lectures.</div></header>']
+           + '<div class="sp-sources">' + esc(word("Written by AI from your course material: check anything that "
+                                                   "looks wrong against your slides and lectures.")) + "</div></header>"]
     rows = "".join(f'<li><a href="#{c["id"]}"><span class="n">{n}</span><span class="t">{esc(c["title"])}</span>'
                    f'<span class="p">{(pages or {}).get(c["id"], "")}</span></a></li>'
                    for n, c in enumerate(outline["chapters"], 1))
-    out.append(f'<nav class="sp-toc"><h2>Contents</h2><ol>{rows}</ol></nav>')
+    out.append(f'<nav class="sp-toc"><h2>{word("Contents")}</h2><ol>{rows}</ol></nav>')
     for n, c in enumerate(outline["chapters"], 1):
         numbers = {g["id"]: f"{n}.{k}" for k, g in enumerate(c["figures"], 1)}
 
@@ -1032,13 +1056,14 @@ def document_body(outline: dict[str, Any], sections: dict[str, str], figures: di
     return "".join(out)
 
 
-def document_html(body: str, title: str, folder: Optional[Path] = None) -> str:
+def document_html(body: str, title: str, folder: Optional[Path] = None, language: str = "") -> str:
     """The document as a page of its own (the file and the PDF): the app's stylesheet for it, and KaTeX (a copy in
-    ``folder``, the kept file's, so it works anywhere; else the app's)."""
+    ``folder``, the kept file's, so it works anywhere; else the app's). ``language``: the document's (its words are
+    hyphenated by it)."""
     from .outputs.mathmd import katex_tags
 
     css = CSS_FILE.read_text(encoding="utf-8")
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
+    return (f'<!doctype html><html lang="{code(language)}"><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
             f"<style>{css}</style></head><body class=\"sp-page\"><article class=\"sp-doc\">{body}</article>"
             f"{katex_tags(folder)}</body></html>")
 
@@ -1343,7 +1368,7 @@ def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[
     rel = lambda p: quote(f"{img_dir.name}/{Path(p).name}")   # noqa: E731 - next to the HTML file ("#" in a title)
     titles = [c["title"] for c in outline["chapters"]]
     body = document_body(outline, sections, figures, meta, rel)
-    _write(html_path, document_html(body, outline["title"], html_path.parent))
+    _write(html_path, document_html(body, outline["title"], html_path.parent, meta["language"]))
     pdf_ok = False
     try:
         if _print_to(html_path, pdf_path):
@@ -1352,7 +1377,8 @@ def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[
             if pages:
                 _write(html_path, document_html(document_body(
                     outline, sections, figures, meta, rel,
-                    {c["id"]: pages[i] for i, c in enumerate(outline["chapters"]) if i in pages}), outline["title"], html_path.parent))
+                    {c["id"]: pages[i] for i, c in enumerate(outline["chapters"]) if i in pages}), outline["title"],
+                    html_path.parent, meta["language"]))
                 _print_to(html_path, pdf_path)
     except Exception:  # noqa: BLE001 - the pack is still shown in the app
         log.warning("The study pack's PDF could not be made", exc_info=True)
@@ -1367,9 +1393,12 @@ def assemble(s: Any, plan: dict[str, Any], outline: dict[str, Any], facts: dict[
 
 
 def meta_of(facts: dict[str, Any], made: Optional[dt.date] = None) -> dict[str, Any]:
+    """What the cover says, in the pack's language: its weeks and the day it was made."""
     made = made or dt.date.today()
-    return {"course": facts["course"]["code"], "span": facts["span"].capitalize(), "files": facts["files"],
-            "lectures": facts["lectures"], "date": f"{made.day} {made:%b %Y}"}
+    language = language_of(facts)
+    with writing_in(language):
+        return {"course": facts["course"]["code"], "span": span_title(facts), "files": facts["files"],
+                "lectures": facts["lectures"], "date": date_text(made), "language": language}
 
 
 def made_on(plan: dict[str, Any]) -> dt.date:
@@ -1432,18 +1461,17 @@ def shown_body(s: Any, plan: dict[str, Any]) -> str:
 
 
 def _source(facts: dict[str, Any], g: dict[str, Any]) -> str:
-    """Where a figure comes from, under its caption: "Week 6.pdf, page 4", "lecture of 28 Oct 2026, part 1, slide 7"."""
-    if g["kind"] == "slide":
-        f = next((f for f in facts["files"] if f["ref"] == g["ref"]), None)
-        return f"{f['name']}, page {g['page']}" if f else ""
-    x = next((x for x in facts["lectures"] if x["ref"] == g["ref"]), None)
-    if not x:
-        return ""
-    try:
-        day = f"{dt.date.fromisoformat(str(x['date'])[:10]):%d %b %Y}".lstrip("0")
-    except ValueError:
-        day = x["date"]
-    return f"lecture of {day}, part {g['part']}, slide {g['slide']}"
+    """Where a figure comes from, under its caption, in the pack's language: "Week 6.pdf, page 4", "lecture of 28 Oct
+    2026, part 1, slide 7"."""
+    with writing_in(language_of(facts)):
+        if g["kind"] == "slide":
+            f = next((f for f in facts["files"] if f["ref"] == g["ref"]), None)
+            return word("{name}, page {page}", name=f["name"], page=g["page"]) if f else ""
+        x = next((x for x in facts["lectures"] if x["ref"] == g["ref"]), None)
+        if not x:
+            return ""
+        return word("lecture of {date}, part {part}, slide {slide}", date=date_text(x["date"]), part=g["part"],
+                    slide=g["slide"])
 
 
 def relayout(s: Any, plan: dict[str, Any]) -> Optional[dict[str, Any]]:

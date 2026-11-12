@@ -373,7 +373,9 @@ def pack_text(s: Any, key: str) -> str:
     from .outputs.ai_copy import build_ai_text
 
     course, recs, _, trans, slides = _load(s, key)
-    return build_ai_text("notes", course, [(recs, trans)], slides)
+    lang = getattr(s, "doc_language", None)          # (the notes' language, as the app's own notes: Settings → AI)
+    return build_ai_text("notes", course, [(recs, trans)], slides,
+                         lang=(lambda body: lang(course, body)) if lang else None)
 
 
 # ------------------------------------------------------------------ a week or the whole course
@@ -410,7 +412,8 @@ def course_doc(s: Any, course_id: str, what: str, notes: bool) -> D.Doc:
             for kind, name in NOTE_NAMES.items():
                 md = _notes_md(s, d.key, kind)
                 if md:
-                    blocks += [D.Para([D.R(name)], style="who"), D.Markdown(md, top=2, base=_notes_dir(s, d.key, kind))]
+                    blocks += [D.Para([D.R(name)], style="who"),             # (its boxes in its own language)
+                               D.Markdown(md, top=2, base=_notes_dir(s, d.key, kind), lang="tr" if D.turkish(md) else "en")]
     title = f"{course.code or course.name} · {label}"
     return D.Doc(title, kicker="Lectures and notes" if notes else "Lectures",
                  subtitle=" · ".join(x for x in (topic, f"made with IEUStudia on {long_date(dt.date.today())}") if x),
@@ -464,7 +467,7 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
         if not text and not found:
             continue
         blocks.append(D.Para([D.R(who)], style="who"))
-        blocks += [D.Markdown(x, top=2) for x in found]
+        blocks += [D.Markdown(x, top=2, lang="en") for x in found]      # (the app's notices: English, labels too)
         if text:
             md = dollar_math(text) + (" *(stopped)*" if m.get("status") == "stopped" else "")
             blocks.append(D.Markdown(md, top=2))

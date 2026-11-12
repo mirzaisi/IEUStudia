@@ -224,7 +224,7 @@ def test_copy_for_ai_gives_the_text_back_when_the_clipboard_refuses(monkeypatch)
     monkeypatch.setattr(api._s, "day", lambda key: (None, []))
     import studia.outputs.ai_copy as ai_copy
 
-    monkeypatch.setattr(ai_copy, "build_ai_text", lambda template, course, days: "The lecture's text")
+    monkeypatch.setattr(ai_copy, "build_ai_text", lambda template, course, days, **kw: "The lecture's text")
     r = api.copy_for_ai("c|2026-10-14|lecture")
     assert r["ok"] is False and r["text"] == "The lecture's text" and r["error"] == "Could not access the clipboard."
     monkeypatch.setattr(api_mod, "set_clipboard", lambda text: True)

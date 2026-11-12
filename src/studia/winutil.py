@@ -185,10 +185,11 @@ def bring_to_front(hwnd: int) -> None:
 
 
 def kill_tree(pid: int) -> None:
-    """End a process and its children (WebView2 helpers)."""
+    """End a process and its children (WebView2 helpers, an AI set-up's installer). taskkill at a normal program's
+    priority (_NORMAL): below normal while the app transcribes, it ran into its time-out on a busy PC."""
     try:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(int(pid))], capture_output=True, timeout=15,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | _NORMAL)
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
 
@@ -390,6 +391,10 @@ def set_app_id(app_id: str = "Studia.App") -> None:
 
 # ----------------------------------------------------------------------------- priority while transcribing
 _BELOW_NORMAL, _NORMAL = 0x4000, 0x20
+# The programs IEUStudia starts and waits for (nvidia-smi, Edge printing a PDF, the Claude and Codex command lines)
+# are started with NORMAL_PRIORITY_CLASS (each module's _NO_WINDOW): started while IEUStudia transcribes, they would
+# get its below-normal priority, and on the owner's laptop (12 Nov 2026, a quiet PC) nvidia-smi then didn't answer in
+# 20 s (0.4 s at normal), "claude --version" in 60 s (2-5 s) and Edge's print failed after 180 s (23 s).
 _prio_lock = threading.Lock()
 _low = False
 _eco = False                                        # Windows' efficiency mode (see background_work)

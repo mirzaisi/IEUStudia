@@ -299,7 +299,9 @@ def detect_gpu(quick: bool = False) -> dict[str, Any]:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=8,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            # a normal program's priority: started below normal while the app transcribes, nvidia-smi didn't answer
+            # (winutil._NORMAL)
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0),
         )
         first = (out.stdout or "").strip().splitlines()[0]
         name, mem = [x.strip() for x in first.split(",")[:2]]

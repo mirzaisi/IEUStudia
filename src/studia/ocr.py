@@ -3,8 +3,9 @@
 Nothing to install: pythonnet, which the app already has for its window (pywebview's WinForms backend loads .NET
 Framework through it), projects the WinRT types from .NET Framework, as Windows PowerShell 5.1 does. It reads the
 languages Windows has (Settings → Time & language → Language: a language's "Optical character recognition" part):
-the student's own (the first of their Windows languages that has it) and Turkish when it is there; each line is
-kept as the engine that read more of it read it. ~0.4 s a picture. No handwriting; formulas come out in pieces.
+English, the student's own (the first of their Windows languages that has it) and Turkish, those that are there; each
+line is kept as the engine that read it best read it. ~0.4 s a picture and engine. No handwriting; formulas come out
+in pieces.
 
 Only the words of the lecture go in: a picture is read in the part of the screen that changes from screen to screen
 (the slide, the shared screen in a meeting window: not the toolbars, the taskbar or the participants' tiles), and
@@ -119,25 +120,49 @@ def languages() -> list[str]:
         return []
 
 
+def _base(tag: str) -> str:
+    return tag.lower().split("-")[0]
+
+
+def _order(own: Optional[str], have: list[str]) -> list[str]:
+    """The languages to read with, in order: English, the student's own, Turkish; each when Windows has it here
+    (``own``: the engine Windows makes for the student's languages, ``have``: the OCR languages it has). English
+    comes first because most slides are in it and, where two engines read a line equally well, the first one's
+    reading stays (measured on test slides: English then Turkish read 100 % of the English words and 97 % of the
+    Turkish ones; Turkish then English, 98 % and 97 %; a Turkish Windows' reader alone, 98 % and 97 %)."""
+    def pick(base: str) -> Optional[str]:
+        if own and _base(own) == base:
+            return own
+        tags = [x for x in have if _base(x) == base]
+        return next((x for x in tags if x.lower() == "en-us"), tags[0] if tags else None)
+
+    out: list[str] = []
+    for tag in (pick("en"), own, pick("tr")):
+        if tag and tag not in out:
+            out.append(tag)
+    return out
+
+
 def _engines() -> list[tuple[str, Any]]:
-    """[(language tag, engine)]: the student's own languages' engine, and Turkish's when Windows has it."""
+    """[(language tag, engine)]: English's, the student's own languages' and Turkish's engines, those Windows has
+    (:func:`_order`)."""
     if "engines" in _state:
         return _state["engines"]
     w = _winrt()
     sysm, args = w["System"], w["System"].Array[w["System"].Object]
-    out: list[tuple[str, Any]] = []
     own = w["OcrEngine"].GetMethod("TryCreateFromUserProfileLanguages").Invoke(None, None)
-    if own is not None:
-        lang = _prop(own, "RecognizerLanguage")
-        out.append((str(_prop(lang, "LanguageTag")), own))
+    own_tag = str(_prop(_prop(own, "RecognizerLanguage"), "LanguageTag")) if own is not None else None
     have = [str(_prop(lang, "LanguageTag", w["Language"])) for lang in
             _items(w["OcrEngine"].GetProperty("AvailableRecognizerLanguages").GetValue(None, None))]
-    tr = next((x for x in have if x.lower().startswith("tr")), None)
-    if tr and not any(tag.lower().startswith("tr") for tag, _ in out):
-        lang = sysm.Activator.CreateInstance(w["Language"], args([tr]))
+    out: list[tuple[str, Any]] = []
+    for tag in _order(own_tag, have):
+        if tag == own_tag:
+            out.append((tag, own))
+            continue
+        lang = sysm.Activator.CreateInstance(w["Language"], args([tag]))
         eng = w["OcrEngine"].GetMethod("TryCreateFromLanguage").Invoke(None, args([lang]))
         if eng is not None:
-            out.append((tr, eng))
+            out.append((tag, eng))
     _state["engines"] = out
     return out
 
@@ -232,8 +257,9 @@ def max_side() -> int:
 
 
 def read_lines(gray: np.ndarray) -> tuple[list[Line], str]:
-    """A grey picture's lines (pixel boxes), read by each engine; where two engines read the same line, the longer
-    reading is kept. And the engines' label ("windows en-US", "windows en-US+tr-TR")."""
+    """A grey picture's lines (pixel boxes), read by each engine; where two engines read the same line, the better
+    reading is kept (:func:`_score`; on a tie, the first engine's). And the engines' label ("windows en-US",
+    "windows en-US+tr-TR")."""
     with _lock:
         engines = _engines()
         readings = [(tag, _recognize(eng, gray)) for tag, eng in engines]

@@ -1,6 +1,6 @@
 [project]
 name = "studia"
-version = "4.1.1"
+version = "4.1.2"
 description = "IEUStudia: an unofficial study app for IEU students. IEULearn courses and Panopto lectures transcribed on your PC, heads-ups about quizzes and exams, study plans and optional AI."
 readme = "README.md"
 license = "MIT"
@@ -12,6 +12,7 @@ dependencies = [
     "pypdfium2>=4.30",          # PDF text + page images of course materials
     "yt-dlp>=2025.1",           # video study plans: YouTube search, captions and chapters (no API key)
     "truststore>=0.10",         # HTTPS trusts what Windows trusts (antivirus HTTPS scanning, company proxies)
+    "threadpoolctl>=3.5",       # a batch's features on the graphics card without NumPy's below-normal BLAS helpers
     # Linux: the window (Qt WebEngine instead of WebView2) and the keyring that keeps the sign-in (instead of DPAPI)
     "pywebview[qt]>=5.3; sys_platform == 'linux'",
     "secretstorage>=3.3; sys_platform == 'linux'",
