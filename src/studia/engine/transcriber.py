@@ -12,7 +12,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -68,25 +68,66 @@ def _drive_card_here() -> None:
 
 
 _blas: Any = None                     # threadpoolctl's view of NumPy's BLAS (OpenBLAS), made once
+_blas_lock = threading.Lock()
+_blas_users = 0                       # threads inside _blas_in_this_thread now
+_blas_saved: list[tuple[Any, int]] = []   # each BLAS library and its thread count before the first of them came in
 
 
-def _blas_in_this_thread() -> Any:
+def _blas_set(lib: Any, n: int) -> None:
+    # OpenBLAS's own setter: threadpoolctl's set_num_threads lets only the thread that set a limit change it again, so
+    # a restore from the other thread (the features thread and the transcribe thread overlap) would be skipped
+    getattr(lib, "_real_set_num_threads", lib.set_num_threads)(n)
+
+
+@contextlib.contextmanager
+def _blas_in_this_thread() -> Iterator[None]:
     """A context in which NumPy's BLAS does its work in the calling thread alone, for a batch's features on the
     graphics card. Its helper threads run at the process's below-normal priority while IEUStudia transcribes, and the
     features' one matrix product waited for them: with other programs busy (a browser, a build, another app's work),
     the card sat idle and a lecture took 5-14x as long (owner's RTX 4070 Laptop, 12 Nov 2026: decode 119-160 s
     against 23-29 s for a 7.5-minute test lecture; in the app 2.4-3.1x realtime against ~20x the week before). On the
     processor (CPU transcription) NumPy's threads are left as they are: there the whole app runs below normal alike,
-    and one thread changed the features in the last bit."""
-    global _blas
+    and one thread changed the features in the last bit.
+    BLAS's thread count is the process's: the first thread in sets 1 and the last one out puts back what it was, so
+    the transcribe thread's batch and the features thread's next one overlapping (every lecture's first batch) can't
+    leave it at 1 for the rest of the session (a later transcription on the processor then wouldn't be as before)."""
+    global _blas, _blas_users, _blas_saved
+    entered = False
     try:
-        if _blas is None:
-            from threadpoolctl import ThreadpoolController
+        with _blas_lock:
+            if _blas is None:
+                from threadpoolctl import ThreadpoolController
 
-            _blas = ThreadpoolController()
-        return _blas.limit(limits=1, user_api="blas")
+                _blas = ThreadpoolController()
+            if _blas_users == 0:
+                libs = [c for c in _blas.lib_controllers if getattr(c, "user_api", "") == "blas"]
+                _blas_saved = [(c, int(c.get_num_threads())) for c in libs]
+                try:
+                    for c, _ in _blas_saved:
+                        _blas_set(c, 1)
+                except Exception:
+                    for c, n in _blas_saved:          # (as it was: none of it half done)
+                        with contextlib.suppress(Exception):
+                            _blas_set(c, n)
+                    _blas_saved = []
+                    raise
+            _blas_users += 1
+            entered = True
     except Exception:  # noqa: BLE001 - only speed: without it, as before
-        return contextlib.nullcontext()
+        log.debug("BLAS's threads could not be limited", exc_info=True)
+    try:
+        yield
+    finally:
+        if entered:
+            with _blas_lock:
+                _blas_users -= 1
+                if _blas_users == 0:
+                    for c, n in _blas_saved:
+                        try:
+                            _blas_set(c, n)
+                        except Exception:  # noqa: BLE001
+                            log.debug("BLAS's threads could not be put back", exc_info=True)
+                    _blas_saved = []
 
 
 def _ai_on_gpu() -> bool:

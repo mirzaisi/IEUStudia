@@ -37,7 +37,8 @@ from .i18n import Retold, num, retell, t
 log = logging.getLogger("studia")
 
 Emit = Callable[[dict[str, Any]], None]
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# no window, and a normal program's priority while the app transcribes below normal (see winutil._NORMAL)
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0)
 NPM_REGISTRY = "https://registry.npmjs.org"
 CLAUDE_DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"     # as Anthropic's install.ps1 and install.sh
 SETUP_LIMIT_S = 45 * 60      # `claude install` after the download: it may fetch files of its own, so the limit is

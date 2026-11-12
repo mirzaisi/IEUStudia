@@ -75,7 +75,8 @@ CHARS_PER_TOKEN = 3.1       # Claude, measured on compact transcripts (timestamp
 CHARS_PER_TOKEN_BY = {"chatgpt": 3.9, "codex": 3.9}    # ChatGPT's tokens are longer: 3.87–3.89 billed on a lecture chat
 PROMPT_OVERHEAD = 600       # what Claude Code adds to every request
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# no window, and a normal program's priority while the app transcribes below normal (see winutil._NORMAL)
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0)
 
 
 def _npm_folders() -> list[str]:

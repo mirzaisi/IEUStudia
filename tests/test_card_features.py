@@ -68,3 +68,41 @@ def test_without_threadpoolctl_the_features_are_made_as_before(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_threadpoolctl)
     with transcriber._blas_in_this_thread():
         pass
+
+
+def _blas_threads():
+    from threadpoolctl import threadpool_info
+
+    return [x["num_threads"] for x in threadpool_info() if x.get("user_api") == "blas"]
+
+
+def test_two_threads_overlapping_put_the_count_back_whichever_leaves_first():
+    """Every lecture's first batch: the transcribe thread computes it while the features thread computes the next.
+    A in, B in, A out (still 1 for B), B out: the count is what it was, not 1 for the rest of the session."""
+    import threading
+
+    before = _blas_threads()
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
+
+    def a():
+        with transcriber._blas_in_this_thread():
+            a_in.set()
+            b_in.wait(5)
+        a_out.set()
+
+    def b():
+        a_in.wait(5)
+        with transcriber._blas_in_this_thread():
+            b_in.set()
+            a_out.wait(5)
+            seen["b after a left"] = _blas_threads()
+
+    ta, tb = threading.Thread(target=a), threading.Thread(target=b)
+    ta.start(), tb.start()
+    ta.join(10), tb.join(10)
+    assert all(n == 1 for n in seen["b after a left"])        # B still on one thread after A left
+    assert _blas_threads() == before                            # and the count back as it was
+    with transcriber._blas_in_this_thread():
+        pass
+    assert _blas_threads() == before

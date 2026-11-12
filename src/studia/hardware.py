@@ -31,7 +31,8 @@ MIN_CUDA_DRIVER = 527.0           # CUDA 12 on Windows
 WEBVIEW2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 GB = 1024 ** 3
 WINDOWS = sys.platform == "win32"
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# no window, and a normal program's priority while the app transcribes below normal (see winutil._NORMAL)
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0)
 
 
 class _MemoryStatus(ctypes.Structure):

@@ -74,8 +74,11 @@ def html_to_pdf(html_path: Path, pdf_path: Path, timeout: int = 180) -> bool:
         cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-pdf-header-footer",
                f"--user-data-dir={profile}", f"--print-to-pdf={pdf_path}", html_path.resolve().as_uri()]
         try:
+            # at a normal program's priority: started below normal while the app transcribes, Edge's print failed
+            # after the 180 s time-out (23 s at normal; winutil._NORMAL)
             subprocess.run(cmd, capture_output=True, timeout=timeout,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                           | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0))
         except subprocess.TimeoutExpired:
             log.warning("PDF rendering timed out")
             return False
