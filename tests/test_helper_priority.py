@@ -52,3 +52,15 @@ def test_the_card_check_asks_nvidia_smi_at_a_normal_priority(monkeypatch):
     monkeypatch.setattr(hardware.subprocess, "run", run)
     hardware.nvidia_gpu()
     assert seen and all(f & NORMAL == NORMAL for f in seen)
+
+
+def test_taskkill_ends_a_set_up_at_a_normal_priority(monkeypatch):
+    """Cancel on the Claude Code set-up while lectures transcribe: taskkill below normal ran into its 15 s time-out."""
+    if sys.platform != "win32":
+        pytest.skip("taskkill is Windows'")
+    from studia import winutil
+
+    seen = {}
+    monkeypatch.setattr(winutil.subprocess, "run", lambda cmd, **kw: seen.update(kw))
+    winutil.kill_tree(1234)
+    assert seen["creationflags"] & NORMAL == NORMAL

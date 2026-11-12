@@ -185,10 +185,11 @@ def bring_to_front(hwnd: int) -> None:
 
 
 def kill_tree(pid: int) -> None:
-    """End a process and its children (WebView2 helpers)."""
+    """End a process and its children (WebView2 helpers, an AI set-up's installer). taskkill at a normal program's
+    priority (_NORMAL): below normal while the app transcribes, it ran into its time-out on a busy PC."""
     try:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(int(pid))], capture_output=True, timeout=15,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | _NORMAL)
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
 
