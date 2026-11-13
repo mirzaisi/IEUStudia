@@ -520,6 +520,127 @@ def test_a_formula_or_code_line_wider_than_the_page_goes_on_the_next_line_on_pap
         doc.close()
 
 
+TURKISH = "Şu ağaçtaki ığdır, çünkü İstanbul'da ölçü üç. ÇĞİÖŞÜ çğıöşü. Sınav için bu tanım doğru değil."
+ASCII_TR = ("icin", "cunku", "Sinav", "tanim", "dogru", "degil", "Istanbul", "agac", "olcu")
+
+
+def _printed(tmp_path, page_html: str) -> Path:
+    """``page_html`` printed as the app prints it (print_pdf: Edge or Chrome headless); skipped without either."""
+    from studia.export import find_browser
+
+    if not find_browser():
+        pytest.skip("no Edge or Chrome to print with")
+    page, pdf = tmp_path / "p.html", tmp_path / "p.pdf"
+    page.write_text(page_html, encoding="utf-8")
+    assert studypack.print_pdf(page, pdf)
+    return pdf
+
+
+def _fonts(pdf: Path) -> dict[str, bool]:
+    """The fonts the PDF's text is drawn with, and whether each is embedded: {name: embedded}. A font left out is
+    looked up on the reader's computer, where it may be another one or lack the Turkish letters. (Some fonts have no
+    name in the file: what matters is the flag.)"""
+    import ctypes
+
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    out: dict[str, bool] = {}
+    doc = pdfium.PdfDocument(str(pdf))
+    try:
+        for page in doc:
+            for obj in page.get_objects(max_depth=5):
+                if obj.type != pdfium_c.FPDF_PAGEOBJ_TEXT:
+                    continue
+                font = pdfium_c.FPDFTextObj_GetFont(obj.raw)
+                size = pdfium_c.FPDFFont_GetBaseFontName(font, None, 0)
+                name = ctypes.create_string_buffer(size)
+                pdfium_c.FPDFFont_GetBaseFontName(font, name, size)
+                out[name.value.decode("utf-8", "replace")] = bool(pdfium_c.FPDFFont_GetIsEmbedded(font))
+    finally:
+        doc.close()
+    return out
+
+
+def _text(pdf: Path) -> str:
+    """The PDF's text, all pages, as a reader copying it out gets it (runs of white space made one space)."""
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(pdf))
+    try:
+        return " ".join("".join(page.get_textpage().get_text_range() for page in doc).split())
+    finally:
+        doc.close()
+
+
+def _check_turkish_on_paper(pdf: Path, *upper: str) -> str:
+    """Every font embedded, the Turkish sentence as written, no word fallen back to ASCII ("icin" for "için"), and
+    each of ``upper`` (words the page's CSS upper-cases) with a dotted İ where Turkish has one."""
+    fonts = _fonts(pdf)
+    assert fonts and all(fonts.values()), fonts
+    text = _text(pdf)
+    assert TURKISH in text
+    assert not [w for w in ASCII_TR if re.search(rf"\b{w}\b", text)]
+    for u in upper:
+        assert u in text, f"{u!r} not in {text[:300]!r}"
+    return text
+
+
+def test_a_printed_study_pack_embeds_its_fonts_and_keeps_turkish_letters(tmp_path):
+    """A Turkish pack's cover said "BILGISAYAR MÜHENDISLIĞINE GIRIŞ" on paper: the page was lang="en" and the line
+    is upper-cased by its CSS, so "i" became an undotted "I". Its box labels ("Kendini sına") are upper-cased too."""
+    outline = {"title": "Bilgisayar sistemlerine giriş", "intro": "",
+               "chapters": [{"id": "c1", "title": "Çığır açan işlemciler", "figures": []}]}
+    meta = {"course": "Bilgisayar Mühendisliğine Giriş", "span": "1. hafta", "files": [], "lectures": [],
+            "date": "4 Kas 2026", "language": "Turkish"}
+    section = f"{TURKISH}\n\n$$x^2 + y^2 = r^2$$\n\n:::check\nİşlemci saat hızı neden tek başına yetmez?\n:::\n"
+    body = studypack.document_body(outline, {"c1": section}, {}, meta, str)
+    pdf = _printed(tmp_path, studypack.document_html(body, outline["title"], None, meta["language"]))
+    text = _check_turkish_on_paper(pdf, "BİLGİSAYAR MÜHENDİSLİĞİNE GİRİŞ", "KENDİNİ SINA")
+    assert "Çığır açan işlemciler" in text and "İçindekiler" in text
+
+
+def test_a_printed_cheatsheet_embeds_its_fonts_and_keeps_turkish_letters(tmp_path):
+    """A Turkish sheet: its topics and notes as written, and its entries' labels upper-cased in Turkish ("BİRİM",
+    not "BIRIM")."""
+    import cheatsheet_sample as SAMPLE
+
+    from studia import cheatsheet
+
+    note = {"kind": "rule", "name": "Türkçe not", "tex": "", "text": TURKISH, "where": [], "when": "",
+            "covers": ["not"]}
+    sheet = {"title": "Devre analizi", "topics": [{"id": "t1", "title": "Temel yasalar ve ölçü birimleri",
+                                                    "items": ["Ohm yasası", "not"]}]}
+    entries = {"t1": [*SAMPLE.ENTRIES["t1"], note]}
+    meta = {"course": "EEE 215 · Devre Analizi", "span": "4–6. haftalar", "files": [], "lectures": [],
+            "date": "4 Kas 2026", "language": "Turkish"}
+    page = cheatsheet.document_html(cheatsheet.document_body(sheet, entries, meta), sheet["title"], None, "Turkish")
+    text = _check_turkish_on_paper(_printed(tmp_path, page), "BİRİM", "KURAL")
+    assert "Temel yasalar ve ölçü birimleri" in text
+
+
+def test_a_printed_practice_quiz_embeds_its_fonts_and_keeps_turkish_letters(tmp_path):
+    """A Turkish quiz, as quizzes.make_pdf prints it: its questions and explanations as written, and a box in an
+    explanation labelled in Turkish ("KENDİNİ SINA")."""
+    from studia import quizzes
+
+    questions = [
+        {"n": 1, "type": "mc", "q": "Hangisi bir işlemcinin saat hızını ölçer?",
+         "options": ["Gigahertz", "Gigabayt", "Bit", "Piksel"], "answer": 0,
+         "why": f"{TURKISH}\n\n:::check\nİki çekirdekli işlemci iki kat hızlı mıdır?\n:::\n",
+         "wrong": ["", "Bellek ölçüsü.", "", ""]},
+        {"n": 2, "type": "short", "q": "Önbellek neden işe yarar?",
+         "model": "Sık kullanılan veriyi işlemciye yakın tutar.", "points": ["Erişim süresi kısalır."]},
+    ]
+    plan = {"status": "done", "title": "Deneme", "created_at": "2026-11-04T10:00:00",
+            "result": {"title": "İşlemciler üzerine deneme", "language": "Turkish", "made": "2026-11-04",
+                       "course": {"code": "CE 100"}, "coverage": {"weeks": [1, 2]}, "questions": questions}}
+    page = studypack.document_html(quizzes.document_body(plan), plan["result"]["title"], None,
+                                   "Turkish").replace("</style>", quizzes.QUIZ_CSS + "</style>", 1)
+    text = _check_turkish_on_paper(_printed(tmp_path, page), "DENEME SINAVI", "KENDİNİ SINA")
+    assert "Hangisi bir işlemcinin saat hızını ölçer?" in text and "Cevaplar" in text
+
+
 def test_the_pages_keep_the_documents_casing_and_name_a_class_day_once():
     """The document's own language, not the app's: an English "Definition" isn't uppercased as Turkish
     ("DEFİNİTİON") in a Turkish window, and a Turkish "Kendini sına" is "KENDİNİ SINA" (api.pack_doc's lang)."""
