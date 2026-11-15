@@ -95,7 +95,7 @@ def test_every_document_prompt_asks_for_its_language_and_keeps_the_exam_terms():
         assert "Keep technical terms" not in text, kind
         assert "in English" in text or "Write in English" in text, kind
     tr = texts(other)
-    assert "Write every question, option, answer and explanation in Turkish. " + RULE_TR in tr["quiz"]
+    assert prompts.quiz_languages("Turkish", "English") in tr["quiz"]
     assert "Titles and captions in Turkish. " + RULE_TR in tr["outline"]
     assert "Captions in Turkish. " + RULE_TR in tr["figures"]
     assert "Titles and items in Turkish. " + RULE_TR in tr["topics"]
@@ -104,6 +104,30 @@ def test_every_document_prompt_asks_for_its_language_and_keeps_the_exam_terms():
     # a pack started before 4.1 (no taught_in in its outline): as before, no rule
     assert "Keep technical terms" not in studypack.section_prompt({"title": "T", "chapters": [ch], "language": "Turkish"},
                                                                   ch, "", Scope(kind="pack"))
+
+
+def test_a_quiz_for_a_course_taught_in_another_language_asks_its_questions_in_the_course_s_language():
+    """A Turkish quiz for a course taught in English had its questions in Turkish too, but the exam asks them in
+    English and the student answers in English. Now the questions, their options and their answers stay in the
+    course's language, and what explains them (why an option is right or wrong, the points, the working, the title and
+    the topics) is in the document's. With the two the same the line is word for word as before."""
+    tr, en = prompts.quiz_languages("Turkish", "English"), prompts.quiz_languages("English", "Turkish")
+    assert tr.startswith("Write each question, its options and its answer (the model answer or the final result) in "
+                         "English, as the exam asks them.")
+    assert 'Write what explains them in Turkish: "explanation", "wrong", "points", the working in "steps", "title" and ' \
+           '"topics".' in tr
+    assert tr.count(RULE_TR) == 1 and tr.endswith(RULE_TR)
+    assert "in Turkish, as the exam asks them." in en and "explains them in English:" in en and en.endswith(RULE_EN)
+    assert prompts.quiz_languages("English", "English") == ("Write every question, option, answer and explanation in "
+                                                            "English (the language this course is taught in).")
+    assert prompts.quiz_languages("Turkish", "Turkish") == ("Write every question, option, answer and explanation in "
+                                                            "Turkish (the language this course is taught in).")
+    assert prompts.quiz_languages("Turkish", "") == prompts.quiz_languages("Turkish", "Turkish")
+    facts = {"span": "week 3", "pack": "", "files": [], "lectures": [], "stressed": [], "weeks": [{"no": 3}],
+             "course": {"code": "EEE 215", "name": "Circuits"}, "stressed_lines": "", "outcomes": [],
+             "language": "Turkish", "taught_in": "English"}
+    text = quizzes.write_prompt(Scope(kind="quiz"), facts, 5, {"mc": 3, "short": 1, "problem": 1})
+    assert tr in text and "Write every question, option, answer and explanation" not in text
 
 
 # ------------------------------------------------------------------ the setting
@@ -212,11 +236,14 @@ def test_each_kind_of_document_gets_the_chosen_language(api, monkeypatch):
     assert f"Write in English. {RULE_EN}" in asked[-1]
 
 
-def test_a_quiz_written_in_turkish_for_an_english_course_asks_for_the_english_terms(api):
+def test_a_quiz_written_in_turkish_for_an_english_course_asks_its_questions_in_english(api):
     asked = []
-    answer = json.dumps({"title": "Ohm'un yasası", "topics": ["Ohm's law"], "questions": [
-        {"type": "mc", "question": "Ohm's law (Ohm yasası) neyi söyler?", "options": ["V = IR", "V = I/R", "P = VI", "I = VR"],
-         "answer": "A", "explanation": "Tanım.", "wrong": {"B": "Ters.", "C": "Güç.", "D": "Yanlış."}, "source": "F1 p.1"}]})
+    answer = json.dumps({"title": "Ohm yasası", "topics": ["Ohm's law (Ohm yasası)"], "questions": [
+        {"type": "mc", "question": "What does Ohm's law say?", "options": ["V = IR", "V = I/R", "P = VI", "I = VR"],
+         "answer": "A", "explanation": "Tanım: gerilim akımla direncin çarpımıdır.",
+         "wrong": {"B": "Ters.", "C": "Güç.", "D": "Yanlış."}, "source": "F1 p.1", "topic": "Ohm's law (Ohm yasası)"},
+        {"type": "short", "question": "Why does a fuse protect a circuit?", "answer": "It melts when the current is too high.",
+         "points": ["Akım sınırı aşılınca erir.", "Devreyi açar."], "source": "F1 p.1", "topic": "Ohm's law (Ohm yasası)"}]})
 
     def ask_text(system, content, model="sonnet", effort="low", cancel=None, on_text=None):
         asked.append(content[0]["text"])
@@ -231,8 +258,11 @@ def test_a_quiz_written_in_turkish_for_an_english_course_asks_for_the_english_te
         time.sleep(0.02)
     p = api._s.lib.plan(pid)
     assert p["status"] == "done", p.get("error")
-    assert f"Write every question, option, answer and explanation in Turkish. {RULE_TR}" in asked[0]
+    assert prompts.quiz_languages("Turkish", "English") in asked[0]
     assert p["result"]["language"] == "Turkish"
+    mc, short = p["result"]["questions"]
+    assert mc["q"] == "What does Ohm's law say?" and mc["why"].startswith("Tanım:") and "V = IR" in mc["options"]
+    assert short["model"] == "It melts when the current is too high." and short["points"][0] == "Akım sınırı aşılınca erir."
 
 
 # ------------------------------------------------------------------ the page (node: app.js and the pages)
@@ -289,6 +319,8 @@ PAGE = r"""
   out.trRow = plain(St.docLangRow());
   out.trLine = plain(St.docLangLine({ language: "Turkish", taught_in: "English" }));
   out.trSame = plain(St.docLangLine({ language: "English", taught_in: "English" }));
+  out.trQuiz = plain(St.docLangLine({ language: "Turkish", taught_in: "English" }, { quiz: true }));
+  out.trQuizSame = plain(St.docLangLine({ language: "Turkish", taught_in: "Turkish" }, { quiz: true }));
 """
 
 
@@ -310,9 +342,12 @@ def test_settings_has_the_row_and_each_document_dialog_names_the_language(tmp_pa
     assert out["local"] == ""                                                 # the offline model writes English
     assert out["lines"] == ["Written in English · change in Settings",
                             "Written in Turkish, exam terms in English · change in Settings", ""]
-    for kind in ("quiz", "sheet", "prep", "cards"):
+    assert "Questions in English, explanations in Turkish · change in Settings" in out["quiz"], out["quiz"]
+    for kind in ("sheet", "prep", "cards"):
         assert "Written in Turkish, exam terms in English · change in Settings" in out[kind], (kind, out[kind])
     assert out["went"] == "settings"
     assert "Çalışma belgelerinin dili" in out["trRow"] and "Dersin dili" in out["trRow"]
     assert out["trLine"] == "Türkçe yazılır, sınav terimleri İngilizce · Ayarlar'dan değiştir"
     assert out["trSame"] == "İngilizce yazılır · Ayarlar'dan değiştir"
+    assert out["trQuiz"] == "Sorular İngilizce, açıklamalar Türkçe · Ayarlar'dan değiştir"
+    assert out["trQuizSame"] == "Türkçe yazılır · Ayarlar'dan değiştir"

@@ -32,7 +32,7 @@ from .cancel import Cancelled
 from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
                       writing_in)
 from .i18n import N_, t, tn
-from .outputs.prompts import in_language
+from .outputs.prompts import quiz_languages
 
 log = logging.getLogger("studia")
 
@@ -194,7 +194,7 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
               "the transcript's (slide m) marks show when each was on screen. Use them (formulas, figures, worked "
               "examples), and cite the lecture moment where the slide was shown.") if facts.get("one_lecture") else ""
     lectures = " (cite the [mm:ss] time written before the passage)" if facts["lectures"] else ""
-    return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. Write every question, option, answer and explanation {in_language(facts['language'], facts.get('taught_in', ''))}{extra}
+    return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. {quiz_languages(facts['language'], facts.get('taught_in', ''))}{extra}
 Priorities, in this order:
 {chr(10).join(prio)}
 Answer with one JSON object:
