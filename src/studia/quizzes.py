@@ -32,7 +32,7 @@ from .cancel import Cancelled
 from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
                       writing_in)
 from .i18n import N_, t, tn
-from .outputs.prompts import quiz_languages
+from .outputs.prompts import quiz_languages, quiz_languages_again
 
 log = logging.getLogger("studia")
 
@@ -217,7 +217,7 @@ Rules:
 {facts.get('stressed_lines') or '(nothing found in these lectures)'}
 
 === COURSE MATERIAL ===
-{facts['pack']}"""
+{facts['pack']}{quiz_languages_again(facts['language'], facts.get('taught_in', ''))}"""
 
 
 # ------------------------------------------------------------------ reading the AI's answer

@@ -51,6 +51,17 @@ def quiz_languages(language: str = "", taught_in: str = "") -> str:
             f"working in \"steps\", \"title\" and \"topics\". {rule}")
 
 
+def quiz_languages_again(language: str = "", taught_in: str = "") -> str:
+    """The quiz's two languages said once more after the course material (its prompt's last words), when they differ:
+    told only before the material, Claude Haiku wrote the whole quiz in the material's language ("" when the two are
+    the same)."""
+    lang = language or "English"
+    if not terms_rule(lang, taught_in):
+        return ""
+    return (f"\n\n=== LANGUAGES ===\nQuestions, options and answers in {taught_in}; \"explanation\", \"wrong\", "
+            f"\"points\", \"steps\", \"title\" and \"topics\" in {lang}.")
+
+
 TRANSCRIPT_NOTES = (
     "About the material: an automatic transcript of a university lecture, so names, symbols and numbers may be "
     "misheard. Fix obvious errors from context and the slides; where a reading stays doubtful, say so once, briefly. "
