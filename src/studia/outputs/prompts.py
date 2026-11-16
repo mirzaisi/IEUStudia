@@ -38,6 +38,19 @@ def in_language(language: str = "", taught_in: str = "") -> str:
     return f"in {lang}. {rule}" if rule else f"in {lang} (the language this course is taught in)."
 
 
+def quiz_languages(language: str = "", taught_in: str = "") -> str:
+    """The practice quiz's language line. In another language than the course's, the questions, their options and
+    their answers stay in the course's (the exam asks them in it, and the student answers in it), and what explains
+    them is in the document's, with the terms rule; with the two the same, the line as before."""
+    lang = language or "English"
+    rule = terms_rule(lang, taught_in)
+    if not rule:
+        return f"Write every question, option, answer and explanation {in_language(lang, taught_in)}"
+    return (f"Write each question, its options and its answer (the model answer or the final result) in {taught_in}, "
+            f"as the exam asks them. Write what explains them in {lang}: \"explanation\", \"wrong\", \"points\", the "
+            f"working in \"steps\", \"title\" and \"topics\". {rule}")
+
+
 TRANSCRIPT_NOTES = (
     "About the material: an automatic transcript of a university lecture, so names, symbols and numbers may be "
     "misheard. Fix obvious errors from context and the slides; where a reading stays doubtful, say so once, briefly. "

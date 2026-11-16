@@ -329,7 +329,7 @@
     const big = e.main_input + e.main_output >= 40000;        // (a midterm's eight weeks: about 70k)
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${big ? t.html("Uses part of your {ai} plan.", { ai: St.aiName() }) : t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t("About {k} tokens in one request, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
-      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>${more}`;
+      ${St.docLangLine ? St.docLangLine(e, { quiz: true }) : ""}</div></div>${more}`;
   }
   function drawQuiz() {
     const r = Q.opts, courses = S.courses.filter((c) => c.code), e = nextExam(r);

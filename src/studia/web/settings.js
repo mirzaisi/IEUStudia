@@ -65,10 +65,12 @@
       `<div class="seg">${opts.map(([k, l]) => `<button class="${v === k ? "on" : ""}" data-act="set" data-key="doc_language" data-val="${k}" aria-pressed="${v === k}">${esc(l)}</button>`).join("")}</div>`, "set-doclang");
   };
   // each document dialog's quiet line: the language its estimate says the AI will write in ("" before the estimate)
-  St.docLangLine = (e) => {
+  St.docLangLine = (e, o = {}) => {
     if (!e || !e.language) return "";
-    const L = LANG_NAME(), lang = L[e.language] || e.language;
-    const say = e.taught_in && e.taught_in !== e.language ? t("Written in {language}, exam terms in {course}", { language: lang, course: L[e.taught_in] || e.taught_in })
+    const L = LANG_NAME(), lang = L[e.language] || e.language, other = e.taught_in && e.taught_in !== e.language;
+    const course = other ? L[e.taught_in] || e.taught_in : "";
+    const say = other && o.quiz ? t("Questions in {course}, explanations in {language}", { language: lang, course })
+      : other ? t("Written in {language}, exam terms in {course}", { language: lang, course })
       : t("Written in {language}", { language: lang });
     return `<div class="dim sm doclang-line">${I("globe", "xs")} ${esc(say)} · <button type="button" class="link" data-act="doclang-settings">${t("change in Settings")}</button></div>`;
   };
