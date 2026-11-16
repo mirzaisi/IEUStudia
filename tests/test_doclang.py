@@ -130,6 +130,21 @@ def test_a_quiz_for_a_course_taught_in_another_language_asks_its_questions_in_th
     assert tr in text and "Write every question, option, answer and explanation" not in text
 
 
+def test_a_quiz_s_two_languages_are_said_again_after_the_material():
+    """Told only before the course material, Claude Haiku wrote a Turkish student's quiz all in English (the
+    material's language); said again as the prompt's last words, it kept the questions in English and explained them
+    in Turkish (two tries each, 16 Nov 2026). With one language nothing is added: the prompt is as before."""
+    assert prompts.quiz_languages_again("English", "English") == "" == prompts.quiz_languages_again("Turkish", "")
+    again = prompts.quiz_languages_again("Turkish", "English")
+    assert again.startswith("\n\n=== LANGUAGES ===\nQuestions, options and answers in English;") and "in Turkish." in again
+    facts = {"span": "week 3", "pack": "Ohm's law: V = IR.", "files": [], "lectures": [], "stressed": [],
+             "weeks": [{"no": 3}], "course": {"code": "EEE 215", "name": "Circuits"}, "stressed_lines": "",
+             "outcomes": [], "language": "Turkish", "taught_in": "English"}
+    kinds = {"mc": 3, "short": 1, "problem": 1}
+    assert quizzes.write_prompt(Scope(kind="quiz"), facts, 5, kinds).endswith("Ohm's law: V = IR." + again)
+    same = quizzes.write_prompt(Scope(kind="quiz"), {**facts, "language": "English"}, 5, kinds)
+    assert same.endswith("Ohm's law: V = IR.") and "=== LANGUAGES ===" not in same
+
 # ------------------------------------------------------------------ the setting
 def test_the_setting_saves_stays_valid_and_goes_back_with_the_ai_group(isolated_home):
     from studia.api import Api
