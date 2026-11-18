@@ -62,6 +62,27 @@ def quiz_languages_again(language: str = "", taught_in: str = "") -> str:
             f"\"points\", \"steps\", \"title\" and \"topics\" in {lang}.")
 
 
+def cards_languages(language: str = "", taught_in: str = "") -> str:
+    """The flashcards' language line. In another language than the course's, a card's front (the term or the
+    question) stays in the course's, as the exams ask it, and its back explains it in the document's, with the terms
+    rule; with the two the same, the line as before."""
+    lang = language or "English"
+    rule = terms_rule(lang, taught_in)
+    if not rule:
+        return f"Write them {in_language(lang, taught_in)}"
+    return (f"Write each card's \"front\" (the term or the question) in {taught_in}, as the exams ask it, and its "
+            f"\"back\" and \"topic\" in {lang}. {rule}")
+
+
+def cards_languages_again(language: str = "", taught_in: str = "") -> str:
+    """The cards' two languages said once more after the pages (the prompt's last words), when they differ, as for
+    the quiz (:func:`quiz_languages_again`; "" when the two are the same)."""
+    lang = language or "English"
+    if not terms_rule(lang, taught_in):
+        return ""
+    return f"\n\n=== LANGUAGES ===\n\"front\" in {taught_in}; \"back\" and \"topic\" in {lang}."
+
+
 TRANSCRIPT_NOTES = (
     "About the material: an automatic transcript of a university lecture, so names, symbols and numbers may be "
     "misheard. Fix obvious errors from context and the slides; where a reading stays doubtful, say so once, briefly. "

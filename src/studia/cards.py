@@ -374,11 +374,11 @@ def batches(lib: Any, facts: dict[str, Any], limit: int = BATCH_CHARS) -> list[d
 
 
 def cards_prompt(facts: dict[str, Any], batch: dict[str, Any], most: int, have: list[str]) -> str:
-    from .outputs.prompts import in_language
+    from .outputs.prompts import cards_languages, cards_languages_again
 
     stressed = facts.get("stressed_lines") or ""
     known = "\n".join(f"- {q}" for q in have[:60])
-    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. Write them {in_language(facts['language'], facts.get('taught_in', ''))}
+    return f"""TASK: Make flashcards from these pages of the course's files ({facts['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card. {cards_languages(facts['language'], facts.get('taught_in', ''))}
 Answer with one JSON object:
 {{"cards": [{{"front": "a short question or cue", "back": "the answer: short and exact (a formula, a definition, the steps of a method)", "source": "F1 p.3", "topic": "a few words"}}]}}
 Rules:
@@ -392,7 +392,7 @@ Rules:
 {stressed or '(nothing found)'}
 
 === THE PAGES ===
-{batch['text']}"""
+{batch['text']}{cards_languages_again(facts['language'], facts.get('taught_in', ''))}"""
 
 
 def read_cards(text: str) -> list[dict[str, Any]]:
