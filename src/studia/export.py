@@ -17,7 +17,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from .domain import Course, Recording
 from .outputs.ai_copy import compact_day
 from .outputs.common import (course_display, engine_summary, format_duration, format_language_shares, format_ts,
-                             kind_label, lang_tag, language_shares, long_date, time_range)
+                             kind_label, lang_tag, language_shares, long_date, main_language, time_range)
 from .outputs.highlights import LABELS, excerpt
 from .outputs.markdown import part_views
 from .outputs.prompts import ai_prompt
@@ -105,7 +105,8 @@ def render_pack_html(course: Course, recordings: Sequence[Recording], transcript
     title = f"{course.code or course_display(course)} · {kind_label(first.kind)} · {long_date(first.start.date())}"
     out = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'><title>{esc(title)}</title>",
            f"<style>{_pack_css()}</style></head><body class='sp-page'><article class='sp-doc xp'>",
-           f"<header class='sp-cover'><div class='sp-kicker'>{esc(course.code or course.name)} · AI pack</div>"
+           f"<header class='sp-cover'><div class='sp-kicker'><span lang='{main_language(done) or 'en'}'>"
+           f"{esc(course.code or course.name)}</span> · AI pack</div>"
            f"<h1>{esc(title)}</h1>"]
     meta = [f"<b>Course:</b> {esc(course_display(course))}"]
     if course.instructor:

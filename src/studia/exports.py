@@ -26,7 +26,8 @@ from .domain import Course, Recording
 from .i18n import t
 from .outputs import doc as D
 from .outputs.common import (course_display, engine_summary, format_duration, format_language_shares, format_ts,
-                             kind_label, lang_tag, language_shares, long_date, normalize_lang, select_parts,
+                             kind_label, lang_tag, language_shares, long_date, main_language, normalize_lang,
+                             select_parts,
                              time_range, transcribed_on, as_transcript_map)
 from .outputs.highlights import LABELS, excerpt
 from .outputs.markdown import PartView, part_views
@@ -338,8 +339,9 @@ def transcript_doc(s: Any, key: str, pack: bool = False) -> D.Doc:
     blocks += _highlights(parts, 1, 16 if pack else 14)
     for p in parts:
         blocks += _part(p, 1, slides=pack)
-    return D.Doc(_lecture_title(course, recs), kicker=f"{course.code or course.name} · "
-                 + ("AI pack" if pack else "Transcript"), meta=_meta(course, parts), blocks=blocks)
+    said = main_language(p.transcript for p in parts if p.transcript)       # (the course's name in its language)
+    return D.Doc(_lecture_title(course, recs), kicker="AI pack" if pack else "Transcript",
+                 course=course.code or course.name, course_lang=said, meta=_meta(course, parts), blocks=blocks)
 
 
 def notes_doc(s: Any, key: str, kind: str) -> D.Doc:
@@ -348,7 +350,7 @@ def notes_doc(s: Any, key: str, kind: str) -> D.Doc:
     if md is None:
         raise ExportError(t("These notes are no longer in the course's folder (moved or deleted). Write them again "
                             "with Study notes."))
-    return D.Doc(_lecture_title(course, recs), kicker=f"{course.code or course.name} · {NOTE_NAMES[kind]}",
+    return D.Doc(_lecture_title(course, recs), kicker=NOTE_NAMES[kind], course=course.code or course.name,
                  subtitle=course_display(course), blocks=[D.Markdown(md, top=1, base=_notes_dir(s, key, kind))],
                  lang="tr" if D.turkish(md) else "en")
 
@@ -472,8 +474,8 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
             md = dollar_math(text) + (" *(stopped)*" if m.get("status") == "stopped" else "")
             blocks.append(D.Markdown(md, top=2))
             texts.append(text)
-    return D.Doc(_chat_title(s, chat), kicker=f"{course.code or course.name} · Chat with {ais}", meta=meta,
-                 blocks=blocks, lang="tr" if D.turkish(" ".join(texts)) else "en")
+    return D.Doc(_chat_title(s, chat), kicker=f"Chat with {ais}", course=course.code or course.name,
+                 meta=meta, blocks=blocks, lang="tr" if D.turkish(" ".join(texts)) else "en")
 
 
 # ------------------------------------------------------------------ writing the files

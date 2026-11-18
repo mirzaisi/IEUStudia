@@ -345,7 +345,7 @@ def test_a_review_sheet_prints_in_the_document_look_next_to_its_markdown(tmp_pat
     pdf = studypack.make_pdf(s, plan)
     assert pdf == md_file.with_suffix(".pdf") and pdf.read_bytes() == b"%PDF fake"
     page = pages[-1]
-    assert "EEE 215 · Review sheet</div><h1>Weeks 1–7 review sheet</h1>" in page and "Made with IEUStudia on 4 Nov 2026" in page
+    assert '<span lang="en">EEE 215</span> · Review sheet</div><h1>Weeks 1–7 review sheet</h1>' in page and "Made with IEUStudia on 4 Nov 2026" in page
     assert "<blockquote>" in page and "☐ Node analysis" in page and "katex" in page
     assert studypack.make_pdf(s, {**plan, "status": "running"}) is None
 

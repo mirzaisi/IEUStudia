@@ -278,8 +278,11 @@ class _Writer:
     def document(self) -> str:
         d = self.doc
         body = []
-        if d.kicker:                                 # (English, in capitals: English rules for them)
-            body.append(self.p(self.r(d.kicker, lang="en-US" if self.lang != "en-US" else ""), "Kicker"))
+        if d.course or d.kicker:                     # in capitals: the course by its own language, the words by English
+            en = "en-US" if self.lang != "en-US" else ""
+            course = self.r(d.course, lang=LANGS.get(d.course_lang, "") if d.course_lang else "") if d.course else ""
+            words = self.r((" · " if d.course else "") + d.kicker, lang=en) if d.kicker else ""
+            body.append(self.p(course + words, "Kicker"))
         body.append(self.p(self.r(d.title), "Title"))
         if d.subtitle:
             body.append(self.p(self.r(d.subtitle), "Subtitle"))

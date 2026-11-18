@@ -582,3 +582,28 @@ def test_the_format_is_remembered_per_place(env):
     p = exports.remembered(s.settings, exports.plan(s, f"day:{env.day}", "transcript", "vtt"))
     assert p["day"] == {"fmt": "pdf", "sub": "vtt", "zip": False, "notes": True} and p["course"]["fmt"] == "md"
     assert exports.prefs(types.SimpleNamespace(export_prefs={"day": {"fmt": "exe", "sub": 3}}))["day"]["fmt"] == "pdf"
+
+
+def test_a_course_without_a_code_is_named_on_the_cover_in_its_own_language():
+    """The cover's course is upper-cased by its own language's rules and the English words after it by English ones:
+    Word gets each run its language, the AI pack's page the language most of the lecture was spoken in."""
+    from studia.export import render_pack_html
+
+    doc = D.Doc("Ders notları", kicker="Study notes", course="Bilgisayar Mühendisliğine Giriş", lang="tr")
+    xml = ET.tostring(check_docx(docx_bytes(doc)), encoding="unicode")
+    kicker = re.search(r"<w:p>(?:(?!</w:p>).)*Kicker.*?</w:p>", xml.replace("ns0:", "w:"), re.S).group(0)
+    assert "Bilgisayar Mühendisliğine Giriş" in kicker and 'w:val="en-US"' in kicker and "tr-TR" not in kicker
+    assert kicker.index("Bilgisayar") < kicker.index('w:val="en-US"') < kicker.index("· Study notes")
+    said = D.Doc("Lecture", kicker="Transcript", course="Bilgisayar Mühendisliğine Giriş", course_lang="tr")
+    assert 'w:val="tr-TR"' in ET.tostring(check_docx(docx_bytes(said)), encoding="unicode").replace("ns0:", "w:")
+    assert '<span lang="tr">Bilgisayar Mühendisliğine Giriş</span> · Transcript</div>' in D.to_html(said)
+    assert "Bilgisayar Mühendisliğine Giriş · Transcript" in D.to_markdown(said)
+
+    course = Course(id="c", title="t", code="", name="Bilgisayar Mühendisliğine Giriş")
+    rec = Recording(delivery_id="a", course_id="c", folder_id="f", folder_path="", name="n",
+                    start=dt.datetime(2026, 10, 28, 12, 15), duration_s=600, viewer_url="v")
+    tr = Transcript(delivery_id="a", segments=[Segment(5, 20, "Kondansatör doluyor.", "tr", 0.9)], duration_s=600,
+                    speech_s=15, language_seconds={"tr": 12, "en": 3}, model="m", device="cpu", engine_version="t",
+                    created_at="2026-10-28T13:00:00")
+    page = render_pack_html(course, [rec], {"a": tr}, {}, {})
+    assert "<span lang='tr'>Bilgisayar Mühendisliğine Giriş</span> · AI pack</div>" in page

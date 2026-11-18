@@ -641,6 +641,21 @@ def test_a_printed_practice_quiz_embeds_its_fonts_and_keeps_turkish_letters(tmp_
     assert "Hangisi bir işlemcinin saat hızını ölçer?" in text and "Cevaplar" in text
 
 
+def test_a_printed_export_cover_writes_the_course_by_its_own_language_and_the_words_by_english(tmp_path):
+    """The Export menu's documents put the course before English words ("· Chat with Claude") on a line in capitals.
+    The whole line was lang="en", so a course without a code, "Bilgisayar Mühendisliğine Giriş", was "BILGISAYAR" on
+    paper. Now the course follows the document (Turkish notes) or what was said (a transcript); the words stay
+    English ("WITH", not "WİTH")."""
+    from studia.outputs import doc as D
+
+    course = "Bilgisayar Mühendisliğine Giriş"
+    notes = D.Doc("Ders notları", kicker="Chat with Claude", course=course, lang="tr", blocks=[D.Para([D.R(TURKISH)])])
+    _check_turkish_on_paper(_printed(tmp_path, D.to_html(notes)), "BİLGİSAYAR MÜHENDİSLİĞİNE GİRİŞ",
+                            "CHAT WITH CLAUDE")
+    said = D.Doc("Lecture", kicker="Transcript", course=course, course_lang="tr", blocks=[D.Para([D.R(TURKISH)])])
+    _check_turkish_on_paper(_printed(tmp_path, D.to_html(said)), "BİLGİSAYAR MÜHENDİSLİĞİNE GİRİŞ · TRANSCRIPT")
+
+
 def test_the_pages_keep_the_documents_casing_and_name_a_class_day_once():
     """The document's own language, not the app's: an English "Definition" isn't uppercased as Turkish
     ("DEFİNİTİON") in a Turkish window, and a Turkish "Kendini sına" is "KENDİNİ SINA" (api.pack_doc's lang)."""
