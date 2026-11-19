@@ -272,6 +272,21 @@ console.log(JSON.stringify(out));
 
 
 @node
+def test_the_practice_tab_without_ai_points_to_the_way_that_works_without_it(tmp_path):
+    out = qp._page(tmp_path, """
+  St.kit = { button: () => "" };
+  S.view = { name: "course", courseId: "c1", tab: "practice" };
+  await St.practice.load("c1"); await tick();
+  S.system.ai = { available: false, provider: "none" };
+  out.off = St.practice.tab(S.courses[0]);
+  S.system.ai = { available: true, provider: "claude", label: "Claude" };
+  out.on = St.practice.tab(S.courses[0]);
+""")
+    assert "No AI on this PC? Export for AI chat gives you a zip" in out["off"] and 'data-act="cx-open" data-id="c1"' in out["off"]
+    assert "Claude writes exam-style questions" in out["on"] and "No AI on this PC?" not in out["on"]
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

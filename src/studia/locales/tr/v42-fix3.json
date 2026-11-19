@@ -10,5 +10,6 @@
   "A class held since the last sync comes with the next one.": "Son eşitlemeden sonra yapılan bir ders, bir sonraki eşitlemeyle gelir.",
   "{n} question you missed in this course, asked in new ways": "Bu derste kaçırdığın {n} soru, yeni biçimlerde",
   "Not the same as the result this box checks:": "Bu kutunun kontrol ettiği sonuçla aynı değil:",
-  "Nothing of these weeks is on this PC yet. Download their files or transcribe their lectures first: a review sheet needs something to read.": "Bu haftalardan henüz hiçbir şey bu bilgisayarda yok. Önce dosyalarını indir ya da derslerini yazıya dök: tekrar özetinin okuyacak bir şeye ihtiyacı var."
+  "Nothing of these weeks is on this PC yet. Download their files or transcribe their lectures first: a review sheet needs something to read.": "Bu haftalardan henüz hiçbir şey bu bilgisayarda yok. Önce dosyalarını indir ya da derslerini yazıya dök: tekrar özetinin okuyacak bir şeye ihtiyacı var.",
+  "No quizzes yet. No AI on this PC? Export for AI chat gives you a zip with ready prompts for ChatGPT or Claude on the web. Paste their answer here and the quiz plays on this tab.": "Henüz deneme sınavı yok. Bu bilgisayarda yapay zeka yok mu? Yapay zeka için dışa aktar, web'deki ChatGPT ya da Claude için hazır talimatlarla bir zip hazırlar. Cevabı buraya yapıştır, deneme sınavı bu sekmede açılır."
 }

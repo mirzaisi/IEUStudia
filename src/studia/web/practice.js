@@ -163,7 +163,9 @@
     const list = p.quizzes.map(quizRow).join("");
     return `<div class="card pr-card"><div class="pr-h">${I("list-checks")}<b>${t("Practice quizzes")}</b><span class="spacer"></span>${St.kit ? St.kit.button(c) : ""}
       <button class="btn primary sm" data-act="qz-new" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("Exam-style questions from your files and lectures, written by {ai}", { ai: St.aiName() }) : St.aiHint())}">${I("plus", "sm")} ${t("New quiz")}</button></div>
-      ${list ? `<div class="pr-list">${list}</div>` : `<p class="pr-empty">${esc(t("No quizzes yet. Pick the weeks (or the next quiz or midterm) and {ai} writes exam-style questions from your files and lectures, each saying where it comes from. It takes a few minutes.", { ai: St.aiName() }))}</p>`}</div>`;
+      ${list ? `<div class="pr-list">${list}</div>` : canAI() || !St.kit ? `<p class="pr-empty">${esc(t("No quizzes yet. Pick the weeks (or the next quiz or midterm) and {ai} writes exam-style questions from your files and lectures, each saying where it comes from. It takes a few minutes.", { ai: St.aiName() }))}</p>`
+        // (no AI here: the way that works without it, ChatGPT or Claude on the web)
+        : `<p class="pr-empty">${esc(t("No quizzes yet. No AI on this PC? Export for AI chat gives you a zip with ready prompts for ChatGPT or Claude on the web. Paste their answer here and the quiz plays on this tab."))} <button class="link" data-act="cx-open" data-id="${esc(c.id)}">${t("Export for AI chat")}</button></p>`}</div>`;
   }
   // why a card set failed, in the language of now: cards.py keeps its own reasons as the English words t() looks up,
   // with {ai} to fill in (any other reason, such as the AI's own, stays as it was said)
