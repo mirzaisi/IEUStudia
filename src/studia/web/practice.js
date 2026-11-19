@@ -46,9 +46,12 @@
   }
   const onTab = (cid) => S.view.name === "course" && S.view.courseId === cid && S.view.tab === "practice";
   // a quiz or card set just started: its row (its bar has the plan's id) scrolled into view, if it is drawn
-  const inView = (id) => {
+  const rowOf = (id) => {
     const bar = id && [...document.querySelectorAll(".pr-prog[data-id]")].find((b) => b.dataset.id === id);
-    const row = bar && (bar.closest(".pr-quiz") || bar);
+    return bar && (bar.closest(".pr-quiz") || bar);
+  };
+  const inView = (id) => {
+    const row = rowOf(id);
     if (!row || !row.scrollIntoView) return;
     row.style.scrollMarginBottom = "72px";             // (room for its wait line, which comes a moment later)
     row.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -817,6 +820,17 @@
   St.onGo.home = (v) => { if (goHome) goHome(v); loadSummary(false); };
   const goCourse = St.onGo.course;
   St.onGo.course = (v) => { if (goCourse) goCourse(v); if (v.tab === "practice") loadCourse(v.courseId); };
+  // opened from another page to show one thing (v.show: a quiz just started, by its id, or "mistakes" from an Exam
+  // room's Go over them): scrolled to once the tab is drawn with the course's details (its heads-up box moves it)
+  const afterCourse = St.after.course;
+  St.after.course = (v) => {
+    if (afterCourse) afterCourse(v);
+    if (!v.show || v.tab !== "practice" || !(S.cd || {})[v.courseId] || !P.course[v.courseId]) return;
+    const weak = v.show === "mistakes" && document.querySelector('[data-act="mq-weak"]');
+    const el = weak ? weak.closest(".mq-card") : v.show !== "mistakes" && rowOf(v.show);
+    v.show = null;
+    if (el && el.scrollIntoView) { el.style.scrollMarginBottom = "72px"; el.scrollIntoView({ block: "center", behavior: "instant" }); }
+  };
   const navBefore = St.navExtra;
   St.navExtra = (v) => {
     const due = (P.summary || {}).due || 0;
@@ -911,8 +925,8 @@
       if (p && r.plan && !p.quizzes.some((x) => x.id === r.plan.id)) p.quizzes.unshift({ ...r.plan, weeks: (r.plan.scope || {}).weeks || [], days: (r.plan.scope || {}).days || [], focus: (r.plan.scope || {}).focus || "", questions: (r.plan.scope || {}).questions || 0, tries: 0 });
       // no toast: the quiz's own row says it is being written and that the app can be used meanwhile (at 1024×700 the
       // toast covered the row's Stop button); the row is brought into view instead
-      if (onTab(cid)) renderView(); else go({ name: "course", courseId: cid, tab: "practice" });
-      inView(r.plan && r.plan.id);
+      // (from another page, an Exam room: once the course page is drawn with it, not before)
+      if (onTab(cid)) { renderView(); inView(r.plan && r.plan.id); } else go({ name: "course", courseId: cid, tab: "practice", show: r.plan && r.plan.id });
       loadCourse(cid);
     },
     "qz-play": (el) => playQuiz(el.dataset.id),

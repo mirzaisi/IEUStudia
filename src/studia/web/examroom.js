@@ -354,7 +354,7 @@
     "er-day-clear": async () => saved(await call("exam_set_day", ER.cid, ER.key, "")),
     "er-tray-on": () => { try { localStorage.setItem("studia-room-tray", "1"); } catch (e) { /* private mode */ } if (A["bg-on"]) A["bg-on"](); renderView(); },
     "er-tray-no": () => { try { localStorage.setItem("studia-room-tray", "1"); } catch (e) { /* private mode */ } renderView(); },
-    "er-practice": (el) => go({ name: "course", courseId: el.dataset.cid, tab: "practice" }),
+    "er-practice": (el) => go({ name: "course", courseId: el.dataset.cid, tab: "practice", show: "mistakes" }),    // (its Mistakes card: practice.js)
   });
 
   // ------------------------------------------------------------------ browser preview (mock)
