@@ -223,6 +223,29 @@ def test_a_week_s_menu_offers_its_cards_only_when_it_has_some(tmp_path):
 
 
 @node
+def test_a_review_sheet_needs_something_to_read_and_doesn_t_offer_an_exam_that_is_over(tmp_path):
+    """DEMO 210's Final room: 'Write review sheet' was enabled with 0 files and 0 lectures read, and 'Prepare for'
+    offered the past Midterm next to the Final."""
+    out = room_run(tmp_path, """
+  const MID = { ...FINAL, key: "midterm:0", kind: "midterm", name: "Midterm", week: 8, weeks: [1, 2, 3, 4, 5, 6, 7, 8], ahead: false, los: [] };
+  const weeks = (ready) => [9, 10].map((no) => ({ no, topic: "T" + no, current: no === 10, past: no < 10, start: "x", missing: [], todo_days: [],
+    files: 2, files_ready: ready, lectures: 1, lectures_done: 0, days: [] }));
+  spy("plan_options", { ok: true, model: "sonnet", ai: { available: true, can_plans: true }, assessments: [MID, { ...FINAL, ahead: true }], general: [], weeks: weeks(0) });
+  spy("plan_estimate", { ok: true, estimate: null });
+  await A["plan-new"]({ dataset: { id: "c", kind: "prep", focus: "Final Exam", key: FINAL.key, weeks: "9,10" } }); await tick();
+  out.bare = overlay();
+  spy("plan_options", { ok: true, model: "sonnet", ai: { available: true, can_plans: true }, assessments: [MID, { ...FINAL, ahead: true }], general: [], weeks: weeks(1) });
+  St.closeModal();
+  await A["plan-new"]({ dataset: { id: "c", kind: "prep", focus: "Final Exam", key: FINAL.key, weeks: "9,10" } }); await tick();
+  out.some = overlay();
+""")
+    go = lambda h: h.split('data-act="pd-go"')[1].split(">")[0]  # noqa: E731
+    assert "Nothing of these weeks is on this PC yet." in out["bare"] and "disabled" in go(out["bare"])
+    assert "<b>Midterm</b>" not in out["bare"] and "<b>Final Exam</b>" in out["bare"]
+    assert "Nothing of these weeks is on this PC yet." not in out["some"] and "disabled" not in go(out["some"])
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

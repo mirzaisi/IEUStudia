@@ -416,6 +416,10 @@
     const empty = picked.length > 0 && picked.every(examOnly);           // a plan from nothing used the AI plan for it
     const ai = r.ai || {};
     const prep = sc.kind === "prep";
+    // a review sheet with nothing of its weeks on this PC would be written from the syllabus's topics alone
+    const bare = prep && picked.length > 0 && !empty && !picked.some((w) => w.files_ready || w.lectures_done) && !(sc.files || []).length;
+    // (an assessment that is over isn't one to prepare for, but the one this plan was made for stays)
+    const ahead = (r.assessments || []).map((a, i) => [a, i]).filter(([a]) => a.ahead !== false || sc.focus === a.name);
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
     const kinds = [["videos", "youtube", t("Video study plan"), t("Finds YouTube videos for these weeks and checks each one's transcript (captions) to see what it really teaches.")],
       ["prep", "cap", t("Exam review sheet"), t("A short written review: key ideas per learning outcome, a formula sheet, practice questions with solutions.")],
@@ -428,7 +432,7 @@
       ${D.parent ? "" : `<div class="field"><div class="cp-modes">${kinds.map(([v, ic, label, desc]) => `<button type="button" class="cp-mode ${sc.kind === v ? "on" : ""}" data-act="pd-kind" data-val="${v}">
         <span class="cp-mode-t">${I(ic, "sm")} ${label}</span><span class="cp-mode-d">${desc}</span></button>`).join("")}</div></div>
       <div class="field"><label>${t("Course")}</label><select class="input" data-act="pd-course">${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === D.courseId ? "selected" : ""}>${esc(c.code)} — ${esc(c.display_name)}</option>`).join("")}</select></div>`}
-      ${r.assessments.length ? `<div class="field"><label>${t("Prepare for")}</label><div class="pd-picks">${r.assessments.map((a, i) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
+      ${ahead.length ? `<div class="field"><label>${t("Prepare for")}</label><div class="pd-picks">${ahead.map(([a, i]) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
         <b>${esc(a.name)}</b><span>${t("week {n}", { n: a.week })}${a.los.length ? ` · LO${a.los.join(", LO")}` : ""}</span></button>`).join("")}
         <button class="pd-pick ${!sc.focus ? "on" : ""}" data-act="pd-assess" data-i="-1"><b>${t("Just these weeks")}</b><span>${t("no quiz in mind")}</span></button></div></div>` : ""}
       <div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: sel.size })}</span><span class="cp-tools">${weeks.some((w) => w.current) ? `<button type="button" class="btn ghost sm" data-act="pd-thisweek">${t("This week")}</button>` : ""}<button type="button" class="btn ghost sm" data-act="pd-clear">${t("Clear")}</button></span></label>
@@ -437,7 +441,8 @@
           <span class="t">${esc(w.topic || "—")}${w.current ? ` <span class="pill now">${t("this week")}</span>` : ""}</span>
           <span class="st"><span class="${!w.files ? "" : w.files_ready === w.files ? "ok" : "miss"}" title="${t("Slides and PDFs on this PC / listed on IEULearn")}">${I("file", "xs")}${w.files ? `${w.files_ready}/${w.files}` : "–"}</span>
             <span class="${!w.lectures ? "" : w.lectures_done === w.lectures ? "ok" : "miss"}" title="${t("Lectures transcribed / recorded")}">${I("video", "xs")}${w.lectures ? `${w.lectures_done}/${w.lectures}` : "–"}</span></span></label>`).join("")}</div>
-        ${empty ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("An exam week has no files or lectures of its own: pick the weeks the exam covers.")}</span></div>` : ""}</div>
+        ${empty ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("An exam week has no files or lectures of its own: pick the weeks the exam covers.")}</span></div>` : ""}
+        ${bare ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("Nothing of these weeks is on this PC yet. Download their files or transcribe their lectures first: a review sheet needs something to read.")}</span></div>` : ""}</div>
       ${gen ? `<div class="field"><div class="pk-material">${gen}</div></div>` : ""}
       ${lists.map((f) => `<div class="note-sm pd-list">${I("users", "sm")}<span>${esc(f.name)}: ${St.picks.fileSub({ ...f, students: true }, "")}</span></div>`).join("")}
       ${missing.length || todo.length ? `<div class="pd-gaps">
@@ -460,7 +465,7 @@
       </div>
       <div class="cp-foot"><div class="cp-cost" id="pd-cost">${costHTML()}</div>
         <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
-          <button class="btn primary" data-act="pd-go" ${sel.size && !empty && ai.available && ai.can_plans !== false && !D.starting ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
+          <button class="btn primary" data-act="pd-go" ${sel.size && !empty && !bare && ai.available && ai.can_plans !== false && !D.starting ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
     $(".modal").classList.add("pd");
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keepBody;
     const nw = $(".pd-weeks2"); if (nw) nw.scrollTop = keepWeeks;
