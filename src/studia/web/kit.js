@@ -119,7 +119,8 @@
       if (St.practice && St.practice.refresh) St.practice.refresh(cid);
     },
     "kit-play": () => { const id = K && K.done ? K.done.id : ""; K = null; closeModal(); if (id && A["qz-play"]) A["qz-play"]({ dataset: { id } }); },
-    "kit-study": () => { const cid = K ? K.cid : ""; K = null; closeModal(); if (cid && St.practice && St.practice.study) St.practice.study(cid); },
+    // (the cards just pasted, all of them: not the course's day of cards, which the new-card limit may have used up)
+    "kit-study": () => { const cid = K ? K.cid : "", set = K && K.done ? K.done.id : ""; K = null; closeModal(); if (cid && St.practice && St.practice.study) St.practice.study(cid, set ? { set } : {}); },
   });
   St.kit = { button, open, onPaste };
 

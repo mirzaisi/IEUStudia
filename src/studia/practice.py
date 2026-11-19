@@ -851,18 +851,23 @@ class PracticeApi:
 
     @_safe
     def cards_session(self, course_id: str, weeks: Optional[list[int]] = None,
-                      day_keys: Optional[list[str]] = None, cram: bool = False) -> dict[str, Any]:
+                      day_keys: Optional[list[str]] = None, cram: bool = False, set_id: str = "") -> dict[str, Any]:
         """The cards to study now (``weeks``: only those weeks'; ``day_keys``: only those lectures' cards, all of
-        them: cards.session), how many such cards there are in all (``total``) and how many are set aside
-        (``aside``); ``cram``: the run leaves the schedule alone (the Exam room's, or a lecture whose cards are all
-        learnt and not due yet)."""
+        them: cards.session; ``set_id``: only the cards of that card set, all of them too: the paste's "Study now"),
+        how many such cards there are in all (``total``) and how many are set aside (``aside``); ``cram``: the run
+        leaves the schedule alone (the Exam room's, or a lecture whose cards are all learnt and not due yet)."""
         from .cards import picked, session
 
         deck = self._deck(course_id)
         weeks_ = {int(w) for w in weeks or [] if str(w).isdigit()} or None
         days = {str(k) for k in day_keys or [] if k} or None
         fronts = None
-        if days:
+        if set_id:
+            ids = {c.get("id") for c in ((self._s.lib.plan(str(set_id)) or {}).get("result") or {}).get("cards") or []}
+            deck = [c for c in deck if c["id"] in ids]
+            cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,
+                            cram=bool(cram), whole=True)
+        elif days:
             cards, (_, fronts) = self._lecture_session(course_id, days, deck, weeks_, bool(cram))
         else:
             cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,

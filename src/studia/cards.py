@@ -507,7 +507,7 @@ def week_counts(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Opti
 def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
             weeks: Optional[set[int]] = None, new_per_day: Optional[int] = None,
             days: Optional[set[str]] = None, cram: bool = False,
-            fronts: Optional[set[str]] = None) -> list[dict[str, Any]]:
+            fronts: Optional[set[str]] = None, whole: bool = False) -> list[dict[str, Any]]:
     """The cards to study now, in order: the ones in learning that are due, the reviews due today (the most overdue
     first), then today's new cards; each with its state and what each answer would do. ``weeks``, ``days``: only the
     cards of those weeks, or of those lectures (picked: their own flashcards, ``fronts``, and the questions missed
@@ -516,7 +516,8 @@ def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
     alone (grade).
     A lecture's cards (``days``, its page's "Practise N cards") always come, all of them: the ones due and all its new
     ones (the student asked for this lecture, so the day's new-card limit doesn't hold them back), then the ones not
-    due yet, each "cram" (its answer leaves its schedule as it is)."""
+    due yet, each "cram" (its answer leaves its schedule as it is). So do ``cards`` given as a set of their own
+    (``whole``: the flashcards just pasted, their "Study now")."""
     now = now or dt.datetime.now()
     st = states(lib, course_id)
     end = study_day(now)[1].isoformat(timespec="seconds")
@@ -528,7 +529,7 @@ def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
                  key=lambda c: (int(st[c["id"]]["step"]) < 0, st[c["id"]]["due"]))
     fresh = [c for c in pick if c["id"] not in st]
     rest: list[dict[str, Any]] = []
-    if days:
+    if days or whole:
         taken = {c["id"] for c in due + fresh}
         rest = [early(c) for c in pick if c["id"] not in taken]
     else:

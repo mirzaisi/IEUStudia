@@ -514,6 +514,29 @@ def test_sources_as_web_chats_write_them():
     assert kit.normal_source({"ref": "F1", "page": 2}, names) == {"ref": "F1", "page": 2}
 
 
+def test_study_now_after_a_paste_goes_through_the_pasted_cards_past_the_days_new_card_limit(env, monkeypatch):
+    """"Study now" studied the course's day of cards: with today's new cards used up it said "Nothing to study in
+    this course today" right after 4 cards were added, else older unstudied cards came first."""
+    from studia.api import Api
+
+    a = Api.__new__(Api)
+    a._services = env.svc
+    a._ready = __import__("threading").Event()
+    a._ready.set()
+    monkeypatch.setattr(Api, "_deck", lambda self, cid: cards.deck(env.svc, cid))
+    env.settings.cards_per_day = 3
+    export(env, weeks=[2, 3])
+    first = a.quiz_import("c", "".join(f"Front {i}\tBack {i}\n" for i in range(3)))
+    for c in a.cards_session("c")["cards"]:
+        a.cards_grade("c", c["id"], "easy")
+    second = a.quiz_import("c", "".join(f"Card {i}\tAnswer {i}\n" for i in range(4)))
+    assert first["cards"] == 3 and second["cards"] == 4
+    assert a.cards_session("c")["cards"] == []                          # (the day's new cards: all taken)
+    s = a.cards_session("c", [], [], False, second["id"])
+    assert [c["q"] for c in s["cards"]] == [f"Card {i}" for i in range(4)] and s["total"] == 4
+    assert [c["q"] for c in a.cards_session("c", [], [], False, first["id"])["cards"]] == [f"Front {i}" for i in range(3)]
+
+
 def test_the_api_methods(env, monkeypatch):
     from studia.api import Api
 

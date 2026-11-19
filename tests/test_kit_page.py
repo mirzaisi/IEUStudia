@@ -187,6 +187,10 @@ require(%(kit)s);
   await A["kit-undo"](); await tick();
   out.undo = calls.filter((c) => c[0] === "cards_set_delete").pop();
   out.undoShown = shown.html;
+  paste("front\tback"); await tick(); await tick();                // Study now: the cards just pasted, all of them
+  answers.cards_session = { ok: true, cards: [], total: 0, aside: 0 };
+  A["kit-study"](); await tick();
+  out.study = calls.filter((c) => c[0] === "cards_session").pop(); out.studyToast = toasts.slice(-1)[0];
   answers.quiz_import = { ok: false, error: "IEUStudia found no quiz and no flashcards in what you pasted." };
   paste("hello there"); await tick(); await tick();
   out.failed = shown.html;
@@ -239,6 +243,8 @@ def test_a_quiz_or_cards_pasted_on_the_practice_tab(tmp_path):
     assert "2 were in your deck already, or pasted twice." in cards and 'data-act="kit-study"' in cards
     assert out["undo"] == ["cards_set_delete", "p2"] and out["undoShown"] == ""
     assert ["The pasted cards were taken out again.", "info", ""] in out["toasts"]
+    assert out["study"] == ["cards_session", "c", [], [], False, "p2"]
+    assert out["studyToast"][0] == "The pasted cards aren't in your deck any more."
     assert "IEUStudia found no quiz and no flashcards" in out["failed"] and "hello there" in out["failed"]
     assert "ChatGPT ya da Claude'dan yapıştır" in out["turkish"] and "Alıştırma'ya ekle" in out["turkish"]
     assert "ChatGPT ya da Claude'dan yapıştır" in out["tabTr"]

@@ -619,11 +619,13 @@
   // "Cram", or a week with nothing due today): every card of those weeks, due or not; the schedule is left as it was
   // (cards.py). A lecture whose cards are all learnt and not due yet comes as such a run too (r.cram)
   async function study(cid, o = {}) {
-    const r = await call("cards_session", cid, o.weeks || [], o.days || [], ...(o.cram ? [true] : []));
+    // (o.set: the flashcards just pasted, all of them: kit.js's "Study now")
+    const r = await call("cards_session", cid, o.weeks || [], o.days || [], ...(o.cram || o.set ? [!!o.cram] : []), ...(o.set ? [o.set] : []));
     if (!r.ok) { toast(r.error, "error"); return; }
     if (!r.cards.length) {
       const cram = o.weeks && !o.cram && r.total ? { label: t("Go through them all"), act: "fc-cram", data: { cid, weeks: o.weeks.join(",") } } : undefined;
-      toast(o.days ? (r.aside ? t("This lecture's cards are set aside. Bring them back on the Practice tab.") : t("This lecture's cards aren't in your deck yet."))
+      toast(o.set ? t("The pasted cards aren't in your deck any more.")
+        : o.days ? (r.aside ? t("This lecture's cards are set aside. Bring them back on the Practice tab.") : t("This lecture's cards aren't in your deck yet."))
         : o.weeks ? (r.total ? t("Nothing from {weeks} to study today.", { weeks: weekSpan(o.weeks) }) : t("No flashcards from {weeks} yet.", { weeks: weekSpan(o.weeks) }))
           : t("Nothing to study in this course today."), "info", cram);
       return;
