@@ -156,18 +156,21 @@
     const rel = code === "today" ? t("today") : code === "this-week" ? t("this week") : code === "next-week" ? t("next week") : t("in {n} weeks", { n });
     return { w, code, rel, past: false, now: n <= 0, days: left.map((c) => c.date) };
   }
+  // the day the student set in its Exam room ("Set the exact day": quizzes.assessments' "on"), "" for none
+  const ownDay = (d, key) => { const a = ((d && d.assessments) || []).find((x) => x.key === key); return a && a.on && a.on.from === "yours" ? a.on.date : ""; };
   // an assessment of the plan: the day (and time) an announcement gave for it, as the calendar shows it ("Quiz 2 is
-  // on Friday, 6 November"), else its week. Done once that day is over.
+  // on Friday, 6 November"), else the day the student set, else its week. Done once that day is over.
   function planRel(d, e) {
-    if (!e.date) return weekRel(d, e.week, e.kind);
+    const date = e.date || ownDay(d, e.key || `${e.kind}:${e.no}`);
+    if (!date) return weekRel(d, e.week, e.kind);
     const today = localToday();
-    const w = d.weeks.find((x) => x.start && e.date >= x.start && e.date <= (x.end || x.start)) || (e.week ? d.weeks.find((x) => x.no === e.week) : undefined);
-    const at = { w, date: e.date, time: e.time || "" };
-    if (e.date < today) return { ...at, code: "done", rel: t.c("assessment", "done"), past: true };
-    const n = Math.round((monday(e.date) - monday(today)) / 6048e5);
-    const code = e.date === today ? "today" : n <= 0 ? "this-week" : n === 1 ? "next-week" : "later";
+    const w = d.weeks.find((x) => x.start && date >= x.start && date <= (x.end || x.start)) || (e.week ? d.weeks.find((x) => x.no === e.week) : undefined);
+    const at = { w, date, time: e.date ? e.time || "" : "" };
+    if (date < today) return { ...at, code: "done", rel: t.c("assessment", "done"), past: true };
+    const n = Math.round((monday(date) - monday(today)) / 6048e5);
+    const code = date === today ? "today" : n <= 0 ? "this-week" : n === 1 ? "next-week" : "later";
     const rel = code === "today" ? t("today") : code === "this-week" ? t("this week") : code === "next-week" ? t("next week") : t("in {n} weeks", { n });
-    return { ...at, code, rel, past: false, now: n <= 0, days: [e.date] };
+    return { ...at, code, rel, past: false, now: n <= 0, days: [date] };
   }
   St.planRel = planRel;              // (the tests)
   const dayAt = (r) => (r.date ? dmw(r.date) + (r.time ? `, ${r.time}` : "") : "");     // Fri 6 Nov, 10:00
@@ -186,18 +189,23 @@
     return ((d && d.alerts && d.alerts.plan) || []).filter((e) => !planRel(d, e).past);
   }
   // the syllabus' exam weeks this week and next that no announcement covers (a course whose lecturer posted no
-  // assessment plan): Coming up lists them too, as the calendar and the reminders do; a click opens that week
+  // assessment plan): Coming up lists them too, as the Calendar and the reminders do, as the Exam room has them
+  // (quizzes.assessments: a two-week exam period is one, one a week from an announced exam is that exam), on the day
+  // set in its Exam room if one was; a click opens its room
   function examWeeks(d) {
-    const plan = (d && d.alerts && d.alerts.plan) || [];
-    return ((d && d.weeks) || []).filter((w) => w.exam && w.start && !plan.some((e) => e.kind !== "quiz" && e.week === w.no))
-      .map((w) => ({ w, name: w.exam_label || t("Exam"), r: weekRel(d, w.no, "exam") })).filter((x) => x.r.now || x.r.code === "next-week");
+    return ((d && d.assessments) || []).filter((e) => e.syllabus).map((e) => {
+      const first = e.first_week || e.week, own = ownDay(d, e.key);
+      let r = own ? planRel(d, { ...e, date: own }) : weekRel(d, first, "exam");
+      if (!own && r.past && first !== e.week) r = weekRel(d, e.week, "exam");          // (a period's second week)
+      return { w: r.w || d.weeks.find((x) => x.no === first), name: e.name, key: e.key, r };
+    }).filter((x) => x.w && (x.r.now || x.r.code === "next-week"));
   }
   St.examWeeks = examWeeks;          // (the tests)
-  // a quiz or an exam opens its Exam room (examroom.js: "ready-open", by its name), a syllabus's exam week too (by
-  // its label and week: examroom.find gives the exam it is part of)
+  // a quiz or an exam opens its Exam room (examroom.js: "ready-open", by its key or name), a syllabus's exam week on
+  // a week card too (by its label and week: examroom.find gives the exam it is part of)
   const examKey = (w) => `syllabus:${w.exam_label || t("Exam")}:${w.no}`;
-  const examPill = (c, x) => `<button class="plan-pill ${x.r.now ? "now" : ""} kind-midterm" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(examKey(x.w))}" data-name="${esc(x.name)}" title="${esc(range(x.w.start, x.w.end))}">
-      <b>${esc(x.name)}</b><span>${t("week {n}", { n: x.w.no })}${x.r.rel ? ` · ${esc(x.r.rel)}` : ""}</span></button>`;
+  const examPill = (c, x) => `<button class="plan-pill ${x.r.now ? "now" : ""} kind-midterm" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(x.key)}" data-name="${esc(x.name)}" title="${esc(x.r.date ? dayAt(x.r) : range(x.w.start, x.w.end))}">
+      <b>${esc(x.name)}</b><span>${x.r.date ? esc(dayAt(x.r)) : t("week {n}", { n: x.w.no })}${x.r.rel ? ` · ${esc(x.r.rel)}` : ""}</span></button>`;
   const readyTip = (d, e) => t("Open its Exam room: what it covers, what is still missing and how to practise") + (e.los.length ? "\n" + loTitle(d, e.los) : "");
   function planPill(c, d, e) {
     const r = planRel(d, e);
@@ -383,7 +391,7 @@
     const sub = [range(w.start, w.end), unitTitle && unitTitle !== title ? `IEULearn: ${unitTitle}` : (w.topic_tr && w.topic_tr !== title ? w.topic_tr : "")].filter(Boolean).join(" · ");
     const due = ((d.alerts && d.alerts.plan) || []).filter((e) => e.week === w.no);
     // an assessment's pill opens its Exam room ("ready-open": examroom.js)
-    const duePills = due.map((e) => `<button class="pill due kind-${e.kind} pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: (e.sources[0] || {}).title || "" }))}">${I("cap")}${esc(e.name)}${e.date ? ` · ${esc(dayAt({ date: e.date, time: e.time }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</button>`).join("");
+    const duePills = due.map((e) => `<button class="pill due kind-${e.kind} pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: (e.sources[0] || {}).title || "" }))}">${I("cap")}${esc(e.name)}${e.date || ownDay(d, `${e.kind}:${e.no}`) ? ` · ${esc(dayAt({ date: e.date || ownDay(d, `${e.kind}:${e.no}`), time: e.date ? e.time : "" }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</button>`).join("");
     const asgPills = St.calWeekPills ? St.calWeekPills(d, w) : "";          // the week's assignments (calendar.js)
     const quiet = !w.current && !mats.length && !w.days.length && !due.length;
     const foldable = w.past && !w.current && !quiet;
@@ -583,7 +591,7 @@
     const soon = courses.flatMap((c) => {
       const d = S.cd[c.id];
       return d ? [...upcoming(d).map((e) => ({ c, d, e, r: planRel(d, e) })).filter((x) => x.r.now || x.r.code === "next-week"),
-        ...examWeeks(d).map((x) => ({ c, d, e: { name: x.name, los: [] }, r: x.r, w: x.w }))] : [];
+        ...examWeeks(d).map((x) => ({ c, d, e: { name: x.name, key: x.key, los: [] }, r: x.r, w: x.w }))] : [];
     }).sort((x, y) => (y.r.now ? 1 : 0) - (x.r.now ? 1 : 0));
     const twin = (c) => S.courses.filter((x) => x.code === c.code).length > 1;     // FENG 495 twice: which one
     const dateLine = t("{weekday}, {date}", { weekday: t.date(now, "weekday"), date: t.date(now, "dmy") });   // Tue, 27 Oct 2026 · 27 Eki 2026 Sal
@@ -619,7 +627,7 @@
     if (soon.length || later) {
       h += `<div class="section-title">${I("cap")} ${t("Coming up")} <span class="dim sm">${t("this week and next")}</span><span class="spacer"></span>
           <button class="btn ghost sm" data-act="go" data-view="calendar">${I("calendar-days", "sm")} ${t("Calendar")} ${I("chevron-right", "sm")}</button></div>
-        <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}">
+        <div class="soon">${soon.map(({ c, d, e, r }) => `<button class="soon-card ${r.now ? "now" : ""}" data-act="ready-open" data-cid="${esc(c.id)}"${e.key ? ` data-key="${esc(e.key)}"` : ""} data-name="${esc(e.name)}" title="${esc(readyTip(d, e))}">
           <span class="soon-code">${esc(c.code)}${twin(c) && c.section ? ` · ${esc(c.section)}` : ""}</span><b>${esc(e.name)}</b><span class="soon-when">${esc(r.rel)}${r.code === "today" ? (r.time ? ` · ${esc(r.time)}` : "") : r.date || r.w ? ` · ${esc(relWhen(r))}` : ""}</span>
           ${e.los.length ? `<span class="lo">${esc(loLabel(e.los))}</span>` : ""}</button>`).join("")}${later}</div>`;
     }
@@ -673,6 +681,7 @@
   // ------------------------------------------------------------------ wiring
   St.views.course = coursePage;
   St.hue = hue;                      // (the search's results: a course's colour on its code)
+  St.reloadCourse = (cid) => loadCourse(cid, true);    // (the Exam room: a day or weeks set there show on Home at once)
   St.views.home = homeView;
   St.onGo.course = (v) => {
     if (!v.tab && v.jumpWeek === undefined) { v.jumpWeek = "now"; St.after.course(v); }   // this week, not week 1

@@ -4,7 +4,8 @@ assignment deadlines and the student's own entries. The reminders (agent.reminde
 Lecturers announce assessments by week ("Quiz 2: week 5") and now and then by day ("Quiz 2 on Friday, 6 November").
 A quiz announced for a week is held in one of the course's classes that week, so it becomes an all-day event over
 those class days; a midterm or final follows the exam schedule and spans its week. One announced for a day is on
-that day (at its time, when one was given). Exam weeks from the syllabus are added when no announcement covers them.
+that day (at its time, when one was given), and so is one whose day the student set in its Exam room. Exam weeks
+from the syllabus are added when no announcement covers them (as the Exam room has them: listed).
 An assignment is due at the time IEULearn gives (only the day, when IEULearn gave no time). Each event carries the
 reminders chosen on the Calendar page. The event ids are stable, so importing a newer file again updates the events
 instead of duplicating them (in apps that support it, such as Outlook).
@@ -76,6 +77,23 @@ def _course(lib: Any, settings: Settings, course: Any, cv: Optional[dict[str, An
             "first": first, "times": times}
 
 
+def listed(lib: Any, course_id: str, d: dict[str, Any]) -> list[dict[str, Any]]:
+    """A course's quizzes and exams as the Calendar page, the .ics file and the reminders list them, the same ones the
+    Exam room has (quizzes.assessments): the ones the announcements gave (alerts.assessment_plan) and the syllabus's
+    exam weeks no announcement covers, a two-week exam period as one ("first_week" its first; one a week away from
+    an announced exam of its kind is that exam: quizzes._syllabus_exams). Each with its "key" (quizzes.assessment_key)
+    and "yours": the day the student set in its Exam room ("" when not, or when an announcement gave the day)."""
+    from .examroom import own_day
+    from .quizzes import _syllabus_exams, assessment_key
+
+    plan = list((d.get("alerts") or {}).get("plan") or [])
+    out = []
+    for e in plan + _syllabus_exams(d, [e for e in plan if e.get("week")]):
+        key = assessment_key(e)
+        out.append({**e, "key": key, "yours": "" if e.get("date") else own_day(lib, course_id, key)})
+    return out
+
+
 def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None) -> list[dict[str, Any]]:
     """The assessments still ahead (this week included), soonest first."""
     since = (today or istanbul_now().date()).isoformat()
@@ -83,45 +101,39 @@ def assessment_events(lib: Any, settings: Settings, today: dt.date | None = None
     for c in lib.courses():
         d = _course(lib, settings, c)
         weeks = {w["no"]: w for w in d["weeks"]}
-        covered: set[int] = set()
-        for e in (d.get("alerts") or {}).get("plan") or []:
+        for e in listed(lib, c.id, d):
             w = weeks.get(e.get("week") or 0)
+            first = weeks.get(e.get("first_week") or 0) or w          # (a two-week exam period: from its first week)
             src = e["sources"][0]["title"] if e.get("sources") else ""
             los = [f"LO{n}: {d['outcomes_en'][n - 1]}" if n <= len(d["outcomes_en"]) else f"LO{n}" for n in e["los"]]
-            base = {"uid": f"{c.id}-{e['kind']}-{e['no']}", "course": d["code"], "name": e["name"], "course_id": c.id,
-                    "kind": e["kind"], "los": list(e["los"])}
-            if e.get("date"):                                   # an announcement gave the day
-                if w:
-                    covered.add(w["no"])
+            syllabus = bool(e.get("syllabus"))
+            base = {"uid": f"{c.id}-syllabus-week{first['no']}" if syllabus and first else f"{c.id}-{e['kind']}-{e['no']}",
+                    "course": d["code"], "name": e["name"], "course_id": c.id, "key": e["key"],
+                    "kind": "exam" if syllabus else e["kind"], "los": list(e["los"])}
+            about = ([f"Week {first['no']}" + (f"–{w['no']}" if w and w is not first else "") + f" in the syllabus: {e['name']}."]
+                     if syllabus and first else
+                     [*([f"Covers {', '.join(los)}"] if los else []), *([f"As announced in “{src}” on IEULearn."] if src else [])])
+            day = e.get("date") or e.get("yours")
+            if day:                                # an announcement gave the day, or the student set it in the Exam room
                 at = f" at {e['time']}" if e.get("time") else ""
-                out.append({**base, "classes": [], "ends": [], "start": e["date"], "end": e["date"], "date": e["date"],
-                            "time": e.get("time") or "", "week": w["no"] if w else e.get("week"),
-                            "notes": [f"On {_long(e['date'])}{at}, as announced.",
-                                      *([f"Covers {', '.join(los)}"] if los else []),
-                                      *([f"As announced in “{src}” on IEULearn."] if src else [])]})
+                said = f"On {_long(day)}{at}, as announced." if e.get("date") else f"On {_long(day)}, the day you set in its Exam room."
+                out.append({**base, "classes": [], "ends": [], "start": day, "end": day, "date": day,
+                            "time": (e.get("time") or "") if e.get("date") else "", "yours": not e.get("date"),
+                            "week": (first or {}).get("no") or e.get("week"), "notes": [said, *about]})
                 continue
-            if not w or not w["start"]:
+            if not first or not first["start"]:
                 continue
-            covered.add(w["no"])
             # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
             held = (w.get("classes") or []) if e["kind"] == "quiz" else []
             classes, ends = [x["date"] for x in held], [x["end"] for x in held]
             when = (f"Probably in class on {_days(classes)}; the exact day was not announced: check IEULearn."
                     if classes else "The exact day was not announced: check IEULearn." if e["kind"] == "quiz"
                     else "The exact day and time come from the exam schedule: check IEULearn.")
+            topic = "" if syllabus else (f" ({w['topic_en'] or w['topic_tr']})" if w["topic_en"] or w["topic_tr"] else "")
             out.append({**base, "classes": classes, "ends": ends,
-                        "start": classes[0] if classes else w["start"],
-                        "end": classes[-1] if classes else w["end"] or w["start"], "week": w["no"],
-                        "notes": [f"Week {w['no']}" + (f" ({w['topic_en'] or w['topic_tr']})" if w["topic_en"] or w["topic_tr"] else ""),
-                                  *([f"Covers {', '.join(los)}"] if los else []),
-                                  *([f"As announced in “{src}” on IEULearn."] if src else []), when]})
-        for w in d["weeks"]:
-            if w["exam"] and w["start"] and w["no"] not in covered:
-                out.append({"uid": f"{c.id}-syllabus-week{w['no']}", "course": d["code"], "name": w["exam_label"] or "Exam",
-                            "course_id": c.id, "kind": "exam", "classes": [], "ends": [], "los": [],
-                            "start": w["start"], "end": w["end"] or w["start"], "week": w["no"],
-                            "notes": [f"Week {w['no']} in the syllabus: {w['exam_label']}.",
-                                      "The exact day and time come from the exam schedule: check IEULearn."]})
+                        "start": classes[0] if classes else first["start"],
+                        "end": classes[-1] if classes else (w or first)["end"] or (w or first)["start"], "week": first["no"],
+                        "notes": [*([] if syllabus else [f"Week {w['no']}{topic}"]), *about, when]})
     out = [e for e in out if e["end"] >= since]
     out.sort(key=lambda e: (e["start"], e["course"]))
     return out

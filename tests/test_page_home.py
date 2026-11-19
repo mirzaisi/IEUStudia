@@ -139,11 +139,19 @@ def test_coming_up_has_the_syllabus_exam_weeks_no_announcement_covers(tmp_path):
     out = _page(tmp_path, r"""
       const iso = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
       const week = (no, from, label) => ({ no, start: iso(from), end: iso(from + 6), exam: !!label, exam_label: label || "", past: from < -6 });
-      const weeks = [week(7, -7, "Midterm"), week(8, 0, "Midterm Exam"), week(9, 7, ""), week(15, 49, "Final")];
-      const names = (plan) => St.examWeeks({ weeks, alerts: { plan } }).map((x) => [x.name, x.w.no, x.r.now]);
-      out.none = names([]);
-      out.quiz = names([{ kind: "quiz", no: 2, name: "Quiz 2", week: 8, los: [], sources: [] }]);
-      out.announced = names([{ kind: "midterm", no: 0, name: "Midterm", week: 8, los: [], sources: [] }]);""")
-    assert out["none"] == [["Midterm Exam", 8, True]]          # not last week's, nor the final weeks away
-    assert out["quiz"] == [["Midterm Exam", 8, True]]          # a quiz that week doesn't cover the midterm
+      const weeks = [week(7, -7, "Midterm"), week(8, 0, "Midterm Exam"), week(9, 7, ""), week(15, 49, "Final"),
+        week(16, 56, "Final")];
+      // the syllabus's exams as the Exam room has them (quizzes.assessments: folded and merged there)
+      const exam = (name, w, first, on) => ({ key: `syllabus:${name}:${w}`, kind: /final/i.test(name) ? "final" : "midterm", name, week: w,
+        first_week: first, syllabus: true, los: [], on: on || { date: "", from: "week" } });
+      const names = (assessments) => St.examWeeks({ weeks, alerts: { plan: [] }, assessments }).map((x) => [x.name, x.w.no, x.r.now, x.key, x.r.date || ""]);
+      out.none = names([exam("Midterm", 7, 7), exam("Midterm Exam", 8, 8), exam("Final", 16, 15)]);
+      out.announced = names([{ key: "midterm:0", kind: "midterm", name: "Midterm", week: 8, los: [] }]);
+      out.set = names([exam("Midterm Exam", 8, 8, { date: iso(2), from: "yours" })]).map((x) => [x[1], x[3], x[4]]);
+      out.setDay = iso(2);
+      out.period = St.examWeeks({ weeks: weeks.map((w) => ({ ...w, past: w.no === 15, start: w.no >= 15 ? iso(w.no === 15 ? -7 : 0) : w.start,
+        end: w.no >= 15 ? iso(w.no === 15 ? -1 : 6) : w.end })), assessments: [exam("Final", 16, 15)] }).map((x) => [x.name, x.w.no, x.r.now]);""")
+    assert out["none"] == [["Midterm Exam", 8, True, "syllabus:Midterm Exam:8", ""]]   # not last week's, nor the final
     assert out["announced"] == []                              # announced: Coming up has it from the plan
+    assert out["set"] == [[8, "syllabus:Midterm Exam:8", out["setDay"]]]    # the day set in its Exam room
+    assert out["period"] == [["Final", 16, True]]              # a two-week exam period: still on in its second week

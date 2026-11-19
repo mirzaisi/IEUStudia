@@ -267,8 +267,10 @@ def test_a_final_known_only_from_the_syllabus_gets_a_brief(env):
     start = read(out, "00 Start here.md")
     assert start.startswith("# Start here: Final Exam") and "(the whole term)" in start
     assert "- Weight: Final Exam: 50% of the grade." in start and "Final Project" not in start
-    # what was said of the quizzes, and "the exam" said in class without naming the final, isn't about the final
-    assert "## What the lecturer said about it" not in start
+    # what was said of the quizzes isn't about the final; "the exam" said in class is the next midterm's or final's,
+    # and this course has no midterm (the Exam room's list: examroom.said)
+    heard = start.split("## What the lecturer said about it")[1].split("## ")[0]
+    assert "won't be on the exam" in heard and "quiz" not in heard
     assert "S1 (tied to an exam)" in start and "## Not needed" in start            # (what was stressed still is)
 
 

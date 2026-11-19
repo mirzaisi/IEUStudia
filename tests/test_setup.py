@@ -325,6 +325,7 @@ def test_an_exam_week_is_reminded_once_without_a_day():
     title, text, payload = reminders([mid], dt.datetime(2026, 11, 8, 20, 0), seen)
     assert text == "MATH 240: Midterm Exam is in week 8, which starts tomorrow (Mon 9 Nov). The exam schedule on IEULearn has the day."
     assert payload == "ready:b:syllabus:Midterm Exam:8"             # the syllabus's exam week has an Exam room too
+    assert reminders([{**mid, "key": "midterm:1"}], dt.datetime(2026, 11, 8, 20, 0), {})[2] == "ready:b:midterm:1"
     announced = {**mid, "uid": "b-midterm-1", "name": "Midterm 1", "kind": "midterm"}
     assert reminders([announced], dt.datetime(2026, 11, 9, 9, 0), seen) is None            # the same week, said once
     title, text, payload = reminders([announced, _quiz(course="EEE 215", uid="c-quiz-1", course_id="c",

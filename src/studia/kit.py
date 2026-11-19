@@ -128,14 +128,14 @@ def _own_day(e: dict[str, Any]) -> str:
 
 def choices(d: dict[str, Any]) -> list[dict[str, Any]]:
     """What the export dialog's "For" offers: the assessments still ahead (syllabus finals too), each with the weeks
-    it covers, where they come from and its day (the announced one, else the one the student set, else its week's
-    first)."""
+    it covers, where they come from and its day as the Exam room says it (examroom.when: the announced one, else the
+    one the student set, else its week's class day or first day)."""
     from .quizzes import of
 
     weeks = {w["no"]: w for w in d.get("weeks") or []}
     return [{"key": e["key"], "name": e["name"], "kind": e["kind"], "week": e["week"], "weeks": list(e.get("weeks") or []),
              "weeks_from": e.get("weeks_from") or "",
-             "date": e.get("date") or _own_day(e) or (weeks.get(e["week"]) or {}).get("start") or ""}
+             "date": e.get("date") or (e.get("on") or {}).get("date") or (weeks.get(e["week"]) or {}).get("start") or ""}
             for e in of(d) if e.get("ahead")]
 
 
@@ -153,38 +153,24 @@ def _weight(d: dict[str, Any], e: dict[str, Any]) -> str:
 
 
 def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[str]:
-    """What the lecturer said about this assessment, in class and in the announcements (alerts.py), newest first."""
-    from .alerts import named_assessments
+    """What the lecturer said about this assessment, in class and in the announcements, newest first: the Exam
+    room's own list (examroom.said), as the brief's lines."""
     from .course_export import _date, _en_day
+    from .examroom import said
 
-    sources = {s.get("id") for s in e.get("sources") or []}
-    starts = {w["no"]: w.get("start") or "" for w in d.get("weeks") or []}
-    since = starts.get(min(e.get("weeks") or [0]), "") if e.get("kind") != "final" else ""
     out = []
-    for it in (d.get("alerts") or {}).get("items") or []:
-        mine = it.get("source") == "announcement" and it.get("announcement_id") in sources
-        said = named_assessments(f"{it.get('title') or ''} {it.get('text') or ''}")
-        named = [n for k, n in said if k == e["kind"]]
-        cat = it.get("category")
-        # "the exam" said in class is the next one: a midterm's unless it names the final, the final's only if it does
-        ours = cat == e["kind"] or (cat == "exam" and (bool(named) if e["kind"] == "final" else
-                                                      e["kind"] == "midterm" and not any(k == "final" for k, _ in said)))
-        if not mine and (not ours or (named and e.get("no") and not ({0, e["no"]} & set(named)))):
-            continue
-        # "we have a quiz next week", said before these weeks began, was about an earlier one
-        if not mine and not (e.get("no") and e["no"] in named) and since and (it.get("date") or "")[:10] < since:
-            continue
+    for it in said(d, e, SAID_MOST):
         day = _date(it.get("date") or "")
         text = " ".join(str(it.get("text") or "").split())
         if it.get("source") == "lecture":
             ref = lrefs.get(it.get("day_key") or "")
             where = (f"in class [{ref} part {it.get('part') or 1} {it.get('ts') or ''}]".replace(" ]", "]") if ref
                      else f"in class (part {it.get('part') or 1}, {it.get('ts') or ''})")
+            if it.get("other_section_en"):            # (as the zip's heads-up says it)
+                where += f", heard in {it['other_section_en']}'s lecture (the dates may differ for my section)"
         else:
             where = f"announcement “{it.get('title') or ''}”"
         out.append(f"- {_en_day(day) + ', ' if day else ''}{where}: “{text}”")
-        if len(out) >= SAID_MOST:
-            break
     return out
 
 
