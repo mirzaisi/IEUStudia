@@ -1534,10 +1534,12 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
 
     single = not every and len(plans) == 1
     focus = kit_mod.assessment(plans[0].detail, choice.focus) if single else None
-    if focus:
-        mine = choice.weeks is not None and set(choice.weeks) <= set(focus.get("weeks") or [])
-        span = (f"{today.day} {MONTHS[today.month - 1][:3]} {today.year}" if mine else span)
-        root = clean_name(f"{lead} - {focus['name']} - {span}", ROOT_MAX)
+    if focus:                       # (its weeks, or everything up to now within them: the day only)
+        stamp = f"{today.day} {MONTHS[today.month - 1][:3]} {today.year}"
+        picked = set(choice.weeks) if choice.weeks is not None else {w.no for w in plans[0].weeks}
+        tail = (stamp if picked <= set(focus.get("weeks") or []) else
+                f"up to {stamp}" if choice.weeks is None else span)
+        root = clean_name(f"{lead} - {focus['name']} - {tail}", ROOT_MAX)
     else:
         root = clean_name(f"{lead} - {span}", ROOT_MAX)
     target = folder / fit_name(folder, root, ".zip", 120, spare=len(".tmp"))

@@ -20,7 +20,7 @@ from studia.coursesite import Announcement
 from studia.library import Library
 from test_kit import CARDS_JSON, CHATGPT, TODAY, env, export, names, read  # noqa: F401 - env is a fixture
 from test_kit_page import EXPORT_ANSWERS, STAND_IN, WEB, _run
-from test_quizme_page import LECTURE, _page
+from test_quizme_page import LECTURE, PRACTICE, _page
 
 node = pytest.mark.skipif(not shutil.which("node"), reason="node is not installed")
 
@@ -34,6 +34,10 @@ def test_a_kit_zip_is_named_after_its_quiz(env):
     final = export(env, weeks=[1, 2, 3], focus="syllabus:Final Exam:15")
     assert final["name"] == "MATH 240 - Final Exam - 8 Oct 2026.zip"
     assert read(final, "00 Start here.md").startswith("# Start here: Final Exam")
+    # everything up to now (the dialog sends it so when the final's weeks are those begun): no cut "everything up to
+    # 19" ("EEE 215 - Final Exam - everything up to 19 Nov 2026" is longer than a zip's name may be)
+    assert export(env, focus="syllabus:Final Exam:15")["name"] == "MATH 240 - Final Exam - 8 Oct 2026.zip"
+    assert export(env, focus="quiz:2")["name"] == "MATH 240 - Quiz 2 - up to 8 Oct 2026.zip"
     assert export(env, weeks=[2, 3])["name"] == "MATH 240 - weeks 2-3 - 8 Oct 2026.zip"          # (no For: as before)
 
 
@@ -264,3 +268,19 @@ def test_the_lectures_buttons_stay_on_one_line(tmp_path):
     assert out["wrapped"] == ["tight"] and out["oneLine"]["added"] == [] and out["oneLine"]["removed"] >= 1
     css = (WEB / "styles.css").read_text(encoding="utf-8")
     assert ".toolbar.tight .tb-lbl { display: none; }" in css
+
+
+@node
+def test_quiz_me_on_stressed_moments_says_who_picked_them(tmp_path):
+    """With nothing ticked, "Quiz me on these" opened the dialog on "The moments you picked": the app had picked the
+    ones that stand out."""
+    out = _page(tmp_path, PRACTICE + """
+  A["st-quiz"]({ dataset: { cid: "c1" } }); await tick();
+  out.none = overlay();
+  St.closeModal && St.closeModal();
+  A["st-pick"]({ checked: true, dataset: { cid: "c1", id: "s1" } });
+  A["st-quiz"]({ dataset: { cid: "c1" } }); await tick();
+  out.ticked = overlay();
+""")
+    assert "What the lecturer stressed" in out["none"] and "The moments you picked" not in out["none"]
+    assert "The moments you picked" in out["ticked"] and "1 moment the lecturer stressed" in out["ticked"]
