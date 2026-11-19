@@ -518,12 +518,14 @@
   }
   function recHTML(r, d) {
     const dim = r.duplicate || r.too_short || r.hidden;
-    const warn = r.warn_level && r.warn_level !== "info"
+    const silent = r.status === "failed" && r.no_sound;     // its pill says so, and holds the whole note: no marks saying it again
+    const warn = !silent && r.warn_level && r.warn_level !== "info"
       ? `<span class="warn-icon ${r.warn_level === "error" ? "error" : ""}" title="${esc(r.warnings.map((w) => w.message).join("\n"))}">${I("alert", "sm")}</span>` : "";
+    const odd = (r.anomalies || []).filter((a) => !(silent && a.kind === "no_sound")).map((a) => a.text);
     const busy = ["queued", "downloading", "transcribing"].includes(r.status);
     const acts = [
       busy ? `<button class="btn ghost icon sm" data-act="cancel" data-id="${r.id}" title="${t("Cancel")}">${I("x", "sm")}</button>` : "",
-      r.status === "failed" ?`<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="${t("Try again")}">${I("retry", "sm")}</button>` : "",
+      r.status === "failed" ? `<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="${t("Try again")}">${I("retry", "sm")}</button>` : "",
       r.status === "done" ? `<button class="btn ghost icon sm" data-act="open-day" data-day="${esc(d.day_key)}" title="${t("Read the transcript")}">${I("file-text", "sm")}</button>` : "",
       `<button class="btn ghost icon sm" data-act="url" data-url="${esc(r.viewer_url)}" title="${t("Watch on Panopto")}">${I("external", "sm")}</button>`,
     ].join("");
@@ -532,7 +534,7 @@
       <span class="part">${r.part ? t("Part {n}", { n: r.part }) : "—"}</span>
       <span class="time">${esc(r.time)}–${esc(r.end_time)}</span>
       <span class="dur">${fmtDur(r.duration_s)}</span>
-      <span class="state">${statusHTML(r)}${Studia.replacedTag ? Studia.replacedTag(r) : ""}${warn}${oddMark((r.anomalies || []).map((a) => a.text))}</span>
+      <span class="state">${statusHTML(r)}${Studia.replacedTag ? Studia.replacedTag(r) : ""}${warn}${oddMark(odd)}</span>
       <span class="acts">${acts}</span></div>`;
   }
   function updateRow(r) {
@@ -563,7 +565,8 @@
     const status = d.transcribed ? `<span class="pill done">${I("check")}${t("Transcribed")}</span>`
       : d.no_sound ? silentPill()
       : d.is_new ? `<span class="pill new">${I("sparkle")}${t("New")}</span>` : d.any_done ? `<span class="pill">${t("Partly transcribed")}</span>` : "";
-    const warn = d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="${t("See the notes on the transcript page")}">${I("alert", "sm")}</span>` : "";
+    // (only a day with a transcript: the notes are on its page; a part's own are on its row)
+    const warn = d.any_done && d.warn_level && d.warn_level !== "info" ? `<span class="warn-icon ${d.warn_level === "error" ? "error" : ""}" title="${t("See the notes on the transcript page")}">${I("alert", "sm")}</span>` : "";
     return `<div class="card day" data-day="${esc(d.day_key)}">
       <div class="day-head">
         <input type="checkbox" class="check" data-act="sel-day" data-day="${esc(d.day_key)}" ${selIds.length ? "" : "disabled"} aria-label="${t("Select day")}">

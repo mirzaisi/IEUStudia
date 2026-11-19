@@ -245,6 +245,29 @@ def test_no_speech_found_is_not_shown_as_the_microphone_being_off(tmp_path):
 
 
 @node
+def test_a_lecture_with_no_speech_says_it_once(tmp_path):
+    """A part with no speech showed its pill, a red warning and a yellow mark that all said it, and its day a warning
+    pointing to "the notes on the transcript page" of a day with no transcript. Now the pill says it (its title holds
+    the whole note); other marks stay, and a day with a transcript still points to its notes."""
+    out = run(tmp_path, """
+  const off = "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.";
+  const rec = (id, extra) => ({ id, status: "failed", error: off, no_sound: true, part: 1, time: "09:00", end_time: "09:45",
+    duration_s: 2700, warnings: [{ level: "error", message: off }], warn_level: "error", viewer_url: "v",
+    anomalies: [{ kind: "no_sound", text: "No speech was found in it" }, { kind: "off_day", text: "Recorded on a Sunday" }], ...extra });
+  const day = (any_done, recordings) => ({ date: "2026-10-14", day_key: "e|14", label: "Wed 14 Oct", parts: recordings.length,
+    no_sound: true, transcribed: any_done, any_done, warn_level: "error", recordings });
+  out.silent = plain(St.dayCardHTML(day(false, [rec("a")]), { show_mode: "all", available_sections: [] }));
+  out.part = plain(St.dayCardHTML(day(true, [rec("a"), rec("b", { status: "done", error: "", no_sound: false, warnings: [],
+    warn_level: "", anomalies: [] })]), { show_mode: "all", available_sections: [] }));
+""")
+    head, row = out["silent"].split('data-rid="a"')
+    assert "No speech found" in head and "warn-icon" not in head          # no transcript page to see notes on
+    assert "microphone was off" in row and "warn-icon" not in row and "No speech was found in it" not in row
+    assert "Recorded on a Sunday" in row                                  # (what else looks off stays)
+    assert "See the notes on the transcript page" in out["part"].split('data-rid="a"')[0]
+
+
+@node
 def test_a_retried_lecture_shows_what_its_new_try_found_at_once(tmp_path):
     """"Only noise or music" tried again and found almost silent: the row said "only noise or music" (its last try's
     note) until the course list came back; now its note is the new try's at once."""
