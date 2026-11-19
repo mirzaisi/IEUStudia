@@ -190,7 +190,8 @@
       <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}${c.cram && !X.cram ? ` · ${esc(t("Not due yet"))}` : ""}</div>
       <div class="fc-q md">${md(c.q)}</div><div class="qz-opts">${opts}</div>${why}
       <div class="fc-meta">${src}</div>
-      <div class="actions">${shown ? `<span class="dim sm qz-self-q">${esc(right ? t("The app marks it Good.") : t("The app marks it Again: it comes back soon."))}</span><button class="btn primary" data-act="fc-mc-next" autofocus>${t("Next card")}</button>`
+      <div class="actions">${shown ? `<span class="dim sm qz-self-q">${esc(X.cram || c.cram ? (right ? t("Going over it now doesn't change when it comes back.") : t("It comes back once more before you finish."))   // (a cram: no schedule to mark)
+        : right ? t("The app marks it Good.") : t("The app marks it Again: it comes back soon."))}</span><button class="btn primary" data-act="fc-mc-next" autofocus>${t("Next card")}</button>`
         : `<button class="btn ghost" data-act="fc-close">${t.c("flashcards", "Stop")}</button>`}</div>
       <div class="fc-keys dim sm">${shown ? t("Key: Enter goes on") : t("Keys: 1 to 4 pick an answer")}</div></div>`;
   }

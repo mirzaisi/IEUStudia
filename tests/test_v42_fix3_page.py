@@ -68,6 +68,34 @@ def test_a_quiz_written_from_another_page_shows_its_row_once_the_course_page_is_
 
 
 @node
+def test_a_missed_question_s_card_in_a_cram_says_it_comes_back_in_this_sitting_not_that_it_is_marked(tmp_path):
+    """In a cram an MC card answered wrong said 'The app marks it Again: it comes back soon.', though a cram changes no
+    card's schedule (and its header said 'flashcards' where the others said 'cram')."""
+    out = qp._page(tmp_path, """
+  const mc = (id, extra) => card(id, { origin: "quiz", quiz: { type: "mc", title: "Quiz 3 practice", options: ["a", "b", "c", "d"], answer: 0, wrong: ["", "x", "y", "z"] }, ...extra });
+  ANSWERS.cards_grade = (cid, id, g, cram) => ({ ok: true, state: g === "again"
+    ? { step: 0, due: new Date(Date.now() + 60e3).toISOString().slice(0, 19), next: {}, cram: !!cram }
+    : { step: -1, due: new Date(Date.now() + 86400e3).toISOString().slice(0, 19), next: {}, cram: !!cram } });
+  SESSION = { ok: true, cards: [mc("m1"), mc("m2")], total: 2, aside: 0, cram: true };
+  await St.practice.study("c1", { weeks: [9, 10], cram: true }); await tick();
+  out.head = shown.html;
+  A["fc-pick"]({ dataset: { i: "2" } }); await tick(); out.wrong = shown.html;
+  St.mistakes && A["fc-mc-next"] && await A["fc-mc-next"](); await tick();
+  A["fc-pick"]({ dataset: { i: "0" } }); await tick(); out.right = shown.html;
+  // a day's sitting (not a cram): marked as before
+  St.closeModal();
+  SESSION = { ok: true, cards: [mc("d1", { cram: false })], total: 1, aside: 0, cram: false };
+  await St.practice.study("c1"); await tick();
+  A["fc-pick"]({ dataset: { i: "1" } }); await tick(); out.day = shown.html;
+""")
+    assert "MATH 240 · cram" in out["head"] and "flashcards" not in out["head"].split("</b>")[0]
+    assert "It comes back once more before you finish." in out["wrong"] and "marks it Again" not in out["wrong"]
+    assert "Going over it now doesn&#39;t change when it comes back." in out["right"] or \
+        "Going over it now doesn't change when it comes back." in out["right"]
+    assert "The app marks it Again: it comes back soon." in out["day"]
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();
