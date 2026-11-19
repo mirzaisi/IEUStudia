@@ -234,7 +234,8 @@
   const weakFirst = (o) => { const w = (o || {}).weak || {}; return w.missed > 0 && w.attempts >= 2; };
   function weakModeBtn(Q, mode) {
     const w = (Q.opts || {}).weak || {};
-    return w.missed ? mode("weak", esc(t("My weak spots")), esc(t.n(w.missed, "{n} question you missed, asked in new ways", "{n} questions you missed, asked in new ways"))) : "";
+    // (the whole course's: an Exam room counts only its own quizzes' misses, so it says fewer)
+    return w.missed ? mode("weak", esc(t("My weak spots")), esc(t.n(w.missed, "{n} question you missed in this course, asked in new ways", "{n} questions you missed in this course, asked in new ways"))) : "";
   }
   function weakWhere(o) {
     const w = (o || {}).weak || {};
