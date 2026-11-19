@@ -167,8 +167,10 @@ def find(d: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
 
 
 def event_key(event: dict[str, Any]) -> str:
-    """What finds a reminder's (calendar_export's) quiz or exam: a syllabus exam week by its label and week, the
-    rest by name."""
+    """What finds a reminder's (calendar_export's) quiz or exam: its key (calendar_export.listed); without one, a
+    syllabus exam week by its label and week, the rest by name."""
+    if event.get("key"):
+        return str(event["key"])
     if event.get("kind") == "exam" and event.get("week"):
         return f"syllabus:{event.get('name') or ''}:{event['week']}"
     return str(event.get("name") or "")
@@ -223,29 +225,75 @@ def material(d: dict[str, Any], e: dict[str, Any], busy: Iterable[str] = (), rea
             "todo": todo, "missing": [m["id"] for m in files.values() if not m.get("downloaded")]}
 
 
-def _in_weeks(weeks: list[dict[str, Any]], iso: str) -> bool:
-    day = (iso or "")[:10]
-    return any(w.get("start") and w["start"] <= day <= (w.get("end") or w["start"]) for w in weeks)
+def _last_day(d: dict[str, Any], e: dict[str, Any]) -> str:
+    """The last day an assessment may be on: the announced day, else its week's (a two-week exam period's) last."""
+    if e.get("date"):
+        return str(e["date"])[:10]
+    w = next((x for x in d.get("weeks") or [] if x.get("no") == e.get("week")), None) or {}
+    return w.get("end") or w.get("start") or "9999-12-31"
 
 
-def said(d: dict[str, Any], e: dict[str, Any]) -> list[dict[str, Any]]:
-    """What the lecturer said about it: the announcements it comes from, and what was said in class in its weeks
-    about an assessment of its kind (the heads-ups, alerts.py)."""
-    weeks = _covered(d, e)
+def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST) -> list[dict[str, Any]]:
+    """What the lecturer said about it (the heads-ups, alerts.py), newest first: the Exam room's list and the exam
+    kit's brief (kit.start_md). The announcements it comes from, and what else is about it, in class or in another
+    announcement, by its main point:
+      - its kind ("quiz" for a quiz); for a midterm or the final also "exam" (said of the final only when it names
+        the final, else of the next midterm or final after it was said);
+      - one that names its kind's number is about that one ("Quiz 2": not Quiz 3's);
+      - one that doesn't ("we have a quiz next week", "the exam") is about the next one of its kind after it was
+        said, and not about one whose weeks begin after it (that was an earlier one's)."""
+    from . import quizzes
+    from .alerts import named_assessments
+
+    kind = e.get("kind")
+    every = list(quizzes.of(d))
+    if not any(x.get("key") == e.get("key") for x in every):
+        every.append(e)                               # (a quiz announced only by its day)
+    ends = sorted((_last_day(d, x), str(x.get("key")), x.get("kind")) for x in every)
+    starts = {w.get("no"): w.get("start") or "" for w in d.get("weeks") or []}
+    since = starts.get(min(e.get("weeks") or [0]), "") if kind != "final" else ""
     srcs = {s.get("id") for s in e.get("sources") or []}
-    kinds = {"quiz"} if e.get("kind") == "quiz" else {e.get("kind"), "exam"}
-    out = []
+
+    def next_one(day: str, kinds: set[str]) -> str:
+        """The key of the first assessment of these kinds still to come that day (after them all: the last one)."""
+        those = [(end, key) for end, key, k in ends if k in kinds]
+        return next((key for end, key in those if end >= day), those[-1][1] if those else "")
+
+    out: list[dict[str, Any]] = []
     for a in (d.get("alerts") or {}).get("items") or []:
-        if a.get("source") == "announcement":
-            if a.get("announcement_id") in srcs:
-                out.append(a)
-        elif _in_weeks(weeks, a.get("date") or "") and kinds & set(a.get("categories") or [a.get("category")]):
+        if len(out) >= most:
+            break
+        if a.get("source") == "announcement" and a.get("announcement_id") in srcs:
             out.append(a)
-    return out[:SAID_MOST]
+            continue
+        cat, day = a.get("category"), (a.get("date") or "")[:10]
+        named = named_assessments(f"{a.get('title') or ''} {a.get('text') or ''}")
+        if cat == "exam" and kind != "quiz":          # "the exam": the final's when it names it, else the next one's
+            ok = kind == "final" if any(k == "final" for k, _ in named) else next_one(day, {"midterm", "final"}) == e["key"]
+        elif cat != kind:
+            ok = False
+        elif kind == "final":
+            ok = True
+        else:
+            nos = {n for k, n in named if k == kind and n}
+            if nos and e.get("no"):
+                ok = e["no"] in nos
+            else:                                     # no number: the next one, if its weeks had begun
+                ok = next_one(day, {kind}) == e["key"] and not (since and day and day < since)
+        if ok:
+            out.append(a)
+    return out
 
 
-def stressed_moments(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, Any]) -> list[dict[str, Any]]:
-    """The moments stressed in its weeks that stand out most (the same detector quizzes use: stressed.py)."""
+def _same_moment(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return (a.get("source", "lecture") == "lecture" and a.get("day_key") == b.get("day_key")
+            and (a.get("part") or 1) == (b.get("part") or 1) and abs(float(a.get("t") or 0) - float(b.get("t") or 0)) <= 30)
+
+
+def stressed_moments(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, Any],
+                     shown: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+    """The moments stressed in its weeks that stand out most (the same detector quizzes use: stressed.py), but for
+    the ones already ``shown`` under what the lecturer said about it."""
     from . import stressed
 
     try:
@@ -258,8 +306,9 @@ def stressed_moments(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, A
     if not nos:
         return []
     keep = ("id", "kind", "text", "hl", "lang", "day_key", "day", "part", "t", "ts", "n", "score")
-    return [{k: it.get(k) for k in keep} | {"week": day_week.get(it["day"])}
-            for it in stressed.ranked(items, nos, day_week)[:STRESSED_MOST]]
+    shown = list(shown)
+    top = [it for it in stressed.ranked(items, nos, day_week) if not any(_same_moment(a, it) for a in shown)]
+    return [{k: it.get(k) for k in keep} | {"week": day_week.get(it["day"])} for it in top[:STRESSED_MOST]]
 
 
 # ------------------------------------------------------------------ practice and what was condensed
@@ -359,6 +408,7 @@ def room(svc: Any, course_id: str, key: str, jobs: Iterable[dict[str, Any]] = ()
     prac = practice_part(svc, course_id, d, e, now)
     made = condensed(lib, course_id, e)
     every = quizzes.of(d)
+    heard = said(d, e)
     return {
         "course": {"id": d["id"], "code": d.get("code") or "", "name": d.get("display_name") or d.get("name") or ""},
         "assessment": {k: e.get(k) for k in ("key", "kind", "no", "name", "week", "weeks", "weeks_from", "guessed",
@@ -372,8 +422,8 @@ def room(svc: Any, course_id: str, key: str, jobs: Iterable[dict[str, Any]] = ()
                    "current": bool(w.get("current")), "past": bool(w.get("past")), "exam": bool(w.get("exam"))}
                   for w in d.get("weeks") or []],
         "material": mat,
-        "said": said(d, e),
-        "stressed": stressed_moments(lib, course_id, d, e),
+        "said": heard,
+        "stressed": stressed_moments(lib, course_id, d, e, heard),       # (one said there isn't said twice)
         "practice": prac,
         "condensed": made,
         "counts": {"material": {"have": mat["transcribed"] + mat["downloaded"],

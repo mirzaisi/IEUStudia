@@ -59,7 +59,7 @@
   const ICON = { quiz: "target", midterm: "cap", final: "cap", exam: "cap", assignment: "file-text", class: "video", makeup: "plus", cancelled: "ban", own: "bookmark", holiday: "sun" };
   function sureLabel(it) {
     return ({ exact: t("Exact time from IEULearn"), ieulearn_day: t("Day from IEULearn: the time is on IEULearn"), day: t("Day from an announcement"),
-      week: t("Week from an announcement"), syllabus: t("Week from the syllabus"), announced: t("From an announcement"),
+      week: t("Week from an announcement"), syllabus: t("Week from the syllabus"), announced: t("From an announcement"), set: t("The day you set in its Exam room"),
       recorded: t("Recorded on Panopto"), schedule: t("Usual class time"), yours: t("Your entry"), holiday: t("No classes") })[it.sure] || "";
   }
   const blocksText = (it) => ((it.blocks && it.blocks.length ? it.blocks : it.time ? [[it.time, it.end_time || ""]] : []).map(([a, b]) => (b ? `${a}–${b}` : a)).join(" · "));
@@ -94,8 +94,7 @@
       it.kind === "class" ? blocksText(it) : "", it.makeup ? t("make-up class") : "", it.los && it.los.length ? `LO${it.los.join(", LO")}` : "",
       it.kind === "own" && it.note ? it.note : "", ["makeup", "cancelled"].includes(it.kind) && it.note ? `“${it.note}”` : ""].filter(Boolean);
     const plan = ["quiz", "midterm", "final", "exam"].includes(it.kind) && !!it.course_id && !past;     // ("exam": a syllabus's week)
-    // (a syllabus's exam week by its label and week: examroom.find gives the exam it is part of)
-    const key = it.kind === "exam" && it.week_no ? `syllabus:${it.title}:${it.week_no}` : "";
+    const key = it.key || "";         // (its key, as the Exam room has it: agenda.py)
     const acts = [plan ? `<button class="btn sm" data-act="ready-open" data-cid="${esc(it.course_id)}"${key ? ` data-key="${esc(key)}"` : ""} data-name="${esc(it.title)}">${I("cap", "sm")} ${t("Exam room")}</button>` : "",
       it.kind === "own" ? `<button class="btn ghost icon sm" data-act="cal-del" data-id="${esc(it.entry_id)}" title="${t("Delete this entry")}">${I("x", "sm")}</button>` : "",
       srcIcon(it) ? `<button class="btn ghost icon sm" data-act="cal-open" data-id="${esc(it.id)}" title="${esc(srcTip(it))}">${I(srcIcon(it), "sm")}</button>` : ""].join("");

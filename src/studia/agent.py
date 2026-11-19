@@ -226,7 +226,7 @@ def _assessment_due(e: dict[str, Any], now: dt.datetime, days: int, told: set[st
         until = dt.datetime.combine(first, dt.time.fromisoformat(e["time"]) if e.get("time") else REMIND_UNTIL)
         if e.get("kind") == "own":
             key = f"{e['uid']}@{e['date']}" + (f"T{e['time']}" if e.get("time") else "")
-        elif quiz or not e.get("week"):
+        elif quiz or not e.get("week") or e.get("yours"):   # (the day set in its Exam room: said once more for it)
             key = f"{e['uid']}@{e['date']}"
         else:
             key = f"{e.get('course_id') or e['course']}-exam-week{e['week']}"
@@ -296,7 +296,9 @@ def _line(r: dict[str, Any], today: dt.date) -> str:
                 else t("{name}: {when}.", **what) if not e["course"]
                 else t("{course}: {name}, {when} at {time}.", time=e["time"], **what) if e.get("time")
                 else t("{course}: {name}, {when}.", **what))
-    if e.get("date"):                                     # the day it was announced for
+    if e.get("yours"):                                    # the day the student set in its Exam room
+        line = t("{course}: {name} is {when}, the day you set.", **what)
+    elif e.get("date"):                                   # the day it was announced for
         line = (t("{course}: {name} is {when} at {time}, as announced.", time=e["time"], **what) if e.get("time")
                 else t("{course}: {name} is {when}, as announced.", **what))
     elif kind == "quiz" and n:                            # one of its week's class days (rest: another one)

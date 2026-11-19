@@ -48,7 +48,7 @@
     if (!cid || !St.findCourse(cid)) { toast(t("This course is no longer in your list."), "error"); return; }
     if (S.view.name !== "exam") ER.back = { ...S.view };
     if ($("#overlay .modal")) St.closeModal();
-    ER.cid = cid; ER.key = String(key || ""); ER.room = null; ER.error = ""; ER.pick = null;
+    ER.cid = cid; ER.key = String(key || ""); ER.room = null; ER.error = ""; ER.pick = null; ER.allStressed = false;
     go({ name: "exam", courseId: cid, key: ER.key });
   }
 
@@ -153,12 +153,15 @@
     };
     return `<div class="card er-card"><div class="er-h">${I("megaphone", "sm")}<b>${t("What the lecturer said about it")}</b></div>${r.said.map(row).join("")}</div>`;
   }
+  const STRESSED_SHOWN = 4;          // the ones that stand out most; the rest one click away (the page stays short)
   function stressedHTML(r) {
     if (!r.stressed.length) return "";
+    const more = ER.allStressed ? 0 : Math.max(0, r.stressed.length - STRESSED_SHOWN);
     return `<div class="card er-card"><div class="er-h">${I("star", "sm")}<b>${t("Stressed in class in those weeks")}</b></div>
-      ${r.stressed.map((s) => `<button class="er-item" data-act="alert-open" data-day="${esc(s.day_key)}" data-part="${s.part}" data-t="${s.t}" title="${esc(t("Read it in the transcript"))}">
+      ${r.stressed.slice(0, r.stressed.length - more).map((s) => `<button class="er-item" data-act="alert-open" data-day="${esc(s.day_key)}" data-part="${s.part}" data-t="${s.t}" title="${esc(t("Read it in the transcript"))}">
         <span class="er-text">${s.kind === "exam" ? `<span class="pill due">${I("cap")}${esc(t("About the exam"))}</span> ` : ""}“${markHL(s.text || "", s.hl)}”</span>
-        <span class="er-meta">${I("video", "xs")} ${s.week ? `${esc(t("Week {n}", { n: s.week }))} · ` : ""}${esc(dmw(s.day))} · ${esc(t("part {n}", { n: s.part }))} · ${esc(s.ts || "")}${s.n > 1 ? ` · ${esc(t.n(s.n, "said {n} time", "said {n} times"))}` : ""}</span></button>`).join("")}</div>`;
+        <span class="er-meta">${I("video", "xs")} ${s.week ? `${esc(t("Week {n}", { n: s.week }))} · ` : ""}${esc(dmw(s.day))} · ${esc(t("part {n}", { n: s.part }))} · ${esc(s.ts || "")}${s.n > 1 ? ` · ${esc(t.n(s.n, "said {n} time", "said {n} times"))}` : ""}</span></button>`).join("")}
+      ${more ? `<button class="link noprint er-more" data-act="er-more">${esc(t.n(more, "Show {n} more", "Show {n} more"))}</button>` : ""}</div>`;
   }
   function practiceHTML(c, r) {
     const p = r.practice, w = p.mastery || {}, cards = p.cards || {}, named = (r.assessment.los || []).length > 0;
@@ -167,8 +170,14 @@
     const skill = (key, label, text, x) => (St.mistakes && St.mistakes.skillRow ? St.mistakes.skillRow(c, { mistakes: p.mistakes }, key, label, text, x)
       : `<div class="mq-skill"><div class="mq-skill-h">${label ? `<span class="lo-no">${esc(label)}</span>` : ""}<span class="grow">${esc(text || "")}</span><span class="dim sm">${esc(t("{right} of {n} right", { right: score(x.right), n: x.tried }))}</span></div></div>`);
     const rows = [...tried.map((x) => skill(`er:lo:${x.no}`, `LO${x.no}`, x.text, x)), ...topics.map((x) => skill(`er:tp:${x.name}`, "", x.name, x))].join("");
-    const quiz = (q) => `<div class="er-q"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(span(q.weeks))}${q.focus ? ` · ${esc(t("for {name}", { name: q.focus }))}` : ""}${q.best ? ` · ${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}` : q.tries ? "" : ` · ${esc(t("not taken yet"))}`}</div></div>
-      ${q.status === "done" ? `<button class="btn sm noprint" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${q.tries ? t("Practise again") : t("Practise")}</button>` : `<span class="dim sm">${esc(q.status === "error" ? t("failed") : t("being written"))}</span>`}</div>`;
+    // (as the Practice tab shows them: one being written, one stopped or failed with Resume, one to play)
+    const busyQ = (q) => ["running", "queued"].includes(q.status);
+    const quizState = (q) => (q.status === "done" ? (q.best ? ` · ${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}` : q.tries ? "" : ` · ${esc(t("not taken yet"))}`)
+      : busyQ(q) ? ` · ${esc(t("being written"))}` : "");
+    const quizWhy = (q) => (q.status === "done" || busyQ(q) ? "" : `<div class="sm">${q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message || t("Stopped"))}</div>`);
+    const quiz = (q) => `<div class="er-q"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(span(q.weeks))}${q.focus ? ` · ${esc(t("for {name}", { name: q.focus }))}` : ""}${quizState(q)}</div>${quizWhy(q)}</div>
+      ${q.status === "done" ? `<button class="btn sm noprint" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${q.tries ? t("Practise again") : t("Practise")}</button>`
+        : busyQ(q) ? `<span class="dim sm">${SPIN()}</span>` : `<button class="btn sm noprint" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>`}</div>`;
     const cardLine = cards.total ? [t.n(cards.total, "{n} flashcard from these weeks", "{n} flashcards from these weeks"), cards.due ? t.n(cards.due, "{n} due today", "{n} due today") : "",
       cards.learnt ? t.n(cards.learnt, "{n} learnt", "{n} learnt") : ""].filter(Boolean).join(" · ") : t("No flashcards from these weeks yet.");
     return `<div class="card er-card"><div class="er-h">${I("target", "sm")}<b>${t("How well you know it")}</b></div>
@@ -279,6 +288,7 @@
   St.views.exam = view;
   St.crumbs.exam = (v) => { const c = St.findCourse(v.courseId); return `<button class="btn ghost sm" data-act="er-back">${I("arrow-left", "sm")} ${t("Back")}</button> ${c ? esc(c.code) : ""} <span class="dim">· ${t("Exam room")}</span>`; };
   St.onGo.exam = (v) => {
+    if (ER.cid !== v.courseId || ER.key !== (v.key || "")) ER.allStressed = false;
     ER.cid = v.courseId; ER.key = v.key || "";
     if (!S.cd[v.courseId]) call("course_detail", v.courseId).then((r) => { if (r.ok && !S.cd[v.courseId]) S.cd[v.courseId] = r.course; });   // (its files open from here)
     load(v.courseId, v.key || "");
@@ -303,6 +313,7 @@
     "er-back": () => { const b = ER.back; go(b && b.name && b.name !== "exam" ? b : { name: "course", courseId: ER.cid }); },
     "er-reload": () => load(ER.cid, ER.key),
     "er-print": () => window.print(),
+    "er-more": () => { ER.allStressed = true; renderView(); },
     "er-get": async (el) => {
       el.disabled = true;
       const r = await call("exam_get_everything", ER.cid, ER.key);
