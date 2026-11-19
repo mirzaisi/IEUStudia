@@ -107,11 +107,15 @@ def quiz_back(q: dict[str, Any]) -> str:
 
 def quiz_item(plan: dict[str, Any], q: dict[str, Any]) -> dict[str, Any]:
     """A missed question as a card of the deck: front, back and source as any card's, and the question itself
-    ("quiz") so a multiple-choice one is asked again with its options."""
+    ("quiz") so a multiple-choice one is asked again with its options. Its week is its source's; with none, the
+    quiz's own week when it was on one week, else no week, and "weeks": the ones its quiz was on (picked: a set of
+    weeks takes it only when it holds all of them). Not the quiz's last week: a pasted quiz's weeks are the course's
+    weeks so far, so all its questions without a source joined the coming quiz's cram and its Exam room's count."""
     src = q.get("source") or {}
-    weeks = (plan.get("scope") or {}).get("weeks") or []
+    weeks = sorted({int(w) for w in (plan.get("scope") or {}).get("weeks") or [] if str(w).isdigit()})
+    week = src.get("week") or (weeks[0] if len(weeks) == 1 else None)
     return {"id": quiz_card_id(plan["id"], q["q"]), "q": q["q"], "a": quiz_back(q), "origin": "quiz", "source": src,
-            "week": src.get("week") or (max(weeks) if weeks else None), "stressed": bool(q.get("stressed")),
+            "week": week, **({} if week else {"weeks": weeks}), "stressed": bool(q.get("stressed")),
             "quiz": {"plan_id": plan["id"], "n": q.get("n"), "type": q.get("type"), "title": plan.get("title") or "",
                      **{k: q[k] for k in ("options", "answer", "wrong", "why", "model", "points", "steps") if k in q}}}
 
@@ -482,8 +486,10 @@ def picked(cards: list[dict[str, Any]], weeks: Optional[set[int]] = None,
            aside: bool = False) -> list[dict[str, Any]]:
     """The cards of those weeks, and of those lectures (``days``: their day keys: the lecture's own flashcards, the
     missed quiz questions it taught, and (``fronts``, lecture_fronts) its cards the deck keeps under another lecture);
-    not the ones set aside (``aside``: only those)."""
-    return [c for c in cards if (not weeks or c.get("week") in weeks)
+    not the ones set aside (``aside``: only those). A card with no week (a missed question whose source wasn't found)
+    is of those weeks only when they hold every week its quiz was on (quiz_item's "weeks"), never of a week alone."""
+    return [c for c in cards if (not weeks or (c.get("week") in weeks if c.get("week") else
+                                               bool(c.get("weeks")) and set(c["weeks"]) <= set(weeks)))
             and (not days or (c.get("source") or {}).get("day_key") in days or norm(c.get("q")) in (fronts or ()))
             and bool(c.get("aside")) == aside]
 
