@@ -743,6 +743,25 @@ def test_what_an_assessment_covers_is_kept_in_english_and_turkish():
     assert [(e["name"], e["week"]) for e in assessment_plan([_ann("m", "Ara sınav", "Ara Sınav\n1-7. haftalar")])] == []
 
 
+def _plan_of(title, body):
+    return [(e["name"], e["week"], e["date"], e["time"]) for e in
+            assessment_plan([_ann("a", title, body, "2026-11-03T09:00")])]
+
+
+def test_this_weeks_quiz_in_turkish_keeps_its_quiz_and_day():
+    """"Bu hafta 2. quiz …" lost its quiz: the "week 8. Quiz 3" guard read the Turkish "hafta" (this / next week) as
+    a sentence ending with a week."""
+    plan = _plan_of
+    assert plan("Duyuru", "Gelecek hafta 3. quizimiz 12 Kasım Perşembe günü yapılacaktır.") == \
+        [("Quiz 3", None, "2026-11-12", "")]
+    assert plan("Duyuru", "Bu hafta 2. quiz 7 Kasım Cuma günü saat 10:30'da yapılacak.") == \
+        [("Quiz 2", None, "2026-11-07", "10:30")]
+    assert plan("Duyuru", "Önümüzdeki hafta 2. quizimiz 7 Kasım Cuma günü yapılacaktır.") == \
+        [("Quiz 2", None, "2026-11-07", "")]
+    assert plan("Exams", "Midterm is in week 8. Quiz 3 will be held on Friday, November 13.") == \
+        [("Quiz 3", None, "2026-11-13", "")]                                       # (the guard's own case)
+
+
 def test_a_quiz_announced_only_by_its_day_gets_its_week_when_week_1_is_known():
     from studia.quizzes import assessments
     from studia.views import dated_plan

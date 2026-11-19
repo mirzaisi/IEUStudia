@@ -337,10 +337,10 @@ _CLOCK_NEAR = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b(?:\s*([ap])\.?m\b)?
 
 def _turkish_ordinals(text: str) -> str:
     """"2. quizimiz" → "quiz 2", "ilk quizimiz" → "quiz 1", "ikinci ara sınav" → "ara sinav 2" (folded text); not
-    "week 8. Quiz 3" (a sentence that ends with a week)."""
+    "week 8. Quiz 3" (a sentence that ends with a week; the Turkish "bu hafta 2. quiz" is this week's Quiz 2)."""
     def one(m: re.Match) -> str:
         if m.group(1):
-            if re.search(r"(?:week|hafta)\s*$", text[max(0, m.start() - 8):m.start()]):
+            if re.search(r"\bweek\s*$", text[max(0, m.start() - 8):m.start()]):
                 return m.group(0)
             return f"{m.group(2)} {m.group(1)}"
         return f"{m.group(4)} {_TR_NTH[m.group(3)]}"
