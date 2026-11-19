@@ -35,10 +35,13 @@ def test_the_prompt_asks_for_a_check_only_with_written_questions():
     facts = {"span": "week 1", "pack": "", "lectures": [], "language": "English", "taught_in": "English"}
     sc = Scope(kind="quiz")
     p = quizzes.write_prompt(sc, facts, 5, {"mc": 2, "short": 1, "problem": 2})
-    assert '"check": {"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V"}' in p
+    # the example names its result: Sonnet wrote no "of" for three problems that each asked for several results
+    # while the example's check had none (a real call, 4.2.0)
+    assert '"check": {"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V", "of": "the voltage across R2"}' in p
     assert '"check" (every worked problem, and a short answer whose answer is one number)' in p
     assert "Leave \"check\" out when the answer is not one number" in p
-    assert '"of" names that result in a few words' in p and "when the problem asks for more than one" in p
+    assert '"of" names that result in a few words' in p and "the student types it in a box labelled with it" in p
+    assert "when the problem asks for more than one result it says which one" in p
     assert '"check" (every' not in quizzes.write_prompt(sc, facts, 5, {"mc": 5, "short": 0, "problem": 0})
 
 
@@ -75,6 +78,13 @@ def test_a_repaired_key_replaces_the_old_one_only_when_the_app_confirms_it():
     assert qs[0]["steps"] == ["$P = (0.01)^2 \\cdot 4700 = 0.47$ W"] and qs[0]["n"] == 1
     assert qs[1]["unverified"] and qs[1]["model"] == "$P = 0.5$ W"          # 0.4 W still: it stays flagged
     assert quizzes.apply_repair(qs, "no JSON at all") == 0
+    # a repaired key without "of" keeps the name of the result its box asks for
+    named = quizzes.clean_quiz({"questions": [{**BAD, "check": {**BAD["check"], "of": "the power in R"}}]},
+                               facts)["questions"]
+    assert named[0]["check"]["of"] == "the power in R" and '"of": "…"' in quizzes.repair_prompt(named)
+    assert quizzes.apply_repair(named, json.dumps({"questions": [
+        {"n": 1, "answer": "$P = 0.47$ W", "check": {"expr": "0.01^2*4700", "value": 0.47, "unit": "W"}}]})) == 1
+    assert named[0]["verified"] and named[0]["check"]["of"] == "the power in R"
 
 
 def test_the_repair_request_keeps_the_quizs_languages():

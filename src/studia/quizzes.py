@@ -57,9 +57,9 @@ CHECK_RULE = ('- "check" (every worked problem, and a short answer whose answer 
               'cos, tan, asin, acos, atan (radians), exp, ln, log10, log2, abs, arg, comb, factorial, pi, e and j for '
               'the imaginary unit (no letters for quantities, no units); "value" is its result as a number in "unit"; '
               '"unit" like "V", "mA", "kΩ", "Hz", "%" ("" for none); "of" names that result in a few words, in the '
-              'language of your explanations (like "the power in R2"), when the problem asks for more than one. Your '
-              '"answer" states that same result. Leave "check" out when the answer is not one number (a formula, a '
-              'proof).')
+              'language of your explanations (like "the voltage across R2"): the student types it in a box labelled '
+              'with it, so when the problem asks for more than one result it says which one. Your "answer" states '
+              'that same result. Leave "check" out when the answer is not one number (a formula, a proof).')
 REPAIR_SYSTEM = ("You are an experienced university lecturer checking the answer key of practice problems: you solve "
                  "each one again carefully, step by step, maths in LaTeX, and never ask questions back.")
 
@@ -406,7 +406,7 @@ Answer with one JSON object:
  "questions": [
   {{"type": "mc", "question": "…", "options": ["…", "…", "…", "…"], "answer": "B", "explanation": "why the right option is right", "wrong": {{"A": "why this option is wrong", "C": "…", "D": "…"}}, "source": "F1 p.12", "topic": "…", "los": [3], "stressed": ["S2"], "level": "medium"}},
   {{"type": "short", "question": "…", "answer": "the model answer, 1–3 sentences", "points": ["what a full answer must say", "…"], "source": "L1 part 2 14:05", "topic": "…", "los": [], "stressed": [], "level": "easy"}},
-  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V"}}, "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
+  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V", "of": "the voltage across R2"}}, "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
 Rules:
 - Like the questions this course's lecturer asks in a quiz or midterm: the material's own methods, examples and notation, from understanding to applying; no trivia about the material itself ("what is on slide 5", "what did the lecturer joke about").
 - Multiple choice: exactly four options, one of them right; the wrong ones are mistakes students really make; "wrong" says for each wrong option why it is wrong. The right answer's letter varies across the quiz. No "all/none of the above". In "explanation" and "wrong", never call an option by its letter or its place (the app reorders the options): say what it says.
@@ -1183,7 +1183,7 @@ def repair_prompt(bad: list[dict[str, Any]], language: str = "", taught_in: str 
 {langs}
 {CHECK_RULE}
 Answer with one JSON object ("answer": a worked problem's final result, with units; a short answer's whole model answer again, its 1-3 sentences with the corrected result):
-{{"questions": [{{"n": 2, "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "…", "value": 0, "unit": "…"}}}}]}}
+{{"questions": [{{"n": 2, "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "…", "value": 0, "unit": "…", "of": "…"}}}}]}}
 
 === PROBLEMS ===
 {chr(10).join(rows)}{again}"""
@@ -1204,6 +1204,8 @@ def apply_repair(questions: list[dict[str, Any]], text: str) -> int:
         check = numcheck.clean_check(_get(it, "check"))
         if q is None or not check or not model or isinstance(model, (dict, list)):
             continue
+        if (q.get("check") or {}).get("of") and not check.get("of"):     # the same result: its name kept for the box
+            check = {**check, "of": q["check"]["of"]}
         trial = {**q, "model": _clean_tex(_text(model, 3000)), "check": check}
         steps = [_clean_tex(x) for x in _steps(_get(it, "steps"))]
         if q["type"] == "problem" and steps:
