@@ -444,7 +444,7 @@
     if (Studia.views[v.name]) el.innerHTML = Studia.views[v.name](v);   // home, course pages, plans (course.js …)
     else if (v.name === "course") el.innerHTML = courseHTML(findCourse(v.courseId));
     else if (v.name === "new") el.innerHTML = newHTML();
-    else if (v.name === "day") el.innerHTML = dayHTML();
+    else if (v.name === "day") { el.innerHTML = dayHTML(); fitDayActions(); }
     else if (v.name === "library") { el.innerHTML = libraryHTML(); renderSearchResults(); }
     else if (v.name === "settings") el.innerHTML = settingsHTML();
     else if (v.name === "chat") el.innerHTML = chatHTML();
@@ -909,11 +909,19 @@
       <button class="btn grad sm" data-act="ask-day" ${aiBtn(hasText && ai.available)} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
       <button class="btn sm" data-act="claude" ${hasText && ai.available && S.ai.running && S.ai.dayKey !== d.day_key ? whyOff(t("{ai} is still writing for another lecture. Try again when it's done.", { ai: aiName() })) : aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
       <span class="spacer"></span>${quiz ? copy : ""}
-      ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
-      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
-      <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} ${t("Folder")}</button>`;
+      ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf" title="PDF" aria-label="PDF">${I("file", "sm")}<span class="tb-lbl"> PDF</span></button>` : ""}
+      <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}" aria-label="${esc(t("Text file"))}">${I("file-text", "sm")}<span class="tb-lbl"> ${t("Text file")}</span></button>
+      <button class="btn ghost sm" data-act="file" data-what="folder" title="${esc(t("Folder"))}" aria-label="${esc(t("Folder"))}">${I("folder-open", "sm")}<span class="tb-lbl"> ${t("Folder")}</span></button>`;
   }
-  function renderDayActions() { const el = $("#day-actions"); if (el) el.innerHTML = dayActionsHTML(); }
+  // the lecture's buttons stay on one line: when they would wrap (Turkish at 1024 px wide, or with a PDF), the file
+  // buttons on the right show only their icons, each with its name as a tooltip
+  function fitDayActions() {
+    const el = $("#day-actions"); if (!el || !el.classList || !el.firstElementChild) return;
+    el.classList.remove("tight");
+    if (el.lastElementChild.offsetTop > el.firstElementChild.offsetTop) el.classList.add("tight");
+  }
+  if (typeof window.addEventListener === "function") window.addEventListener("resize", () => { if (S.view.name === "day") fitDayActions(); });
+  function renderDayActions() { const el = $("#day-actions"); if (el) { el.innerHTML = dayActionsHTML(); fitDayActions(); } }
   function notesHTML() {   // the AI notes of this day: the kind being written, else the chosen (or newest) kind
     const d = S.day; if (!d) return "";
     const notes = d.notes || [];

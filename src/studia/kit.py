@@ -155,13 +155,16 @@ def _weight(d: dict[str, Any], e: dict[str, Any]) -> str:
 def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[str]:
     """What the lecturer said about this assessment, in class and in the announcements (alerts.py), newest first."""
     from .alerts import named_assessments
-    from .course_export import _date, _en_day
+    from .course_export import _date, _en_day, class_list_announcements
 
     sources = {s.get("id") for s in e.get("sources") or []}
     starts = {w["no"]: w.get("start") or "" for w in d.get("weeks") or []}
     since = starts.get(min(e.get("weeks") or [0]), "") if e.get("kind") != "final" else ""
+    lists = class_list_announcements(d)                 # (one that lists students would name classmates)
     out = []
     for it in (d.get("alerts") or {}).get("items") or []:
+        if it.get("source") == "announcement" and str(it.get("announcement_id")) in lists:
+            continue
         mine = it.get("source") == "announcement" and it.get("announcement_id") in sources
         said = named_assessments(f"{it.get('title') or ''} {it.get('text') or ''}")
         named = [n for k, n in said if k == e["kind"]]
@@ -480,7 +483,7 @@ def _blocks(text: str) -> list[str]:
 
 def _loads(s: str) -> Any:
     """The JSON in a block or an answer (quizzes._json_body: LaTeX backslashes, a sentence around it), a trailing
-    comma forgiven; of an answer cut short, the questions or cards that are whole (_salvage)."""
+    comma forgiven; of an answer cut short, the questions or cards that are whole (_salvage: marked "cut")."""
     from .quizzes import _json_body
 
     data = _json_body(s)
@@ -491,11 +494,13 @@ def _loads(s: str) -> Any:
 
 
 _LIST_START = re.compile(r"[\"'](questions|sorular|cards|kartlar|flashcards)[\"']\s*:\s*\[")
+_TITLE = re.compile(r"[\"'](?:title|başlık|baslik)[\"']\s*:\s*\"((?:[^\"\\\n]|\\.){1,200})\"", re.I)
+CUT = "_cut"                     # (the key _salvage marks a cut-short answer with)
 
 
 def _salvage(s: str) -> Any:
     """An answer cut short (the chat stopped in the middle of its JSON): {"questions": […]} or {"cards": […]} of the
-    items that are whole, None when none is."""
+    items that are whole (with the title written before them), None when none is."""
     from .ai import _tex_backslashes
 
     s = _tex_backslashes(s) if "\\" in s else s
@@ -512,7 +517,14 @@ def _salvage(s: str) -> Any:
         except ValueError:
             break
         items.append(item)
-    return {m.group(1): items} if items else None
+    if not items:
+        return None
+    title = _TITLE.search(s[:m.start()])
+    try:
+        head = {"title": json.loads(f'"{title.group(1)}"')} if title else {}
+    except ValueError:
+        head = {}
+    return {**head, m.group(1): items, CUT: True}
 
 
 def kit_in(text: str) -> str:
@@ -525,14 +537,16 @@ def read_quiz(text: str) -> dict[str, Any]:
     also from several code blocks (a chat that wrote a block per question) and with Turkish keys; else its Markdown."""
     from . import quizzes
 
-    title, topics, qs, kid = "", [], [], ""
+    title, topics, qs, kid, cut = "", [], [], "", False
     for body in _blocks(text) or [text]:
         data = _loads(body)
         if data is None:
             continue
         data = _en_keys(data)
-        if isinstance(data, dict) and isinstance(data.get("kit"), str):
-            kid = kid or data["kit"].strip().lower()
+        if isinstance(data, dict):
+            cut = cut or bool(data.pop(CUT, False))
+            if isinstance(data.get("kit"), str):
+                kid = kid or data["kit"].strip().lower()
         quiz, found = quizzes._question_lists(data)
         for hint, q in found:
             q = q if isinstance(q, dict) else {"question": q}
@@ -544,8 +558,8 @@ def read_quiz(text: str) -> dict[str, Any]:
             topics = [quizzes._text(x, 200) for x in quiz.get("topics") or []] if isinstance(quiz.get("topics"), list) else []
     if not qs:
         md = quizzes.read_markdown(text)
-        title, qs = md["title"], md["questions"]
-    return {"title": title, "topics": topics, "questions": qs, "kit": kid or kit_in(text)}
+        title, qs, cut = md["title"], md["questions"], False
+    return {"title": title, "topics": topics, "questions": qs, "kit": kid or kit_in(text), "cut": cut}
 
 
 def _card_rows(data: Any) -> tuple[list[dict[str, Any]], bool]:
@@ -634,8 +648,10 @@ def read_cards(text: str) -> tuple[list[dict[str, Any]], bool, str]:
         if data is None:
             continue
         data = _en_keys(data)
-        if isinstance(data, dict) and isinstance(data.get("kit"), str):
-            kid = kid or data["kit"].strip().lower()
+        if isinstance(data, dict):
+            data.pop(CUT, None)
+            if isinstance(data.get("kit"), str):
+                kid = kid or data["kit"].strip().lower()
         got, says = _card_rows(data)
         rows += got
         said = said or (says and bool(got))
@@ -646,6 +662,11 @@ def read_cards(text: str) -> tuple[list[dict[str, Any]], bool, str]:
         rows = [{"q": c["q"], "a": c["a"], "source": None, "topic": ""} for c in parse_cards(text or "")]
     rows = [r for r in rows if len(r["q"]) >= 3 and r["a"]]
     return rows, said and bool(rows), kid or kit_in(text)
+
+
+def was_cut(text: str) -> bool:
+    """Did the chat stop in the middle of its JSON (only the whole questions or cards before that were read)?"""
+    return any(isinstance(data, dict) and bool(data.get(CUT)) for data in map(_loads, _blocks(text) or [text]))
 
 
 def kind_of(text: str) -> str:
@@ -693,15 +714,27 @@ def normal_source(v: Any, names: list[tuple[str, str]]) -> Any:
     return ref + (f" part {part.group(1)}" if part else "") + (f" {at.group(1)}" if at else "")
 
 
-def _names(kit: Optional[dict[str, Any]]) -> list[tuple[str, str]]:
-    """The kit's files by name (with and without the extension; the longest first), for a source that names one."""
+def _names(kit: Optional[dict[str, Any]], lib: Any = None, course_id: str = "") -> list[tuple[str, str]]:
+    """The course's files by name (with and without the extension; the longest first), for a source that names one:
+    the kit's, and every file of the course that has its reference (a quiz from an older zip of the course, or one
+    whose id the chat left out, names files the newest kit may not have)."""
+    named = [(x.get("name"), ref, 5) for ref, x in ((kit or {}).get("refs") or {}).items() if x.get("kind") == "file"]
+    if lib is not None and course_id:
+        refs = numbers(lib, course_id)
+        try:
+            rows = lib.materials(course_id, include_gone=True)
+        except Exception:  # noqa: BLE001 - the kit's names then
+            log.debug("the course's files couldn't be listed for a paste", exc_info=True)
+            rows = []
+        # (a short name without its extension, "Slides", "Notes", is a word a source may hold for another reason)
+        named += [(m.get("file_name") or m.get("title"), refs[m["resource_id"]], 10) for m in rows
+                  if str(refs.get(m.get("resource_id"), "")).startswith("F")]
     out = []
-    for ref, x in ((kit or {}).get("refs") or {}).items():
-        name = str(x.get("name") or "").casefold().strip() if x.get("kind") == "file" else ""
-        for n in {name, name.rsplit(".", 1)[0]}:
-            if len(n) >= 5:
-                out.append((n, ref))
-    return sorted(out, key=lambda x: -len(x[0]))
+    for name, ref, least in named:
+        name = str(name or "").casefold().strip()
+        stem = name.rsplit(".", 1)[0]
+        out += [(n, ref) for n, most in ((name, 5 if stem != name else least), (stem, least)) if len(n) >= most]
+    return sorted(dict.fromkeys(out), key=lambda x: -len(x[0]))
 
 
 def _sourced(items: list[dict[str, Any]], keys: Iterable[str], names: list[tuple[str, str]]) -> list[str]:
@@ -721,7 +754,7 @@ def _kit_of(lib: Any, course_id: str, kit_id: str, items: list[dict[str, Any]],
     quiz from another chat, citing none, is checked against the whole course so far); and the references cited, the
     items' sources made readable on the way."""
     newest = load(lib, course_id, kit_id)
-    cited = _sourced(items, keys, _names(newest))
+    cited = _sourced(items, keys, _names(newest, lib, course_id))
     named = bool(kit_id) and newest is not None and newest.get("id") == kit_id
     return (newest if named or cited else None), cited
 
@@ -810,7 +843,7 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
                     message=tn(n, "{n} question", "{n} questions"))
     return {"kind": "quiz", "id": pid, "title": title, "questions": n, "read": read, "unused": max(0, read - n),
             "named": n - cov["found"] - cov["no_source"], "found": cov["found"], "no_source": cov["no_source"],
-            "kit": kid, "focus": focus}
+            "kit": kid, "focus": focus, "cut": bool(raw.get("cut"))}
 
 
 def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str = "",
@@ -855,7 +888,7 @@ def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str
                     message=tn(len(made), "{n} card", "{n} cards"))
     return {"kind": "cards", "id": pid, "title": title, "cards": len(made), "read": len(rows),
             "dupes": max(0, len(rows) - len(made)), "named": len(made) - found - none, "found": found,
-            "no_source": none, "kit": kid}
+            "no_source": none, "kit": kid, "cut": was_cut(text)}
 
 
 def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str = "") -> dict[str, Any]:
