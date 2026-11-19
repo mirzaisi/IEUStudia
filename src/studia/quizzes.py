@@ -974,6 +974,7 @@ def coverage(quiz: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
             "topics_missing": topics_missing[:12], "found": sum(1 for q in qs if q.get("found")),
             "no_source": sum(1 for q in qs if not q.get("source")),
             "materials_missing": [m["title"] for m in facts.get("materials_missing") or []],
+            "materials_students": [m["title"] for m in facts.get("materials_students") or []],
             "days_missing": [x["date"] for x in facts.get("days_missing") or []],
             "files_cut": [f["name"] for f in facts.get("files_cut") or []],
             "lectures_cut": sorted({lecture_refs[r]["date"] for r in (facts.get("cut") or []) + (facts.get("left_out") or [])

@@ -289,7 +289,7 @@ class PracticeApi:
         d = course_detail(self._s.lib, self._s.settings, course_id)
         if d is None:
             return {"ok": False, "error": t("This course is no longer in your list.")}
-        opts = studypack.options(self._s.lib, self._s.settings, course_id)
+        opts = studypack.options(self._s.lib, self._s.settings, course_id, d)
         return {"ok": True, **opts, "assessments": quizzes.of(d), "quant": quizzes.quantitative(d),
                 **document_language(d, self._s.settings), "ai": claude_info(),
                 "model": self._s.settings.plan_model or self._s.settings.ai_model}

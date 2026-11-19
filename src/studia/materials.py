@@ -60,6 +60,103 @@ def unit_week(unit: dict[str, Any], first: Optional[dt.date]) -> Optional[int]:
     return n if 1 <= n <= 30 else None
 
 
+# ------------------------------------------------------------------ class lists: kept away from the AI
+# A course file that lists students by number (a lab's grades, the project groups) is classmates' data: no AI tool
+# sends it (quizzes, cards, packs, cheatsheets, review sheets and video plans: studypack.gather and plans.gather; a
+# chat's course files and uploads; Export for AI chat), unless the student says to include it anyway. Told by what it
+# holds, not by its name ("Ders Notları" and "Lab results template" are study material): many different numbers of one
+# length of 8 to 11 digits, as student numbers are (not the fractional part of a number, "3,14159265", and not binary,
+# "10110010")
+_STUDENT_NO = re.compile(r"(?<!\d)(?<!\d[.,])\d{8,11}(?!\d)")
+STUDENTS_MIN = 20                # different ones of one length
+
+
+def text_lists_students(texts: Any) -> bool:
+    """Is this the text of a list of students (their numbers with marks or groups)?"""
+    from collections import defaultdict
+
+    seen: dict[int, set[str]] = defaultdict(set)
+    for text in texts:
+        for n in _STUDENT_NO.findall(text or ""):
+            if not set(n) <= {"0", "1"}:
+                seen[len(n)].add(n)
+    return any(len(v) >= STUDENTS_MIN for v in seen.values())
+
+
+def file_cells(path: Path) -> list[str]:
+    """The text of a course file whose text the app doesn't keep: an Excel workbook's cells, a CSV's fields."""
+    ext = path.suffix.lower()
+    if ext == ".xlsx":
+        out: list[str] = []
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                sheet = info.filename == "xl/sharedStrings.xml" or re.fullmatch(r"xl/worksheets/sheet\d+\.xml",
+                                                                               info.filename)
+                if sheet and info.file_size < 64 * 1024 * 1024:
+                    xml = z.read(info).decode("utf-8", "replace")
+                    for v in re.findall(r"<(?:t|v)\b[^>]*>([^<]*)</(?:t|v)>", xml):
+                        if re.fullmatch(r"\d(?:\.\d+)?E\+?\d+", v):          # 2.0210602014E10: a number Excel wrote so
+                            v = f"{float(v):.0f}"
+                        out.append(v)
+        return out
+    if ext in (".csv", ".tsv"):
+        text = path.read_text(encoding="utf-8", errors="replace")[:20_000_000]
+        sep = ";" if text.count(";") > text.count(",") else ","
+        return re.split(rf"[{sep}\t|\n]", text)
+    return []
+
+
+def lists_students(lib: Any, resource_id: str, path: str = "") -> bool:
+    """Does this course file list students? From the text the app keeps of it, else from the file itself (one not read
+    yet, or a kind the app keeps no text of: an Excel workbook). Kept per file and download (meta
+    "students:<resource id>"), so the dialogs can ask for every file of a course. False for a file not on this PC."""
+    import json
+
+    m = lib.get_material(resource_id) or {}
+    path = path or m.get("local_path") or ""
+    status = m.get("text_status") or ""
+    if not path or status in ("no-text", "failed"):         # not here; a scan, or a file that can't be read
+        return False
+    stamp = f"{m.get('downloaded_at') or ''}|{status}|{m.get('pages') or 0}|{path}"
+    try:
+        kept = json.loads(lib.get_meta(f"students:{resource_id}") or "{}")
+    except ValueError:
+        kept = {}
+    if isinstance(kept, dict) and kept.get("at") == stamp:
+        return bool(kept.get("v"))
+    try:
+        p = Path(path)
+        if status == "done":
+            texts = lib.material_pages(resource_id)
+        elif p.suffix.lower().lstrip(".") in TEXT_KINDS:
+            texts = extract_pages(p) if p.is_file() else []
+        else:
+            texts = file_cells(p) if p.is_file() else []
+        found = text_lists_students(texts)
+    except Exception as exc:  # noqa: BLE001 - a file that can't be read is put in as before (and asked again)
+        log.warning("%s could not be read to check for a list of students: %s", resource_id, exc)
+        return False
+    lib.set_meta(f"students:{resource_id}", json.dumps({"at": stamp, "v": found}))
+    return found
+
+
+def students_allowed(lib: Any, resource_id: str) -> bool:
+    """The student said to include this file anyway (it isn't a class list, or they want it read)."""
+    return lib.get_meta(f"students-ok:{resource_id}") == "1"
+
+
+def allow_students(lib: Any, resource_id: str, on: bool = True) -> None:
+    import time
+
+    lib.set_meta(f"students-ok:{resource_id}", "1" if on else "")
+    lib.set_meta("students-ok-at", str(time.time()))          # (a chat's material is made again: chat._signature)
+
+
+def left_out(lib: Any, resource_id: str, path: str = "") -> bool:
+    """Is this course file kept away from the AI: it lists students and the student hasn't said to include it?"""
+    return lists_students(lib, resource_id, path) and not students_allowed(lib, resource_id)
+
+
 # ------------------------------------------------------------------ text extraction
 def _xml_text(xml: str, para_tag: str, text_tag: str) -> str:
     paras = []

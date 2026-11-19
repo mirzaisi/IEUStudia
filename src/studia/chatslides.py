@@ -293,16 +293,20 @@ def collect(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, can_im
     pictures are wanted; a PowerPoint slide that is mostly a figure: that figure), before any budget."""
     from . import chatfiles
     from .chatread import Page
+    from .materials import left_out
 
     send = normalize(send)
     can_images = ai.provider() in ("claude", "chatgpt", "codex") if can_images is None else can_images
     catalog = course_files(lib, course_id, day_keys, said if send["mode"] == "lecture" else "")
     ids = chosen_ids(catalog, send) if send["mode"] != "none" else []
     picked = [f for f in catalog["files"] if f["id"] in set(ids)]
-    files, pages, missing = [], [], 0
+    files, pages, missing, students = [], [], 0, []
     for f in picked:
         if not f["downloaded"]:
             missing += 1
+            continue
+        if left_out(lib, f["id"], f["path"]):    # a class list: classmates' numbers never go to the AI
+            students.append({"id": f["id"], "title": f["title"], "label": f["label"]})
             continue
         texts = _pages(lib, f)
         cost = picture_cost(page_ratio(f["path"])) if f["ext"] == "pdf" else 0
@@ -324,7 +328,7 @@ def collect(lib: Any, course_id: str, day_keys: Iterable[str], send: Any, can_im
         pages += own
         files.append({"file": f, "pages": own})
     return {"send": send, "catalog": catalog, "files": files, "pages": pages, "missing": missing,
-            "can_images": bool(can_images)}
+            "students": students, "can_images": bool(can_images)}
 
 
 def allocate(candidates: list[Any], count: int, tokens: Optional[int] = None, size: Optional[int] = None,
@@ -430,6 +434,7 @@ def assemble(col: dict[str, Any], captured: int = 0, chosen: Optional[list[Any]]
     summary = {
         "mode": send["mode"], "images_on": send["images"], "can_images": col["can_images"],
         "files": files_out, "missing": col["missing"] if not local else 0, "pages": n_pages, "page_images": page_images,
+        "students": col.get("students") or [],          # left out: they list students (materials.left_out)
         "text_only_pages": n_pages - page_images, "video_images": video, "video_total": captured,
         "text_tokens": text_tokens, "image_tokens": image_tokens + video * ai.IMAGE_TOKENS,
         "tokens": text_tokens + image_tokens + video * ai.IMAGE_TOKENS,
