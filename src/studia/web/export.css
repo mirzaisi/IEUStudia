@@ -55,7 +55,7 @@
 .cx-kit { margin-top: 10px; }
 .cx-kit-lead { margin: 6px 0 6px; font-size: 13px; line-height: 1.5; color: var(--text-2); }
 .cx-pr { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); }
-.cx-pr .grow { min-width: 0; }
+.cx-pr .grow { flex: 1; min-width: 0; }
 .cx-pr b { font-size: 13px; font-weight: 600; }
 .cx-pr .btn { flex: none; }
 .cx-kit-note { margin-top: 4px; }
