@@ -10,7 +10,12 @@ as ``<name>.zip.tmp`` and renamed at the end: cancelled or failed, nothing is le
 name that is open in another program keeps its name while this one gets a new one. Course files not on this PC are
 downloaded first through the app's own download (the caller's ``download``), or listed as missing. Names in the zip are
 Windows-safe with their Turkish letters, two files of one name in one folder are kept apart, and every path is short
-enough (ZIP_PATH_MAX) to unzip in Downloads within Windows' path limit."""
+enough (ZIP_PATH_MAX) to unzip in Downloads within Windows' path limit.
+
+One course's zip is an exam kit too (kit.py): its course files and lectures carry their short references in front of
+their names ("F3 - Slides.pdf", "L2 2026-10-14 Wed - Lecture"), Prompts/ holds a practice quiz, flashcards and a
+cheatsheet to paste into the chat, and with a quiz or exam picked ("For", Choice.focus) "00 Start here.md" is its
+brief. What the chat writes from it is pasted back on the Practice tab."""
 
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import shutil
 import threading
 import time
 import unicodedata
+import uuid
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -79,6 +85,7 @@ class Choice:
     files: bool = True               # course files
     notices: bool = True             # announcements, quizzes, exams and deadlines
     download: bool = True            # course files not on this PC: downloaded first (else listed as missing)
+    focus: str = ""                  # "For": an assessment's key (quizzes.assessment_key): the exam kit's brief (kit.py)
 
     @classmethod
     def of(cls, d: Optional[dict[str, Any]]) -> "Choice":
@@ -94,7 +101,8 @@ class Choice:
                     continue
             weeks = sorted(picked)
         return cls(weeks, **{k: bool(d.get(k, True)) for k in ("transcripts", "screens", "files", "notices",
-                                                                 "download")})
+                                                                 "download")},
+                   focus=str(d.get("focus") or "")[:200] if isinstance(d.get("focus"), str) else "")
 
 
 @dc.dataclass
@@ -473,7 +481,10 @@ def options(lib: Any, settings: Any, output_root: Path, course_id: str = "",
         free = shutil.disk_usage(_existing(folder)).free
     except OSError:
         free = 0
-    return {"courses": [{"id": c.id, "code": c.code, "name": c.name} for c in courses], "all": not course_id,
+    from .kit import choices                      # "For": the coming quizzes and exams (one course's zip)
+
+    return {"assessments": choices(plans[0].detail) if course_id and plans else [],
+            "courses": [{"id": c.id, "code": c.code, "name": c.name} for c in courses], "all": not course_id,
             "today": today.isoformat(), "weeks": [weeks[n] for n in sorted(weeks)],
             "general": {"files": sum(1 for m in gen if m.path), "missing": [m.id for m in gen if not m.path],
                         "bytes": sum(m.size for m in gen if m.path)},
@@ -1057,9 +1068,10 @@ def span_text(choice: Choice, today: dt.date) -> str:
 
 
 def first_message(courses: list[Course], choice: Choice, all_courses: Optional[list[Course]] = None,
-                  every: Optional[bool] = None) -> str:
+                  every: Optional[bool] = None, focus: str = "") -> str:
     """The first message to send with the zip, in the app's language (``every``: all courses' zip, a folder for each
-    course, even with one course on the dashboard)."""
+    course, even with one course on the dashboard; ``focus``: the quiz or exam it was made for, whose brief is in
+    "00 Start here.md")."""
     every = len(courses) > 1 if every is None else every
     parts = []
     if choice.transcripts:
@@ -1083,6 +1095,8 @@ def first_message(courses: list[Course], choice: Choice, all_courses: Optional[l
                  "question:")
     if choice.notices:
         head += " " + t("The announcements and the quizzes, exams and deadlines are in it too.")
+    if focus:
+        head += " " + t("I'm preparing for {name}: read 00 Start here.md first, it says what it covers.", name=focus)
     return f"{head} {tail}"
 
 
@@ -1093,6 +1107,15 @@ def _how_to(message: str) -> list[str]:
             "3. " + t("Send this as your first message, with your question at the end:"), "",
             "> " + message, "",
             t("ChatGPT takes files up to 512 MB. For a bigger zip, export fewer weeks or leave out the screens."), ""]
+
+
+def _practise() -> list[str]:
+    """The README's way back (kit.py): a prompt from Prompts/, its answer pasted on the Practice tab."""
+    return ["## " + t("Then practise with it"), "",
+            "1. " + t("Open a file in Prompts, copy all of it and send it in the same chat."),
+            "2. " + t("When the answer is done, copy all of it (the copy button under it works)."),
+            "3. " + t("In IEUStudia, open the course's Practice tab and press Ctrl+V. The quiz plays there with scores "
+                      "and opens where each question comes from; the cards join your deck."), ""]
 
 
 @dc.dataclass
@@ -1108,7 +1131,8 @@ class Notes:
     students: set[str] = dc.field(default_factory=set)      # files left out: lists of students
 
 
-def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: str, alone: bool) -> str:
+def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: str, alone: bool,
+                  kit: Optional[dict[str, Any]] = None) -> str:
     p, counts, notes = w.plan, w.counts, w.notes
     lines = [f"# {course_title(p.course, p.detail)}: {span_text(choice, today)}", "",
              t("Made with IEUStudia on {date}.", date=date_long(today)) + " " + t(
@@ -1118,9 +1142,19 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
                  files=tn(counts["files"], "{n} course file", "{n} course files")), ""]
     if alone:
         lines += _how_to(message)
+        if kit:
+            lines += _practise()
     lines += ["## " + t("What is inside"), ""]
     if alone:
         lines += ["- " + t("README.md: this file."), "- " + t("Index of files.md: every file in the zip, with what it is.")]
+    if kit:                         # the exam kit (kit.py)
+        if kit.get("start"):
+            lines.append("- " + t("00 Start here.md: what {name} covers, what the lecturer said and stressed about it, "
+                                  "and what isn't needed. The AI reads it first.", name=kit["focus"]))
+        lines.append("- " + t("Prompts/: ready prompts for a practice quiz, flashcards and a cheatsheet, to paste into "
+                              "the chat."))
+        lines.append("- " + t("F1, F2… and L1, L2…: the short names in front of each course file and lecture, so the AI "
+                              "can say where something comes from."))
     lines.append("- " + t("Course overview.md: the course's description, learning outcomes, grading and weekly plan."))
     asgs = assignments(p.detail) if choice.notices else []
     if choice.notices:
@@ -1191,9 +1225,13 @@ def all_readme(writers: list["_CourseWriter"], choice: Choice, today: dt.date, m
     return "\n".join(lines)
 
 
-def index_md(entries: list[tuple[str, str]], root: str) -> str:
-    """Every file of the zip, folder by folder."""
+def index_md(entries: list[tuple[str, str]], root: str, refs: Optional[list[str]] = None) -> str:
+    """Every file of the zip, folder by folder; first its references (F1…, L1…: kit.ref_lines) when it has them."""
     lines = ["# " + t("Index of files"), "", t("Every file in this zip, folder by folder."), ""]
+    if refs:
+        lines += ["## " + t("References"), "",
+                  t("The short name in front of each course file (F1, F2…) and lecture (L1, L2…), as the AI cites them."),
+                  "", *[f"- {x}" for x in refs], ""]
     by_folder: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for rel, what in entries:
         folder, _, name = rel.rpartition("/")
@@ -1208,7 +1246,8 @@ def index_md(entries: list[tuple[str, str]], root: str) -> str:
 # ------------------------------------------------------------------ writing one course
 class _CourseWriter:
     def __init__(self, z: Zip, plan: Plan, base: str, choice: Choice, today: dt.date, counters: dict[str, int],
-                 ci: int, cn: int) -> None:
+                 ci: int, cn: int, refs: Optional[dict[str, str]] = None,
+                 pages: Callable[[str], int] = lambda rid: 0) -> None:
         self.z, self.plan, self.base, self.choice, self.today = z, plan, base, choice, today
         self.course = plan.course
         self.counters, self.ci, self.cn = counters, ci, cn
@@ -1216,6 +1255,10 @@ class _CourseWriter:
         self.counts = {"lectures": 0, "screens": 0, "files": 0}       # files: different ones (not their copies)
         self._written: set[str] = set()
         self.week_lines: list[str] = []
+        # the exam kit's references (kit.numbers: a file's or lecture's "F3" / "L2" in front of its name), and what
+        # each one written is ({ref: {"kind", its id or day, name, pages, week, its path in the zip}})
+        self.refs, self.pages = refs or {}, pages
+        self.cited: dict[str, dict[str, Any]] = {}
 
     def write(self) -> None:
         p, ch, z = self.plan, self.choice, self.z
@@ -1286,13 +1329,15 @@ class _CourseWriter:
                                                  parts=", ".join(map(str, d.silent))))
         if not (ch.transcripts or ch.screens):
             return _lecture_line(d, "", 0, ch)
-        label = f"{d.date.isoformat()} {WEEKDAYS_SHORT[d.date.weekday()]} - {kind_label(d.kind)}" + (
-            f" (sec {', '.join(d.other)})" if d.other else " (other sec)" if d.another else "")
+        ref = self.refs.get(d.key, "")
+        label = (f"{ref} " if ref else "") + f"{d.date.isoformat()} {WEEKDAYS_SHORT[d.date.weekday()]} - " \
+            f"{kind_label(d.kind)}" + (f" (sec {', '.join(d.other)})" if d.other else " (other sec)" if d.another else "")
         folder = z.folder(z.folder(week_folder, "Lectures", 20), label, DAY_MAX)
         recs = sorted(d.recs, key=lambda r: r.start)
         trans = store.load_transcripts(d.done)
         shots = d.slides() if ch.screens else {}
         names: dict[str, str] = {}
+        wrote = False
         if ch.screens:
             for p in part_views(recs, trans, shots):
                 for s in shots.get(p.rec.delivery_id) or []:
@@ -1307,7 +1352,7 @@ class _CourseWriter:
                     if got:
                         names[s.path] = got
         if ch.transcripts:
-            text = compact_day(self.course, recs, trans, shots or None)
+            text = compact_day(self.course, recs, trans, shots or None, label=ref)
             if text:
                 notes = []
                 if d.todo:
@@ -1318,11 +1363,17 @@ class _CourseWriter:
                 if d.another:
                     notes.append(f"This is {d.other_text}'s lecture: the dates and details it gives may differ for "
                                  "your section.")
-                z.text(folder, "Transcript.md", text + "".join("\n\n" + n for n in notes) + "\n\n" + _legend(bool(names)),
-                       t("transcript: {kind}, {date}", kind=kind, date=when))
+                cite = (f"\nCite this lecture as {ref}, with the part and the time: \"{ref} part 1 14:05\"."
+                        if ref else "")
+                z.text(folder, "Transcript.md", text + "".join("\n\n" + n for n in notes) + "\n\n" + _legend(bool(names))
+                       + cite, t("transcript: {kind}, {date}", kind=kind, date=when))
+                wrote = True
         if names:
             z.text(folder, "Transcript by screen.md", by_screen(self.course, d, trans, shots, names),
                    t("what was said on each screen: {kind}, {date}", kind=kind, date=when))
+        if ref and (wrote or names):                   # (a lecture whose transcript file is gone isn't cited)
+            self.cited.setdefault(ref, {"kind": "lecture", "day_key": d.key, "date": d.date.isoformat(),
+                                        "week": week_no or None, "path": folder})
         self.counts["lectures"] += 1
         self.counts["screens"] += len(names)
         rel = folder[len(week_folder) + 1:] if folder.startswith(week_folder + "/") else folder
@@ -1351,12 +1402,16 @@ class _CourseWriter:
                 stem, ext = split_name(m.file_name or Path(m.path).name, m.ext)
                 if not ext:
                     ext = split_name(Path(m.path).name)[1]
-                got = z.file(folder, stem, ext, m.path, t("course file of week {n}", n=week_no) if week_no else
-                             t("course file for the whole course"))
+                ref = self.refs.get(m.id, "")
+                got = z.file(folder, f"{ref} - {stem}" if ref else stem, ext, m.path,
+                             t("course file of week {n}", n=week_no) if week_no else t("course file for the whole course"))
                 if got:
                     self._written.add(m.id)              # a unit for two weeks is in both: one file, counted once
                     self.counts["files"] = len(self._written)
                     rel = folder[len(parent) + 1:] + "/" + got
+                    if ref and ref not in self.cited:
+                        self.cited[ref] = {"kind": "file", "id": m.id, "name": m.shown, "week": week_no or None,
+                                           "pages": m.pages or self.pages(m.id), "path": f"{folder}/{got}"}
             if m.link:
                 self.notes.links.add(m.id)
             elif rel is None and ch.files:
@@ -1382,6 +1437,30 @@ def _check_space(folder: Path, size: int) -> None:
         raise ExportError(t("There isn't enough free space on the disk for this export: it needs about {need}, and "
                             "{free} is free. Free up some space, or leave out the screens or some weeks, and try again.",
                             need=size_text(need), free=size_text(free)))
+
+
+def _kit(lib: Any, settings: Any, z: Zip, plan: Plan, choice: Choice, today: dt.date, cited: dict[str, dict[str, Any]],
+         kid: str) -> Optional[dict[str, Any]]:
+    """The exam kit's files in the zip (kit.make): "00 Start here.md" with a quiz or exam picked, and Prompts/. One
+    that can't be made leaves the zip as it was (its references still in the names)."""
+    from . import kit as kit_mod
+
+    try:
+        made = kit_mod.make(lib, settings, plan, choice, today, cited, kid)
+    except Cancelled:
+        raise
+    except Exception:  # noqa: BLE001 - the zip without the kit's files
+        log.warning("Export: the exam kit couldn't be made", exc_info=True)
+        return None
+    if made["start"]:
+        z.text("", "00 Start here.md", made["start"],
+               t("start here: what {name} covers, and what the lecturer said and stressed about it", name=made["focus"]))
+    what = {"quiz": t("a prompt for a practice quiz you can paste back into IEUStudia"),
+            "cards": t("a prompt for flashcards you can paste back into IEUStudia"),
+            "sheet": t("a prompt for a cheatsheet")}
+    for x in made["prompts"]:
+        z.text("Prompts", x["file"], x["text"], what[x["key"]])
+    return made
 
 
 def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Choice, *,
@@ -1428,24 +1507,35 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
                 if choice.files else 0}
     progress({"step": "start", "estimate": size, "fraction": 0.0})
     tmp = target.with_name(target.name + ".tmp")
-    message = first_message(courses, choice, all_courses, every)
+    # one course's zip is an exam kit too (kit.py): references in its files' names, its prompts, and with a quiz or
+    # exam picked ("For") its brief
+    from . import kit as kit_mod
+
+    single = not every and len(plans) == 1
+    refs = kit_mod.numbers(lib, plans[0].course.id, *kit_mod.course_order(lib, plans[0])) if single else {}
+    focus = kit_mod.assessment(plans[0].detail, choice.focus) if single else None
+    message = first_message(courses, choice, all_courses, every, focus["name"] if focus else "")
+    kid, made = uuid.uuid4().hex[:8], None
     z = Zip(tmp, root, work, progress, cancel)
     writers: list[_CourseWriter] = []
     try:
         for ci, p in enumerate(plans, start=1):
             base = z.folder("", course_folder_name(p.course, all_courses), COURSE_MAX) if every else ""
-            w = _CourseWriter(z, p, base, choice, today, counters, ci, len(plans))
+            w = _CourseWriter(z, p, base, choice, today, counters, ci, len(plans), refs,
+                              lambda rid: len(lib.material_pages(rid)))
             w.write()
             writers.append(w)
-            z.text(base, "README.md", course_readme(w, choice, today, message, alone=not every),
+            if single:
+                made = _kit(lib, settings, z, p, choice, today, w.cited, kid)
+            z.text(base, "README.md", course_readme(w, choice, today, message, alone=not every, kit=made),
                    t("what is in this course's folder") if every else
                    t("what is in this zip, and how to use it in ChatGPT"))
         z.tell(force=True, step="zip")
         if every:
             z.text("", "README.md", all_readme(writers, choice, today, message),
                    t("what is in this zip, and how to use it in ChatGPT"))
-        z.text("", "Index of files.md", index_md(z.index + [("Index of files.md", t("this list"))], root),
-               t("this list"))
+        z.text("", "Index of files.md", index_md(z.index + [("Index of files.md", t("this list"))], root,
+                                                 kit_mod.ref_lines(made["refs"]) if made else None), t("this list"))
         z.close()
         check(cancel)
         final = _place(tmp, target)
@@ -1453,6 +1543,11 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
         z.abort()
         _remove(tmp)
         raise
+    if made:
+        try:
+            kit_mod.save(lib, made, final.name)
+        except Exception:  # noqa: BLE001 - a quiz pasted back still finds its sources by the course's references
+            log.warning("Export: the kit %s was not kept", kid, exc_info=True)
     got = final.stat().st_size
     out = {"path": str(final), "folder": str(final.parent), "name": final.name, "bytes": got, "estimate": size,
            "renamed": final != target, "courses": len(writers),
@@ -1463,7 +1558,9 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
            "links": len(set().union(*(w.notes.links for w in writers))) if writers else 0,
            "students": len(set().union(*(w.notes.students for w in writers))) if writers else 0,
            "weeks": sorted({w.no for p in plans for w in p.weeks}), "first_message": message,
-           "too_big": got > CHATGPT_MAX}
+           "too_big": got > CHATGPT_MAX,
+           "kit": {"id": kid, "focus": made["focus"], "start": bool(made["start"]),
+                   "prompts": [{"key": x["key"], "text": x["text"]} for x in made["prompts"]]} if made else None}
     log.info("Export: %s (%d KB; %d lectures, %d screens, %d files)", final.name, got // 1024, out["lectures"],
              out["screens"], out["files"])
     return out

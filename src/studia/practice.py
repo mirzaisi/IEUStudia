@@ -956,3 +956,18 @@ class PracticeApi:
             except Exception:  # noqa: BLE001 - its text instead
                 log.debug("page %s of %s not drawn", n, path, exc_info=True)
         return out
+
+    # ---- the exam kit's way back (kit.py): what ChatGPT or Claude on the web wrote, pasted on the Practice tab
+    @_safe
+    def quiz_import(self, course_id: str, text: str, export_id: str = "") -> dict[str, Any]:
+        """A pasted quiz (or flashcards: "kind" says which it held), read, checked and saved; how much was read."""
+        from .kit import pasted
+
+        return pasted(self, course_id, text, export_id)
+
+    @_safe
+    def cards_import(self, course_id: str, text: str, export_id: str = "") -> dict[str, Any]:
+        """Pasted flashcards (JSON, a table, tab-separated lines or "Q: … A: …"), saved as a card set."""
+        from .kit import pasted
+
+        return pasted(self, course_id, text, export_id, want="cards")

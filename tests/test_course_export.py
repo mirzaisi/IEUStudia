@@ -125,6 +125,8 @@ def read(path, name):
 
 
 ROOT = "MATH 240 - everything up to 8 Oct 2026"
+# one course's zip: each lecture and course file has its reference (kit.py) in front of its name
+LEC1, LEC3 = "Lectures/L1 2026-09-23 Wed - Lecture", "Lectures/L3 2026-10-07 Wed - Lecture"
 
 
 # ------------------------------------------------------------------ the zip's structure
@@ -138,22 +140,22 @@ def test_everything_up_to_now_has_a_folder_per_week_with_transcripts_screens_and
     w1 = "Week 01 - Sample Spaces"
     assert {"README.md", "Index of files.md", "Course overview.md", "Announcements.md",
             "Quizzes, exams and deadlines.md", f"{w1}/Week overview.md",
-            f"{w1}/Lectures/2026-09-23 Wed - Lecture/Transcript.md",
-            f"{w1}/Lectures/2026-09-23 Wed - Lecture/Transcript by screen.md",
-            f"{w1}/Lectures/2026-09-23 Wed - Lecture/Screens/Part 1 - Screen 01.jpg",
-            f"{w1}/Lectures/2026-09-23 Wed - Lecture/Screens/Part 1 - Screen 02.jpg",
-            f"{w1}/Course files/Week01.pdf", "Week 02 - Counting/Week overview.md",
-            "Week 03 - Bayes/Lectures/2026-10-07 Wed - Lecture/Transcript.md",
-            "General course files/Formula Sheet/Formül sayfası.pdf"} <= rel
+            f"{w1}/{LEC1}/Transcript.md",
+            f"{w1}/{LEC1}/Transcript by screen.md",
+            f"{w1}/{LEC1}/Screens/Part 1 - Screen 01.jpg",
+            f"{w1}/{LEC1}/Screens/Part 1 - Screen 02.jpg",
+            f"{w1}/Course files/F1 - Week01.pdf", "Week 02 - Counting/Week overview.md",
+            f"Week 03 - Bayes/{LEC3}/Transcript.md",
+            "General course files/Formula Sheet/F7 - Formül sayfası.pdf"} <= rel
     # weeks begun by today only, a screen shown twice is one picture, pictures are stored as they are
     assert not any(r.startswith(("Week 04", "Week 05", "Week 08")) for r in rel)
     assert sum("/Screens/" in r for r in rel) == 2
-    assert names[f"{ROOT}/{w1}/Lectures/2026-09-23 Wed - Lecture/Screens/Part 1 - Screen 01.jpg"].compress_type == zipfile.ZIP_STORED
+    assert names[f"{ROOT}/{w1}/{LEC1}/Screens/Part 1 - Screen 01.jpg"].compress_type == zipfile.ZIP_STORED
     assert out["lectures"] == 2 and out["screens"] == 2 and out["weeks"] == [1, 2, 3]
     # the transcript with the screen marks and the legend; what was said on each screen, the screen shown again too
-    text = read(path, f"{ROOT}/{w1}/Lectures/2026-09-23 Wed - Lecture/Transcript.md")
+    text = read(path, f"{ROOT}/{w1}/{LEC1}/Transcript.md")
     assert "[00:30] (slide 2) ⭐ Next week we have a quiz on counting." in text and "[TR]" in text and "How to read this" in text
-    by = read(path, f"{ROOT}/{w1}/Lectures/2026-09-23 Wed - Lecture/Transcript by screen.md")
+    by = read(path, f"{ROOT}/{w1}/{LEC1}/Transcript by screen.md")
     assert "## Part 1, screen 2 (00:20 to 00:50)\nPicture: Screens/Part 1 - Screen 02.jpg" in by
     assert "[00:30] ⭐ Next week we have a quiz on counting." in by.split("screen 2 (00:20")[1].split("## ")[0]
     assert "## Part 1, screen 1 (00:50 to 01:30), shown again\nPicture: Screens/Part 1 - Screen 01.jpg" in by
@@ -257,7 +259,7 @@ def test_what_to_put_in_leaves_the_rest_out(env):
     rel = {n.split("/", 1)[1] for n in entries(out["path"])}
     assert not any("/Screens/" in r or "Transcript by screen" in r or r.endswith(".pdf") for r in rel)
     assert "Announcements.md" not in rel and "Quizzes, exams and deadlines.md" not in rel
-    text = read(out["path"], f"{ROOT}/Week 01 - Sample Spaces/Lectures/2026-09-23 Wed - Lecture/Transcript.md")
+    text = read(out["path"], f"{ROOT}/Week 01 - Sample Spaces/{LEC1}/Transcript.md")
     assert "(slide" not in text and "Transcript by screen.md" not in text
     week1 = read(out["path"], f"{ROOT}/Week 01 - Sample Spaces/Week overview.md")
     assert "- Week01.pdf (course files were left out of this export)" in week1
@@ -305,7 +307,7 @@ def test_files_not_on_this_pc_are_listed_with_why_or_downloaded_first(env):
 
     out = build(env, download=download, progress=events.append)
     assert got == ["r2"] and out["missing"] == 0
-    assert f"{ROOT}/Week 01 - Sample Spaces/Course files/Extra.pdf" in entries(out["path"])
+    assert f"{ROOT}/Week 01 - Sample Spaces/Course files/F2 - Extra.pdf" in entries(out["path"])
     steps = [e for e in events if e.get("step") == "download"]
     assert steps[0]["i"] == 1 and steps[0]["n"] == 1 and steps[0]["name"] == "Extra.pdf"
     assert any(e.get("done") == 5 and e.get("total") == 10 for e in steps)
@@ -346,8 +348,8 @@ def test_a_unit_for_two_weeks_is_in_both(env):
     out = build(env, weeks=[3, 4])
     root = "MATH 240 - weeks 3-4 - 8 Oct 2026"
     names = entries(out["path"])
-    assert f"{root}/Week 03 - Bayes/Course files/Hafta3-4.pdf" in names
-    assert f"{root}/Week 04 - Random Variables/Course files/Hafta3-4.pdf" in names
+    assert f"{root}/Week 03 - Bayes/Course files/F5 - Hafta3-4.pdf" in names        # (one file: one reference)
+    assert f"{root}/Week 04 - Random Variables/Course files/F5 - Hafta3-4.pdf" in names
 
 
 def test_a_file_of_a_unit_for_two_weeks_is_counted_once(env):
@@ -379,7 +381,7 @@ def test_a_recording_with_no_speech_is_not_called_not_transcribed_yet(env):
     assert "- Week 2, Wed 30 Sep (Lecture): Panopto's recording has no speech (no sound, or only noise or music), so " \
            "there is nothing to transcribe." in readme
     assert "- Week 3, Wed 7 Oct (Lecture): part 2 has no speech on Panopto's recording, so it has no transcript." in readme
-    text = read(out["path"], f"{ROOT}/Week 03 - Bayes/Lectures/2026-10-07 Wed - Lecture/Transcript.md")
+    text = read(out["path"], f"{ROOT}/Week 03 - Bayes/{LEC3}/Transcript.md")
     assert "Part 2 has no speech on Panopto's recording, so no transcript (no sound, or only noise or music)." in text
     o = ce.options(env.lib, env.settings, env.out, "c", today=TODAY)
     assert all(w["untranscribed"] == 0 for w in o["weeks"])                     # the dialog says nothing is left
@@ -440,8 +442,8 @@ def test_a_course_file_that_lists_students_stays_out_of_the_zip(tmp_path):
     out = ce.build(lib, Settings(), tmp_path / "out", "e", ce.Choice(), today=TODAY)
     root = "EEE 215 - everything up to 8 Oct 2026"
     names = set(entries(out["path"]))
-    assert f"{root}/Week 01 - Hafta 1/Course files/Week01.pdf" in names
-    assert f"{root}/General course files/Lab Grades Weeks 1-3/Ders Notları.pdf" in names       # study material stays
+    assert f"{root}/Week 01 - Hafta 1/Course files/F1 - Week01.pdf" in names
+    assert f"{root}/General course files/Lab Grades Weeks 1-3/F4 - Ders Notları.pdf" in names   # study material stays
     assert not any("Grades 22" in n or "Groups" in n for n in names)
     assert out["students"] == 2 and out["files"] == 2
     readme = read(out["path"], f"{root}/README.md")
@@ -454,9 +456,12 @@ def test_a_course_file_that_lists_students_stays_out_of_the_zip(tmp_path):
 
 
 def test_two_files_of_one_name_in_a_folder_are_kept_apart(env):
-    out = build(env, weeks=[2])
+    out = build(env, course_id="", weeks=[2])                         # (all courses: no references in the names)
     names = [n.rsplit("/", 1)[1] for n in entries(out["path"]) if "/Course files/" in n]
     assert sorted(names) == ["Slides.pdf", "slides (2).PDF"]          # Windows doesn't tell case apart
+    one = build(env, weeks=[2])
+    assert sorted(n.rsplit("/", 1)[1] for n in entries(one["path"]) if "/Course files/" in n) == \
+        ["F3 - Slides.pdf", "F4 - slides.PDF"]
     n = ce.Names()
     assert [n.take("f", "CON", ".pdf"), n.take("f", "con", ".pdf"), n.take("f", 'a:b*c?', ".txt")] == \
         ["CON_.pdf", "con_ (2).pdf", "a b c.txt"]
@@ -471,7 +476,8 @@ def test_long_turkish_names_keep_their_letters_and_every_path_fits(env):
         assert max(len(n) for n in names) <= ce.ZIP_PATH_MAX
         pdf = next(i for i in infos if i.filename.endswith(".pdf") and "Kesikli" in i.filename)
         folder, name = pdf.filename.rsplit("/", 1)
-        assert name.startswith("Kesikli tekdüze, Binom") and name.endswith(".pdf") and pdf.flag_bits & 0x800
+        assert name.startswith("F6 - Kesikli tekdüze, Binom" if course_id else "Kesikli tekdüze, Binom")
+        assert name.endswith(".pdf") and pdf.flag_bits & 0x800
         assert "/Week 05 - Poisson" in folder
         assert all(not re.search(r'[<>:"\\|?*]', n) for n in names)
     assert ce.clean_name("Week 05 - " + LONG_TR, 40) == "Week 05 - Kesikli tekdüze, Binom"         # at a word
