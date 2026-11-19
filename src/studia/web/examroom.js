@@ -102,7 +102,7 @@
       ${tile(k.material.of && k.material.have === k.material.of ? "ok" : "", t("Material"), t("{done} of {n}", { done: k.material.have, n: k.material.of }), t("lectures transcribed and files on this PC"))}
       ${tile(k.practised.answers ? "ok" : "", t("Practised"), t.n(k.practised.answers, "{n} question answered", "{n} questions answered"), practised)}
       ${tile(k.condensed.done ? "ok" : "", t("Condensed"), t.n(k.condensed.done, "{n} sheet ready", "{n} sheets ready"),
-        making ? t.n(making, "{n} more being made or stopped", "{n} more being made or stopped") : t("cheatsheets, review sheets and study packs for it"))}</div>`;
+        making ? t.n(making, "{n} more not finished yet", "{n} more not finished yet") : t("cheatsheets, review sheets and study packs for it"))}</div>`;
   }
   function missingHTML(r) {
     const m = r.material, files = m.missing.filter((id) => !busyFile(id)), fetching = m.missing.length - files.length;

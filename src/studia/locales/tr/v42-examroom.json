@@ -33,7 +33,7 @@
   "{n} flashcard answer": "{n} kart cevabı",
   "Condensed": "Özetler",
   "{n} sheet ready": "{n} özet hazır",
-  "{n} more being made or stopped": "{n} tane daha hazırlanıyor ya da durduruldu",
+  "{n} more not finished yet": "{n} tane daha henüz bitmedi",
   "cheatsheets, review sheets and study packs for it": "bu sınav için formül kâğıtları, tekrar özetleri ve konu anlatımları",
   "{n} lecture is being transcribed now: the queue at the bottom shows how long it takes.": "{n} ders şu an yazıya dökülüyor: ne kadar süreceğini alttaki sıra gösterir.",
   "Downloading {n} file…": "{n} dosya indiriliyor…",

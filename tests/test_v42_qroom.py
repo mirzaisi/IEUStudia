@@ -179,6 +179,23 @@ def test_the_digest_opens_the_room_of_a_syllabus_exam_and_says_its_set_day(lib):
 
 # ------------------------------------------------------------------ the page
 @node
+def test_the_calendars_exam_room_button_opens_the_room_by_its_key_and_says_whose_day_it_is(tmp_path):
+    out = run(tmp_path, """
+  const today = inDays(0);
+  S.cal.data = { today, now: "12:00", term: { start: inDays(-60), end: inDays(60) }, reminders: {}, courses: [{ id: "c", code: "MATH 240", name: "P", section: "", twin: false }],
+    items: [{ id: "c-quiz-3", key: "quiz:3", kind: "quiz", course_id: "c", code: "MATH 240", title: "Quiz 3", date: inDays(3), time: "", week_no: 12, sure: "set", los: [],
+      source: { type: "announcement", id: "a2" } },
+      { id: "c-syllabus-week15", key: "syllabus:Final Exam:16", kind: "exam", course_id: "c", code: "MATH 240", title: "Final Exam", date: "",
+        week: { no: 15, start: inDays(20), end: inDays(33) }, days: [], week_no: 15, sure: "syllabus", los: [], source: { type: "syllabus", url: "" } }] };
+  S.cal.view = "list"; S.view = { name: "calendar" };
+  out.html = St.views.calendar(S.view); out.text = text(out.html);
+""")
+    assert 'data-act="ready-open" data-cid="c" data-key="quiz:3"' in out["html"]
+    assert 'data-act="ready-open" data-cid="c" data-key="syllabus:Final Exam:16"' in out["html"]
+    assert "The day you set in its Exam room" in out["text"]
+
+
+@node
 def test_the_course_page_says_the_day_set_in_the_room(tmp_path):
     """The room and its chip said the day the student set; the Coming up strip and the week card's pill kept the week."""
     out = run(tmp_path, """
