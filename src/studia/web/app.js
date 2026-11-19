@@ -1685,6 +1685,12 @@
     if (!r.ok) return;
     S.chat.list = r.chats || [];
     if (r.limits && Object.keys(r.limits).length) S.limits = r.limits;
+    // the open chat's name as saved: a chat begun with "/quiz 5" is named after its quiz once it is written
+    const c = S.chat.data, row = c && S.chat.list.find((x) => x.id === c.id);
+    if (row && row.title && row.title !== c.title) {
+      c.title = row.title;
+      if (S.view.name === "chat" && S.chat.id === c.id && !S.chat.draft) renderChatHead();
+    }
     const el = $("#chat-items"); if (el) el.innerHTML = chatItemsHTML();
     const slot = $("#chat-filter-slot"); if (slot && !slot.querySelector("input")) slot.innerHTML = chatFilterHTML();   // (many chats now)
   }

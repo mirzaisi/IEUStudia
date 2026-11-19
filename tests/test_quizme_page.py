@@ -269,3 +269,28 @@ def test_a_quiz_in_a_chat_shows_as_a_card_only_when_it_is_done(tmp_path):
     assert out["failed"] == [True, True]
     assert out["chip"] == [True, False] and out["chipOld"] is False and out["sent"] == "/quiz"
     assert out["slash"] == [False, True] and out["offline"] is True and "Quizzes need ChatGPT or Claude" in out["toast"]
+
+
+@node
+def test_a_chat_begun_with_quiz_takes_its_quiz_s_name_in_the_header(tmp_path):
+    """The header kept "/quiz 5" until the chat was opened again: the chat was renamed after its quiz on the app's
+    side, and only the chat list was told."""
+    out = _page(tmp_path, """
+  els["#chat-head"] = {}; els["#chat-items"] = {};
+  const msgs = [{ seq: 1, role: "user", text: "/quiz 5", status: "done", usage: {} },
+    { seq: 2, role: "assistant", text: "", status: "streaming", usage: {} }];
+  S.chat.data = { id: "ch", course_id: "c1", title: "/quiz 5", messages: msgs, days: [], model: "sonnet", running: true };
+  S.chat.id = "ch"; S.chat.draft = null; S.view = { name: "chat", chatId: "ch" };
+  const row = { id: "ch", course_id: "c1", course_code: "MATH 240", title: "/quiz 5", scope_label: "13 Oct · Lecture", model: "sonnet", updated_at: "2026-11-19T10:00:00" };
+  St.Mock.chat_list = () => ({ ok: true, chats: [{ ...row }] });
+  St.renderChatHead(); await tick();
+  out.before = els["#chat-head"].innerHTML.includes("<h2 title=\\"/quiz 5\\">");
+  row.title = "Bayes and conditional probability";          // the quiz is written and saved: the chat is named after it
+  window.__lsEvent({ type: "chat", chat_id: "ch", seq: 2, state: "done", text: "Here it is.", usage: { quiz: { id: "pq", title: row.title, questions: 5 } } });
+  await tick(60);
+  out.after = els["#chat-head"].innerHTML;
+  out.list = els["#chat-items"].innerHTML.includes("Bayes and conditional probability");
+""")
+    assert out["before"]
+    assert '<h2 title="Bayes and conditional probability">' in out["after"] and "/quiz 5" not in out["after"]
+    assert out["list"]
