@@ -196,11 +196,14 @@
     const file = (f) => `<div class="er-file"><span class="er-print-tick">${f.downloaded ? "☑" : "☐"}</span>${I("file-text", "xs")}<button class="link" data-act="mat-open" data-id="${esc(f.id)}">${esc(f.name || f.title)}</button>
         <span class="dim sm">${esc(f.downloaded ? "" : busyFile(f.id) ? t("downloading…") : t("not on this PC"))}${f.tied ? ` ${esc(t("· tied to it"))}` : ""}</span></div>`;
     const tied = m.files.filter((f) => f.week == null);
+    const has = (w) => m.days.some((x) => x.week === w.no) || m.files.some((f) => f.week === w.no);
+    const empty = weeks.filter((w) => !has(w)).map((w) => w.no);          // (a final's weeks still ahead: one line)
     return `<div class="card er-card er-weeks"><div class="er-h">${I("calendar", "sm")}<b>${t("Its weeks")}</b>
-        <span class="dim sm">${esc(t("Lectures read: {done} of {n}", { done: m.read, n: m.readable }))}</span></div>
-      ${weeks.map((w) => { const days = m.days.filter((x) => x.week === w.no), files = m.files.filter((f) => f.week === w.no); return `<div class="er-week">
+        ${m.readable ? `<span class="dim sm">${esc(t("Lectures read: {done} of {n}", { done: m.read, n: m.readable }))}</span>` : ""}</div>
+      ${weeks.filter(has).map((w) => `<div class="er-week">
         <div class="er-week-h"><b>${esc(t("Week {n}", { n: w.no }))}</b><span class="grow">${esc(w.topic || "")}</span><span class="dim sm">${esc(dmw(w.start))}</span></div>
-        ${days.map(day).join("")}${files.map(file).join("")}${!days.length && !files.length ? `<div class="dim sm er-none">${esc(t("Nothing for this week yet."))}</div>` : ""}</div>`; }).join("")}
+        ${m.days.filter((x) => x.week === w.no).map(day).join("")}${m.files.filter((f) => f.week === w.no).map(file).join("")}</div>`).join("")}
+      ${empty.length ? `<div class="er-week dim sm er-none">${esc(t("Nothing yet for {weeks}.", { weeks: span(empty) }))}</div>` : ""}
       ${tied.length ? `<div class="er-week"><div class="er-week-h"><b>${esc(t("Course-wide and announcement files"))}</b></div>${tied.map(file).join("")}</div>` : ""}</div>`;
   }
   // the evening before, with the background checks off: offer them once (a reminder comes when the app is closed)
@@ -222,8 +225,10 @@
     }
     const r = ER.room;
     if (!r || r.course.id !== v.courseId) return `<div class="view-inner er-page">${skeleton()}</div>`;
+    const right = saidHTML(c, r) + stressedHTML(r), made = condensedHTML(r);
+    const cols = right ? [practiceHTML(c, r) + made, right] : made ? [practiceHTML(c, r), made] : [practiceHTML(c, r)];
     return `<div class="view-inner er-page" style="--h:${St.hue ? St.hue(c) : 220}">${headHTML(c, r)}${trayHTML(r)}${countsHTML(r)}${missingHTML(r)}${stepsHTML(c, r)}
-      <div class="er-grid"><div class="er-col">${practiceHTML(c, r)}${condensedHTML(r)}</div><div class="er-col">${saidHTML(c, r)}${stressedHTML(r)}</div></div>
+      <div class="er-grid ${cols.length === 1 ? "one" : ""}">${cols.map((x) => `<div class="er-col">${x}</div>`).join("")}</div>
       ${weeksHTML(c, r)}${St.sq ? St.sq.line(c) : ""}<p class="dim sm er-foot">${esc(t("Worked out on this PC from your lectures, files, announcements and practice, without AI."))}</p></div>`;
   }
   // the course page's top: the next quiz or exam, as a chip that opens its room ("Quiz 3 in 4 days")
@@ -286,6 +291,7 @@
     if (onMaterial) onMaterial(e);
     if (S.view.name === "exam" && ER.room && ER.room.material.files.some((f) => f.id === e.id)) { if (e.state === "done") reloadSoon(); else renderView(); }
   };
+  St.onStudied = (cid) => { if (cid === ER.cid) reloadSoon(); };          // a flashcard sitting ended (practice.js)
   const onPlan = St.onEvents.plan;
   St.onEvents.plan = (e) => { if (onPlan) onPlan(e); if (e && ["done", "error", "queued", "paused"].includes(e.status)) reloadSoon(); };
 

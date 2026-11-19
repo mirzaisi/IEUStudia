@@ -617,7 +617,7 @@
   function drawStudy() {
     const X = P.study; if (!X) return;
     // Escape or a click beside it ends the session as Stop does: the counts of what is left today come again
-    St.onModalClose = () => { const Y = P.study; P.study = null; if (Y && Y.done) refresh(Y.cid); };
+    St.onModalClose = () => { const Y = P.study; P.study = null; if (Y && Y.done) { refresh(Y.cid); if (St.onStudied) St.onStudied(Y.cid); } };   // (the Exam room's counts)
     const c = X.queue[X.pos], code = (St.findCourse(X.cid) || {}).code || "";
     if (!c) {
       modal(`<div class="fc fc-study"><h2>${I("check-circle")} ${X.cram ? t("Done with these weeks' cards") : t("Done for today")}</h2>
