@@ -808,6 +808,20 @@ def _found(src: Optional[dict[str, Any]], found: bool) -> Optional[dict[str, Any
 
 
 # ------------------------------------------------------------------ saving what was pasted
+def _not_twice(lib: Any, course_id: str, questions: list[dict[str, Any]]) -> None:
+    """The same quiz pasted again (the chat's answer copied a second time): it is on the Practice tab already."""
+    from .cards import norm
+
+    stems = sorted(norm(q.get("q") or "") for q in questions)
+    for p in lib.plans(course_id):
+        if (p.get("scope") or {}).get("source") != "import" or (p.get("scope") or {}).get("kind") != "quiz":
+            continue
+        had = ((lib.plan(p["id"]) or {}).get("result") or {}).get("questions") or []
+        if sorted(norm(q.get("q") or "") for q in had) == stems:
+            raise Unread(t("You added this quiz already: it's on this course's Practice tab, called {title}.",
+                           title=p.get("title") or ""))
+
+
 def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str = "") -> dict[str, Any]:
     """A pasted quiz, checked and saved as a finished quiz of the course; what was read of it."""
     from . import quizzes
@@ -828,6 +842,7 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
                        "the prompt from the zip, then paste the whole answer."))
     for q in quiz["questions"]:
         q["source"] = _found(q.get("source"), q.get("found"))
+    _not_twice(lib, course_id, quiz["questions"])
     title = quiz["title"] or span_title(facts)
     cov = quizzes.coverage(quiz, facts)
     focus = (kit or {}).get("focus") or ""

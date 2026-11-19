@@ -190,6 +190,18 @@ def test_the_prompt_pasted_back_by_mistake_adds_nothing(env):
     assert r["ok"] and r["questions"] == 4 and r["kit"] == k["id"]
 
 
+def test_the_same_quiz_pasted_twice_is_added_once(env):
+    """Copied from the chat a second time and pasted again, a quiz was added again: two of it on the Practice tab."""
+    k = export(env, weeks=[2, 3], focus="quiz:2")["kit"]
+    first = kit.pasted(env.api, "c", CHATGPT % {"kit": k["id"]})
+    again = kit.pasted(env.api, "c", "Here it is again:\n" + CHATGPT % {"kit": k["id"]})
+    assert first["ok"] and not again["ok"]
+    assert again["error"] == "You added this quiz already: it's on this course's Practice tab, called Conditional " \
+                             "probability and Bayes."
+    env.lib.delete_plan(first["id"])                                    # (Undo, or deleted: then it can come in)
+    assert kit.pasted(env.api, "c", CHATGPT % {"kit": k["id"]})["ok"]
+
+
 def test_a_quiz_from_another_courses_zip_says_where_it_goes(env):
     """A quiz from the EEE 215 zip's chat, pasted on MATH 240's Practice tab, was saved under MATH 240 with its
     "F3 p.8" opening MATH 240's F3: the wrong file's page, shown as the question's source."""
