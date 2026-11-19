@@ -840,6 +840,28 @@ def test_a_list_of_weeks_a_week_before_and_a_quiz_named_after_a_week_are_read_wh
     assert [(e["name"], e["week"], e["covers"]) for e in both] == [("Quiz 2", 4, []), ("Quiz 3", 10, [])]
 
 
+def test_a_later_cover_phrase_about_the_class_or_a_detail_does_not_replace_what_it_covers():
+    """The last cover phrase of an announcement won, also one about the class or a detail: "After the quiz we will
+    cover the topics of week 12" made Quiz 3 cover week 12, and every quiz, plan and reminder for it aimed there."""
+    def covers(body, title):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    after = "Quiz 3 will be held in week 11 and covers weeks 8-10. After the quiz we will cover the topics of week 12."
+    assert covers(after, "Quiz 3") == {"Quiz 3": [8, 9, 10]} == covers(after, "Announcement")
+    assert covers("Quiz 3 will be held in week 11. It covers weeks 8, 9 and 10. Next lecture will cover week 11 "
+                  "material.", "Quiz 3") == {"Quiz 3": [8, 9, 10]}
+    assert covers("The midterm will be held in week 9. It covers weeks 1-8, including the lab of week 3.",
+                  "Midterm") == {"Midterm": list(range(1, 9))}
+    assert covers("3. quiz 11. haftada yapılacak ve 8. ve 9. haftaların konularını kapsayacak. 10. haftanın konusu "
+                  "quizden sonra işlenecek.", "3. Quiz") == {"Quiz 3": [8, 9]}
+    assert covers("Quiz 2 will be held in week 6 and covers weeks 1-5. The formula sheet includes the tables of "
+                  "week 4.", "Quiz 2") == {"Quiz 2": [1, 2, 3, 4, 5]}
+    # one about the class first, what it covers after; and one about the class alone is still read
+    assert covers("Quiz 3 will be held in week 10. Last week we covered week 5 topics. It will cover weeks 6 and 7.",
+                  "Quiz 3") == {"Quiz 3": [6, 7]}
+    assert covers("Quiz 3 will be held in week 10. For the quiz we will cover weeks 8 and 9.", "Quiz 3") == \
+        {"Quiz 3": [8, 9]}
+
+
 @pytest.mark.parametrize("sep", [" - ", " , ", " ve ", "  ,  ", " . - "])
 def test_a_long_run_of_numbers_in_an_announcement_is_read_at_once(sep):
     """A list of problem numbers with a space before each separator ("1 - 2 - 3 …") was tried every way its spaces

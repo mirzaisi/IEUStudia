@@ -351,6 +351,13 @@ _IT = re.compile(r"\b(?:it|(?:this|that|the(?:\s+next)?|next)\s+(?:quiz|exam|tes
                  r"s[iı]nav|quiz)\b")
 _TR_NOT = re.compile(r"kapsam(?:a[yzmd]|[iı]yor)|kapsam\s+d[iı][sş]|de[gğ]il|sorulma|[cç][iı]kma[yz]|"
                      r"dahil\s+(?:edilme|olma)|girme[yz]")
+# a cover phrase about the class, not the assessment ("After the quiz we will cover week 12", "Next lecture will cover
+# week 11", "10. haftanın konusu quizden sonra işlenecek"): another one in the announcement says more
+_TAUGHT = re.compile(r"\b(?:we|lectures?|class(?:es)?|lessons?)(?:'ll|\s+(?:will|shall|have|had|are|were|going|to|then|"
+                     r"also|now|already|just|still))*\s+$")
+_OTHER_TIME = re.compile(r"\b(?:after|following)\s+(?:(?:the|this|that|our)\s+)?(?:quiz|exam|midterm|final|test)|"
+                         r"\b(?:next|last|previous|following|today'?s?)\s+(?:lecture|class|lesson|week)|\bsonra\b|"
+                         r"\b(?:gelecek|[oö]n[uü]m[uü]zdeki|sonraki|ge[cç]en)\s+(?:ders|hafta)")
 # a range with "week" twice or with one end ("week 1" understood), written the way _COVER_WEEKS reads it: "from week 1
 # to week 7" → "weeks 1 to 7", "week 3 and week 5" → "weeks 3 and 5", "(all topics) up to week 7", "until week 7",
 # "through week 7" → "weeks 1 to 7", "before week 8" → "weeks 1 to 7"; "1. haftadan 7. haftaya" → "1-7. haftaya",
@@ -569,8 +576,14 @@ def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], lis
     """What the assessments ``body`` names cover: [((kind, no), weeks)], from "Quiz 3 will cover weeks 8 and 9" and the
     Turkish "3. quiz 8. ve 9. haftaları kapsar" (body folded, Turkish ordinals read: "quiz 3"). Several quizzes get a
     week each only when it says "respectively" ("sırasıyla"); one the sentence doesn't name is the title's. One end
-    of a range alone ("from week 3 onwards") is no week it covers, nor is a week it leaves out (_left_out)."""
-    out: list[tuple[tuple[str, int], list[int]]] = []
+    of a range alone ("from week 3 onwards") is no week it covers, nor is a week it leaves out (_left_out). Of several
+    for one assessment, the first of those that name it wins, and one about the class (_TAUGHT, _OTHER_TIME) only when
+    no other is said ("It covers weeks 8-10. Next lecture will cover week 11.": weeks 8-10)."""
+    best: dict[tuple[str, int], tuple[tuple[int, bool], list[int]]] = {}
+
+    def keep(key: tuple[str, int], weeks: list[int], rank: tuple[int, bool]) -> None:
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, weeks)
     body = _ranges(body)
     for m in _COVER_WEEKS.finditer(body):
         g = next(i for i in range(1, 4) if m.group(i))
@@ -594,22 +607,25 @@ def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], lis
         clause = body[start:m.start()]
         said = list(dict.fromkeys(_quiz_numbers(clause)))      # (one quiz named twice is one quiz)
         names = list(_A_ANY.finditer(clause))
+        aside = bool(_TAUGHT.search(clause) or _OTHER_TIME.search(clause if g == 1 else body[start:stop]))
         if len(said) > 1:                              # "Quiz 1-4 sırasıyla 2., 4., 6. ve 8. haftaların…"
             items = [int(x) for x in re.findall(r"\d{1,2}", text)]
             if len(items) == len(said) and _EACH.search(body, m.start() - 200 if m.start() > 200 else 0, m.end() + 40):
-                out += [(("quiz", n), [w]) for n, w in zip(said, items) if 1 <= w <= 20]
+                for n, w in zip(said, items):
+                    if 1 <= w <= 20:
+                        keep(("quiz", n), [w], (0, aside))
         elif names:
-            out.append((_assessment(names[-1]), weeks))
+            keep(_assessment(names[-1]), weeks, (0, aside))
         elif said:
-            out.append((("quiz", said[0]), weeks))
+            keep(("quiz", said[0]), weeks, (0, aside))
         elif len(named) == 1:                          # "About Quiz 3": "It covers weeks 8 and 9."
-            out.append((_assessment(named[0]), weeks))
+            keep(_assessment(named[0]), weeks, (1, aside))
         elif start and (not clause.strip() or _IT.search(clause)):    # "Quiz 3 is in week 10. It covers weeks 8-9."
             back = [c.end() for c in _COVER_CUT.finditer(body, 0, start - 1)]
             one = {_assessment(x) for x in _A_ANY.finditer(body, back[-1] if back else 0, start)}
             if len(one) == 1:
-                out.append((one.pop(), weeks))
-    return out
+                keep(one.pop(), weeks, (1, aside))
+    return [(key, weeks) for key, (_, weeks) in best.items()]
 
 
 def named_assessments(text: str) -> list[tuple[str, int]]:
