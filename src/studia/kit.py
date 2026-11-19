@@ -101,7 +101,8 @@ def ref_lines(refs: dict[str, dict[str, Any]]) -> list[str]:
     for ref in sorted(refs, key=_ref_key):
         x = refs[ref]
         if x.get("kind") == "file":
-            out.append(f"{ref} = the file {x.get('name') or ''}" + (f" ({x['pages']} pages)" if x.get("pages") else "")
+            pages = int(x.get("pages") or 0)
+            out.append(f"{ref} = the file {x.get('name') or ''}" + (f" ({pages} page{'s' if pages > 1 else ''})" if pages else "")
                        + (f", week {x['week']}" if x.get("week") else ", for the whole course") + f": {x.get('path') or ''}")
         else:
             d = _date(x.get("date") or "")
@@ -263,7 +264,7 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
 
 # ------------------------------------------------------------------ the prompts (English, with the language rules)
 _HEAD = ("(From IEUStudia, the study app I made this zip with. I will paste your answer back into it: it plays the {what} "
-         "and opens the page or lecture moment each one comes from.)")
+         "and opens the page or lecture moment each {one} comes from.)")
 
 
 def _aim(f: dict[str, Any]) -> str:
@@ -296,7 +297,8 @@ def quiz_prompt(kid: str, f: dict[str, Any], n: int = QUIZ_ASKED) -> str:
     start = " Read 00 Start here.md in the zip first." if f.get("start") else ""
     refs = _refs_block(f, '"source"')
     again = quiz_languages_again(f.get("language") or "", f.get("taught_in") or "")
-    return (f"{_HEAD.format(what='quiz with scores')}{start}\n\n{body}\n\n{refs}{again}\n\n=== HOW TO ANSWER ===\n"
+    return (f"{_HEAD.format(what='quiz with scores', one='question')}{start}\n\n{body}\n\n{refs}{again}\n\n"
+            "=== HOW TO ANSWER ===\n"
             "Only the JSON object, in one ```json code block. Nothing before or after it.")
 
 
@@ -307,7 +309,7 @@ def cards_prompt(kid: str, f: dict[str, Any], n: int = CARDS_ASKED) -> str:
 
     lang, taught = f.get("language") or "", f.get("taught_in") or ""
     start = " Read 00 Start here.md in the zip first." if f.get("start") else ""
-    return f"""{_HEAD.format(what='cards with spaced repetition')}{start}
+    return f"""{_HEAD.format(what='cards with spaced repetition', one='card')}{start}
 
 TASK: Make {n} flashcards from the course material in the zip I uploaded ({f['span']}): the definitions, formulas, theorems, rules, units, methods and key facts a student must know for the exams, one idea per card.{_aim(f)} {cards_languages(lang, taught)}
 Answer with one JSON object:
@@ -601,8 +603,9 @@ def read_cards(text: str) -> tuple[list[dict[str, Any]], bool, str]:
 
 def kind_of(text: str) -> str:
     """What a paste holds: "quiz", "cards" or "" (neither). A quiz wins unless the text says it holds cards: a
-    Markdown quiz's "Answer:" lines read as cards too."""
-    from .quizzes import clean_question
+    Markdown quiz's "Answer:" lines read as cards too. Questions none of which can be used are still a quiz (the
+    import then says why)."""
+    from .quizzes import answered, clean_question
 
     rows, said, _ = read_cards(text)
     if said:
@@ -610,7 +613,9 @@ def kind_of(text: str) -> str:
     raw = read_quiz(text)
     if any(isinstance(q, dict) and clean_question(q, None) for q in raw["questions"]):
         return "quiz"
-    return "cards" if rows else ""
+    if rows:
+        return "cards"
+    return "quiz" if raw["questions"] and answered(raw) else ""
 
 
 # ------------------------------------------------------------------ where each question comes from

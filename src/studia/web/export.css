@@ -1,5 +1,6 @@
-/* IEUStudia — Export for AI chat (export.js): the weeks with their dates, what goes in, the progress and the end.
- * Builds on the fixed-footer dialog (.modal.pd) and the week rows (.pd-wk) of styles.css. */
+/* IEUStudia — Export for AI chat (export.js): the weeks with their dates, what goes in, the progress and the end;
+ * the exam kit's prompts, and its paste dialog on the Practice tab (kit.js). Builds on the fixed-footer dialog
+ * (.modal.pd) and the week rows (.pd-wk) of styles.css. */
 .modal.cx h2 { display: flex; gap: 8px; align-items: center; }
 .cx-lead { color: var(--text-2); margin: 0 0 16px; font-size: 13px; line-height: 1.5; }
 .cx-weeks { max-height: 240px; }
@@ -45,6 +46,26 @@
 .cx-how ol { margin: 6px 0 2px; padding-left: 20px; font-size: 13px; line-height: 1.55; }
 .cx-how li + li { margin-top: 3px; }
 .cx-how li .btn { margin-left: 4px; vertical-align: middle; }
+
+/* "For" and the exam kit (kit.py): the note under For, the first message, the prompts to copy */
+.cx-for { margin-top: 6px; line-height: 1.45; }
+.cx-first { margin-top: 6px; padding: 8px 10px; border-left: 3px solid var(--border-strong); background: var(--surface);
+  border-radius: 6px; font-size: 12.5px; line-height: 1.5; color: var(--text-2); user-select: text; overflow-wrap: anywhere;
+  max-height: 110px; overflow-y: auto; }
+.cx-kit { margin-top: 10px; }
+.cx-kit-lead { margin: 6px 0 6px; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.cx-pr { display: flex; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); }
+.cx-pr .grow { min-width: 0; }
+.cx-pr b { font-size: 13px; font-weight: 600; }
+.cx-pr .btn { flex: none; }
+.cx-kit-note { margin-top: 4px; }
+
+/* the paste dialog on the Practice tab (kit.js) */
+.kit-text { width: 100%; box-sizing: border-box; min-height: 170px; resize: vertical; font: 12.5px/1.45 var(--mono); }
+.kit-err { margin-top: 10px; }
+.modal.kit .note-sm { margin-top: 10px; }
+.kit-head { font-size: 13.5px; margin-top: 2px; }
+.kit-lines { margin: 2px 0 0; padding-left: 58px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
 
 @media (max-width: 700px) { .cx-incs { grid-template-columns: 1fr; } .cx-wk .cx-dates { display: none; } }
 

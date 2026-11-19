@@ -120,6 +120,7 @@
   function quizScope(q) {
     const bits = [q.days && q.days.length === 1 && !(q.weeks || []).length ? t("one lecture") : weekSpan(q.weeks)];
     if (q.source === "chat") bits.unshift(t("From a chat"));           // "/quiz" in Ask AI (chatquiz.py)
+    if (q.source === "import") bits.unshift(t("From ChatGPT or Claude"));   // pasted on this tab (kit.js)
     if (q.focus) bits.push(t("for {name}", { name: q.focus }));
     if (q.questions) bits.push(t.n(q.questions, "{n} question", "{n} questions"));
     return bits.join(" · ");
@@ -150,7 +151,7 @@
   }
   function quizzesHTML(c, p) {
     const list = p.quizzes.map(quizRow).join("");
-    return `<div class="card pr-card"><div class="pr-h">${I("list-checks")}<b>${t("Practice quizzes")}</b><span class="spacer"></span>
+    return `<div class="card pr-card"><div class="pr-h">${I("list-checks")}<b>${t("Practice quizzes")}</b><span class="spacer"></span>${St.kit ? St.kit.button(c) : ""}
       <button class="btn primary sm" data-act="qz-new" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("Exam-style questions from your files and lectures, written by {ai}", { ai: St.aiName() }) : St.aiHint())}">${I("plus", "sm")} ${t("New quiz")}</button></div>
       ${list ? `<div class="pr-list">${list}</div>` : `<p class="pr-empty">${esc(t("No quizzes yet. Pick the weeks (or the next quiz or midterm) and {ai} writes exam-style questions from your files and lectures, each saying where it comes from. It takes a few minutes.", { ai: St.aiName() }))}</p>`}</div>`;
   }
