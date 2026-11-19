@@ -157,6 +157,8 @@ def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[s
     from .course_export import _date, _en_day
 
     sources = {s.get("id") for s in e.get("sources") or []}
+    starts = {w["no"]: w.get("start") or "" for w in d.get("weeks") or []}
+    since = starts.get(min(e.get("weeks") or [0]), "") if e.get("kind") != "final" else ""
     out = []
     for it in (d.get("alerts") or {}).get("items") or []:
         mine = it.get("source") == "announcement" and it.get("announcement_id") in sources
@@ -167,6 +169,9 @@ def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[s
         ours = cat == e["kind"] or (cat == "exam" and (bool(named) if e["kind"] == "final" else
                                                       e["kind"] == "midterm" and not any(k == "final" for k, _ in said)))
         if not mine and (not ours or (named and e.get("no") and not ({0, e["no"]} & set(named)))):
+            continue
+        # "we have a quiz next week", said before these weeks began, was about an earlier one
+        if not mine and not (e.get("no") and e["no"] in named) and since and (it.get("date") or "")[:10] < since:
             continue
         day = _date(it.get("date") or "")
         text = " ".join(str(it.get("text") or "").split())

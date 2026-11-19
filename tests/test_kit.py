@@ -84,7 +84,8 @@ def make_env(tmp_path, settings=None):
             for did, start in (("d1", dt.datetime(2026, 9, 23, 8, 30)), ("d2", dt.datetime(2026, 9, 30, 8, 30)),
                                ("d3", dt.datetime(2026, 10, 7, 8, 30)))]
     lib.merge_recordings("c", recs, first_sync=True)
-    _transcribe(lib, recs[0], ["Today: sample spaces and events.", "An event is a subset of the sample space."])
+    _transcribe(lib, recs[0], ["Today: sample spaces and events.", "An event is a subset of the sample space.",
+                               "Next week we have a quiz on sample spaces, so you need to study the events."])
     _transcribe(lib, recs[1], ["Today: conditional probability and the multiplication rule.",
                                "This will be on the quiz, so you need to know the multiplication rule.",
                                "An example with two dice: the second throw given the first.",
@@ -155,6 +156,8 @@ def test_a_kit_for_a_quiz_has_its_brief_prompts_and_references(env):
     assert "- Weight: Quizzes: 20% of the grade in all (4 of them, about 5% each)." in start
     assert "  - LO2: compute conditional probabilities" in start
     assert "announcement “Quiz 2”: “Quiz 2 will be in week 4 and will cover weeks 2 and 3." in start
+    assert "[L3 part 1 02:30]: “You need to know the total probability rule for the quiz" in start
+    assert "Next week we have a quiz on sample spaces" not in start        # (said in week 1: about Quiz 1)
     assert "S1 (tied to an exam) [L2 part 1 02:30] “This will be on the quiz" in start
     nothing = start.split("## Not needed (the lecturer said so)")[1].split("## ")[0]
     assert "[L2 part 1 10:00]" in nothing and "The proof of the multiplication rule won't be on the exam." in nothing
