@@ -304,6 +304,33 @@ def test_the_student_can_change_any_mark_but_a_choice(api, monkeypatch):
     assert quiz_card_id("q1", "Why is a voltmeter's resistance high?") in st
 
 
+def test_changing_one_mark_leaves_the_other_cards_of_the_try_alone(api, monkeypatch):
+    """Marking one answer again ran add_missed over the whole try: every other missed question's card went back to
+    a day's interval, due tomorrow, though none of them was answered again."""
+    from studia import cards
+
+    lib = api._s.lib
+    row = api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 0, "mark": "app", "app_got": 0, "text": "x"},
+                                              {"n": 2, "got": 0, "mark": "self", "text": "no idea"},
+                                              {"n": 5, "got": 0, "mark": "self", "text": "a dot"}]})["attempt"]
+    one = cards.quiz_card_id("q1", "Find $v_2$ across 2 kΩ of 2 kΩ + 4 kΩ on 12 V.")
+    now = dt.datetime.now()
+    cards.grade(lib, "c", one, "easy", now + dt.timedelta(days=1))
+    cards.grade(lib, "c", one, "good", now + dt.timedelta(days=4))
+    before = cards.states(lib, "c")[one]
+    assert before["interval"] >= practice.GRADUATED_DAYS
+    assert api.quiz_mark_set("q1", row["id"], 5, 0.5)["ok"]
+    after = cards.states(lib, "c")[one]
+    assert (after["interval"], after["due"]) == (before["interval"], before["due"])
+    assert 1 not in [m["n"] for m in practice.mistakes(lib, "c")]           # still spaced out: off the list
+    # the AI's marks: only the answers it marked
+    monkeypatch.setattr("studia.ai.ask_json", lambda *a, **k: ({"marks": [{"n": 2, "mark": 0}]}, {"usage": {}}))
+    api.quiz_mark("q1", row["id"])
+    wait_event(api, "done")
+    after = cards.states(lib, "c")[one]
+    assert (after["interval"], after["due"]) == (before["interval"], before["due"])
+
+
 def test_mastery_weighs_a_mark_by_who_gave_it(api, monkeypatch):
     """LO1: a written answer the student marked right (half weight) and a choice the app marked wrong (full): a
     third. Once the AI marks the written one right too, it weighs fully: a half."""

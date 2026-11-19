@@ -157,12 +157,14 @@ class ChecksApi:
     _s: Any
     _ai_cancel: Optional[threading.Event]
 
-    def _carded(self, plan: dict[str, Any], row: dict[str, Any]) -> None:
-        """Answers marked again: the questions now missed join the cards (as a try's do)."""
+    def _carded(self, plan: dict[str, Any], row: dict[str, Any], ns: list[int]) -> None:
+        """Answers ``ns`` marked again: the ones now missed join the cards (as a try's do). Only those: the try's
+        other missed questions keep their cards' spacing."""
         from .cards import add_missed
 
         if getattr(self._s.settings, "mistake_cards", True) and plan.get("status") == "done":
-            add_missed(self._s.lib, plan["course_id"], plan["id"], plan.get("result") or {}, row["answers"])
+            changed = [a for a in row["answers"] if isinstance(a, dict) and a.get("n") in set(ns)]
+            add_missed(self._s.lib, plan["course_id"], plan["id"], plan.get("result") or {}, changed)
 
     @_safe
     def quiz_check_number(self, plan_id: str, n: int, text: str) -> dict[str, Any]:
@@ -190,7 +192,7 @@ class ChecksApi:
             return {"ok": False, "error": t("This answer can't be marked again.")}
         set_mark(a, got)
         row = save_answers(lib, row, row["answers"])
-        self._carded(p, row)
+        self._carded(p, row, [int(n)])
         return {"ok": True, "attempt": row}
 
     @_safe
@@ -233,12 +235,14 @@ class ChecksApi:
                     raise RuntimeError(t("{ai}'s marks could not be read. Try again.", ai=ai_name()))
                 now = attempt(lib, plan_id, row["id"]) or row           # (as it is now: a mark changed meanwhile)
                 by = ai_name()
+                marked = []
                 for a in now["answers"]:
                     if isinstance(a, dict) and a.get("n") in marks and "ai_got" not in a:
                         got, missing = marks[a["n"]]
                         a.update(got=got, mark="ai", ai_got=got, ai_why=missing, ai_by=by)
+                        marked.append(a["n"])
                 done = save_answers(lib, now, now["answers"])
-                self._carded(p, done)
+                self._carded(p, done, marked)
                 self._push({**base, "phase": "done", "answers": done["answers"], "score": done["score"],  # type: ignore[attr-defined]
                             "marked": len(marks), "sent": len(sent)})
             except Exception as exc:  # noqa: BLE001 - said plainly on the page
