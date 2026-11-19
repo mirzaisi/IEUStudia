@@ -1279,7 +1279,9 @@ def _document_body(plan: dict[str, Any]) -> str:
     course = (r.get("course") or {}).get("code", "")
     made = date_text(r.get("made") or (plan.get("created_at") or "")[:10])
     span = (cov.get("span") or "") if writing() == "en" else weeks_text(cov.get("weeks") or [])
-    covers = [esc(word("{n} questions on {span}", n=len(r.get("questions") or []), span=span))]
+    gone = set(r.get("removed") or [])           # the questions the student removed (practice.quiz_question)
+    qs = [{**q, "n": i} for i, q in enumerate((q for q in r.get("questions") or [] if q.get("n") not in gone), 1)]
+    covers = [esc(word("{n} questions on {span}", n=len(qs), span=span))]
     if cov.get("focus") and cov["focus"].get("name"):
         covers.append(esc(word("for {name}", name=cov["focus"]["name"])))
     left = []
@@ -1290,7 +1292,6 @@ def _document_body(plan: dict[str, Any]) -> str:
     if cov.get("topics_missing"):
         left.append(esc(word("no question on: {list}", list=", ".join(cov["topics_missing"]))))
     quiz = word("Practice quiz")
-    qs = r.get("questions") or []
     out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(course)} · {quiz}</div>'
            f'<h1>{esc(r.get("title") or plan.get("title") or quiz)}</h1>'
            f'<div class="sp-sub">{" ".join(covers)} · {esc(word("made with IEUStudia on {date}", date=made))}</div>'

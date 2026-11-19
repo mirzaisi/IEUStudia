@@ -516,6 +516,11 @@ def test_the_printed_quiz_is_to_solve_on_paper_with_its_answer_key_on_pages_of_i
     assert key.index("Answers explained") < key.index("Ohm") and "That is about sums." in key
     css = quizzes.QUIZ_CSS
     assert ".qz-part + .qz-part { break-before: page; }" in css and "print-color-adjust: exact" in css
+    # a question the student removed (Remove this question) is not printed; the others are numbered again
+    plan["result"]["removed"] = [1]
+    questions, key = quizzes.document_body(plan).split('<section class="sp-ch qz-part qz-answers">')
+    assert "Ohm" not in questions + key and "2 questions on week 4" in questions and "/ 2" in questions
+    assert '<div class="qz-n">1</div><div class="qz-body"><p>Find' in questions and "<b>3</b>" not in key
 
 
 def test_an_answer_misread_as_questions_is_asked_again(env):
