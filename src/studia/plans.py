@@ -117,6 +117,8 @@ class Scope:
     picked: bool = False         # the chooser's ticks: then an empty files/days list means none of them
     questions: int = 0           # a practice quiz (quizzes.py): how many questions (0: its default)
     qtypes: str = ""             # and which kinds: "mixed", "mc", "short", "problems"
+    weak: bool = False           # a quiz on the student's weak spots (practice.weak_spots): the material narrowed
+    avoid: list[str] = dc.field(default_factory=list)   # questions such a quiz must not ask again (right twice)
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> "Scope":
@@ -133,6 +135,8 @@ class Scope:
         s.allow_tr = s.video_lang != "en"
         s.files = [str(x) for x in s.files or []]
         s.days = [str(x) for x in s.days or []]
+        s.weak = bool(s.weak)
+        s.avoid = [str(x)[:600] for x in s.avoid or [] if str(x).strip()][:60]
         return s
 
     def to_json(self) -> dict[str, Any]:

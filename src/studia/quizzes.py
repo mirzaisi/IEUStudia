@@ -239,7 +239,89 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                  stressed={ref: {k: it[k] for k in ("id", "day_key", "part", "t", "ts", "kind", "text")}
                            for ref, it in by_ref.items()},
                  one_lecture=bool(scope.days) and len(scope.days) == 1 and not scope.files)
+    if getattr(scope, "weak", False):
+        _weak(lib, course_id, scope, facts)
     return facts
+
+
+def _weak(lib: Any, course_id: str, scope: Any, facts: dict[str, Any]) -> None:
+    """A weak-spot quiz: the student's weak spots (practice.weak_spots) in the facts, and the material narrowed to
+    where the missed questions come from (narrow); what not to ask again ("avoid": answered right twice, and the
+    missed questions themselves)."""
+    from .practice import weak_spots
+
+    w = weak_spots(lib, course_id, scope.focus or "", outcomes=facts.get("outcomes") or [])
+    facts["weak"] = {"missed": w["missed"], "los": [{"no": r["no"], "text": r.get("text", ""), "right": r["right"],
+                                                     "tried": r["tried"]} for r in w["los"]],
+                     "topics": [{"name": r["name"], "right": r["right"], "tried": r["tried"]} for r in w["topics"]]}
+    facts["avoid"] = list(dict.fromkeys([*(scope.avoid or []), *w["avoid"], *(x["q"] for x in w["missed"])]))
+    pack = narrow(lib, course_id, facts, w["missed"])
+    if pack:
+        facts.update(pack=pack, chars=len(pack), narrowed=True, one_lecture=False)
+
+
+def narrow(lib: Any, course_id: str, facts: dict[str, Any], missed: list[dict[str, Any]]) -> str:
+    """The material of a weak-spot quiz: of each file, the page a missed question comes from and the pages either
+    side; of each lecture, what was said within practice.NEAR_S seconds of where one was taught (the screens shown
+    then too). The files and lectures with nothing kept leave the facts. "" when no missed question has a source in
+    the material (the whole material is used then)."""
+    from .practice import NEAR_S
+    from .studypack import _file_head, _lecture_head, lecture_text
+
+    pages: dict[str, set[int]] = {}
+    spots: dict[str, list[tuple[int, float]]] = {}
+    by_id = {f["id"]: f for f in facts["files"]}
+    for m in missed:
+        src = m.get("source") or {}
+        if src.get("kind") == "file" and src.get("id") in by_id and src.get("page"):
+            p = int(src["page"])
+            pages.setdefault(src["id"], set()).update({p - 1, p, p + 1})
+        elif src.get("kind") == "lecture" and src.get("day_key") and src.get("t") is not None:
+            spots.setdefault(src["day_key"], []).append((int(src.get("part") or 1), float(src["t"])))
+    out: list[str] = []
+    files, lectures = [], []
+    for f in facts["files"]:
+        want = pages.get(f["id"])
+        if not want:
+            continue
+        lines = [f"[{f['ref']} p.{n}] {' '.join(text.split())}" for n, text in enumerate(lib.material_pages(f["id"]), 1)
+                 if n in want and text.strip()]
+        if lines:
+            files.append(f)
+            out.append(_file_head(f, pictures=False) + "\n".join(lines))
+    for x in facts["lectures"]:
+        near = spots.get(x["day_key"])
+        if not near:
+            continue
+        kept, part, head = [], 0, ""
+        for line in lecture_text(lib, course_id, x["day_key"]).split("\n"):
+            m = re.match(r"## Part (\d+)", line)
+            if m:
+                part, head = int(m.group(1)), line
+                continue
+            scr = re.match(r"\[Screen \d+, (\d+(?::\d{2}){1,2})-(\d+(?::\d{2}){1,2})\]", line)
+            ts = re.match(r"\[(\d+(?::\d{2}){1,2})\]", line)
+            if scr:
+                a, b = _secs(scr.group(1)) or 0.0, _secs(scr.group(2)) or 0.0
+                close = any(p == part and a - NEAR_S <= at <= b + NEAR_S for p, at in near)
+            elif ts:
+                at0 = _secs(ts.group(1)) or 0.0
+                close = any(p == part and abs(at0 - at) <= NEAR_S for p, at in near)
+            else:
+                continue
+            if close:
+                if head:
+                    kept.append(head)
+                    head = ""
+                kept.append(line)
+        if kept:
+            lectures.append(x)
+            out.append(_lecture_head(x) + "\n".join(kept))
+    if not out:
+        return ""
+    facts["files"], facts["lectures"] = files, lectures
+    facts["files_cut"], facts["cut"], facts["left_out"] = [], [], []
+    return "\n".join([facts["pack"].split("\n=== ", 1)[0].rstrip(), *out])
 
 
 # ------------------------------------------------------------------ write (AI)
@@ -266,14 +348,21 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
                          f"{kinds['problem']} worked problems" if kinds["problem"] else "") if x]
     want = ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]
     prio = [f"1. The material below ({facts['span']}): every question comes from it and from nothing else."]
+    weak = facts.get("weak")
+    if weak:
+        prio.append("2. The student's weak spots (below): every question tests one of them. Test the same ideas in new "
+                    "ways, and probe the same misconceptions (the wrong answers they gave), so they can see whether "
+                    "they understand it now. Start easy or medium; at most two hard questions, at the end. Never "
+                    "repeat a question listed below.")
     f = facts.get("focus")
     if f and f.get("los"):
         los = "; ".join(f"LO{x['no']}" + (f": {x['text']}" if x["text"] else "") for x in f["los"])
         name = f"{f['name']} (week {f['week']})" if f.get("name") and f.get("week") else f.get("name") or "the next exam"
-        prio.append(f"2. The student prepares for {name}, which covers these learning outcomes: {los}. Most "
-                    "questions test them; tag each question with the outcomes it tests (\"los\").")
+        prio.append(f"{len(prio) + 1}. The student prepares for {name}, which covers these learning outcomes: {los}. "
+                    "Most questions test them; tag each question with the outcomes it tests (\"los\").")
     elif f and f.get("name"):
-        prio.append(f"2. The student prepares for {f['name']}" + (f" (week {f['week']})" if f.get("week") else "") + ".")
+        prio.append(f"{len(prio) + 1}. The student prepares for {f['name']}" +
+                    (f" (week {f['week']})" if f.get("week") else "") + ".")
     if facts.get("stressed_lines"):
         prio.append(f"{len(prio) + 1}. What the lecturer stressed (the S moments below): more questions on these, "
                     "the ones tied to an exam first; tag each question with the moments it tests (\"stressed\"). "
@@ -303,12 +392,60 @@ Rules:
 - "source": where the question comes from: a file page as "F1 p.12" or a lecture moment as "L1 part 2 14:05"{lectures}. Only the references listed below.
 - "topic": the topic the question tests, written exactly as in "topics".
 - Maths in LaTeX: $...$ in a sentence, $$...$$ on a line of its own. No two questions test the same thing.{slides}
-
+{weak_blocks(facts)}
 === WHAT THE LECTURER STRESSED ===
 {facts.get('stressed_lines') or '(nothing found in these lectures)'}
 
 === COURSE MATERIAL ===
 {facts['pack']}{quiz_languages_again(facts['language'], facts.get('taught_in', ''))}"""
+
+
+def _quote(s: Any, most: int = 300) -> str:
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= most else s[:most].rsplit(" ", 1)[0] + "…"
+
+
+def weak_blocks(facts: dict[str, Any]) -> str:
+    """A weak-spot quiz's two blocks: THE STUDENT'S WEAK SPOTS (the learning outcomes and topics where they lose
+    points, each question they got wrong with the wrong answer they gave and why it is wrong) and ALREADY ASKED, DO
+    NOT REPEAT ("" for another quiz)."""
+    weak = facts.get("weak")
+    if not weak:
+        return ""
+    out = ["", "=== THE STUDENT'S WEAK SPOTS ==="]
+    if weak.get("los"):
+        out.append("Learning outcomes they lose points on: " + "; ".join(
+            f"LO{x['no']}" + (f": {x['text']}" if x.get("text") else "") + f" ({_n(x['right'])} of {x['tried']} right)"
+            for x in weak["los"]))
+    if weak.get("topics"):
+        out.append("Topics they lose points on: " + "; ".join(f"{x['name']} ({_n(x['right'])} of {x['tried']} right)"
+                                                            for x in weak["topics"]))
+    if weak.get("missed"):
+        out.append("Questions they got wrong:")
+        for m in weak["missed"]:
+            bits = [f"- Q: {_quote(m['q'])}"]
+            if m.get("skipped"):
+                bits.append("They skipped it.")
+            elif m.get("chose"):
+                bits.append(f"They chose: {_quote(m['chose'], 160)}" +
+                            (f" (wrong because: {_quote(m['why_wrong'], 200)})" if m.get("why_wrong") else ""))
+            elif m.get("typed"):
+                bits.append(f"They wrote: {_quote(m['typed'], 200)}")
+            if m.get("right"):
+                bits.append(f"Right answer: {_quote(m['right'], 200)}")
+            if m.get("los"):
+                bits.append("Tests " + ", ".join(f"LO{n}" for n in m["los"]))
+            out.append(" | ".join(bits))
+    avoid = [a for a in facts.get("avoid") or [] if a not in {m["q"] for m in weak.get("missed") or []}]
+    if avoid:
+        out += ["", "=== ALREADY ASKED, DO NOT REPEAT ===",
+                "They answered these right twice: no question that asks the same thing again."]
+        out += [f"- {_quote(a, 200)}" for a in avoid[:30]]
+    return "\n".join(out) + "\n"
+
+
+def _n(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
 
 
 # ------------------------------------------------------------------ reading the AI's answer
@@ -905,12 +1042,13 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
     zero = True if 0 in ints else False if ints and max(ints) >= 4 else None
     known_los = set(range(1, len(facts.get("outcomes") or []) + 1)) or None
     stressed = facts.get("stressed") or {}
+    avoid = {_same(a) for a in facts.get("avoid") or [] if _same(a)}      # (a weak-spot quiz: asked before)
     out, seen = [], set()
     for q in qs:
         if not isinstance(q, dict):
             continue
         c = clean_question(q, zero)
-        if c is None or _same(c["q"]) in seen:
+        if c is None or _same(c["q"]) in seen or _same(c["q"]) in avoid:
             continue
         seen.add(_same(c["q"]))
         src = check_source(parse_source(c.pop("raw_source")), facts)

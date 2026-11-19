@@ -1,6 +1,6 @@
 /* IEUStudia — Settings: what students set up beyond the basics, each with a good default. The language of study
  * documents (and each document dialog's line naming it), Practice (how many questions a
- * new quiz starts with, new flashcards a day), when the reminders come and how often the background checks look,
+ * new quiz starts with, new flashcards a day, missed questions as cards), when the reminders come and how often the background checks look,
  * and "Back to the defaults" for each group (config.GROUPS says what each puts back; never the speech model, the
  * folder, the AI service, the language or running in the background). The other cards are app.js's and setup.js's;
  * this file adds its rows to them through window.Studia. */
@@ -44,7 +44,7 @@
     transcription: t("Transcribe with: Automatic. Capture slides: on. Ask before closing: on. Recordings shorter than 1 minute are hidden. Your speech model stays as it is."),
     files: t("Subtitles: on. Keep downloaded audio: off. Your folder stays where it is."),
     ai: `${t("The models and reasoning levels go back to the recommended ones. Your AI service stays connected.")} ${t("Study documents go back to the course's language.")}`,
-    practice: t("A new quiz starts with 10 questions, and up to 20 new flashcards a day."),
+    practice: `${t("A new quiz starts with 10 questions, and up to 20 new flashcards a day.")} ${t("Missed questions join your flashcards.")}`,
     notifications: t("New lectures, announcements and reminders: on. New files: off. Checks every 30 minutes. Reminders 2 days before a quiz or exam, and 1 day and 3 hours before a deadline. Running in the background stays as it is."),
     appearance: t("Theme: as Windows. Reading text: Normal. The language stays as it is."),
   });
@@ -82,7 +82,9 @@
       ${row(t("Questions in a new quiz"), t("A practice quiz starts with this many. You can pick another number for each quiz."),
         `<div class="seg">${QUIZ_SIZES.map((n) => `<button class="${q === n ? "on" : ""}" data-act="set" data-key="quiz_questions" data-val="${n}">${n}</button>`).join("")}</div>`)}
       ${row(t("New flashcards a day"), t("For each course. Cards you have started come back when they are due, whatever this is."),
-        `<select class="input" style="width:110px" data-act="set-sel" data-key="cards_per_day" aria-label="${esc(t("New flashcards a day"))}">${days.map((n) => `<option value="${n}" ${per === n ? "selected" : ""}>${n}</option>`).join("")}</select>`)}</div>`;
+        `<select class="input" style="width:110px" data-act="set-sel" data-key="cards_per_day" aria-label="${esc(t("New flashcards a day"))}">${days.map((n) => `<option value="${n}" ${per === n ? "selected" : ""}>${n}</option>`).join("")}</select>`)}
+      ${row(t("Add missed questions to my cards"), t("A question you miss in a quiz comes back as a flashcard the next day, then a few days later."),
+        `<input type="checkbox" class="switch" data-act="set-bool" data-key="mistake_cards" ${s.mistake_cards === false ? "" : "checked"} aria-label="${esc(t("Add missed questions to my cards"))}">`)}</div>`;
   };
 
   // ---- Notifications: how often the background checks look, and when the reminders come
@@ -158,7 +160,7 @@
     transcription: { settings: { device: "auto", capture_slides: true, ask_before_closing: true, min_duration_s: 60 } },
     files: { settings: { write_srt: true, keep_audio: false } },
     ai: { settings: { ai_model: "sonnet", plan_model: "", verify_model: "haiku", ai_model_light: "haiku", ai_effort: {}, doc_language: "course" } },
-    practice: { settings: { quiz_questions: 10, cards_per_day: 20 } },
+    practice: { settings: { quiz_questions: 10, cards_per_day: 20, mistake_cards: true } },
     notifications: { app: { notify_recordings: true, notify_announcements: true, notify_materials: false, notify_reminders: true, sync_minutes: 30 },
       reminders: { exams: 2, due_days: 1, due_hours: 3 } },
     appearance: { settings: { theme: "system", text_size: 100 } } } });
