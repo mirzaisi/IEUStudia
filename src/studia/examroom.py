@@ -257,24 +257,9 @@ def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST,
       - one that names its kind's number is about that one ("Quiz 2": not Quiz 3's);
       - one that doesn't ("we have a quiz next week", "the exam") is about the next one of its kind after it was
         said, and not about one whose weeks begin after it (that was an earlier one's)."""
-    from . import quizzes
-    from .alerts import named_assessments
-
-    kind = e.get("kind")
-    every = list(quizzes.of(d))
-    if not any(x.get("key") == e.get("key") for x in every):
-        every.append(e)                               # (a quiz announced only by its day)
-    ends = sorted((_last_day(d, x), str(x.get("key")), x.get("kind")) for x in every)
-    starts = {w.get("no"): w.get("start") or "" for w in d.get("weeks") or []}
-    since = starts.get(min(e.get("weeks") or [0]), "") if kind != "final" else ""
+    every = _every(d, e)
     srcs = {s.get("id") for s in e.get("sources") or []}
     skip = {str(x) for x in skip}
-
-    def next_one(day: str, kinds: set[str]) -> str:
-        """The key of the first assessment of these kinds still to come that day (after them all: the last one)."""
-        those = [(end, key) for end, key, k in ends if k in kinds]
-        return next((key for end, key in those if end >= day), those[-1][1] if those else "")
-
     out: list[dict[str, Any]] = []
     for a in (d.get("alerts") or {}).get("items") or []:
         if len(out) >= most:
@@ -284,23 +269,67 @@ def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST,
         if a.get("source") == "announcement" and a.get("announcement_id") in srcs:
             out.append(a)
             continue
-        cat, day = a.get("category"), (a.get("date") or "")[:10]
-        named = named_assessments(f"{a.get('title') or ''} {a.get('text') or ''}")
-        if cat == "exam" and kind != "quiz":          # "the exam": the final's when it names it, else the next one's
-            ok = kind == "final" if any(k == "final" for k, _ in named) else next_one(day, {"midterm", "final"}) == e["key"]
-        elif cat != kind:
-            ok = False
-        elif kind == "final":
-            ok = True
-        else:
-            nos = {n for k, n in named if k == kind and n}
-            if nos and e.get("no"):
-                ok = e["no"] in nos
-            else:                                     # no number: the next one, if its weeks had begun
-                ok = next_one(day, {kind}) == e["key"] and not (since and day and day < since)
-        if ok:
+        if _about(d, e, every, a):
             out.append(a)
     return out
+
+
+def _every(d: dict[str, Any], e: dict[str, Any]) -> list[dict[str, Any]]:
+    from . import quizzes
+
+    every = list(quizzes.of(d))
+    if not any(x.get("key") == e.get("key") for x in every):
+        every.append(e)                               # (a quiz announced only by its day)
+    return every
+
+
+def _about(d: dict[str, Any], e: dict[str, Any], every: list[dict[str, Any]], a: dict[str, Any]) -> bool:
+    """A heads-up item ({"category", "date", "title", "text"}) is about this assessment, by said's rules."""
+    from .alerts import named_assessments
+
+    kind = e.get("kind")
+    ends = sorted((_last_day(d, x), str(x.get("key")), x.get("kind")) for x in every)
+    starts = {w.get("no"): w.get("start") or "" for w in d.get("weeks") or []}
+    since = starts.get(min(e.get("weeks") or [0]), "") if kind != "final" else ""
+
+    def next_one(day: str, kinds: set[str]) -> str:
+        """The key of the first assessment of these kinds still to come that day (after them all: the last one)."""
+        those = [(end, key) for end, key, k in ends if k in kinds]
+        return next((key for end, key in those if end >= day), those[-1][1] if those else "")
+
+    cat, day = a.get("category"), (a.get("date") or "")[:10]
+    named = named_assessments(f"{a.get('title') or ''} {a.get('text') or ''}")
+    if cat == "exam" and kind != "quiz":              # "the exam": the final's when it names it, else the next one's
+        return kind == "final" if any(k == "final" for k, _ in named) else next_one(day, {"midterm", "final"}) == e["key"]
+    if cat != kind:
+        return False
+    if kind == "final":
+        return True
+    nos = {n for k, n in named if k == kind and n}
+    if nos and e.get("no"):
+        return e["no"] in nos
+    # no number: the next one, if its weeks had begun
+    return next_one(day, {kind}) == e["key"] and not (since and day and day < since)
+
+
+def _about_earlier(d: dict[str, Any], e: dict[str, Any], every: list[dict[str, Any]], it: dict[str, Any]) -> bool:
+    """A moment tied to an exam that was about an earlier quiz or exam, not this one: "these topics are in the exam,
+    weeks 1 to 6" said before the midterm is no word on the final; "this will be on the quiz" neither. It is read as
+    the heads-up reads it (its item there, else its own words)."""
+    from .alerts import matches
+
+    if it.get("kind") != "exam":
+        return False
+    a = next((x for x in (d.get("alerts") or {}).get("items") or []
+              if x.get("source", "lecture") == "lecture" and _same_moment(x, it)), None)
+    if a is None:
+        cats = [c for c in matches(it.get("text") or "", it.get("lang") or "en") if c in ("exam", "quiz", "midterm", "final")]
+        a = {"category": cats[0] if cats else "exam", "date": it.get("day") or "", "text": it.get("text") or ""}
+    if _about(d, e, every, a):
+        return False
+    mine = _last_day(d, e)
+    others = [x for x in every if x.get("key") != e.get("key") and _about(d, x, every, a)]
+    return bool(others) and all(_last_day(d, x) < mine for x in others)
 
 
 def _same_moment(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -324,8 +353,9 @@ def stressed_moments(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, A
     if not nos:
         return []
     keep = ("id", "kind", "text", "hl", "lang", "day_key", "day", "part", "t", "ts", "n", "score")
-    shown = list(shown)
-    top = [it for it in stressed.ranked(items, nos, day_week) if not any(_same_moment(a, it) for a in shown)]
+    shown, every = list(shown), _every(d, e)
+    top = [it for it in stressed.ranked(items, nos, day_week)
+           if not any(_same_moment(a, it) for a in shown) and not _about_earlier(d, e, every, it)]
     return [{k: it.get(k) for k in keep} | {"week": day_week.get(it["day"])} for it in top[:STRESSED_MOST]]
 
 
