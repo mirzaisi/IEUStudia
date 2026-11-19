@@ -8,6 +8,7 @@ import json
 from studia import examroom, kit, quizzes, stressed
 from studia.coursesite import Announcement
 from test_kit import env, export, read  # noqa: F401 - env: the exam kit's course (a fixture)
+from test_mistakes import FIRST, api, make_quiz, questions  # noqa: F401 - api: a course with a lecture (a fixture)
 from test_quizzes import FACTS
 from test_v42_qroom import _said_course, _wk
 
@@ -76,6 +77,24 @@ def test_a_final_s_room_leaves_out_remarks_stressed_about_an_earlier_quiz_or_exa
     quiz3 = {**every["quiz:3"], "weeks": [12, 13]}
     got = [m["id"] for m in examroom.stressed_moments(None, "c", d, quiz3, examroom.said(d, quiz3))]
     assert got == ["fin", "fin2"]                 # about the final, still to come: kept
+
+
+# ------------------------------------------------------------------ a question asked again in another quiz
+def test_a_question_missed_again_in_another_quiz_is_not_counted_as_a_new_card(api):
+    """'6 missed questions join your flashcards' after a second quiz that repeated the first one's questions, while
+    the deck went from 12 to 13 cards (it keeps one card per front)."""
+    lib = api._s.lib
+    make_quiz(lib, "q1", api.day)
+    assert len(api.quiz_attempt("q1", {"answers": FIRST})["carded"]) == 3
+    before = len(api._deck("c"))
+    make_quiz(lib, "q2", api.day)                                           # the same questions, word for word
+    assert api.quiz_attempt("q2", {"answers": FIRST})["carded"] == []
+    qs = questions(api.day)
+    qs[0] = {**qs[0], "q": "What is $P(B|A)$?"}                             # one new question, two asked before
+    make_quiz(lib, "q3", api.day, qs)
+    carded = api.quiz_attempt("q3", {"answers": FIRST})["carded"]
+    assert len(carded) == 1 and len(api._deck("c")) == before + 1
+    assert next(c for c in api._deck("c") if c["id"] == carded[0])["q"] == "What is $P(B|A)$?"
 
 
 # ------------------------------------------------------------------ a quiz pasted with no zip made before

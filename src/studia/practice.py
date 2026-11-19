@@ -739,6 +739,12 @@ class PracticeApi:
         row = save_attempt(lib, plan_id, p["course_id"], attempt or {})
         carded = add_missed(lib, p["course_id"], plan_id, p.get("result") or {}, row["answers"]) \
             if getattr(self._s.settings, "mistake_cards", True) and p.get("status") == "done" else []
+        if carded:            # a question the deck has already (asked again in another quiz) stays one card: not new
+            try:
+                shown = {c["id"] for c in self._deck(p["course_id"])}
+                carded = [i for i in carded if i in shown]
+            except Exception:  # noqa: BLE001 - the count as it was
+                log.debug("the deck couldn't be read after a try", exc_info=True)
         return {"ok": True, "attempt": row, "attempts": attempts(lib, plan_id), "carded": carded}
 
     @_safe
