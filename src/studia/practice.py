@@ -835,7 +835,8 @@ class PracticeApi:
                        days=days, cram=cram, fronts=fronts), (deck, fronts)
 
     def _lecture_cards(self, day_key: str) -> int:
-        """How many cards the lecture page's "Practise N cards" opens (its session's), 0 when they can't be read."""
+        """How many cards the lecture page's "Practise N cards" opens (its session's); -1 when they can't be read
+        (the page then counts the notes' own cards)."""
         try:
             return len(self._lecture_session(str(day_key).split("|")[0], {str(day_key)})[0])
         except Exception:  # noqa: BLE001 - the page counts the notes' own cards then
