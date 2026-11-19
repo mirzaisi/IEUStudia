@@ -24,7 +24,8 @@ globalThis.window = globalThis;
 const shown = { html: "" }, calls = [], toasts = [], menus = [], notes = { drawn: 0 };
 const modalEl = { classList: { add() {} }, querySelector: () => null };
 globalThis.document = { documentElement: {}, addEventListener() {}, querySelectorAll: () => [],
-  querySelector: (sel) => (sel === "#overlay .modal" || sel === ".modal" ? (shown.html ? modalEl : null) : null), getElementById: () => null };
+  querySelector: (sel) => (sel === "#overlay .modal" || sel === ".modal" ? (shown.html ? modalEl : null)
+    : sel.startsWith("#overlay .") ? (shown.html.includes(sel.slice(10)) ? modalEl : null) : null), getElementById: () => null };
 require(%(i18n)s);
 const DAY = "c1|2026-10-07|lecture";
 const card = (id, extra) => ({ id, q: "Front " + id, a: "Back " + id, origin: "lecture", source: { kind: "lecture", day_key: DAY, date: "2026-10-07", part: 1, t: 30, ts: "00:30" },
@@ -151,6 +152,30 @@ def test_the_flashcards_card_says_where_its_cards_come_from_and_an_old_try_s_ans
     assert "Not kept: this try is from an older version of IEUStudia." in out["old"]
     assert "You didn&#39;t write an answer." in out["empty"] or "You didn't write an answer." in out["empty"]
     assert "it shrinks the space" in out["typed"] and "older version" not in out["typed"]
+
+
+@node
+def test_the_end_screen_says_which_missed_questions_joined_the_cards_and_a_result_alone_is_the_answer(tmp_path):
+    out = _page(tmp_path, """
+  const q = { n: 4, type: "problem", q: "Find $P$.", steps: ["$P = VI$"], model: "24 W", source: null, numeric: true, verified: true };
+  const R = { id: "p1", cid: "c1", order: [0], pos: 1, answers: { 4: { got: 0, final: "30 W", app_got: 0, mark: "app", text: "" } },
+    quiz: { title: "Power", result: { questions: [q], removed: [] } }, only: [], saved: false, saving: false };
+  P().run = R; St.practice.showRun(R); await tick(); await tick();
+  out.end = shown.html; out.toasts = toasts.map((x) => x[3]);
+  St.mistakes.state.open.add("p1|4");
+  St.practice.showRun(R); out.row = shown.html;
+  await A["mq-uncard"]({ dataset: { cid: "c1", ids: "qa,qb" } }); await tick();
+  out.after = shown.html; out.undone = R.carded;
+  // the quiz closed before its try was saved: a toast says it then
+  const R2 = { ...R, id: "p2" }; shown.html = "";
+  St.mistakes.saved(R2, { attempt: { id: "a2" }, carded: ["qc"] });
+  out.closed = toasts.slice(-1)[0];
+""".replace("const R = {", "ANSWERS.quiz_attempt = () => ({ ok: true, attempt: { id: \"a1\" }, attempts: [], carded: [\"qa\", \"qb\"] });\n  const R = {"))
+    assert "2 missed questions join your flashcards: they come back tomorrow." in out["end"]
+    assert 'data-act="mq-uncard" data-cid="c1" data-ids="qa,qb"' in out["end"] and "mq-uncard" not in out["toasts"]
+    assert "Your result: 30 W" in out["row"] and "You didn&#39;t write an answer." not in out["row"] and "didn't write" not in out["row"]
+    assert "join your flashcards" not in out["after"] and out["undone"] is None
+    assert out["closed"][:4] == ["1 missed question joins your flashcards: it comes back tomorrow.", "info", "Undo", "mq-uncard"]
 
 
 @node

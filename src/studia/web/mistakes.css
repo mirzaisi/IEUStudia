@@ -34,6 +34,9 @@
 .mq-why.no b { color: var(--red); }
 .mq-src { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .mq-acts { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+/* the end screen: the missed questions that joined the cards, with Undo */
+.mq-carded { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 0; color: var(--text-2); }
+.mq-carded > .i { color: var(--accent-text); flex: none; }
 
 /* ---- where it was taught */
 .modal.mq-mom-modal { width: min(780px, calc(100vw - 40px)); }

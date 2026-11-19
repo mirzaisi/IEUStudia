@@ -145,7 +145,8 @@
     const g = a.got || 0;
     const who = a.mark === "ai" ? t("Marked by {ai}", { ai: a.ai_by || St.aiName() }) : a.mark === "app" ? t("Marked by the app") : t("Marked by you");
     const what = g >= 1 ? t("right") : g > 0 ? t("partly") : t("wrong");
-    const lines = [a.final ? `<div class="ck-mine">${esc(t("Your result: {result}", { result: a.final }))}</div>` : "",
+    // (the result alone is shown as the answer itself: mistakes.js)
+    const lines = [a.final && a.text ? `<div class="ck-mine">${esc(t("Your result: {result}", { result: a.final }))}</div>` : "",
       `<div class="ck-who">${esc(who)}: <b>${esc(what)}</b>${a.mark === "ai" && a.ai_why ? `<span class="ck-why md"> · ${mdLine(a.ai_why)}</span>` : ""}</div>`,
       q.unverified ? keyLine(q) : ""].join("");
     const change = attempt ? `<div class="ck-change"><span class="dim sm">${esc(t("Change the mark:"))}</span>${[[0, t("Wrong")], [0.5, t("Partly")], [1, t("Right")]]

@@ -570,7 +570,7 @@
     }).join("");
     return `<div class="qz qz-end"><h2>${I("check-circle")} ${esc(t("You got {score} of {total}", { score: score(got), total: ids.length }))} <span class="dim">${t.pct(share)}</span></h2>
       <p class="lead">${esc(say)}</p>${St.mistakes ? `<p class="dim sm">${esc(t("Open a question to see your answer beside the right one, and where it was taught."))}</p>` : ""}<ol class="qz-results">${rows}</ol>
-      ${R.saved ? "" : `<p class="dim sm">${SPIN()} ${t("Saving…")}</p>`}${St.checks ? St.checks.endBar(R) : ""}
+      ${R.saved ? "" : `<p class="dim sm">${SPIN()} ${t("Saving…")}</p>`}${St.mistakes ? St.mistakes.cardedLine(R) : ""}${St.checks ? St.checks.endBar(R) : ""}
       <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button>
         ${missed.length ? `<button class="btn primary" data-act="qz-retry" data-id="${esc(R.id)}" data-only="${missed.join(",")}" autofocus>${I("retry", "sm")} ${esc(t.n(missed.length, "Try {n} missed question", "Try {n} missed questions"))}</button>` : ""}</div></div>`;
   }
