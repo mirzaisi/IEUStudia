@@ -162,3 +162,19 @@ def save(lib: Any, course_id: str, f: dict[str, Any], text: str, n: int, chat_id
 def unread() -> str:
     """What the chat says under an answer whose quiz could not be read."""
     return t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again.")
+
+
+def readable(text: str, usage: Optional[dict[str, Any]]) -> str:
+    """An answer as an exported chat (and its Copy) shows it: one whose quiz was saved is its sentence and a line
+    naming the quiz, as the page shows it (its JSON is for the app, never pages of it in a PDF); any other answer as
+    it was written. Exports stay English."""
+    made = (usage or {}).get("quiz") if isinstance(usage, dict) else None
+    if not isinstance(made, dict) or not text:
+        return text
+    cut = text.find("```")
+    intro = (text[:cut] if cut >= 0 else re.sub(r"[{\[][\s\S]*$", "", text)).strip()
+    intro = re.split(r"\n\s*\n", intro)[0].strip() if intro else ""
+    n = int(made.get("questions") or 0)
+    title = " ".join(str(made.get("title") or "Practice quiz").split())
+    line = f'*Practice quiz "{title}" ({n} question{"" if n == 1 else "s"}), saved to Practice in IEUStudia.*'
+    return f"{intro}\n\n{line}" if intro else line

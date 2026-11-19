@@ -218,6 +218,28 @@ def test_a_quiz_with_topics_gets_no_passages_from_outside_the_chat(env):
     assert "sources" not in e["usage"] and e["usage"]["quiz"]["questions"] == 3
 
 
+def test_an_exported_chat_names_its_quiz_instead_of_its_json(env):
+    """An exported chat (Markdown, and the PDF or Word document) had the quiz's whole JSON block as the answer: pages
+    of braces for the student. It is the answer's sentence and a line naming the quiz, as the chat shows it."""
+    from studia import exports
+    from studia.outputs import doc as D
+
+    chat = env.svc.create("c", [DAY])
+    answer = "Here is your quiz.\n\nGood luck!\n```ieustudia-quiz\n" + json.dumps(QUIZ) + "\n```"
+    ask(env, chat["id"], "/quiz 3", answer)
+    ask(env, chat["id"], "/quiz 2", 'Sure!\n```ieustudia-quiz\n{"questions": [{"type": "mc"')      # unread: as written
+    line = 'Here is your quiz.\n\n*Practice quiz "Conditional probability" (3 questions), saved to Practice in IEUStudia.*'
+    md = env.svc.export(chat["id"]).read_text(encoding="utf-8")
+    assert line in md and '"questions": [{"type": "mc", "question": "What does' not in md and "Good luck" not in md
+    assert '{"questions": [{"type": "mc"' in md                                    # the quiz that wasn't saved
+    s = types.SimpleNamespace(lib=env.lib, day=env.ns.day, chat=env.svc)
+    blocks = [b.md for b in exports.chat_doc(s, chat["id"]).blocks if isinstance(b, D.Markdown)]
+    assert line in blocks and not any("What does conditioning" in b for b in blocks)
+    one = chatquiz.readable("```ieustudia-quiz\n{}\n```", {"quiz": {"title": "Ohm", "questions": 1}})
+    assert one == '*Practice quiz "Ohm" (1 question), saved to Practice in IEUStudia.*'
+    assert chatquiz.readable("Plain answer.", {}) == "Plain answer."
+
+
 # ------------------------------------------------------------------ a quiz on the moments the student picked
 def test_a_quiz_on_picked_stressed_moments(env):
     from studia import stressed

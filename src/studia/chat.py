@@ -145,6 +145,13 @@ def _quiz_command(text: str) -> Optional[dict[str, Any]]:
     return command(text)
 
 
+def _quiz_readable(text: str, usage: Any) -> str:
+    """An answer as an exported chat shows it: a saved quiz's sentence and name, not its JSON (chatquiz.py)."""
+    from .chatquiz import readable
+
+    return readable(text, usage)
+
+
 PIECE_CHARS = 4000            # a lecture read in parts: its transcript in pieces of about this much (the notes of each:
                               # up to chatread.NOTE_CHARS, about a third of it)
 
@@ -1634,8 +1641,9 @@ class ChatService:
                 if not m["text"].strip() and not notes:
                     continue
                 lines += [f"**{who}:**", ""] + [x for n in notes for x in (n, "")]
-                if m["text"].strip():
-                    lines += [m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""), ""]
+                if m["text"].strip():           # (a "/quiz" answer: its sentence and the quiz's name, not its JSON)
+                    lines += [_quiz_readable(m["text"], m["usage"]).strip() +
+                              (" *(stopped)*" if m["status"] == "stopped" else ""), ""]
                 lines += ["---", ""]
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
         name = safe_name(f"{stamp} - {title}" if stamp else title, limit=110) + f" [{chat_id[:6]}]"
