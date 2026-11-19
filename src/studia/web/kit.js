@@ -52,7 +52,7 @@
     if (!K) return;
     modal(K.done ? doneHTML() : pasteHTML());
     const m = $("#overlay .modal");
-    if (m) m.classList.add("pd", "cx", "kit");
+    if (m) m.classList.add("pd", "kit");
     St.onModalClose = () => { if (K && K.busy) K.closed = true; else K = null; };   // closed while reading: a toast says how it went
   }
   function open(cid, text) {
