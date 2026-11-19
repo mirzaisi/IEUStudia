@@ -32,6 +32,7 @@ from . import store, views
 from .cancel import Cancelled, check
 from .domain import Course, Recording
 from .i18n import date_long, date_short, day_month, join, num, t, tn
+from .materials import STUDENTS_MIN, left_out, text_lists_students  # noqa: F401 - (STUDENTS_MIN: as before)
 from .outputs.ai_copy import _noise, compact_day
 from .outputs.common import MONTHS, WEEKDAYS_SHORT, format_duration, format_ts, kind_label, lang_tag, long_date
 from .outputs.markdown import part_views
@@ -372,66 +373,14 @@ def plan_course(lib: Any, settings: Any, course_id: str, choice: Choice, today: 
 
 
 # A course file that lists students by number (a lab's grades, the project groups) is classmates' data: it stays out of
-# a zip meant for ChatGPT. Told by what it holds, not by its name ("Ders Notları" and "Lab results template" are study
-# material): many different numbers of one length of 8 to 11 digits, as student numbers are (not the fractional part
-# of a number, "3,14159265", and not binary, "10110010")
-_STUDENT_NO = re.compile(r"(?<!\d)(?<!\d[.,])\d{8,11}(?!\d)")
-STUDENTS_MIN = 20                # different ones of one length
-
-
-def lists_students(texts: Iterable[str]) -> bool:
-    """Is this the text of a list of students (their numbers with marks or groups)?"""
-    seen: dict[int, set[str]] = defaultdict(set)
-    for text in texts:
-        for n in _STUDENT_NO.findall(text or ""):
-            if not set(n) <= {"0", "1"}:
-                seen[len(n)].add(n)
-    return any(len(v) >= STUDENTS_MIN for v in seen.values())
-
-
-def _cells(path: Path) -> list[str]:
-    """The text of a course file whose text the app doesn't keep: an Excel workbook's cells, a CSV's fields."""
-    ext = path.suffix.lower()
-    if ext == ".xlsx":
-        out: list[str] = []
-        with zipfile.ZipFile(path) as z:
-            for info in z.infolist():
-                sheet = info.filename == "xl/sharedStrings.xml" or re.fullmatch(r"xl/worksheets/sheet\d+\.xml",
-                                                                               info.filename)
-                if sheet and info.file_size < 64 * 1024 * 1024:
-                    xml = z.read(info).decode("utf-8", "replace")
-                    for v in re.findall(r"<(?:t|v)\b[^>]*>([^<]*)</(?:t|v)>", xml):
-                        if re.fullmatch(r"\d(?:\.\d+)?E\+?\d+", v):          # 2.0210602014E10: a number Excel wrote so
-                            v = f"{float(v):.0f}"
-                        out.append(v)
-        return out
-    if ext in (".csv", ".tsv"):
-        text = path.read_text(encoding="utf-8", errors="replace")[:20_000_000]
-        sep = ";" if text.count(";") > text.count(",") else ","
-        return re.split(rf"[{sep}\t|\n]", text)
-    return []
+# a zip meant for ChatGPT, as out of every AI tool (materials.left_out: told by what it holds, not by its name), unless
+# the student said to include it anyway
+lists_students = text_lists_students             # (the text check, by its old name)
 
 
 def _lists_students(lib: Any, m: Material) -> bool:
-    """Does this course file list students? From the text the app keeps of it (MaterialStore.index_text), else from
-    the file itself: one not read yet, or a kind the app keeps no text of (an Excel workbook)."""
-    from .materials import TEXT_KINDS, extract_pages
-
-    status = (lib.get_material(m.id) or {}).get("text_status") or ""
-    if status in ("no-text", "failed"):                  # a scan, or a file that can't be read
-        return False
-    path = Path(m.path)
-    try:
-        if status == "done":
-            texts = lib.material_pages(m.id)
-        elif path.suffix.lower().lstrip(".") in TEXT_KINDS:
-            texts = extract_pages(path)
-        else:
-            texts = _cells(path)
-        return lists_students(texts)
-    except Exception as exc:  # noqa: BLE001 - a file that can't be read is put in as before
-        log.warning("Export: %s could not be read to check for a list of students: %s", m.id, exc)
-        return False
+    """Does this course file list students (and the student hasn't said to include it anyway)?"""
+    return left_out(lib, m.id, m.path)
 
 
 def _leave_out_lists(lib: Any, plans: list["Plan"]) -> None:

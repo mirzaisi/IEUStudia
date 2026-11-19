@@ -131,8 +131,51 @@ def _file_head(f: dict[str, Any], pictures: bool = True) -> str:
     from .outputs.figures import pages_text
 
     pics = f"; pages with a figure: {pages_text(f['pictures'])}" if pictures and f.get("pictures") else ""
-    return (f"\n=== FILE {f['ref']} (week {f['week']}): {f['name']}, {f['pages']} pages"
+    return (f"\n=== FILE {f['ref']} ({file_where(f)}): {f['name']}, {f['pages']} pages"
             f"{', PDF' if f['pdf'] else ''}{pics} ===\n")
+
+
+def file_where(f: dict[str, Any]) -> str:
+    """Where a gathered file belongs, for the AI: "week 5", "course-wide", "from an announcement, week 9"."""
+    week = f"week {f['week']}" if f.get("week") else ""
+    if f.get("group") == "announcement":
+        return "from an announcement" + (f", {week}" if week else "")
+    return week or "course-wide"
+
+
+def _week_at(d: dict[str, Any], day: str) -> Optional[int]:
+    """The course week a day ("2026-11-02…") falls in, None outside the known weeks."""
+    day = (day or "")[:10]
+    return next((w["no"] for w in d.get("weeks") or [] if day and w.get("start") and
+                 w["start"] <= day <= (w.get("end") or w["start"])), None) if day else None
+
+
+def general_files(lib: Any, d: dict[str, Any], check: bool = True) -> list[dict[str, Any]]:
+    """The course's files that belong to no week (d["general"]: "Course-wide", "No longer in the weekly plan", "From
+    announcements"), each once: what the dialogs offer as "Course-wide and announcement files" and gather reads when
+    picked. An announcement's file is in the week it came in ("week"; a course-wide one: None); "for": the keys of the
+    assessments it is tied to (its posted solutions: quizzes.tied_files), so "For Quiz 3" ticks it; "students": it
+    lists students, so it is left out (materials.left_out; ``check``: worked out)."""
+    from .library import ANN_UNIT
+    from .materials import left_out
+
+    tied: dict[str, list[str]] = {}
+    for e in d.get("assessments") or []:
+        for rid in e.get("files") or []:
+            tied.setdefault(rid, []).append(e["key"])
+    out, seen = [], set()
+    for u in d.get("general") or []:
+        for m in u.get("materials") or []:
+            if m["id"] in seen or m.get("gone") and not m.get("downloaded"):
+                continue
+            seen.add(m["id"])
+            ann = u.get("id") == ANN_UNIT
+            week = _week_at(d, (lib.get_material(m["id"]) or {}).get("first_seen") or "") if ann else None
+            out.append({"id": m["id"], "title": m["title"], "name": m["file_name"] or m["title"], "pages": m["pages"],
+                        "ext": m["ext"], "ready": m["downloaded"] and m["text"] == "done", "downloaded": m["downloaded"],
+                        "group": "announcement" if ann else "course", "unit": u["title"], "week": week,
+                        "for": tied.get(m["id"], []), "students": bool(check and m["downloaded"] and left_out(lib, m["id"]))})
+    return out
 
 
 def picture_pages(f: dict[str, Any]) -> Optional[list[int]]:
@@ -156,6 +199,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     """The picked files and lectures (``scope.files`` / ``scope.days``; empty: all of the weeks, unless the chooser's
     ticks (``scope.picked``) left them empty), as one text for the outline, with references (F1…, L1…) the later
     stages use."""
+    from .materials import left_out
     from .outputs.markdown import part_views
     from .plans import _excerpt, _fit_days, _shares, _week_span
     from .views import course_detail
@@ -176,27 +220,35 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
     for w in weeks:
         topic = " / ".join(x for x in (w["topic_en"], w["topic_tr"]) if x) or ", ".join(u["title"] for u in w["units"])
         head.append(f"  Week {w['no']}: {topic}")
-    files, lectures, missing, days_missing = [], [], [], []
+    files, lectures, missing, days_missing, students = [], [], [], [], []
     seen: set[str] = set()                  # a unit for two weeks ("Hafta 6 ve 7") is in both: its files once
+
+    def add_file(m: dict[str, Any], week: Optional[int], group: str = "") -> None:
+        if not m["downloaded"] or m["text"] != "done":
+            missing.append({"id": m["id"], "title": m["title"], "week": week})
+            return
+        if left_out(lib, m["id"]):               # a class list: classmates' numbers never go to the AI
+            students.append({"id": m["id"], "title": m["title"], "week": week})
+            return
+        row = lib.get_material(m["id"]) or {}
+        path = row.get("local_path") or ""
+        n = len(lib.material_pages(m["id"]))
+        if n:
+            files.append({"ref": f"F{len(files) + 1}", "id": m["id"], "name": m["file_name"] or m["title"],
+                          "week": week, "pages": n, "path": path,
+                          "pdf": (m.get("ext") or Path(path).suffix.lstrip(".")).lower() == "pdf",
+                          **({"group": group} if group else {})})
+            pics = picture_pages(files[-1])
+            if pics is not None:                 # (else unknown: any of its pages may be a figure)
+                files[-1]["pictures"] = pics
+
     for w in weeks:
         for u in w["units"]:
             for m in u["materials"]:
                 if (only_f and m["id"] not in pick_f) or m["id"] in seen:
                     continue
                 seen.add(m["id"])
-                if not m["downloaded"] or m["text"] != "done":
-                    missing.append({"id": m["id"], "title": m["title"], "week": w["no"]})
-                    continue
-                row = lib.get_material(m["id"]) or {}
-                path = row.get("local_path") or ""
-                n = len(lib.material_pages(m["id"]))
-                if n:
-                    files.append({"ref": f"F{len(files) + 1}", "id": m["id"], "name": m["file_name"] or m["title"],
-                                  "week": w["no"], "pages": n, "path": path,
-                                  "pdf": (m.get("ext") or Path(path).suffix.lstrip(".")).lower() == "pdf"})
-                    pics = picture_pages(files[-1])
-                    if pics is not None:                 # (else unknown: any of its pages may be a figure)
-                        files[-1]["pictures"] = pics
+                add_file(m, w["no"])
         for day in reversed(w["days"]):          # in the order they were taught (the course page: newest first)
             if (only_d and day["day_key"] not in pick_d) or (not only_d and day.get("mine") is False):
                 continue
@@ -209,6 +261,12 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             if parts:
                 lectures.append({"ref": f"L{len(lectures) + 1}", "day_key": day["day_key"], "date": day["date"],
                                  "week": w["no"], "parts": parts})
+    # the course-wide and announcement files only when picked (after the weeks', so their F numbers stay)
+    general = {u_m["id"]: u_m for u in d.get("general") or [] for u_m in u.get("materials") or []}
+    for g in (general_files(lib, d, check=False) if pick_f else []):
+        if g["id"] in pick_f and g["id"] not in seen:
+            seen.add(g["id"])
+            add_file(general[g["id"]], g["week"], g["group"])
     # every page of the files first, as far as the room goes (the plan names the pages each chapter or topic is taught
     # from, and what it never saw is in none); the lectures share the rest, at least LECTURES_MIN (their excerpts:
     # the chapters and entries read the passages the plan names in full)
@@ -245,6 +303,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             "files_cut": files_cut,
             "left_out": [texts[i][0]["ref"] for i in range(len(texts)) if i not in rooms],
             "materials_missing": missing, "days_missing": days_missing,
+            "materials_students": students,            # left out: they list students (materials.left_out)
             "course": {"id": course_id, "code": d["code"], "name": d["display_name"]},
             "weeks": [{"no": w["no"], "topic": w["topic_en"] or w["topic_tr"]} for w in weeks],
             "span": _week_span([w["no"] for w in weeks]),
@@ -1544,25 +1603,35 @@ def make_pdf(s: Any, plan: dict[str, Any]) -> Optional[Path]:
 
 
 # ------------------------------------------------------------------ what the dialog offers, and the cost
-def options(lib: Any, settings: Any, course_id: str) -> dict[str, Any]:
-    """The weeks with their files and lectures, for picking the material."""
+def options(lib: Any, settings: Any, course_id: str, d: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """The weeks with their files and lectures, for picking the material; each week with what isn't on this PC
+    ("missing": file ids) and your section's class days not transcribed ("todo_days"), as the plan dialog's, for the
+    dialogs' Download and Transcribe; a file that lists students is marked ("students": left out). "general": the
+    course-wide and announcement files (general_files)."""
+    from .materials import left_out
     from .views import course_detail
 
-    d = course_detail(lib, settings, course_id)
+    d = d or course_detail(lib, settings, course_id)
     if d is None:
         raise KeyError(t("This course is no longer in your list."))
     weeks = []
     for w in d["weeks"]:
         files = [{"id": m["id"], "name": m["file_name"] or m["title"], "pages": m["pages"], "ext": m["ext"],
-                  "ready": m["downloaded"] and m["text"] == "done", "downloaded": m["downloaded"]}
+                  "ready": m["downloaded"] and m["text"] == "done", "downloaded": m["downloaded"],
+                  "students": bool(m["downloaded"] and left_out(lib, m["id"]))}
                  for u in w["units"] for m in u["materials"]]
         days = [{"day_key": x["day_key"], "date": x["date"], "label": x["label"], "kind": x["kind_label"],
                  "ready": x["any_done"], "mine": x.get("mine") is not False} for x in w["days"]]
+        # your section's class days, without one that has no speech on Panopto (nothing to transcribe or read)
+        own = [x for x in w["days"] if x.get("mine") is not False and not (x.get("no_sound") and not x["transcribed"])]
         if files or days or w["topic_en"] or w["topic_tr"]:
             weeks.append({"no": w["no"], "start": w["start"], "current": w["current"], "past": w["past"],
                           "topic": w["topic_en"] or w["topic_tr"] or " · ".join(u["title"] for u in w["units"]),
-                          "files": files, "days": days})
-    return {"course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks}
+                          "files": files, "days": days,
+                          "missing": list(dict.fromkeys(f["id"] for f in files if not f["downloaded"])),
+                          "todo_days": [x["day_key"] for x in own if not x["transcribed"]]})
+    return {"course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks,
+            "general": general_files(lib, d)}
 
 
 def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any]:

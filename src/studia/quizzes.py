@@ -84,10 +84,45 @@ def _syllabus_exams(d: dict[str, Any], plan: list[dict[str, Any]]) -> list[dict[
     return out
 
 
-def assessments(d: dict[str, Any]) -> list[dict[str, Any]]:
-    """The assessments the lecturer announced (alerts.assessment_plan) and the syllabus' exam weeks no announcement
-    covers, each with the weeks it most likely covers (as the plan dialog: a quiz since the one before it, Midterm 2
-    since Midterm 1) and whether it is still ahead."""
+def assessment_key(e: dict[str, Any]) -> str:
+    """An assessment's name for keeping things with it that stays when its week moves: "quiz:3", "midterm:1",
+    "final:0"; a syllabus exam week (no announcement, no sources): "syllabus:<its name>:<week>"."""
+    return f"syllabus:{e['name']}:{e['week']}" if e.get("syllabus") else f"{e['kind']}:{e['no']}"
+
+
+def _weeks_meta(course_id: str, key: str) -> str:
+    return f"exam-weeks:{course_id}:{key}"
+
+
+def own_weeks(lib: Any, course_id: str, key: str) -> list[int]:
+    """The weeks the student set for an assessment (meta "exam-weeks:<course>:<key>"), [] for none."""
+    try:
+        raw = json.loads(lib.get_meta(_weeks_meta(course_id, key)) or "[]") if lib is not None and course_id else []
+    except (ValueError, TypeError):
+        return []
+    return sorted({int(n) for n in raw if str(n).isdigit() and 1 <= int(n) <= 30}) if isinstance(raw, list) else []
+
+
+def set_weeks(lib: Any, course_id: str, key: str, weeks: Any) -> list[int]:
+    """Keep the weeks the student says an assessment covers ([]: back to the announced or guessed ones)."""
+    nos = sorted({int(n) for n in weeks or [] if str(n).isdigit() and 1 <= int(n) <= 30})
+    lib.set_meta(_weeks_meta(course_id, key), json.dumps(nos) if nos else "")
+    return nos
+
+
+def assessments(d: dict[str, Any], lib: Any = None) -> list[dict[str, Any]]:
+    """The one place that says which weeks each quiz and exam covers (views.course_detail keeps it as
+    d["assessments"]; the quiz, plan and pack dialogs, Get ready and the Exam room read it from there). Each of the
+    assessments the lecturer announced (alerts.assessment_plan) and the syllabus' exam weeks no announcement covers,
+    with:
+      key        - a stable name (assessment_key)
+      weeks      - the weeks it covers: the student's own (with ``lib``), else the ones an announcement named ("Quiz 3
+                   will cover weeks 8 and 9"), else a guess (a quiz since the one before it, Midterm 2 since Midterm 1,
+                   a final all of them)
+      weeks_from - where they come from: "yours", "announced" or "guessed"; "guessed" keeps the guess
+      covers     - the weeks an announcement named ([] when none did), "covers_from" that announcement
+      files      - the course-wide and announcement files tied to it (its posted solutions: tied_files)
+      ahead      - whether it is still ahead"""
     past = {w["no"] for w in d.get("weeks") or [] if w.get("past")}
     plan = [e for e in (d.get("alerts") or {}).get("plan") or [] if e.get("week")]
     plan += _syllabus_exams(d, plan)
@@ -101,15 +136,71 @@ def assessments(d: dict[str, Any]) -> list[dict[str, Any]]:
             midterm = e["week"]
         else:
             start = 1 if e["kind"] == "final" else prev + 1
-        out.append({**e, "weeks": list(range(min(start, e["week"]), e["week"] + 1)), "ahead": e["week"] not in past})
+        guess = list(range(min(start, e["week"]), e["week"] + 1))
+        covers = sorted({int(n) for n in e.get("covers") or [] if 1 <= int(n) <= 30})
+        key = assessment_key(e)
+        mine = own_weeks(lib, d.get("id") or "", key)
+        weeks, origin = (mine, "yours") if mine else (covers, "announced") if covers else (guess, "guessed")
+        out.append({**e, "key": key, "weeks": weeks, "weeks_from": origin, "guessed": guess, "covers": covers,
+                    "covers_from": e.get("covers_from") or "", "files": [], "ahead": e["week"] not in past})
         prev = e["week"]
+    tied = tied_files(d, out)
+    for e in out:
+        e["files"] = [rid for rid, keys in tied.items() if e["key"] in keys]
+    return out
+
+
+def of(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """A course's assessments as views.course_detail gave them (worked out again for a course dict without them)."""
+    return d["assessments"] if "assessments" in d else assessments(d)
+
+
+_ANN_FILE_LINK = re.compile(r"https?://[^\s<>\"]+")
+
+
+def tied_files(d: dict[str, Any], plan: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The course-wide and announcement files (d["general"]) tied to an assessment: {resource id: [its keys]}. A
+    file is tied when its name names it ("Quiz1 - Solutions.pdf"), or it is attached to an announcement that names it
+    in its title ("Quiz 3 solutions") or is a source of that assessment alone (not the term's schedule: MATH 250's
+    "Quiz_Duyurusu" is a source of every quiz)."""
+    from .alerts import named_assessments
+    from .library import ANN_UNIT
+
+    cid = d.get("id") or ""
+    by_rid: dict[str, dict[str, Any]] = {}             # an attached file's announcement (its link is in the text)
+    for a in d.get("announcements") or []:
+        for url in _ANN_FILE_LINK.findall(a.get("body") or ""):
+            url = url.rstrip(").,;:!?'\"]")
+            m = re.search(r"/announcements/(\d+)/file/(\d+)", url)
+            rid = f"ann-{cid}-{m.group(1)}-{m.group(2)}" if m else \
+                f"ann-{cid}-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:12]}"
+            by_rid.setdefault(rid, a)
+
+    def matches(kind: str, no: int) -> list[str]:
+        same = [e for e in plan if e["kind"] == kind]
+        return [e["key"] for e in same if e["no"] == no or ((no == 0 or e["no"] == 0) and len(same) == 1)]
+
+    out: dict[str, list[str]] = {}
+    for u in d.get("general") or []:
+        for m in u.get("materials") or []:
+            keys: list[str] = []
+            for kind, no in named_assessments(f"{m.get('title') or ''} {m.get('file_name') or ''}"):
+                keys += matches(kind, no)
+            a = by_rid.get(m["id"]) if u.get("id") == ANN_UNIT else None
+            if a is not None:
+                of_it = [e["key"] for e in plan if any(s.get("id") == a["id"] for s in e.get("sources") or [])]
+                keys += of_it if len(of_it) == 1 else []
+                for kind, no in named_assessments(a.get("title") or ""):
+                    keys += matches(kind, no)
+            if keys:
+                out[m["id"]] = list(dict.fromkeys(keys))
     return out
 
 
 def _focus(d: dict[str, Any], scope: Any) -> Optional[dict[str, Any]]:
     """The assessment the quiz prepares for (an announced one, or a syllabus exam week: the one still ahead when two
     have its name), with its learning outcomes' text (the syllabus's)."""
-    named = [x for x in assessments(d) if x["name"] == scope.focus] if scope.focus else []
+    named = [x for x in of(d) if x["name"] == scope.focus] if scope.focus else []
     e = next((x for x in named if x["ahead"]), named[0] if named else None)
     los = sorted(set(e["los"] if e else []) | set(scope.los or []))
     if not e and not los:
@@ -885,6 +976,7 @@ def coverage(quiz: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
             "topics_missing": topics_missing[:12], "found": sum(1 for q in qs if q.get("found")),
             "no_source": sum(1 for q in qs if not q.get("source")),
             "materials_missing": [m["title"] for m in facts.get("materials_missing") or []],
+            "materials_students": [m["title"] for m in facts.get("materials_students") or []],
             "days_missing": [x["date"] for x in facts.get("days_missing") or []],
             "files_cut": [f["name"] for f in facts.get("files_cut") or []],
             "lectures_cut": sorted({lecture_refs[r]["date"] for r in (facts.get("cut") or []) + (facts.get("left_out") or [])

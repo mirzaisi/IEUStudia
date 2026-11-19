@@ -311,8 +311,8 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         out += [f"  LO{i}: {lo}" for i, lo in enumerate(d["outcomes_tr"], 1)]
     if plan:
         out.append("ASSESSMENTS ANNOUNCED BY THE LECTURER:")
-        out += [f"  {e['name']}: week {e['week'] or '?'}" + (f", covers LO{', LO'.join(map(str, e['los']))}" if e["los"] else "")
-                for e in plan]
+        out += [f"  {e['name']}: week {e['week'] or '?'}" + (f", covers {_week_span(e['covers'])}" if e.get("covers") else "")
+                + (f", covers LO{', LO'.join(map(str, e['los']))}" if e["los"] else "") for e in plan]
     out.append("WEEKS IN SCOPE:")
     for w in weeks:
         topic = " / ".join(x for x in (w["topic_en"], w["topic_tr"]) if x) or ", ".join(u["title"] for u in w["units"])
@@ -322,22 +322,37 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
     if keys:
         out.append("WHAT THE LECTURER SAID ABOUT ASSESSMENTS IN THESE WEEKS:")
         out += [f"  [{a['category']}] {a['text'][:300]}" for a in keys[:12]]
-    missing, files = [], []
+    from .materials import left_out
+    from .studypack import file_where, general_files
+
+    missing, files, students = [], [], []
     seen: set[str] = set()                  # a unit for two weeks ("Hafta 6 ve 7") is in both: its files once
+
+    def add_file(m: dict[str, Any], about: dict[str, Any]) -> None:
+        if not m["downloaded"] or m["text"] != "done":
+            missing.append(about)
+            return
+        if left_out(lib, m["id"]):               # a class list: classmates' numbers never go to the AI
+            students.append(about)
+            return
+        pieces = [f"[p.{n}] {' '.join(page.split())}" for n, page in enumerate(lib.material_pages(m["id"]), 1)
+                  if page.strip()]
+        if pieces:
+            files.append((about, f"\n=== FILE ({file_where(about)}): {m['file_name'] or m['title']} ===\n", pieces))
+
     for w in weeks:
         for u in w["units"]:
             for m in u["materials"]:
                 if m["id"] in seen:
                     continue
                 seen.add(m["id"])
-                if not m["downloaded"] or m["text"] != "done":
-                    missing.append({"id": m["id"], "title": m["title"], "week": w["no"]})
-                    continue
-                pieces = [f"[p.{n}] {' '.join(page.split())}" for n, page in enumerate(lib.material_pages(m["id"]), 1)
-                          if page.strip()]
-                if pieces:
-                    files.append(({"id": m["id"], "title": m["title"], "week": w["no"]},
-                                  f"\n=== FILE (week {w['no']}): {m['file_name'] or m['title']} ===\n", pieces))
+                add_file(m, {"id": m["id"], "title": m["title"], "week": w["no"]})
+    # the course-wide and announcement files the student picked (scope.files; a plan's weeks bring all of theirs)
+    general = {m["id"]: m for u in d.get("general") or [] for m in u.get("materials") or []}
+    for g in (general_files(lib, d, check=False) if scope.files else []):
+        if g["id"] in scope.files and g["id"] not in seen:
+            seen.add(g["id"])
+            add_file(general[g["id"]], {"id": g["id"], "title": g["title"], "week": g["week"], "group": g["group"]})
     # the files share their part of the pack evenly (a short one leaves its share to the others), so the newest
     # weeks' files are read too and not only the first weeks'; a file whose first page alone is longer than its share
     # gives a part of that page
@@ -383,6 +398,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
     from .doclang import document_language
 
     return {"pack": pack, "chars": len(pack), "materials_used": used, "materials_missing": missing,
+            "materials_students": students,                      # left out: they list students (materials.left_out)
             **document_language(d, settings, {"pack": pack}),       # the plan's (review sheet's) language, the course's
             "materials_left_out": [about for i, (about, _, _) in enumerate(files) if i not in frooms],
             "days_used": [days[i][0] for i in keep], "days_missing": days_missing,

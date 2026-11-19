@@ -136,14 +136,17 @@
     // the course's slide files
     const f = r.files;
     const slideTools = `<button class="btn ghost sm cf-mini" data-act="sp-open">${t("Change")}</button>`;
-    if (f && (f.files.length || f.missing)) {
+    // a class list (classmates' numbers: materials.left_out) isn't sent, unless the student says so after a warning
+    const listed = (name, attrs) => note("warning", `${esc(t("{name} isn't sent: it lists students by number.", { name }))} <button type="button" class="link" data-act="cf-students" ${attrs} data-name="${esc(name)}">${t("Include anyway")}</button>`);
+    if (f && (f.files.length || f.missing || (f.students || []).length)) {
       const rows = f.files.map((x) => row({ ref: `material:${x.id}`, icon: x.ext === "pptx" ? "presentation" : "file",
         title: esc(x.title), sub: [(x.ext || "").toUpperCase(), t.n(x.pages, "{n} page", "{n} pages"),
           x.native ? t("the whole PDF as a file") : x.pictures ? t.n(x.pictures, "{n} as a picture", "{n} as pictures") : t("as text"), readAs(x)].filter(Boolean).map(esc).join(" · "),
         tokens: x.tokens, warn: blankAs(x) }));
       const warn = [f.missing ? t.n(f.missing, "{n} chosen file isn't on this PC yet, so it isn't sent.", "{n} chosen files aren't on this PC yet, so they aren't sent.") : "",
         f.cut && !(r.read || {}).on ? t("The files are long: only their beginning goes as text.") : ""].filter(Boolean);
-      out.push(group(t("Course slides from IEULearn"), rows.join("") + warn.map((w) => note("warning", esc(w))).join(""), slideTools));
+      out.push(group(t("Course slides from IEULearn"), rows.join("") + warn.map((w) => note("warning", esc(w))).join("")
+        + (f.students || []).map((x) => listed(x.label || x.title, `data-id="${esc(x.id)}"`)).join(""), slideTools));
     } else if (!local) out.push(group(t("Course slides from IEULearn"), `<div class="cf-empty">${t("None. Choose some with Send slides.")}</div>`, slideTools));
     if (r.video.count) out.push(group(t("Slides from the video"), row({ ref: "video", icon: "monitor", title: esc(t.n(r.video.count, "{n} picture of the lecture's screen", "{n} pictures of the lecture's screen")), sub: esc(t("with the first question")), tokens: r.video.tokens })));
     // the student's own files
@@ -154,8 +157,9 @@
       extra: `<button type="button" class="btn ghost icon sm cf-x" data-act="cf-remove" data-id="${esc(u.id)}" title="${esc(t("Remove {name}", { name: u.name }))}">${ic("trash", "sm")}</button>` }));
     const busy = F.busy.map((b) => `<div class="cf-row static"><div class="cf-open"><span class="cf-ic">${St.SPIN()}</span><span class="cf-txt"><span class="cf-t">${esc(b.name)}</span><span class="cf-s">${b.total ? t("Adding… {pct}", { pct: t.pct(Math.min(1, b.done / b.total)) }) : t("Adding…")}</span></span></div></div>`);
     const left = r.upload_pictures_left_out && !(r.read || {}).on ? note("warning", esc(t.n(r.upload_pictures_left_out, "{n} page goes as text only: one request to {ai} takes up to {max} pictures in all.", "{n} pages go as text only: one request to {ai} takes up to {max} pictures in all.", { max: r.limits.pictures, ai }))) : "";
+    const lists = (r.uploads || []).filter((u) => u.students).map((u) => listed(u.name, `data-upload="${esc(u.id)}"`)).join("");
     out.push(group(t("Your files"), (ups.join("") + busy.join("")) || `<div class="cf-empty">${t("Add photos, PDFs, Word, PowerPoint or text files: with the paperclip, by dropping them here, or by pasting a screenshot.")}</div>`,
-      `<button class="btn ghost sm cf-mini" data-act="cf-attach">${ic("clip", "sm")} ${t("Add")}</button>`) + left);
+      `<button class="btn ghost sm cf-mini" data-act="cf-attach">${ic("clip", "sm")} ${t("Add")}</button>`) + lists + left);
     const reading = readGroup(r, ai, local);
     if (reading) out.push(reading);
     // the rest that goes along
@@ -559,6 +563,15 @@
       const r = await call("chat_upload_remove", sp, el.dataset.id);
       if (!r.ok) { toast(r.error, "error"); return; }
       F.sig = sigOf(sp); took(r.inputs);
+    },
+    "cf-students": async (el) => {               // a class list sent after all: warned first (picks.js says the same)
+      const sp = spec(); if (!sp) return;
+      const yes = await St.ask({ title: t("Include this file?"), ok: t("Include anyway"), danger: true,
+        text: t("{name} seems to list students by their numbers (grades or groups). Your classmates' details shouldn't go to the AI. Include it only if it isn't a class list.", { name: el.dataset.name || t("This file") }) });
+      if (!yes) return;
+      const r = await call("students_include", el.dataset.id || "", sp, el.dataset.upload || "");
+      if (!r.ok) { toast(r.error, "error"); return; }
+      load();
     },
   });
 

@@ -27,6 +27,7 @@ from typing import Any, Optional
 from . import ai
 from .chatslides import PagePicture
 from .i18n import t
+from .materials import text_lists_students
 
 log = logging.getLogger("studia")
 
@@ -163,6 +164,7 @@ def add(target: str, src: Path, name: str) -> dict[str, Any]:
                 raise Refused(t("{name} has no text that could be read.", name=name))
             (box / "text.json").write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
             meta["pages"], meta["chars"] = len(pages), sum(len(p) for p in pages)
+            meta["students"] = text_lists_students(pages)          # a class list: not sent unless the student says so
             if kind == "pdf" and not meta["pages"]:
                 raise Refused(t("{name} has no pages.", name=name))
             if kind == "pdf":
@@ -293,6 +295,28 @@ def listing(target: str) -> list[dict[str, Any]]:
 
 def ids(target: str) -> list[str]:
     return [m["id"] for m in listing(target)]
+
+
+def students(target: str, m: dict[str, Any]) -> bool:
+    """Does this upload list students by number (a class's grades or groups: materials.text_lists_students)? Kept in
+    its meta.json (an upload from before 4.2 is read once)."""
+    if m.get("kind") == "image":
+        return False
+    if "students" not in m:
+        try:
+            box = folder(target) / m["id"]
+            m["students"] = text_lists_students(_pages(box))
+            (box / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+        except (OSError, ValueError, KeyError):
+            return False
+    return bool(m["students"])
+
+
+def allow_students(target: str, uid: str) -> None:
+    """Send this upload although it lists students: the student said so (after a warning)."""
+    meta, _ = get(target, uid)
+    meta["students_ok"] = True
+    (folder(target) / uid / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
 
 def get(target: str, uid: str) -> tuple[dict[str, Any], Path]:
@@ -522,10 +546,12 @@ def collect(target: str, can_images: bool, local: bool = False) -> dict[str, Any
         box = folder(target) / m["id"]
         item = {k: m.get(k) for k in ("id", "name", "kind", "ext", "size", "pages", "width", "height")}
         item.update({"text_tokens": 0, "pictures": 0, "picture_tokens": 0, "cut": False, "unread": False, "native": False,
-                     "blank": 0})
+                     "blank": 0, "students": students(target, m) and not m.get("students_ok")})
         original = str(box / f"original.{m['ext']}")
         pages: list[Any] = []
-        if m["kind"] == "image":
+        if item["students"]:                     # a class list: classmates' numbers never go to the AI (unless asked)
+            pass
+        elif m["kind"] == "image":
             if can_images and not local:
                 pic = box / "picture.jpg"
                 weight = int((pic.stat().st_size if pic.is_file() else 150_000) * 0.7) * 4 // 3   # sent at 1024 px

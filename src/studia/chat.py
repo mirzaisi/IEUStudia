@@ -400,7 +400,7 @@ class ChatService:
             units = self.lib.units(course_id)
             out.append((json.dumps(units, sort_keys=True, default=str), chatslides.first_week_day(self.lib, course_id, units)))
             out += [tuple(m.get(k) for k in _MATERIAL_KEYS) + (_file_stamp(m.get("local_path") or ""),)
-                    for m in self.lib.materials(course_id)]
+                    for m in self.lib.materials(course_id)] + [self.lib.get_meta("students-ok-at")]   # (include anyway)
         if uploads:
             for m in chatfiles.listing(uploads):
                 box = chatfiles.folder(uploads) / str(m.get("id"))

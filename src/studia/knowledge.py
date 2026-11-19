@@ -67,6 +67,7 @@ def retrieve(lib: Any, course_id: str, question: str, skip_days: Iterable[str] =
     They are found as the search page finds things (search.py): whole words in any of their forms, numbers however
     they are written, words of the same meaning in both languages. Pages and lecture paragraphs with more of the
     question's words come first; at most two passages of one class day."""
+    from .materials import left_out
     from .outputs.common import format_ts
     from .search import passages, snippet
 
@@ -75,7 +76,7 @@ def retrieve(lib: Any, course_id: str, question: str, skip_days: Iterable[str] =
     parts, sources, size = [], [], 0
     for h, text, _ in [x for x in found if x[0].kind == "file" and x[0].field == "body"][:limit]:
         m = lib.get_material(h.ref)
-        if not m:
+        if not m or left_out(lib, m["resource_id"]):        # (a class list: classmates' numbers never go to the AI)
             continue
         piece = f"[{m['file_name'] or m['title']} p.{h.sub}] {snippet(text, h.occ, EXCERPT_CHARS)['text']}"
         if size + len(piece) > max_chars:

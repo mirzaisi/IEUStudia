@@ -1640,6 +1640,20 @@ class Api(PracticeApi):
         return {"ok": True, "course": detail}
 
     @safe
+    def students_include(self, resource_id: str = "", spec: Any = None, upload_id: str = "") -> dict[str, Any]:
+        """A course file (``resource_id``) or a chat's upload (``spec``, ``upload_id``) that lists students goes to
+        the AI after all: the student said to include it anyway (the page warned first). materials.left_out."""
+        if upload_id:
+            from . import chatfiles, chatinputs
+
+            chatfiles.allow_students(chatinputs.spec_of(self._s.chat, spec)["target"], str(upload_id))
+        else:
+            from .materials import allow_students
+
+            allow_students(self._s.lib, str(resource_id or ""))
+        return {"ok": True}
+
+    @safe
     def materials_download(self, resource_ids: list[str]) -> dict[str, Any]:
         """Download materials (and index their text) one after another in the background."""
         ids = list(dict.fromkeys(str(i) for i in resource_ids or []))     # (a file of two weeks is asked for once)
@@ -2325,8 +2339,10 @@ class Api(PracticeApi):
     @safe
     def plan_options(self, course_id: str) -> dict[str, Any]:
         """What the new-plan dialog offers: the weeks (with what is downloaded and transcribed) and the assessments
-        the lecturer announced, each with the weeks it most likely covers."""
+        with the weeks each covers (d["assessments"], as the quiz dialog and Get ready show them)."""
         from .ai import claude_info
+        from .materials import left_out
+        from .studypack import general_files
 
         d = views.course_detail(self._s.lib, self._s.settings, course_id)
         if d is None:
@@ -2341,19 +2357,12 @@ class Api(PracticeApi):
                           "exam": w["exam"], "files": len(mats),
                           "files_ready": sum(1 for m in mats if m["downloaded"] and m["text"] == "done"),
                           "missing": [m["id"] for m in mats if not m["downloaded"]],
+                          "students": [{"id": m["id"], "name": m["file_name"] or m["title"]} for m in mats
+                                       if m["downloaded"] and left_out(self._s.lib, m["id"])],   # (class lists: left out)
                           "lectures": len(own), "lectures_done": sum(1 for x in own if x["any_done"]),
                           "todo_days": [x["day_key"] for x in own if not x["transcribed"]]})
-        assess, prev, midterm = [], 0, 0
-        for e in sorted((e for e in (d.get("alerts") or {}).get("plan") or [] if e.get("week")), key=lambda e: e["week"]):
-            if e["kind"] == "midterm":                  # Midterm 2: since Midterm 1
-                start = midterm + 1 if e["no"] >= 2 else 1
-                midterm = e["week"]
-            else:                                       # a quiz: since the last assessment
-                start = 1 if e["kind"] == "final" else prev + 1
-            assess.append({**e, "weeks": list(range(min(start, e["week"]), e["week"] + 1))})
-            prev = e["week"]
         return {"ok": True, "course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks,
-                "assessments": assess, "ai": claude_info(),
+                "assessments": d["assessments"], "general": general_files(self._s.lib, d), "ai": claude_info(),
                 "model": self._s.settings.plan_model or self._s.settings.ai_model}
 
     @safe

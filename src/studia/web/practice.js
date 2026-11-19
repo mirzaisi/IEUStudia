@@ -283,13 +283,16 @@
     const w = Q.opts.weeks.find((x) => x.no === no); if (!w) return;
     if (on) Q.weeks.add(no); else Q.weeks.delete(no);
     const kept = new Set(Q.opts.weeks.filter((x) => Q.weeks.has(x.no)).flatMap((x) => x.files.map((f) => f.id)));
-    w.files.forEach((f) => { if (on && f.ready) Q.files.add(f.id); else if (!on && !kept.has(f.id)) Q.files.delete(f.id); });
+    w.files.forEach((f) => { if (on && f.ready && !f.students) Q.files.add(f.id); else if (!on && !kept.has(f.id)) Q.files.delete(f.id); });
     w.days.forEach((d) => { if (on && d.ready && d.mine) Q.days.add(d.day_key); else if (!on) Q.days.delete(d.day_key); });
   }
   function setMode(mode) {
     Q.mode = mode; Q.weeks = new Set(); Q.files = new Set(); Q.days = new Set();
-    if (mode === "next") (nextExam(Q.opts) || { weeks: [] }).weeks.forEach((n) => pickWeek(n, true));
-    else if (mode === "weeks") {
+    if (mode === "next") {
+      const e = nextExam(Q.opts) || { weeks: [] };
+      e.weeks.forEach((n) => pickWeek(n, true));
+      if (St.picks) St.picks.tied(Q.opts, e.key).forEach((id) => Q.files.add(id));     // its posted solutions
+    } else if (mode === "weeks") {
       const cur = latestReady(Q.opts.weeks, (w) => w.files.some((f) => f.ready) || w.days.some((d) => d.ready && d.mine));
       if (cur) pickWeek(cur.no, true);
     } else {
@@ -309,7 +312,7 @@
     cid = cid || S.view.courseId || (courses[0] || {}).id;
     if (!cid) { toast(t("Sync your courses first."), "error"); return; }
     Q = { cid, opts: null, mode: "", weeks: new Set(), files: new Set(), days: new Set(), day: "", count: +(S.settings || {}).quiz_questions || 10,     // (Settings → Practice)
-      kinds: "mixed", topics: "", model: "", effort: (Q && Q.effort) || "", est: null, starting: false };
+      kinds: "mixed", topics: "", model: "", effort: (Q && Q.effort) || "", est: null, starting: false, fetching: new Set() };
     modal(`<div class="cp-scroll"><h2>${I("list-checks")} ${t("New practice quiz")}</h2>${skeleton()}</div>`);
     $(".modal").classList.add("pd", "pk", "qz-dlg");
     const r = await call("quiz_options", cid);
@@ -317,6 +320,8 @@
     if (!r.ok) { toast(r.error, "error"); closeModal(); return; }
     Q.opts = r; Q.model = r.model || "sonnet";
     setMode(nextExam(r) ? "next" : "weeks");
+    // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked
+    if (St.picks) St.picks.live({ state: () => Q, open: () => !!$("#overlay #qz-cost"), refetch: () => call("quiz_options", Q.cid), tie: qTie, redraw: () => { readQuiz(); drawQuiz(); estimateQuiz(); } });
     drawQuiz(); estimateQuiz();
   }
   function quizCost() {
@@ -342,16 +347,20 @@
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="qz-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
-    const picked = r.weeks.filter((w) => Q.weeks.has(w.no));
+    const picked = r.weeks.filter((w) => Q.weeks.has(w.no)), pk = St.picks;
+    const fileSub = (f) => { const sub = f.ready ? t.n(f.pages, "{n} page", "{n} pages") : Q.fetching.has(f.id) ? t("downloading…") : f.downloaded ? t("not read yet") : t("not on this PC"); return pk ? pk.fileSub(f, sub) : sub; };
     const material = picked.map((w) => `<div class="pk-week"><div class="pk-week-h">${t("Week {n}", { n: w.no })} <span class="dim">${esc(w.topic || "")}</span></div>
-        ${w.files.map((f) => item("file", f.id, Q.files.has(f.id), f.ready, f.name, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : f.downloaded ? t("not read yet") : t("not on this PC"))).join("")}
+        ${w.files.map((f) => item("file", f.id, Q.files.has(f.id), f.ready && !f.students, f.name, fileSub(f))).join("")}
         ${w.days.filter((d) => d.mine || Q.days.has(d.day_key)).map((d) => item("day", d.day_key, Q.days.has(d.day_key), d.ready, `${d.label} · ${d.kind}`, d.ready ? t("transcribed") : t("not transcribed"))).join("")}
-        ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("");
+        ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("")
+      + (pk ? pk.groupHTML(r, Q.files, "qz-item", Q.fetching) : "");         // course-wide and announcement files
+    // what the picked weeks still miss, with Download and Transcribe (as the plan dialog)
+    const gaps = pk && Q.mode !== "lecture" ? pk.gapsHTML(qMissing(), [...new Set(picked.flatMap((w) => w.todo_days || []))], { download: "qz-download", transcribe: "qz-transcribe" }) : "";
     const where = Q.mode === "lecture"
       ? `<div class="field"><label>${t("Which lecture?")}</label><select class="input" data-act="qz-day">${lectures().map((d) => `<option value="${esc(d.day_key)}" ${d.day_key === Q.day ? "selected" : ""}>${esc(t("Week {n}", { n: d.week }))} · ${esc(d.label)} · ${esc(d.kind)}</option>`).join("")}</select></div>`
       : `<div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: Q.weeks.size })}</span></label>
           <div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${Q.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="qz-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
-        ${picked.length ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(Q.files.size, "{n} file", "{n} files")} · ${t.n(Q.days.size, "{n} lecture", "{n} lectures")}</span></label><div class="pk-material">${material}</div></div>` : ""}`;
+        ${material ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(Q.files.size, "{n} file", "{n} files")} · ${t.n(Q.days.size, "{n} lecture", "{n} lectures")}</span></label><div class="pk-material">${material}</div></div>` : ""}${gaps}`;
     const kinds = [["mixed", t("Mixed")], ["mc", t("Multiple choice")], ["short", t("Short answers")], ...(r.quant ? [["problems", t("Worked problems")]] : [])];
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
     const sc = qScope(), ready = (sc.files.length || sc.days.length) && canAI() && !Q.starting;
@@ -375,6 +384,10 @@
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keep;
   }
   function readQuiz() { document.querySelectorAll(".modal [data-qz]").forEach((el) => { Q[el.dataset.qz] = el.value; }); }
+  // the files not on this PC: the picked weeks', and (For Quiz 3) the course-wide ones tied to it, as its solutions
+  const qTie = () => (Q.mode === "next" ? (nextExam(Q.opts) || {}).key || "" : "");
+  const qMissing = () => [...new Set([...Q.opts.weeks.filter((w) => Q.weeks.has(w.no)).flatMap((w) => w.missing || []),
+    ...(St.picks ? St.picks.tiedMissing(Q.opts, qTie()) : [])])].filter((id) => !Q.fetching.has(id));
   let estTimer = null;
   function estimateQuiz() {
     clearTimeout(estTimer);
@@ -428,6 +441,7 @@
     if (cov.stressed_total) covers.push(t("Tests {hit} of the {total} moments the lecturer stressed in these weeks", { hit: cov.stressed_hit || 0, total: cov.stressed_total }));
     if ((cov.materials_missing || []).length) left.push(t("Files not on this PC: {list}", { list: cov.materials_missing.join(", ") }));
     if ((cov.days_missing || []).length) left.push(t("Lectures not transcribed: {list}", { list: cov.days_missing.map(dmw).join(", ") }));
+    if ((cov.materials_students || []).length) left.push(t("Lists of students, kept away from the AI: {list}", { list: cov.materials_students.join(", ") }));
     if ((cov.files_cut || []).length) left.push(t("Too long to read whole, so only their first pages: {list}", { list: cov.files_cut.join(", ") }));
     if ((cov.lectures_cut || []).length) left.push(t("Only parts of these lectures fitted: {list}", { list: cov.lectures_cut.map(dmw).join(", ") }));
     if ((cov.topics_missing || []).length) left.push(t("No question on: {list}", { list: cov.topics_missing.join(", ") }));
@@ -585,7 +599,7 @@
   // ------------------------------------------------------------------ cards from files, Anki
   let M = null;      // the cards-from-files dialog
   async function makeDialog(cid) {
-    M = { cid, opts: null, weeks: new Set(), files: new Set(), effort: (M && M.effort) || "", model: "", est: null, starting: false };
+    M = { cid, opts: null, weeks: new Set(), files: new Set(), effort: (M && M.effort) || "", model: "", est: null, starting: false, fetching: new Set() };
     modal(`<div class="cp-scroll"><h2>${I("ai")} ${t("Cards from files")}</h2>${skeleton()}</div>`);
     $(".modal").classList.add("pd", "pk");
     const r = await call("pack_options", cid);
@@ -594,13 +608,16 @@
     M.opts = r; M.model = r.model || "sonnet";
     const cur = latestReady(r.weeks, (w) => w.files.some((f) => f.ready));
     if (cur) mPick(cur.no, true);
+    // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked
+    if (St.picks) St.picks.live({ state: () => M, open: () => !!$("#overlay #fm-cost"), refetch: () => call("pack_options", M.cid), redraw: () => { readMake(); drawMake(); estimateMake(); } });
     drawMake(); estimateMake();
   }
+  function readMake() { document.querySelectorAll(".modal [data-fm]").forEach((x) => { M[x.dataset.fm] = x.value; }); }
   function mPick(no, on) {
     const w = M.opts.weeks.find((x) => x.no === no); if (!w) return;
     if (on) M.weeks.add(no); else M.weeks.delete(no);
     const kept = new Set(M.opts.weeks.filter((x) => M.weeks.has(x.no)).flatMap((x) => x.files.map((f) => f.id)));
-    w.files.forEach((f) => { if (on && f.ready) M.files.add(f.id); else if (!on && !kept.has(f.id)) M.files.delete(f.id); });
+    w.files.forEach((f) => { if (on && f.ready && !f.students) M.files.add(f.id); else if (!on && !kept.has(f.id)) M.files.delete(f.id); });
   }
   const mScope = () => ({ kind: "cards", weeks: [...M.weeks].sort((a, b) => a - b), files: [...M.files], days: [], picked: true, model: M.model, effort: M.effort || "" });
   function makeCost() {
@@ -614,16 +631,20 @@
       ${St.docLangLine ? St.docLangLine(e, { cards: true }) : ""}</div></div>`;
   }
   function drawMake() {
-    const r = M.opts, old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
+    const r = M.opts, old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0, pk = St.picks;
     const picked = r.weeks.filter((w) => M.weeks.has(w.no));
+    const sub = (f) => { const s = f.ready ? t.n(f.pages, "{n} page", "{n} pages") : M.fetching.has(f.id) ? t("downloading…") : f.downloaded ? t("not read yet") : t("not on this PC"); return pk ? pk.fileSub(f, s) : s; };
     const files = picked.map((w) => `<div class="pk-week"><div class="pk-week-h">${t("Week {n}", { n: w.no })} <span class="dim">${esc(w.topic || "")}</span></div>
-      ${w.files.map((f) => `<label class="pk-item ${f.ready ? "" : "off"}"><input type="checkbox" class="check" data-act="fm-item" data-id="${esc(f.id)}" ${M.files.has(f.id) ? "checked" : ""} ${f.ready ? "" : "disabled"}>
-        ${I("file-text", "sm")}<span class="grow">${esc(f.name)}</span><span class="dim sm">${f.ready ? t.n(f.pages, "{n} page", "{n} pages") : f.downloaded ? t("not read yet") : t("not on this PC")}</span></label>`).join("")
-        || `<div class="dim sm pk-none">${t("No files for this week.")}</div>`}</div>`).join("");
+      ${w.files.map((f) => `<label class="pk-item ${f.ready && !f.students ? "" : "off"}"><input type="checkbox" class="check" data-act="fm-item" data-id="${esc(f.id)}" ${M.files.has(f.id) ? "checked" : ""} ${f.ready && !f.students ? "" : "disabled"}>
+        ${I("file-text", "sm")}<span class="grow">${esc(f.name)}</span><span class="dim sm">${sub(f)}</span></label>`).join("")
+        || `<div class="dim sm pk-none">${t("No files for this week.")}</div>`}</div>`).join("")
+      + (pk ? pk.groupHTML(r, M.files, "fm-item", M.fetching) : "");          // course-wide and announcement files
+    const missing = [...new Set(picked.flatMap((w) => (w.missing || []).filter((id) => !M.fetching.has(id))))];
+    const gaps = pk ? pk.gapsHTML(missing, [], { download: "fm-download" }) : "";       // (cards: from files only)
     modal(`<div class="cp-scroll"><h2>${I("ai")} ${t("Cards from files")}</h2>
       <p class="pk-lead">${esc(t("{ai} makes flashcards from the files you pick: definitions, formulas, rules and methods, one idea per card, each with the page it comes from. They join this course's deck.", { ai: St.aiName() }))}</p>
       <div class="field"><label class="cp-label">${t("Weeks")}</label><div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${M.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="fm-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
-      ${picked.length ? `<div class="field"><label class="cp-label">${t("Files")} <span class="dim sm">${t.n(M.files.size, "{n} file", "{n} files")}</span></label><div class="pk-material">${files}</div></div>` : ""}
+      ${files ? `<div class="field"><label class="cp-label">${t("Files")} <span class="dim sm">${t.n(M.files.size, "{n} file", "{n} files")}</span></label><div class="pk-material">${files}</div></div>` : ""}${gaps}
       <div class="cp-opts">${St.isChatGPT() ? "" : `<div class="cp-opt"><div class="t">${t("Model")}</div><select class="input" data-fm="model">${[["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]].map(([k, l]) => `<option value="${k}" ${M.model === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>`}
         ${St.effortField ? St.effortField("fm", "plan", M.effort, { attrs: 'data-fm="effort"', why: t("Long files are read in several requests, each one at this level.") }) : ""}</div></div>
       <div class="cp-foot"><div class="cp-cost" id="fm-cost">${makeCost()}</div><div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
@@ -759,6 +780,14 @@
     "qz-week": (el) => { readQuiz(); const no = +el.dataset.no; pickWeek(no, !Q.weeks.has(no)); drawQuiz(); estimateQuiz(); },
     "qz-item": (el) => { readQuiz(); const set = el.dataset.kind === "file" ? Q.files : Q.days; if (el.checked) set.add(el.dataset.id); else set.delete(el.dataset.id); drawQuiz(); estimateQuiz(); },
     "qz-day": (el) => { readQuiz(); Q.day = el.value; drawQuiz(); estimateQuiz(); },
+    "qz-download": async () => {                 // the picked weeks' files not on this PC: ticked once they are in
+      readQuiz();
+      const asked = Q, ids = qMissing();
+      if (!(await St.picks.download(ids)) || asked !== Q) return;
+      ids.forEach((id) => Q.fetching.add(id));
+      if ($("#overlay #qz-cost")) { readQuiz(); drawQuiz(); }
+    },
+    "qz-transcribe": () => { readQuiz(); St.picks.transcribe([...new Set(Q.opts.weeks.filter((w) => Q.weeks.has(w.no)).flatMap((w) => w.todo_days || []))]); },
     "qz-count": (el) => { readQuiz(); Q.count = +el.dataset.n; drawQuiz(); estimateQuiz(); },
     "qz-kinds": (el) => { readQuiz(); Q.kinds = el.value; },
     "qz-go": async (el) => {
@@ -828,6 +857,13 @@
     "fc-make": (el) => makeDialog(el.dataset.cid),
     "fm-week": (el) => { document.querySelectorAll(".modal [data-fm]").forEach((x) => { M[x.dataset.fm] = x.value; }); const no = +el.dataset.no; mPick(no, !M.weeks.has(no)); drawMake(); estimateMake(); },
     "fm-item": (el) => { if (el.checked) M.files.add(el.dataset.id); else M.files.delete(el.dataset.id); drawMake(); estimateMake(); },
+    "fm-download": async () => {                 // the picked weeks' files not on this PC: ticked once they are in
+      readMake();
+      const asked = M, ids = [...new Set(M.opts.weeks.filter((w) => M.weeks.has(w.no)).flatMap((w) => (w.missing || []).filter((id) => !M.fetching.has(id))))];
+      if (!(await St.picks.download(ids)) || asked !== M) return;
+      ids.forEach((id) => M.fetching.add(id));
+      if ($("#overlay #fm-cost")) { readMake(); drawMake(); }
+    },
     "fm-go": async (el) => {
       if (!M || M.starting) return;
       document.querySelectorAll(".modal [data-fm]").forEach((x) => { M[x.dataset.fm] = x.value; });
