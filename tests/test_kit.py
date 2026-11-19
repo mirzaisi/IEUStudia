@@ -12,7 +12,7 @@ import zipfile
 
 import pytest
 
-from studia import cards, kit, practice, quizzes, store
+from studia import cards, kit, practice, store
 from studia import course_export as ce
 from studia.config import Settings
 from studia.coursesite import Announcement, Resource, Unit
@@ -369,6 +369,20 @@ def test_markdown_from_claude_and_a_block_per_question(env):
                                                      "source": "F3 p.2"}) + "\n```" for i in (1, 2, 3))
     r = kit.pasted(env.api, "c", blocks)
     assert r["ok"] and r["questions"] == 3 and r["named"] == 3
+
+
+def test_an_answer_cut_short_keeps_its_whole_questions(env):
+    """The chat stopped in the middle of question 4 (a long answer, "Continue generating" not pressed): the three
+    whole questions are read, and the import says so by its counts."""
+    export(env, weeks=[2, 3], focus="quiz:2")
+    cut = (CHATGPT % {"kit": "00000000"}).split('{"type": "mc", "question": "What is the multiplication rule')[0]
+    cut += '{"type": "mc", "question": "What is the multipl'
+    assert kit.read_quiz(cut)["questions"] and len(kit.read_quiz(cut)["questions"]) == 3
+    r = kit.pasted(env.api, "c", cut)
+    assert r["ok"] and r["read"] == 3 and r["questions"] == 3
+    cards_cut = (CARDS_JSON % {"kit": "x"}).split('{"front": "Total probability rule"')[0] + '{"front": "Total prob'
+    rows, said, _ = kit.read_cards(cards_cut)
+    assert said and [c["q"] for c in rows] == ["Conditional probability P(A|B)", "Multiplication rule"]
 
 
 def test_a_quiz_from_another_chat_finds_its_sources_by_their_words(env):

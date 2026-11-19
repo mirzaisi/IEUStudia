@@ -462,14 +462,39 @@ def _blocks(text: str) -> list[str]:
 
 def _loads(s: str) -> Any:
     """The JSON in a block or an answer (quizzes._json_body: LaTeX backslashes, a sentence around it), a trailing
-    comma forgiven."""
+    comma forgiven; of an answer cut short, the questions or cards that are whole (_salvage)."""
     from .quizzes import _json_body
 
     data = _json_body(s)
     if data is None:
         fixed = re.sub(r",(\s*[}\]])", r"\1", s or "")
         data = _json_body(fixed) if fixed != s else None
-    return data
+    return data if data is not None else _salvage(s or "")
+
+
+_LIST_START = re.compile(r"[\"'](questions|sorular|cards|kartlar|flashcards)[\"']\s*:\s*\[")
+
+
+def _salvage(s: str) -> Any:
+    """An answer cut short (the chat stopped in the middle of its JSON): {"questions": […]} or {"cards": […]} of the
+    items that are whole, None when none is."""
+    from .ai import _tex_backslashes
+
+    s = _tex_backslashes(s) if "\\" in s else s
+    m = _LIST_START.search(s)
+    if not m:
+        return None
+    dec, items, i = json.JSONDecoder(), [], m.end()
+    while True:
+        j = s.find("{", i)
+        if j < 0 or s[i:j].strip(" \t\r\n,"):
+            break
+        try:
+            item, i = dec.raw_decode(s, j)
+        except ValueError:
+            break
+        items.append(item)
+    return {m.group(1): items} if items else None
 
 
 def kit_in(text: str) -> str:
