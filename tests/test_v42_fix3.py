@@ -79,6 +79,23 @@ def test_a_final_s_room_leaves_out_remarks_stressed_about_an_earlier_quiz_or_exa
     assert got == ["fin", "fin2"]                 # about the final, still to come: kept
 
 
+# ------------------------------------------------------------------ Turkish: one word for "or" between days
+def test_turkish_days_are_joined_with_the_word_home_uses():
+    """The room said '25 Kas Çar ya da 28 Kas Cmt', Home '… veya …' (the browser's own list word)."""
+    from studia import i18n
+
+    assert i18n.table("tr")["or {days}"] == "veya {days}"
+
+
+def test_a_narrow_top_bar_keeps_the_background_checks_note_to_its_icon():
+    from pathlib import Path
+
+    from studia import i18n
+
+    css = (Path(i18n.__file__).parent / "web" / "styles.css").read_text(encoding="utf-8")
+    assert "@media (max-width: 1100px) { .topbar .bg-off .lbl { display: none; } }" in css
+
+
 # ------------------------------------------------------------------ a question asked again in another quiz
 def test_a_question_missed_again_in_another_quiz_is_not_counted_as_a_new_card(api):
     """'6 missed questions join your flashcards' after a second quiz that repeated the first one's questions, while

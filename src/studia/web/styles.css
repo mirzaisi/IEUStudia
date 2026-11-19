@@ -670,6 +670,9 @@ kbd { font: 600 10.5px var(--font); color: var(--text-3); border: 1px solid var(
 .topbar .bg-off { color: var(--text-3); font-weight: 500; }
 /* a narrow window: the graphics card chip (all is normal there) gives way, so "Background checks off" stays readable */
 @media (max-width: 1220px) { .topbar .gpu-chip { display: none; } }
+/* narrower still: "Background checks off" is its icon (its words on hover), so the page's name in the crumb can be read
+   (Turkish at 1024 px cut "MATH 240 · Sınava hazırlık" to "MATH 240 · Sınav…") */
+@media (max-width: 1100px) { .topbar .bg-off .lbl { display: none; } }
 .bg-hint { align-items: center; } .bg-hint > div { flex: 1; }
 
 /* ------------------------------------------------------------------ overlays */
