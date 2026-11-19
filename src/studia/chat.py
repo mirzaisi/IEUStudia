@@ -1337,7 +1337,7 @@ class ChatService:
                      **({"read": read} if read else {}),
                      **({"notices": shown, "notices_ai": made_by} if shown else {})}
             if made_from is not None and state == "done":  # the quiz in the answer: saved, a card under it
-                usage.update(self._quiz_saved(chat, quiz, made_from, text))
+                usage.update(self._quiz_saved(chat, quiz, made_from, text, first=not history))
             self.lib.update_chat_message(cid, seq, text, state, usage)
             if not session.alive():
                 self._drop(cid)
@@ -1399,9 +1399,10 @@ class ChatService:
         return asked, {**made_from, "chat_files": ids}
 
     def _quiz_saved(self, chat: dict[str, Any], quiz: dict[str, Any], made_from: dict[str, Any],
-                    text: str) -> dict[str, Any]:
+                    text: str, first: bool = False) -> dict[str, Any]:
         """The quiz in a "/quiz" answer, saved to the course's Practice tab: {"quiz": its id, title and size} for the
-        page's "Play quiz" card, else {"quiz_error"} (the answer stays as it was written)."""
+        page's "Play quiz" card, else {"quiz_error"} (the answer stays as it was written). A chat that began with
+        "/quiz" is named after its quiz (not "/quiz 5")."""
         from . import chatquiz
 
         try:
@@ -1412,6 +1413,8 @@ class ChatService:
             made = None
         if made is None:
             return {"quiz_error": chatquiz.unread()}
+        if first and not chat.get("title"):
+            self.lib.update_chat(chat["id"], title=made["title"][:120])
         self._s.emit({"type": "plan", "id": made["id"], "course_id": chat["course_id"], "status": "done",
                       "stage": "done", "progress": 1.0, "message": "", "error": "", "title": made["title"],
                       "kind": "quiz", "source": "chat"})

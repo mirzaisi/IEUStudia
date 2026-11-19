@@ -913,9 +913,11 @@
       const ai = S.system.ai || {}, P = St.practice;
       const done = w.days.filter((x) => x.any_done && (x.mine !== false || !mineOnly(c))).map((x) => x.day_key);
       const todo = w.days.filter((x) => x.mine !== false && x.parts && !x.transcribed && !x.no_sound && !x.live).length;
-      const mats = w.units.flatMap((u) => u.materials).filter((m) => !m.downloaded && !m.gone && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
+      const all = w.units.flatMap((u) => u.materials);
+      const mats = all.filter((m) => !m.downloaded && !m.gone && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
+      const readable = done.length || all.some((m) => m.downloaded && m.text === "done");     // (something to quiz on)
       St.menu(el, [
-        ...(P && ai.available && ai.can_plans !== false ? [{ id: "quiz", icon: "list-checks", label: t("Quiz me on this week"), desc: t("Practice questions from its files and lectures"),
+        ...(P && ai.available && ai.can_plans !== false && readable ? [{ id: "quiz", icon: "list-checks", label: t("Quiz me on this week"), desc: t("Practice questions from its files and lectures"),
           run: () => P.quizDialog(c.id, { mode: "weeks", weeks: [no] }) }] : []),
         ...(P ? [{ id: "cards", icon: "layers", label: t("Study this week's cards"), run: () => P.study(c.id, { weeks: [no] }) }] : []),
         ...(ai.available && done.length ? [{ id: "ask", icon: "chat", label: t("Ask about this week"), desc: t.n(done.length, "{n} transcribed lecture", "{n} transcribed lectures"),

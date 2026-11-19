@@ -124,6 +124,8 @@ WEEKS = """
               units: [{ id: "u5", title: "Hafta 5", materials: [mat("m1", true), mat("m2", false)] }],
               days: [{ day_key: DAY, date: "2026-10-13", label: "13 Oct", kind_label: "Lecture", parts: 2, transcribed: true, any_done: true, mine: true },
                      { day_key: "c1|2026-10-15|lecture", date: "2026-10-15", label: "15 Oct", kind_label: "Lecture", parts: 1, transcribed: false, any_done: false, mine: true }] },
+            { no: 7, start: "2026-10-26", end: "2026-11-01", topic_en: "Unread", topic_tr: "", readings: "", past: true, current: false, exam: false,
+              units: [{ id: "u7", title: "Hafta 7", materials: [mat("m7", false)] }], days: [] },
             { no: 9, start: "2026-11-09", end: "2026-11-15", topic_en: "Later", topic_tr: "", readings: "", past: false, current: false, exam: false, units: [], days: [] }] };
   S.cd.c1 = d; S.weeksOpen = { c1: new Set([5]) };
   S.view = { name: "course", courseId: "c1", tab: "weeks" };
@@ -149,12 +151,16 @@ def test_a_week_card_has_a_menu_and_its_quiz_pill_opens_get_ready(tmp_path):
   items.filter((it) => it !== "-").forEach((it) => it.run());
   out.seen = seen;
   out.download = called("materials_download");
+  // a week with nothing to read yet: nothing to quiz on, its file to download
+  A["menu-week"]({ dataset: { cid: "c1", no: "7" } });
+  out.unread = items.map((it) => (it === "-" ? "-" : it.label));
   // without ChatGPT or Claude: no quiz, no chat
   S.system.ai = { available: false };
   A["menu-week"]({ dataset: { cid: "c1", no: "5" } });
   out.plain = items.map((it) => (it === "-" ? "-" : it.label));
 """)
-    assert out["menus"] == 1 and out["pill"]                  # a week with nothing yet has no menu
+    assert out["menus"] == 2 and out["pill"]                  # a week with nothing yet has no menu
+    assert out["unread"] == ["Study this week's cards", "-", "Download 1 file"]
     assert out["labels"] == ["Quiz me on this week", "Study this week's cards", "Ask about this week", "-", "Download 1 file",
                              "Transcribe 1 lecture"]
     assert out["seen"]["quiz"] == ["c1", {"mode": "weeks", "weeks": [5]}]

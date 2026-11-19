@@ -887,9 +887,11 @@
     const ai = S.system.ai || {};
     const hasText = d.parts.some((p) => p.paragraphs.length);
     // with ChatGPT or Claude in the app, "Quiz me" is the lecture's first button (practice.js's quiz dialog, set to
-    // this lecture) and Copy for AI goes beside the files; without, Copy for AI stays first
+    // this lecture) and Copy for AI, an icon beside the files, takes its room (the row stays one line at 1024 px);
+    // without, Copy for AI stays first
     const quiz = !!(Studia.practice && Studia.practice.quizDialog) && ai.available && ai.can_plans !== false;
-    const copy = `<button class="btn ${quiz ? "ghost" : "primary"} sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>`;
+    const copy = quiz ? `<button class="btn ghost sm" data-act="menu-copy" ${hasText ? "" : "disabled"} title="${esc(t("Copy for AI"))}" aria-label="${esc(t("Copy for AI"))}">${I("copy", "sm")}${I("chevron-down", "sm caret")}</button>`
+      : `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>`;
     return `${quiz ? `<button class="btn primary sm" data-act="day-quiz" ${hasText ? "" : "disabled"} title="${esc(t("Practice questions on this lecture and its slides, written by {ai}: scored and saved to Practice", { ai: aiName() }))}">${I("list-checks", "sm")} ${t("Quiz me")}</button>` : copy}
       ${Studia.exportBtn ? Studia.exportBtn("day", d.day_key, false, !hasText) : ""}
       ${Studia.player && Studia.player.btn ? Studia.player.btn(!d.parts.length) : ""}

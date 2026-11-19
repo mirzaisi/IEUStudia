@@ -120,6 +120,7 @@ def test_quiz_in_a_chat_is_saved_scored_and_its_sources_found(env):
     assert "S1 (tied to an exam) [L1 part 1 01:00]" in asked                               # what the lecturer stressed
     msgs = env.lib.chat_messages(chat["id"])
     assert msgs[0]["text"] == "/quiz 3"                                     # the chat shows what the student typed
+    assert env.lib.get_chat(chat["id"])["title"] == "Conditional probability"     # named after its quiz, not "/quiz 3"
     made = e["usage"]["quiz"]
     assert made["questions"] == 3 and made["title"] == "Conditional probability"
     plan = env.lib.plan(made["id"])
@@ -139,6 +140,7 @@ def test_quiz_in_a_chat_is_saved_scored_and_its_sources_found(env):
     assert e2["usage"]["quiz_error"].startswith("The quiz in this answer could not be read")
     assert e2["text"] == "No quiz this time, sorry." and "quiz" not in e2["usage"]
     assert len([p for p in env.lib.plans("c") if p["scope"].get("source") == "chat"]) == 1
+    assert env.lib.get_chat(chat["id"])["title"] == "Conditional probability"
 
 
 def test_a_broken_block_leaves_the_answer_and_saves_nothing(env):
