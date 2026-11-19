@@ -185,7 +185,11 @@
           }
         }
         else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(t("{title} could not be transcribed again: {error}. The earlier transcript is kept.", { title: e.title, error: (e.error || t("it failed")).replace(/[.\s]+$/, "") }), "warning"); }
-        else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; r.no_sound = !!e.no_sound; toast(`${e.title}: ${e.error || t("failed")}`, "error"); }
+        else if (e.stage === "failed") {
+          r.status = "failed"; r.error = e.error; r.no_sound = !!e.no_sound;
+          if (r.no_sound) r.warnings = [{ level: "error", message: e.error || "" }];    // its only note now (jobs._warn_no_sound): not the last try's
+          toast(`${e.title}: ${e.error || t("failed")}`, "error");
+        }
         else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || t("Not ready on Panopto yet"), "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
         refreshNewDay(hit, false);

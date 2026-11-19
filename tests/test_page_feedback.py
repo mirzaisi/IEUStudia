@@ -245,6 +245,25 @@ def test_no_speech_found_is_not_shown_as_the_microphone_being_off(tmp_path):
 
 
 @node
+def test_a_retried_lecture_shows_what_its_new_try_found_at_once(tmp_path):
+    """"Only noise or music" tried again and found almost silent: the row said "only noise or music" (its last try's
+    note) until the course list came back; now its note is the new try's at once."""
+    out = run(tmp_path, """
+  const noise = "No speech was found in this recording (only noise or music). Check it on Panopto.";
+  const off = "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.";
+  const r = { id: "c", status: "queued", error: noise, no_sound: true, part: 1, time: "12:09", end_time: "12:51", duration_s: 2520,
+    warnings: [{ level: "error", message: noise }], viewer_url: "v", mine: true };
+  const d = { date: "2026-10-02", day_key: "m|2", label: "Fri 2 Oct", parts: 1, recordings: [r] };
+  S.courses = [{ id: "m", code: "MATH 250", days: [d], show_mode: "all", available_sections: [], counts: {} }];
+  ev({ type: "job", id: "c", final: true, stage: "failed", status: "failed", title: "MATH 250 · Fri 2 Oct 12:09", error: off, no_sound: true });
+  out.row = plain(St.dayCardHTML(d, S.courses[0]));
+  out.toasts = told();
+""")
+    assert "No sound on Panopto" in out["row"] and "microphone was off" in out["row"] and "only noise" not in out["row"]
+    assert out["toasts"][-1].startswith("error: MATH 250 · Fri 2 Oct 12:09: This recording is almost silent on Panopto")
+
+
+@node
 def test_recordings_ticked_on_one_course_page_are_not_selected_on_another(tmp_path):
     out = run(tmp_path, """
   const c = (id, code) => ({ id, code, display_name: code, days: [], counts: { new: 0, total: 0, done: 0 }, content: {} });
