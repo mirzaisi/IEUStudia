@@ -37,6 +37,9 @@
       r.no_source ? t.n(r.no_source, "{n} has no source.", "{n} have no source.") : "",
       quiz && r.unused ? t.n(r.unused, "{n} more couldn't be used (no clear right answer, or asked twice).", "{n} more couldn't be used (no clear right answer, or asked twice).") : "",
       !quiz && r.dupes ? t.n(r.dupes, "{n} was in your deck already, or pasted twice.", "{n} were in your deck already, or pasted twice.") : "",
+      // the chat stopped in the middle (its answer was too long): only what was whole before that came in
+      r.cut ? (quiz ? t("The answer stops part way, so the rest of the quiz is missing. If the chat shows Continue, press it there, then press Undo here and paste the whole answer again.")
+        : t("The answer stops part way, so the rest of the cards are missing. If the chat shows Continue, press it there, then paste the whole answer again: the cards you have already are skipped.")) : "",
     ].filter(Boolean);
     const head = quiz ? t.n(r.questions, "{n} question is ready to play.", "{n} questions are ready to play.")
       : t.n(r.cards, "{n} flashcard joined your deck.", "{n} flashcards joined your deck.");

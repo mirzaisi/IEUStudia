@@ -42,11 +42,16 @@
     const o = X.opts, inc = X.inc;
     let bytes = o.base + (inc.notices ? o.notices : 0), screens = 0, files = 0, lectures = 0, untranscribed = 0;
     const down = new Set();                    // (a file of a unit for two weeks is downloaded once)
+    const had = new Set();                     // (and goes in the zip once: course_export)
     for (const w of o.weeks) {
       if (!X.picked.has(w.no)) continue;
       if (inc.transcripts) bytes += w.bytes.text;
       if (inc.screens) { bytes += w.bytes.screen_text + w.bytes.screens; screens += w.screens; }
-      if (inc.files) { bytes += w.bytes.files; files += w.files; w.missing.forEach((id) => down.add(id)); }
+      if (inc.files) {
+        if (w.sizes) Object.entries(w.sizes).forEach(([id, n]) => { if (!had.has(id)) { had.add(id); bytes += n; files += 1; } });
+        else { bytes += w.bytes.files; files += w.files; }
+        w.missing.forEach((id) => down.add(id));
+      }
       lectures += w.lectures; untranscribed += w.untranscribed;
     }
     if (inc.files && X.picked.size) { bytes += o.general.bytes; files += o.general.files; o.general.missing.forEach((id) => down.add(id)); }
@@ -69,6 +74,7 @@
     const has = (n) => { const w = X.opts.weeks.find((x) => x.no === n); return !!w && (w.now || w.lectures || w.files || w.missing.length); };
     const nos = e ? (e.weeks || []).filter(has) : [];
     X.picked = new Set(nos.length ? nos : nowWeeks());
+    X.toPicked = true;                         // its weeks scrolled into view (Quiz 3's 9–10 are below weeks 1–6)
   }
   function forHTML() {
     const list = X.courseId ? X.opts.assessments || [] : [];
@@ -197,7 +203,7 @@
   function kitHTML(k) {
     if (!k || !(k.prompts || []).length) return "";
     return `<div class="cx-how cx-kit"><div class="cx-how-h">${I("list-checks", "sm")} ${t("Then practise with it")}</div>
-      <p class="cx-kit-lead">${esc(t("Send one of these in the same chat. Then copy the whole answer and press Ctrl+V on this course's Practice tab: a quiz plays there with scores and opens where each question comes from, and cards join your deck."))}</p>
+      <p class="cx-kit-lead">${esc(t("Send one of these with the zip, or later in the same chat. Then copy the whole answer and press Ctrl+V on this course's Practice tab: a quiz plays there with scores and opens where each question comes from, and cards join your deck."))}</p>
       ${k.prompts.map((p) => { const [title, about] = PROMPTS()[p.key] || [p.key, ""]; return `<div class="cx-pr"><div class="grow"><b>${esc(title)}</b><div class="dim sm">${esc(about)}</div></div>
         <button class="btn sm" data-act="cx-copy-prompt" data-k="${esc(p.key)}">${I("copy", "sm")} ${t("Copy")}</button></div>`; }).join("")}
       ${k.focus && k.start ? `<div class="dim sm cx-kit-note">${esc(t("00 Start here.md in the zip tells the AI what {name} covers.", { name: k.focus }))}</div>` : ""}</div>`;
@@ -223,6 +229,9 @@
     const nb = $(".modal .cp-scroll"), nl = $(".cx-weeks");
     if (nb) nb.scrollTop = keep[0];
     if (nl) nl.scrollTop = keep[1];
+    const first = X.toPicked && nl && nl.querySelector ? nl.querySelector(".cx-wk.on") : null;
+    if (first && first.getBoundingClientRect) nl.scrollTop += first.getBoundingClientRect().top - nl.getBoundingClientRect().top - 4;
+    if (X.view === "pick" && X.opts) X.toPicked = false;
   }
 
   // preset: {key, weeks} (an assessment's, as the Exam room and a "cx-open" button with data-key give it): "For" that
@@ -248,7 +257,7 @@
     if (key && (r.assessments || []).some((e) => e.key === key)) pickFor(key);
     else if (preset && preset.weeks) {
       const nos = String(preset.weeks).split(",").map(Number).filter((n) => r.weeks.some((w) => w.no === n));
-      if (nos.length) X.picked = new Set(nos);
+      if (nos.length) { X.picked = new Set(nos); X.toPicked = true; }
     }
     if (X.open) draw();
   }
@@ -318,7 +327,7 @@
     "cx-copy-msg": () => copied((S.cexp || {}).first_message || "", t("Copied: paste it into ChatGPT with the zip.")),
     "cx-copy-prompt": (el) => {
       const p = (((S.cexp || {}).kit || {}).prompts || []).find((x) => x.key === el.dataset.k);
-      if (p) copied(p.text, t("Copied: paste it into the same chat."));
+      if (p) copied(p.text, t("Copied: paste it into the chat with the zip."));
     },
   });
   St.cexp = { open: openDialog };

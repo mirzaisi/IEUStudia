@@ -69,10 +69,14 @@ def unit_week(unit: dict[str, Any], first: Optional[dt.date]) -> Optional[int]:
 # "10110010")
 _STUDENT_NO = re.compile(r"(?<!\d)(?<!\d[.,])\d{8,11}(?!\d)")
 STUDENTS_MIN = 20                # different ones of one length
+# an announcement naming this many students by number (a make-up exam list, the lab groups, the marks) is classmates'
+# data too: its text stays out of the zip for ChatGPT (course_export) and the exam kit's brief (kit.py)
+ANNOUNCED_MIN = 3
 
 
-def text_lists_students(texts: Any) -> bool:
-    """Is this the text of a list of students (their numbers with marks or groups)?"""
+def text_lists_students(texts: Any, least: int = STUDENTS_MIN) -> bool:
+    """Is this the text of a list of students (their numbers with marks or groups)? (``least``: how many different
+    numbers of one length make one.)"""
     from collections import defaultdict
 
     seen: dict[int, set[str]] = defaultdict(set)
@@ -80,12 +84,51 @@ def text_lists_students(texts: Any) -> bool:
         for n in _STUDENT_NO.findall(text or ""):
             if not set(n) <= {"0", "1"}:
                 seen[len(n)].add(n)
-    return any(len(v) >= STUDENTS_MIN for v in seen.values())
+    return any(len(v) >= least for v in seen.values())
+
+
+OLE_KINDS = {".xls", ".doc", ".ppt"}     # the old Office files: one binary "compound file" each
+
+
+def ole_numbers(data: bytes) -> list[str]:
+    """The student-number-like numbers in an old Office file (.xls, .doc, .ppt), read without a library: the digits
+    of its text (one byte per letter, or two: UTF-16) and, in an Excel 97-2003 workbook, the numbers in its cells
+    (BIFF records NUMBER, RK and MULRK, where Excel keeps a number typed as a number)."""
+    import struct
+
+    out = [m.decode("ascii") for m in re.findall(rb"(?<![0-9.,])[0-9]{8,11}(?![0-9])", data)]
+    out += [m.decode("utf-16-le") for m in re.findall(rb"(?<![0-9.,]\x00)(?:[0-9]\x00){8,11}(?![0-9]\x00)", data)]
+
+    def rk(v: int) -> float:
+        x = float(v >> 2 if v < 1 << 31 else (v >> 2) - (1 << 30)) if v & 2 else \
+            struct.unpack("<d", struct.pack("<Q", (v & 0xFFFFFFFC) << 32))[0]
+        return x / 100 if v & 1 else x
+
+    values: list[float] = []
+    for m in re.finditer(rb"\x03\x02\x0e\x00", data):                       # NUMBER: row, column, format, the double
+        if m.end() + 14 <= len(data):
+            values.append(struct.unpack_from("<d", data, m.end() + 6)[0])
+    for m in re.finditer(rb"\x7e\x02\x0a\x00", data):                       # RK: row, column, format, the RK value
+        if m.end() + 10 <= len(data):
+            values.append(rk(struct.unpack_from("<I", data, m.end() + 6)[0]))
+    for m in re.finditer(rb"\xbd\x00(..)", data, re.S):                     # MULRK: row, first column, (format, RK)…
+        size = struct.unpack_from("<H", m.group(1))[0]
+        if 12 <= size <= 2048 and (size - 6) % 6 == 0 and m.end() + size <= len(data):
+            values += [rk(struct.unpack_from("<I", data, m.end() + 4 + 6 * i + 2)[0]) for i in range((size - 6) // 6)]
+    out += [f"{v:.0f}" for v in values if v == v and 1e7 <= v < 1e11 and float(v).is_integer()]
+    return out
 
 
 def file_cells(path: Path) -> list[str]:
-    """The text of a course file whose text the app doesn't keep: an Excel workbook's cells, a CSV's fields."""
+    """The text of a course file whose text the app doesn't keep: an Excel workbook's cells (also an OpenDocument
+    sheet's, and an old .xls one's numbers), a CSV's fields, an old Word or PowerPoint file's numbers."""
     ext = path.suffix.lower()
+    if ext in (".ods", ".odt", ".odp"):
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("content.xml").decode("utf-8", "replace") if "content.xml" in z.namelist() else ""
+        return re.findall(r">([^<]+)<", xml) + re.findall(r'office:value="([^"]*)"', xml)
+    if ext in OLE_KINDS:
+        return [" ".join(ole_numbers(path.read_bytes()[:64 * 1024 * 1024]))]
     if ext == ".xlsx":
         out: list[str] = []
         with zipfile.ZipFile(path) as z:
@@ -118,7 +161,8 @@ def lists_students(lib: Any, resource_id: str, path: str = "") -> bool:
     status = m.get("text_status") or ""
     if not path or status == "no-text":                     # not here; a scan
         return False
-    stamp = f"{m.get('downloaded_at') or ''}|{status}|{m.get('pages') or 0}|{path}"
+    # (the "2": read again since old Office and OpenDocument files are read too)
+    stamp = f"2|{m.get('downloaded_at') or ''}|{status}|{m.get('pages') or 0}|{path}"
     try:
         kept = json.loads(lib.get_meta(f"students:{resource_id}") or "{}")
     except ValueError:

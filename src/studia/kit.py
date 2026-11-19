@@ -154,12 +154,13 @@ def _weight(d: dict[str, Any], e: dict[str, Any]) -> str:
 
 def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[str]:
     """What the lecturer said about this assessment, in class and in the announcements, newest first: the Exam
-    room's own list (examroom.said), as the brief's lines."""
-    from .course_export import _date, _en_day
+    room's own list (examroom.said), as the brief's lines, but for an announcement that lists students (it would
+    name classmates)."""
+    from .course_export import _date, _en_day, class_list_announcements
     from .examroom import said
 
     out = []
-    for it in said(d, e, SAID_MOST):
+    for it in said(d, e, SAID_MOST, skip=class_list_announcements(d)):
         day = _date(it.get("date") or "")
         text = " ".join(str(it.get("text") or "").split())
         if it.get("source") == "lecture":
@@ -265,6 +266,8 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
 # ------------------------------------------------------------------ the prompts (English, with the language rules)
 _HEAD = ("(From IEUStudia, the study app I made this zip with. I will paste your answer back into it: it plays the {what} "
          "and opens the page or lecture moment each {one} comes from.)")
+PROMPT_START = "(From IEUStudia, the study app I made this zip with"       # (every prompt's first words)
+PROMPT_END = "Only the JSON object, in one ```json code block. Nothing before or after it."
 
 
 def _aim(f: dict[str, Any]) -> str:
@@ -298,8 +301,7 @@ def quiz_prompt(kid: str, f: dict[str, Any], n: int = QUIZ_ASKED) -> str:
     refs = _refs_block(f, '"source"')
     again = quiz_languages_again(f.get("language") or "", f.get("taught_in") or "")
     return (f"{_HEAD.format(what='quiz with scores', one='question')}{start}\n\n{body}\n\n{refs}{again}\n\n"
-            "=== HOW TO ANSWER ===\n"
-            "Only the JSON object, in one ```json code block. Nothing before or after it.")
+            f"=== HOW TO ANSWER ===\n{PROMPT_END}")
 
 
 def cards_prompt(kid: str, f: dict[str, Any], n: int = CARDS_ASKED) -> str:
@@ -326,7 +328,7 @@ Rules:
 {_refs_block(f, '"source"')}{cards_languages_again(lang, taught)}
 
 === HOW TO ANSWER ===
-Only the JSON object, in one ```json code block. Nothing before or after it."""
+{PROMPT_END}"""
 
 
 def sheet_prompt(f: dict[str, Any]) -> str:
@@ -466,7 +468,7 @@ def _blocks(text: str) -> list[str]:
 
 def _loads(s: str) -> Any:
     """The JSON in a block or an answer (quizzes._json_body: LaTeX backslashes, a sentence around it), a trailing
-    comma forgiven; of an answer cut short, the questions or cards that are whole (_salvage)."""
+    comma forgiven; of an answer cut short, the questions or cards that are whole (_salvage: marked "cut")."""
     from .quizzes import _json_body
 
     data = _json_body(s)
@@ -477,11 +479,13 @@ def _loads(s: str) -> Any:
 
 
 _LIST_START = re.compile(r"[\"'](questions|sorular|cards|kartlar|flashcards)[\"']\s*:\s*\[")
+_TITLE = re.compile(r"[\"'](?:title|başlık|baslik)[\"']\s*:\s*\"((?:[^\"\\\n]|\\.){1,200})\"", re.I)
+CUT = "_cut"                     # (the key _salvage marks a cut-short answer with)
 
 
 def _salvage(s: str) -> Any:
     """An answer cut short (the chat stopped in the middle of its JSON): {"questions": […]} or {"cards": […]} of the
-    items that are whole, None when none is."""
+    items that are whole (with the title written before them), None when none is."""
     from .ai import _tex_backslashes
 
     s = _tex_backslashes(s) if "\\" in s else s
@@ -498,7 +502,14 @@ def _salvage(s: str) -> Any:
         except ValueError:
             break
         items.append(item)
-    return {m.group(1): items} if items else None
+    if not items:
+        return None
+    title = _TITLE.search(s[:m.start()])
+    try:
+        head = {"title": json.loads(f'"{title.group(1)}"')} if title else {}
+    except ValueError:
+        head = {}
+    return {**head, m.group(1): items, CUT: True}
 
 
 def kit_in(text: str) -> str:
@@ -511,14 +522,16 @@ def read_quiz(text: str) -> dict[str, Any]:
     also from several code blocks (a chat that wrote a block per question) and with Turkish keys; else its Markdown."""
     from . import quizzes
 
-    title, topics, qs, kid = "", [], [], ""
+    title, topics, qs, kid, cut = "", [], [], "", False
     for body in _blocks(text) or [text]:
         data = _loads(body)
         if data is None:
             continue
         data = _en_keys(data)
-        if isinstance(data, dict) and isinstance(data.get("kit"), str):
-            kid = kid or data["kit"].strip().lower()
+        if isinstance(data, dict):
+            cut = cut or bool(data.pop(CUT, False))
+            if isinstance(data.get("kit"), str):
+                kid = kid or data["kit"].strip().lower()
         quiz, found = quizzes._question_lists(data)
         for hint, q in found:
             q = q if isinstance(q, dict) else {"question": q}
@@ -530,8 +543,8 @@ def read_quiz(text: str) -> dict[str, Any]:
             topics = [quizzes._text(x, 200) for x in quiz.get("topics") or []] if isinstance(quiz.get("topics"), list) else []
     if not qs:
         md = quizzes.read_markdown(text)
-        title, qs = md["title"], md["questions"]
-    return {"title": title, "topics": topics, "questions": qs, "kit": kid or kit_in(text)}
+        title, qs, cut = md["title"], md["questions"], False
+    return {"title": title, "topics": topics, "questions": qs, "kit": kid or kit_in(text), "cut": cut}
 
 
 def _card_rows(data: Any) -> tuple[list[dict[str, Any]], bool]:
@@ -620,8 +633,10 @@ def read_cards(text: str) -> tuple[list[dict[str, Any]], bool, str]:
         if data is None:
             continue
         data = _en_keys(data)
-        if isinstance(data, dict) and isinstance(data.get("kit"), str):
-            kid = kid or data["kit"].strip().lower()
+        if isinstance(data, dict):
+            data.pop(CUT, None)
+            if isinstance(data.get("kit"), str):
+                kid = kid or data["kit"].strip().lower()
         got, says = _card_rows(data)
         rows += got
         said = said or (says and bool(got))
@@ -632,6 +647,11 @@ def read_cards(text: str) -> tuple[list[dict[str, Any]], bool, str]:
         rows = [{"q": c["q"], "a": c["a"], "source": None, "topic": ""} for c in parse_cards(text or "")]
     rows = [r for r in rows if len(r["q"]) >= 3 and r["a"]]
     return rows, said and bool(rows), kid or kit_in(text)
+
+
+def was_cut(text: str) -> bool:
+    """Did the chat stop in the middle of its JSON (only the whole questions or cards before that were read)?"""
+    return any(isinstance(data, dict) and bool(data.get(CUT)) for data in map(_loads, _blocks(text) or [text]))
 
 
 def kind_of(text: str) -> str:
@@ -679,15 +699,27 @@ def normal_source(v: Any, names: list[tuple[str, str]]) -> Any:
     return ref + (f" part {part.group(1)}" if part else "") + (f" {at.group(1)}" if at else "")
 
 
-def _names(kit: Optional[dict[str, Any]]) -> list[tuple[str, str]]:
-    """The kit's files by name (with and without the extension; the longest first), for a source that names one."""
+def _names(kit: Optional[dict[str, Any]], lib: Any = None, course_id: str = "") -> list[tuple[str, str]]:
+    """The course's files by name (with and without the extension; the longest first), for a source that names one:
+    the kit's, and every file of the course that has its reference (a quiz from an older zip of the course, or one
+    whose id the chat left out, names files the newest kit may not have)."""
+    named = [(x.get("name"), ref, 5) for ref, x in ((kit or {}).get("refs") or {}).items() if x.get("kind") == "file"]
+    if lib is not None and course_id:
+        refs = numbers(lib, course_id)
+        try:
+            rows = lib.materials(course_id, include_gone=True)
+        except Exception:  # noqa: BLE001 - the kit's names then
+            log.debug("the course's files couldn't be listed for a paste", exc_info=True)
+            rows = []
+        # (a short name without its extension, "Slides", "Notes", is a word a source may hold for another reason)
+        named += [(m.get("file_name") or m.get("title"), refs[m["resource_id"]], 10) for m in rows
+                  if str(refs.get(m.get("resource_id"), "")).startswith("F")]
     out = []
-    for ref, x in ((kit or {}).get("refs") or {}).items():
-        name = str(x.get("name") or "").casefold().strip() if x.get("kind") == "file" else ""
-        for n in {name, name.rsplit(".", 1)[0]}:
-            if len(n) >= 5:
-                out.append((n, ref))
-    return sorted(out, key=lambda x: -len(x[0]))
+    for name, ref, least in named:
+        name = str(name or "").casefold().strip()
+        stem = name.rsplit(".", 1)[0]
+        out += [(n, ref) for n, most in ((name, 5 if stem != name else least), (stem, least)) if len(n) >= most]
+    return sorted(dict.fromkeys(out), key=lambda x: -len(x[0]))
 
 
 def _sourced(items: list[dict[str, Any]], keys: Iterable[str], names: list[tuple[str, str]]) -> list[str]:
@@ -707,7 +739,7 @@ def _kit_of(lib: Any, course_id: str, kit_id: str, items: list[dict[str, Any]],
     quiz from another chat, citing none, is checked against the whole course so far); and the references cited, the
     items' sources made readable on the way."""
     newest = load(lib, course_id, kit_id)
-    cited = _sourced(items, keys, _names(newest))
+    cited = _sourced(items, keys, _names(newest, lib, course_id))
     named = bool(kit_id) and newest is not None and newest.get("id") == kit_id
     return (newest if named or cited else None), cited
 
@@ -760,6 +792,20 @@ def _found(src: Optional[dict[str, Any]], found: bool) -> Optional[dict[str, Any
 
 
 # ------------------------------------------------------------------ saving what was pasted
+def _not_twice(lib: Any, course_id: str, questions: list[dict[str, Any]]) -> None:
+    """The same quiz pasted again (the chat's answer copied a second time): it is on the Practice tab already."""
+    from .cards import norm
+
+    stems = sorted(norm(q.get("q") or "") for q in questions)
+    for p in lib.plans(course_id):
+        if (p.get("scope") or {}).get("source") != "import" or (p.get("scope") or {}).get("kind") != "quiz":
+            continue
+        had = ((lib.plan(p["id"]) or {}).get("result") or {}).get("questions") or []
+        if sorted(norm(q.get("q") or "") for q in had) == stems:
+            raise Unread(t("You added this quiz already: it's on this course's Practice tab, called {title}.",
+                           title=p.get("title") or ""))
+
+
 def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str = "") -> dict[str, Any]:
     """A pasted quiz, checked and saved as a finished quiz of the course; what was read of it."""
     from . import quizzes
@@ -780,6 +826,7 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
                        "the prompt from the zip, then paste the whole answer."))
     for q in quiz["questions"]:
         q["source"] = _found(q.get("source"), q.get("found"))
+    _not_twice(lib, course_id, quiz["questions"])
     title = quiz["title"] or span_title(facts)
     cov = quizzes.coverage(quiz, facts)
     focus = (kit or {}).get("focus") or ""
@@ -796,7 +843,7 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
                     message=tn(n, "{n} question", "{n} questions"))
     return {"kind": "quiz", "id": pid, "title": title, "questions": n, "read": read, "unused": max(0, read - n),
             "named": n - cov["found"] - cov["no_source"], "found": cov["found"], "no_source": cov["no_source"],
-            "kit": kid, "focus": focus}
+            "kit": kid, "focus": focus, "cut": bool(raw.get("cut"))}
 
 
 def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str = "",
@@ -841,7 +888,18 @@ def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str
                     message=tn(len(made), "{n} card", "{n} cards"))
     return {"kind": "cards", "id": pid, "title": title, "cards": len(made), "read": len(rows),
             "dupes": max(0, len(rows) - len(made)), "named": len(made) - found - none, "found": found,
-            "no_source": none, "kit": kid}
+            "no_source": none, "kit": kid, "cut": was_cut(text)}
+
+
+def without_prompt(text: str) -> str:
+    """What was pasted without the kit's own prompts in it (each from its first words to its last line; one that
+    doesn't end so, the cheatsheet's, to the end)."""
+    while True:
+        i = text.find(PROMPT_START)
+        if i < 0:
+            return text
+        j = text.find(PROMPT_END, i)
+        text = text[:i] + (text[j + len(PROMPT_END):] if j >= 0 else "")
 
 
 def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str = "") -> dict[str, Any]:
@@ -855,8 +913,21 @@ def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str =
     text = str(text or "")
     if not text.strip():
         return {"ok": False, "error": t("Paste the answer first.")}
+    # the prompt itself (copied with the end dialog's Copy, then Ctrl+V here): its JSON example would become a
+    # question "…" or a card "a short question or cue"; copied with the chat's answer, only the answer is read
+    text = without_prompt(text)
+    if not text.strip():
+        return {"ok": False, "error": t("This is the prompt for ChatGPT or Claude, not its answer. Send it in the chat "
+                                        "with the zip, then copy the chat's answer and paste that here.")}
     if len(text) > PASTE_MOST:
         return {"ok": False, "error": t("This is too long to be one quiz. Paste one answer at a time.")}
+    # made from another course's zip (pasted on the wrong course's tab): its F and L numbers are that course's, so
+    # here each source would open another file's page
+    other = _meta(lib, KIT.format(str(export_id or "") or kit_in(text)), {}).get("course_id") or ""
+    if other and other != course_id and lib.get_course(other) is not None:
+        c = lib.get_course(other)
+        return {"ok": False, "error": t("This was made from your {course} zip. Open {course}'s Practice tab and paste it "
+                                        "there.", course=c.code or c.name)}
     kind = "cards" if want == "cards" else kind_of(text)
     try:
         if kind == "cards":

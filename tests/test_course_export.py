@@ -344,12 +344,32 @@ def test_links_are_listed_with_their_address_not_as_files(env):
     assert "1 link (a web page or a video) is listed in its week's overview" in read(out["path"], f"{ROOT}/README.md")
 
 
-def test_a_unit_for_two_weeks_is_in_both(env):
+def test_a_unit_for_two_weeks_is_in_the_zip_once(env):
+    """EEE 215's week 6-7 unit put its three files (4.6 MB) in the zip twice, each copy called F7, F8, F9: the zip
+    for ChatGPT was bigger, and two files of one reference were confusing. Its first week has it; the other week's
+    overview says where."""
     out = build(env, weeks=[3, 4])
     root = "MATH 240 - weeks 3-4 - 8 Oct 2026"
     names = entries(out["path"])
     assert f"{root}/Week 03 - Bayes/Course files/F5 - Hafta3-4.pdf" in names        # (one file: one reference)
-    assert f"{root}/Week 04 - Random Variables/Course files/F5 - Hafta3-4.pdf" in names
+    assert not any(n.startswith(f"{root}/Week 04") and n.endswith(".pdf") for n in names)
+    week4 = read(out["path"], f"{root}/Week 04 - Random Variables/Week overview.md")
+    assert "- Week 03 - Bayes/Course files/F5 - Hafta3-4.pdf: kept once, in week 3's folder (IEULearn lists it for " \
+           "both weeks)" in week4
+    assert "- Course files/F5 - Hafta3-4.pdf" in read(out["path"], f"{root}/Week 03 - Bayes/Week overview.md")
+    assert out["files"] == 2                                                          # (and the formula sheet)
+    # the size said before: counted once too (the dialog adds each file's size once: "sizes")
+    size = os.path.getsize(env.lib.get_material("r6")["local_path"])
+    o = ce.options(env.lib, env.settings, env.out, "c", today=TODAY)
+    w3, w4 = (next(w for w in o["weeks"] if w["no"] == n) for n in (3, 4))
+    assert w3["sizes"] == {"r6": size} and w4["sizes"] == {"r6": size}
+    plans = [ce.plan_course(env.lib, env.settings, "c", ce.Choice(weeks=[3, 4], transcripts=False, screens=False,
+                                                                  notices=False), TODAY)]
+    one = ce.estimate(plans, ce.Choice(weeks=[3, 4], transcripts=False, screens=False, notices=False))[0]
+    plans[0].weeks = plans[0].weeks[:1]
+    assert one == ce.estimate(plans, ce.Choice(weeks=[3], transcripts=False, screens=False, notices=False))[0] + 1500
+    every = build(env, course_id="", weeks=[3, 4])                                   # all courses: the same
+    assert sum(n.endswith("Hafta3-4.pdf") for n in entries(every["path"])) == 1
 
 
 def test_a_file_of_a_unit_for_two_weeks_is_counted_once(env):

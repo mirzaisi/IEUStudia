@@ -233,10 +233,11 @@ def _last_day(d: dict[str, Any], e: dict[str, Any]) -> str:
     return w.get("end") or w.get("start") or "9999-12-31"
 
 
-def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST) -> list[dict[str, Any]]:
+def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST,
+         skip: Iterable[str] = ()) -> list[dict[str, Any]]:
     """What the lecturer said about it (the heads-ups, alerts.py), newest first: the Exam room's list and the exam
-    kit's brief (kit.start_md). The announcements it comes from, and what else is about it, in class or in another
-    announcement, by its main point:
+    kit's brief (kit.start_md, which ``skip``s the announcements that list students). The announcements it comes
+    from, and what else is about it, in class or in another announcement, by its main point:
       - its kind ("quiz" for a quiz); for a midterm or the final also "exam" (said of the final only when it names
         the final, else of the next midterm or final after it was said);
       - one that names its kind's number is about that one ("Quiz 2": not Quiz 3's);
@@ -253,6 +254,7 @@ def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST) -> list[di
     starts = {w.get("no"): w.get("start") or "" for w in d.get("weeks") or []}
     since = starts.get(min(e.get("weeks") or [0]), "") if kind != "final" else ""
     srcs = {s.get("id") for s in e.get("sources") or []}
+    skip = {str(x) for x in skip}
 
     def next_one(day: str, kinds: set[str]) -> str:
         """The key of the first assessment of these kinds still to come that day (after them all: the last one)."""
@@ -263,6 +265,8 @@ def said(d: dict[str, Any], e: dict[str, Any], most: int = SAID_MOST) -> list[di
     for a in (d.get("alerts") or {}).get("items") or []:
         if len(out) >= most:
             break
+        if a.get("source") == "announcement" and str(a.get("announcement_id")) in skip:
+            continue
         if a.get("source") == "announcement" and a.get("announcement_id") in srcs:
             out.append(a)
             continue

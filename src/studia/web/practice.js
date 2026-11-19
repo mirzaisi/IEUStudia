@@ -397,7 +397,7 @@
     const modes = `<div class="cp-modes ${weakBtn || Q.stressed ? "four" : ""}">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
       ${mode("weeks", esc(t("Weeks you pick")), esc(t("Their files and lectures")))}
       ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}${weakBtn}
-      ${Q.stressed ? mode("stressed", esc(t("The moments you picked")), esc(t.n(Q.stressed.ids.length, "{n} moment the lecturer stressed", "{n} moments the lecturer stressed"))) : ""}</div>`;
+      ${Q.stressed ? mode("stressed", esc(Q.stressed.picked === false ? t("What the lecturer stressed") : t("The moments you picked")), esc(t.n(Q.stressed.ids.length, "{n} moment the lecturer stressed", "{n} moments the lecturer stressed"))) : ""}</div>`;
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="qz-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
@@ -1007,7 +1007,8 @@
       const cid = el.dataset.cid, items = quizMoments(cid);
       if (!items.length) { toast(t("Tick the moments you want questions on."), "info"); return; }
       quizDialog(cid, { mode: "stressed", ids: items.map((it) => it.id), days: [...new Set(items.map((it) => it.day_key))],
-        items: items.map((it) => ({ id: it.id, text: it.text, day: it.day, ts: it.ts })) });
+        items: items.map((it) => ({ id: it.id, text: it.text, day: it.day, ts: it.ts })),
+        picked: !!(P.picked[cid] && P.picked[cid].size) });        // (none ticked: those that stand out, not "you picked")
     },
     "st-more": (el) => { const k = el.dataset.key; if (P.more.has(k)) P.more.delete(k); else P.more.add(k); renderView(); },
     "st-sum": async (el) => {
