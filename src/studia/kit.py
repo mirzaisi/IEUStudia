@@ -199,16 +199,19 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
              not_needed: list[dict[str, Any]]) -> str:
     """"00 Start here.md": the exam brief the AI reads first (English, like the zip's other files)."""
     from .course_export import _date, _en_day, _en_range, course_title
+    from .examroom import _origin
     from .plans import _week_span
+    from .quizzes import of
 
     weeks = {w["no"]: w for w in d.get("weeks") or []}
     w = weeks.get(e.get("week") or 0) or {}
     name = e["name"]
     lrefs = {x["day_key"]: r for r, x in kit["refs"].items() if x.get("kind") == "lecture"}
+    refs = "(F1…, L1…) of the course files and lectures" if lrefs else "(F1…) of the course files"   # (none taught yet)
     lines = [f"# Start here: {name} · {course_title(course, d)}", "",
              f"I made this zip with IEUStudia to prepare for {name}. Read this file first: what it covers, what the "
-             "lecturer said about it and stressed in those weeks, and the references (F1…, L1…) of the course files "
-             "and lectures in this zip.", "", f"## {name}", ""]
+             f"lecturer said about it and stressed in those weeks, and the references {refs} in this zip.", "",
+             f"## {name}", ""]
     day = _date(e.get("date") or "")
     mine = None if day else _date(_own_day(e))
     if mine:                                        # (the exact day set in the Exam room)
@@ -225,10 +228,12 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
         when += (" (over)" if left < 0 else ", today" if left == 0 else ", tomorrow" if left == 1 else f", in {left} days")
     lines.append(f"- When: {when}.")
     covers = _week_span(sorted(e.get("weeks") or []))
+    since = _origin(of(d), e)["since"] if e.get("weeks_from") == "guessed" and e.get("kind") != "final" else ""
     origin = {"announced": "as the lecturer announced it",
               "yours": "as I set it",
-              "guessed": ("the whole term" if e.get("kind") == "final" else
-                          "IEUStudia's guess: the weeks since the one before it")}.get(e.get("weeks_from") or "", "")
+              "guessed": ("the whole term" if e.get("kind") == "final" else    # (as its Exam room says it)
+                          f"IEUStudia's guess: the weeks since {since}" if since else
+                          "IEUStudia's guess: the weeks up to it")}.get(e.get("weeks_from") or "", "")
     lines.append(f"- It covers: {covers}" + (f" ({origin})" if origin else "") + ".")
     weight = _weight(d, e)
     if weight:
@@ -254,10 +259,12 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
             where = f"{ref} part {it.get('part') or 1} {it.get('ts') or ''}".strip() if ref else str(it.get("day") or "")
             lines.append(f"- [{where}] “{' '.join(str(it.get('text') or '').split())}”")
     listed = [f"- {ln}" for ln in ref_lines(kit["refs"])] or ["- (no course files or lectures in this zip)"]
-    lines += ["", "## References", "",
-              "Each course file's name in this zip starts with its F number, and each lecture's folder with its L number. "
-              "Cite a file page as \"F3 p.12\" and a lecture moment as \"L2 part 1 14:05\" (the part, then the [mm:ss] "
-              "time written before the passage in its Transcript.md).", "", *listed,
+    how = ("Each course file's name in this zip starts with its F number, and each lecture's folder with its L number. "
+           "Cite a file page as \"F3 p.12\" and a lecture moment as \"L2 part 1 14:05\" (the part, then the [mm:ss] "
+           "time written before the passage in its Transcript.md).") if lrefs else (
+           "Each course file's name in this zip starts with its F number. Cite a file page as \"F3 p.12\". No lecture "
+           "of these weeks is in this zip.")
+    lines += ["", "## References", "", how, "", *listed,
               "", "## Prompts", "",
               "Prompts/Practice quiz.md, Prompts/Flashcards.md and Prompts/Cheatsheet.md are ready to paste into this chat."]
     return "\n".join(lines)

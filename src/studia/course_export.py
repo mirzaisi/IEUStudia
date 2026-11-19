@@ -1044,7 +1044,8 @@ def week_overview(course: Course, w: Week, plan: Plan, lectures: list[str], file
             f"{a.get('title') or 'Assignment'} (due {_asg_when(a, year=False)}, {_asg_sent(a, today)})" for a in asgs))
     if w.readings:
         lines += ["", f"Readings: {w.readings.strip()}"]
-    lines += ["", "## Lectures", "", *(lectures or ["- No lectures were recorded this week."])]
+    # (not "none were recorded": a class just held may not be synced yet)
+    lines += ["", "## Lectures", "", *(lectures or ["- No lecture of this week is in IEUStudia."])]
     lines += ["", "## Course files", "", *(files or ["- No course files for this week."])]
     if choice.notices and w.start:
         anns = [a for a in plan.detail.get("announcements") or []
@@ -1102,7 +1103,14 @@ def first_message(courses: list[Course], choice: Choice, all_courses: Optional[l
     if choice.files and has("files"):
         parts.append(t("the course files"))
     inside = join(parts) if parts else t("an overview of the week")
-    if not every:
+    # (a quiz's zip whose weeks have no lecture yet: its files are what the AI can name)
+    lectures = choice.transcripts and has("lectures") or choice.screens and has("screens")
+    if not every and not lectures and choice.files and has("files"):
+        head = t("This zip holds my {course} course, exported from IEUStudia: a folder for each week, with {inside}.",
+                 course=courses[0].code or courses[0].name, inside=inside)
+        tail = t("README.md and Index of files.md list everything. Unzip it and read the files before you answer. When "
+                 "you explain something, say which week and file it comes from, with the page. My first question:")
+    elif not every:
         head = t("This zip holds my {course} course, exported from IEUStudia: a folder for each week, with {inside}.",
                  course=courses[0].code or courses[0].name, inside=inside)
         tail = t("README.md and Index of files.md list everything. Unzip it and read the files before you answer. When "
@@ -1174,8 +1182,10 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
                                   "and what isn't needed. The AI reads it first.", name=kit["focus"]))
         lines.append("- " + t("Prompts/: ready prompts for a practice quiz, flashcards and a cheatsheet, to paste into "
                               "the chat."))
-        lines.append("- " + t("F1, F2… and L1, L2…: the short names in front of each course file and lecture, so the AI "
-                              "can say where something comes from."))
+        lines.append("- " + (t("F1, F2… and L1, L2…: the short names in front of each course file and lecture, so the AI "
+                               "can say where something comes from.") if counts["lectures"] or counts["screens"] else
+                             t("F1, F2…: the short names in front of each course file, so the AI can say where "
+                               "something comes from.")))
     lines.append("- " + t("Course overview.md: the course's description, learning outcomes, grading and weekly plan."))
     asgs = assignments(p.detail) if choice.notices else []
     if choice.notices:

@@ -2,7 +2,11 @@
 question whose options differ only in case (f(2) and F(2)) is kept, and an answer given as an option's text picks that
 option; a final's Exam room doesn't list, under "Stressed in class", a remark about an earlier quiz or exam."""
 
+import datetime as dt
+
 from studia import examroom, quizzes, stressed
+from studia.coursesite import Announcement
+from test_kit import env, export, read  # noqa: F401 - env: the exam kit's course (a fixture)
 from test_quizzes import FACTS
 from test_v42_qroom import _said_course, _wk
 
@@ -71,3 +75,32 @@ def test_a_final_s_room_leaves_out_remarks_stressed_about_an_earlier_quiz_or_exa
     quiz3 = {**every["quiz:3"], "weeks": [12, 13]}
     got = [m["id"] for m in examroom.stressed_moments(None, "c", d, quiz3, examroom.said(d, quiz3))]
     assert got == ["fin", "fin2"]                 # about the final, still to come: kept
+
+
+# ------------------------------------------------------------------ a quiz's zip with no lecture in it
+def test_a_quiz_s_zip_without_lectures_doesn_t_ask_for_lectures_and_times(env):
+    """MATH 240's Quiz 3 zip held only course files (weeks 9-10 not taught yet), and still asked the AI to say 'which
+    week and lecture, with the time' and explained L references and Transcript.md."""
+    out = export(env, weeks=[2, 3], focus="quiz:2", transcripts=False, screens=False)
+    start, readme = read(out, "00 Start here.md"), read(out, "README.md")
+    assert "the references (F1…) of the course files in this zip." in start and "L1" not in start
+    refs = start.split("## References")[1]
+    assert "Cite a file page as \"F3 p.12\". No lecture of these weeks is in this zip." in refs and "Transcript.md" not in refs
+    assert "say which week and file it comes from, with the page. My first question:" in out["first_message"]
+    assert "lecture" not in out["first_message"]
+    assert "- F1, F2…: the short names in front of each course file, so the AI" in readme and "L1, L2" not in readme
+    # with its lectures: as before
+    full = export(env, weeks=[2, 3], focus="quiz:2")
+    assert "say which week and lecture it comes from, with the time." in full["first_message"]
+    assert "(F1…, L1…) of the course files and lectures" in read(full, "00 Start here.md")
+    assert "- F1, F2… and L1, L2…" in read(full, "README.md")
+
+
+def test_a_guessed_quiz_s_brief_says_since_which_one_as_its_room_does(env):
+    env.lib.merge_announcements("c", [Announcement("a1", "Quizzes", "Dr Özkut", dt.datetime(2026, 10, 1, 10, 0),
+                                                   "Quiz 1 will be in week 2.\nQuiz 2 will be in week 4.")], first_sync=True)
+    out = export(env, weeks=[3, 4], focus="quiz:2")
+    assert "- It covers: weeks 3–4 (IEUStudia's guess: the weeks since Quiz 1)." in read(out, "00 Start here.md")
+    # week 4 has no lecture in IEUStudia (its class may not be synced yet): not "none were recorded"
+    week = read(out, "Week 04 - Random Variables/Week overview.md")
+    assert "- No lecture of this week is in IEUStudia." in week and "were recorded" not in week
