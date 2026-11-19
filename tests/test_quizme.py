@@ -259,7 +259,8 @@ def test_card_sessions_for_one_lecture_and_one_week(api):
     for c in first["cards"]:
         assert api.cards_grade("c", c["id"], "easy")["ok"]
     again = api.cards_session("c", [], [days[0]])
-    assert again["cards"] == [] and again["total"] == 2                    # all learnt: nothing today, two in all
+    assert again["total"] == 2 and again["cram"]           # all learnt: the two again, their schedule left alone
+    assert len(again["cards"]) == 2 and all(c["cram"] for c in again["cards"])
     tab = api.practice_course("c")["deck"]
     assert tab["week_counts"] == {"1": {"total": 2, "today": 0}, "2": {"total": 1, "today": 1}}
     assert tab["weeks"] == [1, 2]

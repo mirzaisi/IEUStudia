@@ -824,20 +824,45 @@ class PracticeApi:
         return self._open_here(pdf, show=how == "folder")  # type: ignore[attr-defined]
 
     # ---- flashcards
+    def _lecture_session(self, course_id: str, days: set[str], deck: Optional[list[dict[str, Any]]] = None,
+                         weeks: Optional[set[int]] = None, cram: bool = False) -> tuple[list[dict[str, Any]], Any]:
+        """A lecture's cards to study now (cards.session with its fronts), and the deck they come from."""
+        from .cards import lecture_fronts, session
+
+        deck = self._deck(course_id) if deck is None else deck
+        fronts = lecture_fronts(self._s, days)
+        return session(self._s.lib, deck, course_id, weeks=weeks, new_per_day=self._s.settings.cards_per_day,
+                       days=days, cram=cram, fronts=fronts), (deck, fronts)
+
+    def _lecture_cards(self, day_key: str) -> int:
+        """How many cards the lecture page's "Practise N cards" opens (its session's), 0 when they can't be read."""
+        try:
+            return len(self._lecture_session(str(day_key).split("|")[0], {str(day_key)})[0])
+        except Exception:  # noqa: BLE001 - the page counts the notes' own cards then
+            log.warning("The cards of a lecture could not be counted", exc_info=True)
+            return -1
+
     @_safe
     def cards_session(self, course_id: str, weeks: Optional[list[int]] = None,
                       day_keys: Optional[list[str]] = None, cram: bool = False) -> dict[str, Any]:
-        """The cards to study now (``weeks``: only those weeks'; ``day_keys``: only those lectures' own flashcards),
-        and how many such cards there are in all (``total``: a lecture's cards that are all learnt is said so).
-        ``cram`` (the Exam room): every card of those weeks, the schedule left alone."""
+        """The cards to study now (``weeks``: only those weeks'; ``day_keys``: only those lectures' cards, all of
+        them: cards.session), how many such cards there are in all (``total``) and how many are set aside
+        (``aside``); ``cram``: the run leaves the schedule alone (the Exam room's, or a lecture whose cards are all
+        learnt and not due yet)."""
         from .cards import picked, session
 
         deck = self._deck(course_id)
         weeks_ = {int(w) for w in weeks or [] if str(w).isdigit()} or None
         days = {str(k) for k in day_keys or [] if k} or None
-        cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,
-                        days=days, cram=bool(cram))
-        return {"ok": True, "cards": cards, "total": len(picked(deck, weeks_, days))}
+        fronts = None
+        if days:
+            cards, (_, fronts) = self._lecture_session(course_id, days, deck, weeks_, bool(cram))
+        else:
+            cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,
+                            cram=bool(cram))
+        return {"ok": True, "cards": cards, "total": len(picked(deck, weeks_, days, fronts)),
+                "aside": len(picked(deck, weeks_, days, fronts, aside=True)),
+                "cram": bool(cram) or bool(cards) and all(c.get("cram") for c in cards)}
 
     @_safe
     def cards_grade(self, course_id: str, card_id: str, grade: str, cram: bool = False) -> dict[str, Any]:

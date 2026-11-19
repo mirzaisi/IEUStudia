@@ -94,8 +94,8 @@ def test_a_lecture_quizzes_and_studies_its_own_cards(tmp_path):
   out.dialog = overlay();
   await A["qz-go"]({ disabled: false, innerHTML: "" }); await tick();
   out.created = called("quiz_create");
-  // Practise 3 cards: the deck's own session for this lecture
-  spy("cards_session", { ok: true, cards: [], total: 3 });
+  // Practise 3 cards: the deck's own session for this lecture (none in the deck: said so)
+  spy("cards_session", { ok: true, cards: [], total: 0, aside: 0 });
   S.view = { name: "day", dayKey: DAY, from: { name: "home" } }; S.day = day;
   A["cards-practise"](); await tick();
   out.session = called("cards_session");
@@ -113,7 +113,7 @@ def test_a_lecture_quizzes_and_studies_its_own_cards(tmp_path):
     assert out["created"][0][0] == "c1" and sc["days"] == ["c1|2026-10-13|lecture"] and sc["files"] == [] and sc["weeks"] == [5]
     assert sc["questions"] == 10 and sc["kind"] == "quiz"
     assert out["session"] == [["c1", [], ["c1|2026-10-13|lecture"]]]
-    assert "You know this lecture&#39;s cards for now" in out["toast"] or "You know this lecture's cards for now" in out["toast"]
+    assert "This lecture&#39;s cards aren&#39;t in your deck yet." in out["toast"] or "aren't in your deck yet" in out["toast"]
     assert out["noAI"] == {"quiz": False, "copyPrimary": True}
 
 

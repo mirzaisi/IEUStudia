@@ -34,8 +34,9 @@
       const mine = a.skipped || a.chose == null ? `<span class="dim">${esc(t("You skipped it."))}</span>` : `<div class="md">${opt(q, a.chose)}</div>`;
       return `<div class="mq-cmp">${box(tone(g), t("Your answer"), mine)}${g >= 1 ? "" : box("ok", t("Right answer"), `<div class="md">${opt(q, q.answer)}</div>`)}</div>`;
     }
+    // (a try saved before 4.2 kept no "text": what was written then is not known)
     const typed = a.text ? `<div class="mq-typed">${esc(a.text)}</div>`
-      : `<span class="dim">${esc(a.skipped ? t("You skipped it.") : t("You didn't write an answer."))}</span>`;
+      : `<span class="dim">${esc(a.skipped ? t("You skipped it.") : !("text" in a) && !a.final ? t("Not kept: this try is from an older version of IEUStudia.") : t("You didn't write an answer."))}</span>`;
     const good = q.type === "problem"
       ? `${(q.steps || []).length ? `<ol class="qz-steps">${q.steps.map((s) => `<li class="md">${md(s)}</li>`).join("")}</ol>` : ""}${q.model ? `<div class="qz-final"><b>${t("Answer:")}</b> <span class="md">${mdLine(q.model)}</span></div>` : ""}`
       : `${q.model ? `<div class="md">${md(q.model)}</div>` : ""}${(q.points || []).length ? `<div class="dim sm qz-points-h">${t("A full answer says:")}</div><ul class="qz-points">${q.points.map((x) => `<li class="md">${md(x)}</li>`).join("")}</ul>` : ""}`;
@@ -213,7 +214,8 @@
     X.queue = X.queue.filter((x, i) => i < X.pos || x.id !== c.id);
     X.picked = null; X.shown = false;
     St.practice.drawStudy();
-    toast(off === "aside" ? t("Set aside. You can bring it back from the Flashcards card.") : t("Card deleted."), "success");
+    toast(off === "aside" ? t("Set aside. You can bring it back from the Flashcards card.") : t("Card deleted."), "success",
+      off === "aside" ? { label: t("Undo"), act: "fc-unaside", data: { cid: X.cid, id: c.id } } : undefined);
     St.practice.refresh(X.cid);
   }
 
@@ -298,6 +300,12 @@
       St.practice.drawStudy();
       toast(t("Card saved."), "success");
       St.practice.refresh(X.cid);
+    },
+    "fc-unaside": async (el) => {             // a card just set aside, back in the deck (its toast's Undo)
+      const r = await call("cards_edit", el.dataset.cid, el.dataset.id, { off: "" });
+      if (!r.ok) { toast(r.error, "error"); return; }
+      toast(t("It's back in your deck."), "success");
+      St.practice.refresh(el.dataset.cid);
     },
     "fc-bring-back": async (el) => {
       const r = await call("cards_bring_back", el.dataset.cid);
