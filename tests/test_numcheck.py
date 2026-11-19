@@ -201,6 +201,27 @@ def test_the_key_is_checked_against_its_own_answer(check, model, state):
     assert nc.verify(check, model) == state
 
 
+@pytest.mark.parametrize("model, expr, unit", [
+    ("12,000 Hz", "12000", "Hz"), ("$f = 12{,}000$ Hz", "12000", "Hz"), ("$P = 1{,}200$ W", "120*10", "W"),
+    ("1,250 Ω", "1000+250", "Ω"), ("$12\\,000$ Hz", "12000", "Hz"), ("12 000 Hz", "12000", "Hz"),
+    ("12 000 Hz", "12000", "Hz"), ("$R_{eş} = 1.250\\,\\Omega$", "1000+250", "Ω"),
+    ("$E = 1{,}234{,}567$ J", "1234567", "J"), ("$v = 3{,}5$ V", "3.5", "V")])
+def test_a_key_written_with_digit_groups_is_confirmed(model, expr, unit):
+    """"12,000 Hz", "12{,}000", "12\\,000" and the Turkish "1.250 Ω" were read as 12, two numbers or 1.25: a right
+    key was marked unverified, its repair request spent and "could not confirm" shown."""
+    assert nc.verify({"expr": expr, "unit": unit}, model) == "ok"
+    q = nc.check_key({"type": "problem", "model": model, "check": {"expr": expr, "unit": unit}})
+    assert q["verified"] and q["numeric"]
+
+
+def test_digit_groups_in_a_typed_result():
+    ref = _ref("12000", "Hz")
+    assert [nc.mark(s, ref)["verdict"] for s in ("12 000 Hz", "12 000", "$12\\,000$ Hz", "12{,}000 Hz")] == \
+        ["right", "right", "right", "unknown"]                          # (12{,}000: 12 or 12000, the student says)
+    assert nc.verify({"expr": "12000", "unit": "Hz"}, "12,5 Hz") == "bad"   # still a wrong key
+    assert nc.parse_quantity("1.250").alt is None                      # a typed 1.250 is 1.25 (only a key's may be more)
+
+
 def test_check_key_marks_the_question():
     q = nc.check_key({"type": "problem", "model": "$v_2 = 4$ V", "check": {"expr": "12*2/(2+4)", "value": 4, "unit": "V"}})
     assert q["verified"] and q["numeric"] and "unverified" not in q

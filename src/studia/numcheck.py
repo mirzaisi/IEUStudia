@@ -278,6 +278,7 @@ def plain(text: Any) -> str:
     s = re.sub(r"(^|\s)\*\*|\*\*(?=\s|$|[.,;])", r"\1", s)
     for a in ("\\(", "\\)", "\\[", "\\]", "$"):
         s = s.replace(a, " ")
+    s = re.sub(r"(?<=\d)\{,\}(?=\d)", ",", s)              # LaTeX's comma in a number ("12{,}000", "3{,}5")
     for _ in range(4):                                   # (nested ones from the inside out)
         s = re.sub(r"\\(?:text|mathrm|mathbf|mathit|operatorname|textrm|mbox|rm|boxed)\s*\{([^{}]*)\}", r"\1", s)
         s = re.sub(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}", r"((\1)/(\2))", s)
@@ -286,6 +287,9 @@ def plain(text: Any) -> str:
     s = re.sub(r"\^\s*\{?\s*\\circ\s*\}?", "°", s)
     s = re.sub(r"\\([A-Za-z]+)", lambda m: _CMD.get(m.group(1), m.group(0)), s)
     s = re.sub(r"\\[,;:! ]", " ", s).replace("\\%", "%").replace("~", " ")
+    s = re.sub(r"[   ]", " ", s)
+    # digits grouped by threes with (thin) spaces: "12 000", "$12\,000$" → 12000
+    s = re.sub(r"(?<![\d.,])(\d{1,3})((?: \d{3})+)(?![\d.,])", lambda m: m.group(1) + m.group(2).replace(" ", ""), s)
     s = re.sub(r"\^\s*\{([^{}]*)\}", r"^(\1)", s)
     s = re.sub(r"_\s*\{([^{}]*)\}", r"_\1", s)
     s = _supers(s.replace("{", "(").replace("}", ")"))
@@ -320,14 +324,15 @@ def _in_call(s: str, at: int, names: tuple[str, ...] = ("comb", "log")) -> bool:
     return bool(opens and opens[-1])
 
 
-def _separators(s: str) -> tuple[Optional[str], Optional[str]]:
+def _separators(s: str, dots: bool = False) -> tuple[Optional[str], Optional[str]]:
     """Decimal and thousands separators as Python reads them: "3,3" → 3.3, "1.234,5" → 1234.5, "1,234.5" → 1234.5,
-    "1.234.567" → 1234567. "1,234" could be either: 1.234 (a Turkish decimal comma), and the other reading as well.
-    (None, None) for a number written in a way no one writes."""
+    "1.234.567" → 1234567. "1,234" could be either: 1.234 (a Turkish decimal comma), and the other reading as well;
+    with ``dots`` (an answer key's), so could "1.250" (a Turkish thousands dot). (None, None) for a number written in
+    a way no one writes."""
     out, alt, ambiguous, pos = [], [], 0, 0
     for m in _SEP_RUN.finditer(s):
         run = m.group(0)
-        if "," not in run and run.count(".") <= 1:
+        if "," not in run and run.count(".") <= 1 and not (dots and re.fullmatch(r"[1-9]\d{0,2}\.\d{3}", run)):
             continue
         if "," in run and _in_call(s, m.start()):
             continue
@@ -349,6 +354,9 @@ def _separators(s: str) -> tuple[Optional[str], Optional[str]]:
                 if len(groups[1]) == 3 and groups[0] != "0":
                     two = run.replace(",", "")
                     ambiguous += 1
+            elif dots:                                     # "1.250": 1.25, or 1250
+                one, two = run, run.replace(".", "")
+                ambiguous += 1
             else:
                 continue
         out.append(s[pos:m.start()] + one)
@@ -420,9 +428,10 @@ def _quantity(s: str, known: tuple[str, ...]) -> Optional[Quantity]:
                     u.label if u else "")
 
 
-def parse_quantity(text: Any, known: tuple[str, ...] = ()) -> Optional[Quantity]:
+def parse_quantity(text: Any, known: tuple[str, ...] = (), key: bool = False) -> Optional[Quantity]:
     """One result as written (a number, an expression or a complex number, with its unit), or None: several values,
-    a formula, words. ``known``: units the app doesn't know that count as themselves (a key's "rpm")."""
+    a formula, words. ``known``: units the app doesn't know that count as themselves (a key's "rpm"); ``key``: an
+    answer key's, where "1.250" may be a Turkish 1250 too."""
     s = plain(text)
     if not s or len(s) > MAX_EXPR or "±" in s:
         return None
@@ -432,7 +441,7 @@ def parse_quantity(text: Any, known: tuple[str, ...] = ()) -> Optional[Quantity]
     s = re.sub(r"\s+\([^()\d]*\)\s*$", "", s).strip(" ;:")              # "8.17 V (clockwise)"
     if not s:
         return None
-    first, other = _separators(s)
+    first, other = _separators(s, key)
     if first is None:
         return None
     q = _quantity(first, known)
@@ -549,7 +558,7 @@ def stated(model: Any, known: tuple[str, ...] = ()) -> list[Quantity]:
     """The results an answer states: the whole answer when it is one ("$v_2 = 4$ V"), else its formulas, else the
     numbers in its words ("The current is 2.5 mA, clockwise.")."""
     text = str(model or "")
-    whole = parse_quantity(text, known)
+    whole = parse_quantity(text, known, True)
     if whole is not None:
         return [whole]
     out = []
@@ -557,7 +566,7 @@ def stated(model: Any, known: tuple[str, ...] = ()) -> list[Quantity]:
         body = m.group(1) or m.group(2)
         after = _UNIT_AFTER.match(text[m.end():])
         for cand in ([f"{body} {after.group(1)}"] if after else []) + [body]:
-            q = parse_quantity(cand, known)
+            q = parse_quantity(cand, known, True)
             if q is not None:
                 out.append(q)
                 break
@@ -566,7 +575,8 @@ def stated(model: Any, known: tuple[str, ...] = ()) -> list[Quantity]:
     words = plain(text)
     for m in _NUM_IN_TEXT.finditer(words):
         after = _UNIT_AFTER.match(words[m.end():])
-        q = (parse_quantity(f"{m.group(0)} {after.group(1)}", known) if after else None) or parse_quantity(m.group(0))
+        q = (parse_quantity(f"{m.group(0)} {after.group(1)}", known, True) if after else None) or \
+            parse_quantity(m.group(0), (), True)
         if q is not None:
             out.append(q)
     return out
@@ -574,13 +584,15 @@ def stated(model: Any, known: tuple[str, ...] = ()) -> list[Quantity]:
 
 def verify(ck: Optional[dict[str, Any]], model: Any) -> str:
     """ "ok" when the key's expression, computed here, is the result its answer states (else its value), "bad" when
-    it isn't, "" when there is nothing to compare (no expression the app can compute, nothing stated)."""
+    it isn't, "" when there is nothing to compare (no expression the app can compute, nothing stated). A result
+    written with a comma or dot that could group thousands ("12,000 Hz", "1.250 Ω") is the expression's when either
+    reading is: the expression says which one is meant."""
     ref = _from_check(ck or {})
     if ref is None:
         return ""
     found = stated(model, _known(ref))
     if found:
-        return "ok" if any(compare(q, ref) == "right" for q in found) else "bad"
+        return "ok" if any(compare(q, ref) in ("right", "maybe") for q in found) else "bad"
     val = (ck or {}).get("value")
     v = parse_quantity(str(val)) if val is not None else None
     if v is None:
