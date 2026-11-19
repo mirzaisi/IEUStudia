@@ -137,7 +137,8 @@
         <button class="btn ghost sm" data-act="plan-stop" data-id="${esc(q.id)}">${I("stop", "sm")} ${t("Stop")}</button></div>`;
     }
     if (q.status !== "done") {
-      const why = q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message || t("Stopped"));
+      // (a stopped quiz's message was saved in the language of then: "Stopped: resume to continue" said in today's)
+      const why = q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message ? t(q.message) : t("Stopped"));
       return `<div class="pr-quiz"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(quizScope(q))}</div><div class="sm">${why}</div></div>
         <div class="pr-qacts"><button class="btn sm" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>
         <button class="btn ghost icon sm" data-act="qz-delete" data-id="${esc(q.id)}" title="${esc(t("Delete this quiz"))}">${I("x", "sm")}</button></div></div>`;
@@ -296,6 +297,10 @@
   // the next quiz or exam; the Exam room's own one ({mode: "next", key}: "Practice quiz for it")
   const nextExam = (r) => { const all = r.assessments || [], key = Q && Q.preset && Q.preset.key;
     return (key && all.find((e) => e.key === key && (e.weeks || []).length)) || all.find((e) => e.ahead && (e.weeks || []).length); };
+  // "Quiz this LO" on the Practice tab: the weeks of the quiz or exam announced to cover that outcome (the one of fewest
+  // weeks: the final covers them all), else none (the dialog's own week: the latest with something to read)
+  const loWeeks = (r, los) => (r.assessments || []).filter((e) => (e.weeks || []).length && (e.los || []).some((n) => los.includes(n)))
+    .sort((a, b) => a.weeks.length - b.weeks.length).map((e) => e.weeks)[0];
   // the week a dialog starts at: this week, or the latest one so far, that has something to read
   function latestReady(weeks, ready) {
     const upTo = weeks.filter((w) => w.past || w.current), pick = [...upTo].reverse().find(ready) || weeks.find(ready);
@@ -363,7 +368,8 @@
     if (Q.stressed) setMode("stressed");
     else if (pre.mode === "lecture" && lectures().some((d) => d.day_key === pre.day)) setMode("lecture");
     else if (pre.mode === "weeks") setMode("weeks", pre.weeks);
-    else if (pre.los) setMode(pre.key && (nextExam(r) || {}).key === pre.key ? "next" : "weeks");   // "Quiz this LO": the Exam room's own one, else weeks
+    else if (pre.los && pre.key && (nextExam(r) || {}).key === pre.key) setMode("next");   // "Quiz this LO": the Exam room's own one
+    else if (pre.los) setMode("weeks", loWeeks(r, pre.los));        // (else the weeks where that outcome is, when known)
     else setMode(weak ? "weak" : nextExam(r) ? "next" : "weeks");
     if (pre.los) { Q.los = pre.los; Q.topics = pre.topics || ""; }
     // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked

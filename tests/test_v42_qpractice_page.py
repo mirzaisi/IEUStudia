@@ -201,6 +201,41 @@ def test_the_end_screen_says_which_missed_questions_joined_the_cards_and_a_resul
 
 
 @node
+def test_a_quiz_stopped_before_says_so_in_the_language_of_now(tmp_path):
+    table = i18n.table("tr")
+    out = _page(tmp_path, """
+  P().course.c1 = { deck: { total: 4, today: 4, quiz: 4, lecture_days: 0, files: 0, weeks: [3] }, card_sets: [], mistakes: [],
+    stressed: { total: 0, weeks: [], not_needed: [] },
+    quizzes: [{ id: "p", course_id: "c1", title: "", status: "paused", message: "Stopped: resume to continue", weeks: [4], days: [], questions: 5, tries: 0 }] };
+  S.view = { name: "course", courseId: "c1", tab: "practice" };
+  t.load({ lang: "tr", table: %s });
+  out.tab = St.practice.tab(S.courses[0]);
+""" % json.dumps(table, ensure_ascii=False))
+    assert table["Stopped: resume to continue"] in out["tab"] and "Stopped: resume" not in out["tab"]
+    assert table["Questions you missed in your quizzes. A few minutes a day is enough."] in out["tab"]
+
+
+@node
+def test_quiz_this_lo_picks_the_weeks_of_the_assessment_that_names_it(tmp_path):
+    out = _page(tmp_path, """
+  const wk = (no, current) => ({ no, current, past: !current, topic: "T" + no, files: [{ id: "f" + no, name: "W" + no + ".pdf", pages: 3, ready: true, downloaded: true }], days: [] });
+  ANSWERS.quiz_options = () => ({ ok: true, model: "sonnet", ai: { available: true }, quant: false, weak: { missed: 0, attempts: 0 },
+    weeks: [wk(3), wk(5), wk(7, true)],
+    assessments: [{ key: "quiz:2", kind: "quiz", no: 2, name: "Quiz 2", week: 4, weeks: [3], los: [2], ahead: false, files: [] },
+                  { key: "final:0", kind: "final", no: 0, name: "Final", week: 16, weeks: [3, 5, 7], los: [1, 2], ahead: true, files: [] }] });
+  ANSWERS.quiz_estimate = () => ({ ok: true, estimate: null });
+  ANSWERS.quiz_create = (cid, sc) => ({ ok: true, plan: { id: "z", scope: sc, status: "queued" } });
+  const made = async (no) => { await A["mq-quiz-lo"]({ dataset: { cid: "c1", no: String(no), text: "outcome " + no } }); await tick();
+    await A["qz-go"]({ disabled: false, innerHTML: "" }); await tick(); const sc = calls.filter((c) => c[0] === "quiz_create").pop()[2];
+    return [sc.weeks, sc.los, sc.topics]; };
+  out.two = await made(2); out.one = await made(1); out.nine = await made(9);
+""")
+    assert out["two"] == [[3], [2], "LO2: outcome 2"]          # Quiz 2 names it: its week (not the whole final's)
+    assert out["one"] == [[3, 5, 7], [1], "LO1: outcome 1"]    # only the final names it
+    assert out["nine"] == [[7], [9], "LO9: outcome 9"]         # none does: the latest week with something to read
+
+
+@node
 def test_the_lecture_page_counts_the_cards_its_run_holds(tmp_path):
     harness = (Path(__file__).parent / "test_quizme_page.py").read_text(encoding="utf-8")
     start, end = harness.index('HARNESS = """') + len('HARNESS = """'), harness.index('"""', harness.index('HARNESS = """') + 14)
