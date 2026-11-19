@@ -79,6 +79,28 @@ def test_the_readme_lists_no_course_wide_folder_when_its_only_file_was_left_out(
     assert "General course files/" not in readme and "Formulas.pdf was left out" in readme
 
 
+def test_a_zip_of_weeks_not_taught_yet_doesnt_send_the_ai_looking_for_transcripts(env, tmp_path):
+    """The Quiz 3 kit (weeks 9-10, not taught yet) held 3 PDFs, but its first message said "with the lecture
+    transcripts (with times), the screens shown in class…" and its README listed Lectures/<date>/Transcript.md."""
+    from studia.coursesite import Resource, Unit
+
+    from test_kit import _file, units
+
+    env.lib.merge_units("c", units() + [Unit("u4", 4, "Hafta 4", dt.date(2026, 10, 12), dt.date(2026, 10, 18), "", [
+        Resource("r4", "Random variables", "Random.pdf", "pdf", "pdf", "u4", "/d/r4")])], first_sync=True)
+    env.lib.set_material_file("r4", _file(tmp_path / "files" / "Random.pdf"), 13, "u")
+    out = export(env, weeks=[4])
+    assert out["lectures"] == 0 and out["files"] == 2
+    msg = out["first_message"]
+    assert "a folder for each week, with the course files." in msg and "transcripts" not in msg and "screens" not in msg
+    readme = read(out, "README.md")
+    assert msg in readme and "Transcript.md" not in readme and "Screens/" not in readme
+    assert "Course files/: the week's slides" in readme
+    whole = export(env, weeks=[3])                                             # a week with its lecture: as before
+    assert "the lecture transcripts (with times)" in whole["first_message"]
+    assert "Lectures/<date>/Transcript.md" in read(whole, "README.md")
+
+
 def _ole(*parts):
     """An old Office file's bytes: its compound-file header and the records or text given."""
     return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + b"".join(parts) + b"\x00" * 64

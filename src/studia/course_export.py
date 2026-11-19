@@ -1087,17 +1087,19 @@ def span_text(choice: Choice, today: dt.date) -> str:
 
 
 def first_message(courses: list[Course], choice: Choice, all_courses: Optional[list[Course]] = None,
-                  every: Optional[bool] = None, focus: str = "") -> str:
+                  every: Optional[bool] = None, focus: str = "", found: Optional[dict[str, int]] = None) -> str:
     """The first message to send with the zip, in the app's language (``every``: all courses' zip, a folder for each
     course, even with one course on the dashboard; ``focus``: the quiz or exam it was made for, whose brief is in
-    "00 Start here.md")."""
+    "00 Start here.md"; ``found``: what the zip holds, {"lectures", "screens", "files"}: a kit for a quiz whose weeks
+    haven't been taught yet has no transcripts to look for)."""
     every = len(courses) > 1 if every is None else every
+    has = lambda k: found is None or bool(found.get(k))       # noqa: E731
     parts = []
-    if choice.transcripts:
+    if choice.transcripts and has("lectures"):
         parts.append(t("the lecture transcripts (with times)"))
-    if choice.screens:
+    if choice.screens and has("screens"):
         parts.append(t("the screens shown in class (each with what was said while it was on screen)"))
-    if choice.files:
+    if choice.files and has("files"):
         parts.append(t("the course files"))
     inside = join(parts) if parts else t("an overview of the week")
     if not every:
@@ -1183,16 +1185,16 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
                              if asgs else
                              t("Quizzes, exams and deadlines.md: the quizzes, exams, homework and deadlines that were "
                                "announced or mentioned in class.")))
-    if p.weeks:
+    if p.weeks:                     # (what the zip holds: no lectures yet in a coming quiz's weeks, no screens listed)
         lines.append("- " + t("A folder for each week (Week 01 - …):"))
         lines.append("  - " + t("Week overview.md: the week's topic, dates, lectures, course files and announcements."))
-        if choice.transcripts:
+        if choice.transcripts and counts["lectures"]:
             lines.append("  - " + t("Lectures/<date>/Transcript.md: everything the lecturer said, with times."))
-        if choice.screens:
+        if choice.screens and counts["screens"]:
             lines.append("  - " + t("Lectures/<date>/Transcript by screen.md: what was said while each screen (a slide "
                                     "or the board) was shown."))
             lines.append("  - " + t("Lectures/<date>/Screens/: the screens as pictures."))
-        if choice.files:
+        if choice.files and any(week for week, _ in w._where.values()):
             lines.append("  - " + t("Course files/: the week's slides and documents from IEULearn."))
     if choice.files and any(week == 0 for week, _ in w._where.values()):     # (not when its only file was left out)
         lines.append("- " + t("General course files/: files for the whole course, not for one week."))
@@ -1565,11 +1567,14 @@ def build(lib: Any, settings: Any, output_root: Path, course_id: str, choice: Ch
             writers.append(w)
             if single:
                 made = _kit(lib, settings, z, p, choice, today, w.cited, kid)
+                message = first_message(courses, choice, all_courses, every, focus["name"] if focus else "", w.counts)
             z.text(base, "README.md", course_readme(w, choice, today, message, alone=not every, kit=made),
                    t("what is in this course's folder") if every else
                    t("what is in this zip, and how to use it in ChatGPT"))
         z.tell(force=True, step="zip")
-        if every:
+        if every:                   # (what all of them hold)
+            message = first_message(courses, choice, all_courses, every, "",
+                                    {k: sum(w.counts[k] for w in writers) for k in ("lectures", "screens", "files")})
             z.text("", "README.md", all_readme(writers, choice, today, message),
                    t("what is in this zip, and how to use it in ChatGPT"))
         z.text("", "Index of files.md", index_md(z.index + [("Index of files.md", t("this list"))], root,
