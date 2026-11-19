@@ -299,16 +299,19 @@ def ids(target: str) -> list[str]:
 
 def students(target: str, m: dict[str, Any]) -> bool:
     """Does this upload list students by number (a class's grades or groups: materials.text_lists_students)? Kept in
-    its meta.json (an upload from before 4.2 is read once)."""
+    its meta.json (an upload from before 4.2 is read once; the answer stands when meta.json can't be written)."""
     if m.get("kind") == "image":
         return False
     if "students" not in m:
         try:
             box = folder(target) / m["id"]
             m["students"] = text_lists_students(_pages(box))
-            (box / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
         except (OSError, ValueError, KeyError):
             return False
+        try:
+            (box / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            log.warning("Chat upload %s: whether it lists students could not be kept", m.get("id"), exc_info=True)
     return bool(m["students"])
 
 
