@@ -313,6 +313,13 @@ def _only_filler(n: str) -> bool:
     return bool(words) and all(w in _WEAK_VOCAB for w in words)
 
 
+def filler_only(text: str) -> bool:
+    """Only words the model writes over noise ("Thank you.", "Okay.", "Teşekkürler."), whatever its confidence: over
+    the owner's near-silent recordings large-v3 wrote "Thank you." for every 14-second window, sure of it (0.8)."""
+    n = _norm(text)
+    return n in WEAK_HALLUCINATIONS or _only_filler(n)
+
+
 def _says_numbers(words: Sequence[str], lang: str) -> bool:
     """Digits, or numbers in words of the language decoded ("Three plus three.", "You must be zero.")."""
     return any(re.search(r"\d", w) or w.replace("ı", "i") in _NUMBERS_IN.get(lang, ()) for w in words)

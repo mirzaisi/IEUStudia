@@ -21,7 +21,7 @@ from ..domain import Segment, Transcript
 from ..i18n import num, t, tn
 from ..nativeload import LOAD_LOCK, import_onnxruntime
 from ..quality import NoSpeech, analyze_audio, analyze_transcript, heard_speech, is_silent, still_no_speech
-from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
+from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text, filler_only,
                    hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
 from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, drop_damaged, local_model_path,
                      model_is_downloaded, resolve_device, setup_cuda_dlls)
@@ -377,6 +377,8 @@ class Engine:
                 if u.dur >= 4.0 and top < 0.45:
                     unclear(u, top)
                 continue
+            if speech.sensitive and filler_only(d.text):
+                continue            # listening more closely lets noise in: what the model says over it is no lecture
             if top < MIN_CONF:  # neither language makes sense of it: say so instead of inventing words
                 if u.dur >= 3.0:
                     unclear(u, top)
