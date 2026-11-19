@@ -204,6 +204,22 @@ def test_the_grade_list_check_is_kept_per_download(course, monkeypatch):
     assert not materials.lists_students(lib, "missing-file")
 
 
+def test_a_file_whose_text_could_not_be_read_is_checked_from_the_file_itself(course, tmp_path):
+    """Its text not read when it came (a lock right after the download): the check said "no class list" without
+    reading it, while a chat reads the file itself, classmates' numbers and all."""
+    from studia import chatslides, materials
+
+    lib = course._s.lib
+    p = tmp_path / "Lab Grades.txt"
+    p.write_bytes(STUDENTS.encode("utf-8"))
+    lib.set_material_file("g7", str(p), 10, "u")
+    lib.set_material_text("g7", [], "failed")
+    assert lib.get_material("g7")["text_status"] == "failed"
+    assert materials.lists_students(lib, "g7")
+    col = chatslides.collect(lib, "c", [], {"mode": "all"}, can_images=False)
+    assert "g7" not in [x["file"]["id"] for x in col["files"]] and [x["id"] for x in col["students"]] == ["g7"]
+
+
 def test_a_quiz_prepares_for_the_weeks_the_announcement_named(api):
     from studia import plans
     from studia.plans import Scope

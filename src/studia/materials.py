@@ -108,14 +108,15 @@ def file_cells(path: Path) -> list[str]:
 
 def lists_students(lib: Any, resource_id: str, path: str = "") -> bool:
     """Does this course file list students? From the text the app keeps of it, else from the file itself (one not read
-    yet, or a kind the app keeps no text of: an Excel workbook). Kept per file and download (meta
-    "students:<resource id>"), so the dialogs can ask for every file of a course. False for a file not on this PC."""
+    yet, its text not read when it came (a chat reads the file itself then), or a kind the app keeps no text of: an
+    Excel workbook). Kept per file and download (meta "students:<resource id>"), so the dialogs can ask for every
+    file of a course. False for a file not on this PC."""
     import json
 
     m = lib.get_material(resource_id) or {}
     path = path or m.get("local_path") or ""
     status = m.get("text_status") or ""
-    if not path or status in ("no-text", "failed"):         # not here; a scan, or a file that can't be read
+    if not path or status == "no-text":                     # not here; a scan
         return False
     stamp = f"{m.get('downloaded_at') or ''}|{status}|{m.get('pages') or 0}|{path}"
     try:
