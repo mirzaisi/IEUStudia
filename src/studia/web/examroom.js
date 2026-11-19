@@ -78,15 +78,19 @@
     const tip = sh.number > 1 ? t("{activity}: {pct} in all, {n} of them", { activity: sh.activity, pct: pctOf(sh.weight), n: sh.number }) : sh.activity;
     return `<span class="er-share" title="${esc(tip)}">${esc(t("{pct} of your grade", { pct: pctOf(sh.each) }))}</span>`;
   }
+  // its day (or its week) is behind it: the room says so and offers nothing to get ready with
+  const isOver = (w) => w.days != null && w.days < 0 && !thisWeek(w);
   function headHTML(c, r) {
     const a = r.assessment, w = whenParts(r.when), from = FROM()[r.when.from] || "";
     const los = (a.los || []).map((l) => `<div class="er-lo"><span class="lo-chip">LO${l.no}</span><span>${esc(l.en || l.tr || "")}</span></div>`).join("");
+    const day = isOver(r.when) ? `<b>${esc(r.when.from === "week" ? t("It was in the week of {day}.", { day: dmw(r.when.date) }) : t("It was on {day}.", { day: w.day }))}</b>`
+      : `<b>${esc(w.day)}</b>${w.rel ? `<span class="er-rel">${esc(w.rel)}</span>` : ""}${from ? `<span class="dim">· ${esc(from)}</span>` : ""}
+        ${r.when.from === "announced" ? "" : `<button class="link noprint" data-act="er-day">${r.when.from === "yours" ? t("Change the day") : t("Set the exact day")}</button>`}`;
     return `<div class="card er-head">
       <div class="er-eyebrow">${I("cap", "sm")}<span>${t("Exam room")}</span><span class="dim">· ${esc(c.code)}</span><span class="spacer"></span>
         <button class="btn ghost sm noprint" data-act="er-print" title="${esc(t("Print this page, or save it as a PDF"))}">${I("file", "sm")} ${t("Print")}</button></div>
       <div class="er-title"><h1>${esc(a.name)}</h1>${shareHTML(r.share)}</div>
-      <div class="er-line">${I("calendar", "sm")}<b>${esc(w.day)}</b>${w.rel ? `<span class="er-rel">${esc(w.rel)}</span>` : ""}${from ? `<span class="dim">· ${esc(from)}</span>` : ""}
-        ${r.when.from === "announced" ? "" : `<button class="link noprint" data-act="er-day">${r.when.from === "yours" ? t("Change the day") : t("Set the exact day")}</button>`}</div>
+      <div class="er-line">${I("calendar", "sm")}${day}</div>
       <div class="er-line">${I("layers", "sm")}<b>${esc(t("Covers {weeks}", { weeks: span(a.weeks) }))}</b><span class="dim">· ${originHTML(c, a)}</span>
         <button class="link noprint" data-act="er-weeks">${t("Change the weeks")}</button></div>
       ${los ? `<div class="er-los">${los}</div>` : ""}</div>`;
@@ -105,6 +109,7 @@
         making ? t.n(making, "{n} more not finished yet", "{n} more not finished yet") : t("cheatsheets, review sheets and study packs for it"))}</div>`;
   }
   function missingHTML(r) {
+    if (isOver(r.when)) return "";              // (Get everything for an exam that is over: hours of transcribing for nothing)
     const m = r.material, files = m.missing.filter((id) => !busyFile(id)), fetching = m.missing.length - files.length;
     const busy = [m.busy ? `<div class="dim sm">${SPIN()} ${esc(t.n(m.busy, "{n} lecture is being transcribed now: the queue at the bottom shows how long it takes.", "{n} lectures are being transcribed now: the queue at the bottom shows how long it takes."))}</div>` : "",
       fetching ? `<div class="dim sm">${SPIN()} ${esc(t.n(fetching, "Downloading {n} file…", "Downloading {n} files…"))}</div>` : ""].join("");
@@ -117,6 +122,17 @@
     }
     if (busy) return `<div class="card er-missing"><span class="er-ico">${I("wave")}</span><div class="grow">${busy}</div></div>`;
     if (!m.lectures && !m.files.length) return `<div class="card er-missing"><span class="er-ico">${I("info")}</span><div class="grow dim">${esc(t("No lectures or files are listed for these weeks yet."))}</div></div>`;
+    // weeks already taught with no lecture here, after the course's last one (a class held since the last sync): no
+    // "everything is here" (a week without lectures before a recorded one had no class: a holiday)
+    const d = (S.cd || {})[r.course.id], nos = new Set(r.assessment.weeks);
+    const last = Math.max(0, ...((d && d.weeks) || []).filter((w) => (w.days || []).length).map((w) => w.no));   // (0: not on Panopto)
+    const unseen = last ? r.weeks.filter((w) => nos.has(w.no) && w.no > last && (w.past || w.current) && !w.exam
+      && !m.days.some((x) => x.week === w.no)).map((w) => w.no) : [];
+    if (unseen.length) {
+      return `<div class="card er-missing"><span class="er-ico">${I("info")}</span><div class="grow"><b>${esc(t("No lecture of {weeks} is in IEUStudia yet.", { weeks: span(unseen) }))}</b>
+        <div class="dim sm">${esc(t("A class held since the last sync comes with the next one."))}</div></div>
+        <button class="btn noprint" data-act="sync" ${S.sync && S.sync.running ? "disabled" : ""}>${I("refresh", "sm")} ${t("Sync now")}</button></div>`;
+    }
     return `<div class="card er-missing ok"><span class="er-ico ok">${I("check")}</span><div class="grow"><b>${esc(t("Everything of these weeks is on this PC."))}</b>
       ${m.silent ? `<div class="dim sm">${esc(t.n(m.silent, "{n} lecture has no speech on Panopto", "{n} lectures have no speech on Panopto"))}</div>` : ""}</div></div>`;
   }
@@ -126,14 +142,15 @@
     const ready = !m.todo.length && !m.missing.length;
     const read = m.days.filter((x) => x.any_done).length;
     const aiTip = (s) => (canAI() ? s : St.aiHint());
-    return `<div class="card er-steps noprint"><div class="er-h">${I("zap", "sm")}<b>${t("Get ready for it")}</b><span class="dim sm">${esc(t("each one opens set to these weeks"))}</span></div>
+    return `<div class="card er-steps noprint"><div class="er-h">${I("zap", "sm")}<b>${isOver(r.when) ? t("Go over it") : t("Get ready for it")}</b><span class="dim sm">${esc(t("each one opens set to these weeks"))}</span></div>
       <div class="er-btns">
         <button class="btn ${ready ? "primary" : ""}" data-act="er-quiz" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("Exam-style questions on these weeks, written by {ai}", { ai: St.aiName() })))}">${I("list-checks", "sm")} ${t("Practice quiz for it")}</button>
         ${cards.total ? `<button class="btn" data-act="er-cram" title="${esc(t("Go through all these weeks' flashcards, due or not. Their schedule doesn't change."))}">${I("layers", "sm")} ${esc(t.n(cards.total, "Cram {n} card", "Cram {n} cards"))}</button>`
           : `<button class="btn" data-act="fc-make" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("No flashcards from these weeks yet: {ai} makes them from the files you pick", { ai: St.aiName() })))}">${I("layers", "sm")} ${t("Cards from files")}</button>`}
         <button class="btn" data-act="er-sheet" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("The formulas and rules of these weeks on a few pages")))}">${I("sigma", "sm")} ${t("Cheatsheet")}</button>
         <button class="btn" data-act="er-prep" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("What to know for it, with practice questions")))}">${I("cap", "sm")} ${t("Review sheet")}</button>
-        <button class="btn" data-act="er-ask" ${!ai.available ? St.aiBtn(false) : read ? "" : St.whyOff(t("Transcribe a lecture of these weeks first: then you can ask {ai} about it.", { ai: St.aiName() }))} title="${esc(t.n(read, "A chat about {n} transcribed lecture of these weeks", "A chat about {n} transcribed lectures of these weeks"))}">${I("chat", "sm")} ${t("Ask about these weeks")}</button>
+        <button class="btn" data-act="er-ask" ${!ai.available ? St.aiBtn(false) : read ? "" : St.whyOff(t("Transcribe a lecture of these weeks first: then you can ask {ai} about it.", { ai: St.aiName() }))} title="${esc(!ai.available ? St.aiHint()
+          : read ? t.n(read, "A chat about {n} transcribed lecture of these weeks", "A chat about {n} transcribed lectures of these weeks") : t("Transcribe a lecture of these weeks first: then you can ask {ai} about it.", { ai: St.aiName() }))}">${I("chat", "sm")} ${t("Ask about these weeks")}</button>
         <button class="btn" data-act="er-export" title="${esc(t("A zip of these weeks for ChatGPT or Claude on the web"))}">${I("archive", "sm")} ${t("Export for AI chat")}</button></div></div>`;
   }
   function markHL(text, hl) {
@@ -209,7 +226,8 @@
         <span class="dim sm">${esc(f.downloaded ? "" : busyFile(f.id) ? t("downloading…") : t("not on this PC"))}${f.tied ? ` ${esc(t("· tied to it"))}` : ""}</span></div>`;
     const tied = m.files.filter((f) => f.week == null);
     const has = (w) => m.days.some((x) => x.week === w.no) || m.files.some((f) => f.week === w.no);
-    const empty = weeks.filter((w) => !has(w)).map((w) => w.no);          // (a final's weeks still ahead: one line)
+    // (a final's weeks still ahead: one line; an exam week has no class to wait for)
+    const empty = weeks.filter((w) => !has(w) && !w.exam).map((w) => w.no);
     return `<div class="card er-card er-weeks"><div class="er-h">${I("calendar", "sm")}<b>${t("Its weeks")}</b>
         ${m.readable ? `<span class="dim sm">${esc(t("Lectures read: {done} of {n}", { done: m.read, n: m.readable }))}</span>` : ""}</div>
       ${weeks.filter(has).map((w) => `<div class="er-week">

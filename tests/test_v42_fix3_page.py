@@ -96,6 +96,89 @@ def test_a_missed_question_s_card_in_a_cram_says_it_comes_back_in_this_sitting_n
 
 
 @node
+def test_the_room_of_an_exam_that_is_over_says_so_and_offers_nothing_to_get(tmp_path):
+    """A midterm whose week was over still said 'Mon 2 Nov · done', 'Get ready for it', 'Still missing … Get
+    everything' and 'Set the exact day': one click queued 16 lectures for an exam already written."""
+    out = room_run(tmp_path, """
+  const over = { date: inDays(-5), time: "", from: "class", others: [], days: -5 };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { when: over }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.past = text(view()); out.pastHtml = view();
+  const week = { date: inDays(-12), time: "", from: "week", others: [], days: -12, end: inDays(-6) };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { when: week }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.week = text(view());
+  const thisWeek = { date: inDays(-2), time: "", from: "week", others: [], days: -2, end: inDays(4) };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { when: thisWeek }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.thisWeek = text(view());
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.ahead = text(view());
+""")
+    p = out["past"]
+    assert "It was on " in p and "Set the exact day" not in p and "Change the day" not in p
+    assert "Get everything" not in p and "Still missing" not in p and 'data-act="er-get"' not in out["pastHtml"]
+    assert "Go over it" in p and "Get ready for it" not in p and "Practice quiz for it" in p    # (its tools stay)
+    assert "It was in the week of " in out["week"] and "exam schedule on IEULearn" not in out["week"]
+    assert "this week" in out["thisWeek"] and "Get ready for it" in out["thisWeek"]          # (its week isn't over)
+    a = out["ahead"]
+    assert "Get ready for it" in a and "Set the exact day" in a and "Get everything" in a and "It was" not in a
+
+
+@node
+def test_the_room_says_when_a_week_already_taught_has_no_lecture_here_and_leaves_exam_weeks_out(tmp_path):
+    """Quiz 3's room said 'Everything of these weeks is on this PC.' with a green tick while week 9's class, held
+    since the last sync, wasn't in IEUStudia; the final's said 'Nothing yet for week 8, week 16' (exam weeks)."""
+    out = room_run(tmp_path, """
+  S.cd = { c: { id: "c", weeks: [{ no: 3, days: [{ day_key: "x" }] }], assessments: [] } };
+  const mat = { days: [{ day_key: DAY, date: "2026-11-16", label: "", kind_label: "Lecture", week: 10, transcribed: true, any_done: true, live: false, busy: false, read: false }],
+    files: [{ id: "w9", title: "Week09", name: "Week09.pdf", ext: "pdf", downloaded: true, week: 9, tied: false }],
+    lectures: 1, silent: 0, transcribed: 1, busy: 0, readable: 1, read: 0, downloaded: 1, todo: [], missing: [] };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { material: mat }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.unseen = text(view()); out.unseenHtml = view();
+  // all its weeks have a lecture: the green tick as before
+  St.mocks.exam_room = () => ({ ok: true, room: room({ ...QUIZ3, weeks: [10] }, { material: mat }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.all = text(view());
+  // week 9 without a lecture, but the course has one in week 11: no class that week (a holiday), nothing to sync
+  S.cd.c.weeks.push({ no: 11, days: [{ day_key: "y" }] });
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { material: mat }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.holiday = text(view());
+  // the final: its exam week (16) isn't a week with "nothing yet"
+  St.mocks.exam_room = () => ({ ok: true, room: room(FINAL) });
+  St.openReady("c", FINAL.key); await tick();
+  out.final = view().split('class="er-week dim sm er-none">')[1].split("</div>")[0];
+  // asking about these weeks with none transcribed: the tooltip says why it can't
+  const none = { ...mat, days: mat.days.map((x) => ({ ...x, transcribed: false, any_done: false })) };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { material: none }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.ask = view().split('data-act="er-ask"')[1].split(">")[0];
+""")
+    assert "No lecture of week 9 is in IEUStudia yet." in out["unseen"] and "Everything of these weeks" not in out["unseen"]
+    assert 'data-act="sync"' in out["unseenHtml"]
+    assert "Everything of these weeks is on this PC." in out["all"]
+    assert "Everything of these weeks is on this PC." in out["holiday"] and "No lecture of" not in out["holiday"]
+    assert "16" not in out["final"] and "Nothing yet for" in out["final"]
+    assert "0 transcribed" not in out["ask"] and 'title="Transcribe a lecture of these weeks first' in out["ask"]
+
+
+@node
+def test_the_chat_s_exam_room_chip_is_named_as_the_page_and_left_out_without_exams(tmp_path):
+    out = room_run(tmp_path, """
+  S.chat = S.chat || {}; S.chat.data = { course_id: "c" }; S.chat.draft = null;
+  S.cd = { c: { id: "c", weeks: [], assessments: [{ key: "quiz:3", name: "Quiz 3", ahead: true }] } };
+  out.some = St.chatToolsHTML();
+  S.cd.c.assessments = [];
+  out.none = St.chatToolsHTML();
+""")
+    assert 'data-cmd="ready"' in out["some"] and "Exam room" in out["some"] and "Get ready" not in out["some"]
+    assert 'data-cmd="ready"' not in out["none"] and 'data-cmd="sync"' in out["none"]
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

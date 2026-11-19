@@ -2,5 +2,11 @@
   "_unit": "4.2.0 fixes from the last real-app journeys: a cram's missed-question card, a quiz zip without lectures",
   "It comes back once more before you finish.": "Bitirmeden önce bir kez daha gelir.",
   "README.md and Index of files.md list everything. Unzip it and read the files before you answer. When you explain something, say which week and file it comes from, with the page. My first question:": "README.md ve Index of files.md her şeyi listeliyor. Cevap vermeden önce zip'i aç ve dosyaları oku. Bir şeyi açıklarken hangi haftadan ve hangi dosyadan geldiğini sayfasıyla birlikte söyle. İlk sorum:",
-  "F1, F2…: the short names in front of each course file, so the AI can say where something comes from.": "F1, F2…: her ders dosyasının adının önündeki kısa adlar. Yapay zeka bir şeyin nereden geldiğini bunlarla söyler."
+  "F1, F2…: the short names in front of each course file, so the AI can say where something comes from.": "F1, F2…: her ders dosyasının adının önündeki kısa adlar. Yapay zeka bir şeyin nereden geldiğini bunlarla söyler.",
+  "It was on {day}.": "{day} tarihindeydi.",
+  "It was in the week of {day}.": "{day} ile başlayan haftadaydı.",
+  "Go over it": "Üzerinden geç",
+  "No lecture of {weeks} is in IEUStudia yet.": "{weeks} için IEUStudia'da henüz ders kaydı yok.",
+  "A class held since the last sync comes with the next one.": "Son eşitlemeden sonra yapılan bir ders, bir sonraki eşitlemeyle gelir.",
+  "{n} question you missed in this course, asked in new ways": "Bu derste kaçırdığın {n} soru, yeni biçimlerde"
 }
