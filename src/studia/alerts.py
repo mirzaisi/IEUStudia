@@ -332,6 +332,19 @@ _COVER_WEEKS = re.compile(r"\b(?:cover\w*|includ\w*)\s+(?:(?!(?:held|given|take|
                           r"|(?<![\d.])" + _TR_LIST + r"\s*\.\s*hafta\w*\s+(?:\w+\s+){0,2}?(?:konu|kapsa|i[sş]len)"
                           r"|\bkapsam\w*\s*:?\s*(?:\w+\s+){0,2}?" + _TR_LIST + r"\s*\.\s*hafta")
 _COVER_CUT = re.compile(r"\n|[;!?](?=\s|$)|(?<!\d)\.(?=\s|$)")    # where the sentence naming it starts ("8. ve" goes on)
+# a range with "week" twice or with one end ("week 1" understood), written the way _COVER_WEEKS reads it: "from week 1
+# to week 7" → "weeks 1 to 7", "week 3 and week 5" → "weeks 3 and 5", "(all topics) up to week 7", "until week 7",
+# "through week 7" → "weeks 1 to 7"; "1. haftadan 7. haftaya" → "1-7. haftaya", "7. haftaya kadar" → "1-7. haftaya kadar"
+_TWO_WEEKS = re.compile(r"(?:\b(from|between)\s+(?:the\s+)?)?\bweeks?\s*(\d{1,2})\s*(,|and|&|-|–|to|through|until|till|"
+                        r"up\s+to)\s*(?:the\s+)?weeks?\s*(\d{1,2})\b")
+_UP_TO = re.compile(r"\b(?:up\s+(?:to|until)(?:\s+and\s+including)?|until|till|through|thru|to\s+the\s+end\s+of)\s+"
+                    r"(?:the\s+(?:end\s+of\s+)?)?week\s*(\d{1,2})\b")
+_TR_TWO = re.compile(r"(\d{1,2})\s*\.\s*hafta(?:dan|lardan)\s+(?:itibaren\s+)?(\d{1,2})\s*\.\s*hafta")
+_TR_UP_TO = re.compile(r"(?<![\d.])(\d{1,2})(?=\s*\.\s*hafta(?:ya|nin sonuna)\s+kadar\b)")
+# one end of a range only ("from week 3 onwards", "3. haftadan sonraki konular"): not a week it covers
+_FROM_ONLY = re.compile(r"\b(?:from|after|since|beyond|starting(?:\s+(?:with|from|at))?)\s+(?:the\s+)?weeks?\s*$")
+_ON_ONLY = re.compile(r"\s*(?:onwards?|and\s+(?:after|later|beyond|onwards?)|or\s+later)\b")
+_TR_FROM_ONLY = re.compile(r"\s*\.\s*hafta\w*?(?:d[ae]n|t[ae]n)\b|\s*\.\s*hafta\w*\s+(?:itibaren|sonra)")
 _EACH = re.compile(r"respectively|s[iı]ras[iı]yla|\beach\b")
 _TR_NTH = {"ilk": 1, "birinci": 1, "ikinci": 2, "üçüncü": 3, "ucuncu": 3, "dördüncü": 4, "dorduncu": 4}
 _TR_ORDINAL = re.compile(r"\b(\d{1,2})\s*\.\s*(quiz)\w*|\b(" + "|".join(_TR_NTH) + r")\s+(quiz|ara sinav|vize)\w*")
@@ -476,15 +489,35 @@ def _week_list(text: str) -> list[int]:
     return sorted({n for n in out if 1 <= n <= 20})
 
 
+def _ranges(text: str) -> str:
+    """Folded text with its week ranges as _COVER_WEEKS reads them (see _TWO_WEEKS)."""
+    def two(m: re.Match) -> str:
+        span = m.group(1) or m.group(3) not in (",", "and", "&")
+        return f"weeks {m.group(2)} {'to' if span else 'and'} {m.group(4)}"
+
+    def up_to(m: re.Match) -> str:                     # (not the end of a range already: "1-7. haftaya kadar")
+        return m.group(0) if re.search(r"\d\s*\.?\s*[-–]\s*$", text[:m.start()]) else f"1-{m.group(1)}"
+    text = _UP_TO.sub(lambda m: f"weeks 1 to {m.group(1)}", _TWO_WEEKS.sub(two, text))
+    text = _TR_TWO.sub(r"\1-\2. hafta", text)
+    return _TR_UP_TO.sub(up_to, text)
+
+
 def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], list[int]]]:
     """What the assessments ``body`` names cover: [((kind, no), weeks)], from "Quiz 3 will cover weeks 8 and 9" and the
     Turkish "3. quiz 8. ve 9. haftaları kapsar" (body folded, Turkish ordinals read: "quiz 3"). Several quizzes get a
-    week each only when it says "respectively" ("sırasıyla"); one the sentence doesn't name is the title's."""
+    week each only when it says "respectively" ("sırasıyla"); one the sentence doesn't name is the title's. One end
+    of a range alone ("from week 3 onwards") is no week it covers."""
     out: list[tuple[tuple[str, int], list[int]]] = []
+    body = _ranges(body)
     for m in _COVER_WEEKS.finditer(body):
-        text = next(g for g in m.groups() if g)
+        g = next(i for i in range(1, 4) if m.group(i))
+        text = m.group(g)
         weeks = _week_list(text)
         if not weeks:
+            continue
+        if text.strip().isdigit() and (_TR_FROM_ONLY.match(body, m.end(g)) if g > 1 else
+                                       _FROM_ONLY.search(body, max(0, m.start(g) - 40), m.start(g))
+                                       or _ON_ONLY.match(body, m.end(g))):
             continue
         cut = [c.end() for c in _COVER_CUT.finditer(body, 0, m.start())]
         clause = body[cut[-1] if cut else 0:m.start()]

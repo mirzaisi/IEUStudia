@@ -743,6 +743,33 @@ def test_what_an_assessment_covers_is_kept_in_english_and_turkish():
     assert [(e["name"], e["week"]) for e in assessment_plan([_ann("m", "Ara sınav", "Ara Sınav\n1-7. haftalar")])] == []
 
 
+def test_a_range_said_with_week_twice_or_up_to_a_week_is_every_week_of_it():
+    """"up to week 7" was read as week 7 alone, "from week 1 to week 7" as week 1: the midterm then covered one week,
+    labelled as announced. One end alone ("from week 3 onwards") says no weeks."""
+    def covers(body, title="Midterm"):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    upto7 = list(range(1, 8))
+    held = "The midterm exam will be held in week 8. "
+    assert covers(held + "It will cover all topics up to week 7.") == {"Midterm": upto7}
+    assert covers(held + "It will cover all topics up to week 7.", "Announcement") == {"Midterm": upto7}
+    assert covers(held + "It will cover all the topics up to and including week 7.") == {"Midterm": upto7}
+    assert covers(held + "It will cover the topics from week 1 to week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers week 1 through week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers everything through week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers week 3 and week 5.") == {"Midterm": [3, 5]}
+    assert covers("Midterm will be held in week 8 and covers everything covered until week 6") == \
+        {"Midterm": list(range(1, 7))}
+    assert covers("1. ara sınav 8. haftada yapılacaktır. Sınav 7. haftaya kadar işlenen konuları kapsayacaktır.",
+                  "Ara sınav") == {"Midterm 1": upto7}
+    assert covers("Ara sınav 8. haftada yapılacak, 1. haftadan 7. haftaya kadar olan konuları kapsayacaktır.",
+                  "Ara sınav") == {"Midterm": upto7}
+    assert covers(held + "It will cover weeks 1-7.") == {"Midterm": upto7}          # (as before)
+    # one end alone: no weeks it covers (the guess stays)
+    assert covers(held + "It will cover the topics from week 3 onwards.") == {"Midterm": []}
+    assert covers("Ara sınav 8. haftada yapılacak, 3. haftadan sonraki konuları kapsayacaktır.", "Ara sınav") == \
+        {"Midterm": []}
+
+
 def _plan_of(title, body):
     return [(e["name"], e["week"], e["date"], e["time"]) for e in
             assessment_plan([_ann("a", title, body, "2026-11-03T09:00")])]
