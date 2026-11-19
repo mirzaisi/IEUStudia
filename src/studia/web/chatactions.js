@@ -40,11 +40,17 @@
   // it. A quiz that could not be read leaves the answer as it was written, with a line that says so.
   const canQuiz = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
   const messages = () => ((S.chat && S.chat.data) || {}).messages || [];
-  function quizTurn(seq) {            // the answer to a "/quiz"
+  function quizTurn(seq) {            // the answer to a "/quiz": what was asked ("/quiz 5 Thevenin"), else ""
     const all = messages(), i = all.findIndex((x) => x.seq === seq), q = i > 0 ? all[i - 1] : null;
-    return !!q && q.role === "user" && /^\s*\/quiz\b/i.test(q.text || "");
+    return q && q.role === "user" && /^\s*\/quiz\b/i.test(q.text || "") ? q.text.trim() : "";
   }
-  function quizCard(text, m, streaming) {
+  // a quiz stopped or unread under the last answer: the same "/quiz" again in one click (else typed again)
+  function quizAgain(asked, m, said, hint) {
+    const all = messages(), last = all.length && all[all.length - 1].seq === (m || {}).seq;
+    const btn = last && canQuiz() ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-suggest" data-text="${esc(asked)}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
+    return `<div class="note-sm">${I("info", "sm")}<span>${esc(btn ? said : hint)}${btn}</span></div>`;
+  }
+  function quizCard(text, m, streaming, asked) {
     const u = (m && m.usage) || {}, made = u.quiz, cut = text.indexOf("```");
     // the sentence before the quiz (its first paragraph: never a question or its answer, however the AI wrote it)
     const intro = (cut >= 0 ? text.slice(0, cut) : text.replace(/[{[][\s\S]*$/, "")).trim().split(/\n\s*\n/)[0].trim();
@@ -56,8 +62,8 @@
         <div class="d">${esc(t.n(made.questions, "{n} question", "{n} questions"))} · ${esc(t("saved to Practice"))}</div></div>
         <button class="btn primary sm" data-act="qz-play" data-id="${esc(made.id)}">${I("play", "sm")} ${t("Play quiz")}</button></div></div>` };
     }
-    if (m && m.status === "stopped") return { text: intro, html: `<div class="note-sm">${I("info", "sm")}<span>${esc(t("Stopped before the quiz was finished. Type /quiz to try again."))}</span></div>` };
-    return { text, html: u.quiz_error ? `<div class="note-sm">${I("info", "sm")}<span>${esc(t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again."))}</span></div>` : "" };
+    if (m && m.status === "stopped") return { text: intro, html: quizAgain(asked, m, t("Stopped before the quiz was finished."), t("Stopped before the quiz was finished. Type /quiz to try again.")) };
+    return { text, html: u.quiz_error ? quizAgain(asked, m, t("The quiz in this answer could not be read, so it wasn't saved."), t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again.")) : "" };
   }
   // "Quiz me on this" under the last answer: a quiz on what the chat just covered (a "/quiz" sent as a question)
   function quizChip(seq, m, streaming) {
@@ -69,7 +75,8 @@
   // ---------------------------------------------------------------- AI-suggested actions in answers
   // m: the message (its usage says whether its "/quiz" was saved)
   St.actionCards = (text, seq, streaming, m) => {
-    if (text && quizTurn(seq)) return quizCard(text, m, streaming);
+    const asked = text ? quizTurn(seq) : "";
+    if (asked) return quizCard(text, m, streaming, asked);
     if (!text || !text.includes("```ieustudia")) return { text, html: text ? quizChip(seq, m, streaming) : "" };
     const cards = [];
     const clean = text.replace(/```ieustudia\s*([\s\S]*?)(```|$)/g, (_, body) => {
