@@ -1,0 +1,12 @@
+{
+  "_unit": "4.2.0: the Practice tab checked in the real app: a lecture's own cards always open (Practise N cards), a card set aside comes back with Undo, a try from before 4.2 says its answers weren't kept, a deck of missed questions says so",
+  "This lecture's cards are set aside. Bring them back on the Practice tab.": "Bu dersin kartlarını kenara ayırdın. Alıştırma sekmesinden geri getirebilirsin.",
+  "None of this lecture's cards is due yet, so going through them now doesn't change when they come back.": "Bu dersin hiçbir kartının zamanı henüz gelmedi, bu yüzden şimdi üzerlerinden geçmen ne zaman geri geleceklerini değiştirmez.",
+  "Done with this lecture's cards": "Bu dersin kartları bitti",
+  "Not due yet": "Zamanı gelmedi",
+  "Going over it now doesn't change when it comes back.": "Şimdi üzerinden geçmen ne zaman geri geleceğini değiştirmez.",
+  "Questions you missed in your quizzes. A few minutes a day is enough.": "Deneme sınavlarında kaçırdığın sorular. Günde birkaç dakika yeter.",
+  "{n} card is a question you missed in a quiz.": "{n} kart, deneme sınavlarında kaçırdığın sorulardan.",
+  "Not kept: this try is from an older version of IEUStudia.": "Kayıtlı değil: bu deneme IEUStudia'nın eski bir sürümünden.",
+  "It's back in your deck.": "Kart destene geri döndü."
+}

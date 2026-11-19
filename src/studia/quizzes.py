@@ -23,11 +23,13 @@ import html
 import json
 import logging
 import math
+import os
 import re
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from . import numcheck
 from .cancel import Cancelled
 from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
                       writing_in)
@@ -49,6 +51,18 @@ _QUANT = re.compile(r"^(?:MATH|EEE|EE|ELEC|PHYS|PHY|CE|ME|MECH|IE|ISE|CHEM|CHE|S
 SYSTEM = ("You are an experienced university lecturer writing practice exam questions for a student, only from the "
           "course material you are given (lecture transcripts may mishear names and symbols: fix them from context). "
           "You write exactly what is asked, maths in LaTeX, and never ask questions back.")
+# a worked problem's (and a numeric short answer's) result as an expression the app computes (numcheck.py): the key
+# is confirmed when it gives the result the answer states
+CHECK_RULE = ('- "check" (every worked problem, and a short answer whose answer is one number): the final result as a '
+              'calculation the app can do to confirm your answer: "expr" uses only numbers, + - * / ^ ( ), sqrt, sin, '
+              'cos, tan, asin, acos, atan (radians), exp, ln, log10, log2, abs, arg, comb, factorial, pi, e and j for '
+              'the imaginary unit (no letters for quantities, no units); "value" is its result as a number in "unit"; '
+              '"unit" like "V", "mA", "kΩ", "Hz", "%" ("" for none); "of" names that result in a few words, in the '
+              'language of your explanations (like "the voltage across R2"): the student types it in a box labelled '
+              'with it, so when the problem asks for more than one result it says which one. Your "answer" states '
+              'that same result. Leave "check" out when the answer is not one number (a formula, a proof).')
+REPAIR_SYSTEM = ("You are an experienced university lecturer checking the answer key of practice problems: you solve "
+                 "each one again carefully, step by step, maths in LaTeX, and never ask questions back.")
 
 
 # ------------------------------------------------------------------ gather (no AI)
@@ -66,8 +80,8 @@ def quantitative(d: dict[str, Any], facts: Optional[dict[str, Any]] = None) -> b
 
 def _syllabus_exams(d: dict[str, Any], plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The syllabus' exam weeks no announcement covers, as Home, the course page and the Calendar show them: each as
-    an assessment ("Midterm", "Final Exam"; a two-week exam period is one, until its last week). One a week away from
-    an announced exam of its kind is that exam, moved."""
+    an assessment ("Midterm", "Final Exam"; a two-week exam period is one, until its last week: "first_week" its
+    first). One a week away from an announced exam of its kind is that exam, moved."""
     said = [(e["kind"], e["week"]) for e in plan if e["kind"] != "quiz"]
     out: list[dict[str, Any]] = []
     last: Optional[dict[str, Any]] = None
@@ -79,15 +93,66 @@ def _syllabus_exams(d: dict[str, Any], plan: list[dict[str, Any]]) -> list[dict[
         elif last is not None and last["week"] == w["no"] - 1 and last["name"].casefold() == name.casefold():
             last["week"] = w["no"]
         else:
-            last = {"kind": kind, "no": 0, "name": name, "week": w["no"], "los": [], "sources": [], "syllabus": True}
+            last = {"kind": kind, "no": 0, "name": name, "week": w["no"], "first_week": w["no"], "los": [], "sources": [],
+                    "syllabus": True}
             out.append(last)
     return out
 
 
-def assessments(d: dict[str, Any]) -> list[dict[str, Any]]:
-    """The assessments the lecturer announced (alerts.assessment_plan) and the syllabus' exam weeks no announcement
-    covers, each with the weeks it most likely covers (as the plan dialog: a quiz since the one before it, Midterm 2
-    since Midterm 1) and whether it is still ahead."""
+def assessment_key(e: dict[str, Any]) -> str:
+    """An assessment's name for keeping things with it that stays when its week moves: "quiz:3", "midterm:1",
+    "final:0"; a syllabus exam week (no announcement, no sources): "syllabus:<its name>:<week>"."""
+    return f"syllabus:{e['name']}:{e['week']}" if e.get("syllabus") else f"{e['kind']}:{e['no']}"
+
+
+def former_keys(d: dict[str, Any], e: dict[str, Any]) -> list[str]:
+    """The keys an announced exam had before it was announced, gone now: the syllabus exam week it took the place of
+    (one of its kind a week away: _syllabus_exams) and, for Midterm 1, "midterm:0" (a "Midterm" that
+    alerts.assessment_plan folded into it). The weeks and day the student set there are still its own."""
+    if e.get("syllabus") or e.get("kind") == "quiz" or not e.get("week"):
+        return []
+    plan = list((d.get("alerts") or {}).get("plan") or [])
+    now = {assessment_key(x) for x in plan + _syllabus_exams(d, [x for x in plan if x.get("week")])}
+    out = [assessment_key(s) for s in _syllabus_exams(d, []) if s["kind"] == e["kind"]
+           and s["first_week"] - 1 <= e["week"] <= s["week"] + 1]
+    if e["kind"] == "midterm" and e.get("no") == 1:
+        out.append("midterm:0")
+    return [k for k in out if k not in now]
+
+
+def _weeks_meta(course_id: str, key: str) -> str:
+    return f"exam-weeks:{course_id}:{key}"
+
+
+def own_weeks(lib: Any, course_id: str, key: str) -> list[int]:
+    """The weeks the student set for an assessment (meta "exam-weeks:<course>:<key>"), [] for none."""
+    try:
+        raw = json.loads(lib.get_meta(_weeks_meta(course_id, key)) or "[]") if lib is not None and course_id else []
+    except (ValueError, TypeError):
+        return []
+    return sorted({int(n) for n in raw if str(n).isdigit() and 1 <= int(n) <= 30}) if isinstance(raw, list) else []
+
+
+def set_weeks(lib: Any, course_id: str, key: str, weeks: Any) -> list[int]:
+    """Keep the weeks the student says an assessment covers ([]: back to the announced or guessed ones)."""
+    nos = sorted({int(n) for n in weeks or [] if str(n).isdigit() and 1 <= int(n) <= 30})
+    lib.set_meta(_weeks_meta(course_id, key), json.dumps(nos) if nos else "")
+    return nos
+
+
+def assessments(d: dict[str, Any], lib: Any = None) -> list[dict[str, Any]]:
+    """The one place that says which weeks each quiz and exam covers (views.course_detail keeps it as
+    d["assessments"]; the quiz, plan and pack dialogs, Get ready and the Exam room read it from there). Each of the
+    assessments the lecturer announced (alerts.assessment_plan) and the syllabus' exam weeks no announcement covers,
+    with:
+      key        - a stable name (assessment_key)
+      weeks      - the weeks it covers: the student's own (with ``lib``), else the ones an announcement named ("Quiz 3
+                   will cover weeks 8 and 9"), else a guess (a quiz since the one before it, Midterm 2 since Midterm 1,
+                   a final all of them)
+      weeks_from - where they come from: "yours", "announced" or "guessed"; "guessed" keeps the guess
+      covers     - the weeks an announcement named ([] when none did), "covers_from" that announcement
+      files      - the course-wide and announcement files tied to it (its posted solutions: tied_files)
+      ahead      - whether it is still ahead"""
     past = {w["no"] for w in d.get("weeks") or [] if w.get("past")}
     plan = [e for e in (d.get("alerts") or {}).get("plan") or [] if e.get("week")]
     plan += _syllabus_exams(d, plan)
@@ -101,15 +166,75 @@ def assessments(d: dict[str, Any]) -> list[dict[str, Any]]:
             midterm = e["week"]
         else:
             start = 1 if e["kind"] == "final" else prev + 1
-        out.append({**e, "weeks": list(range(min(start, e["week"]), e["week"] + 1)), "ahead": e["week"] not in past})
+        guess = list(range(min(start, e["week"]), e["week"] + 1))
+        covers = sorted({int(n) for n in e.get("covers") or [] if 1 <= int(n) <= 30})
+        key = assessment_key(e)
+        mine = own_weeks(lib, d.get("id") or "", key)
+        for k in former_keys(d, e) if lib is not None and not mine else []:     # (set before it was announced)
+            mine = mine or own_weeks(lib, d.get("id") or "", k)
+        weeks, origin = (mine, "yours") if mine else (covers, "announced") if covers else (guess, "guessed")
+        out.append({**e, "key": key, "weeks": weeks, "weeks_from": origin, "guessed": guess, "covers": covers,
+                    "covers_from": e.get("covers_from") or "", "files": [], "ahead": e["week"] not in past})
         prev = e["week"]
+    tied = tied_files(d, out)
+    from .examroom import when                  # the day it is on (announced, the student's own, its week's): "on"
+    for e in out:
+        e["files"] = [rid for rid, keys in tied.items() if e["key"] in keys]
+        e["on"] = when(d, e, lib)
+    return out
+
+
+def of(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """A course's assessments as views.course_detail gave them (worked out again for a course dict without them)."""
+    return d["assessments"] if "assessments" in d else assessments(d)
+
+
+_ANN_FILE_LINK = re.compile(r"https?://[^\s<>\"]+")
+
+
+def tied_files(d: dict[str, Any], plan: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The course-wide and announcement files (d["general"]) tied to an assessment: {resource id: [its keys]}. A
+    file is tied when its name names it ("Quiz1 - Solutions.pdf"), or it is attached to an announcement that names it
+    in its title ("Quiz 3 solutions") or is a source of that assessment alone (not the term's schedule: MATH 250's
+    "Quiz_Duyurusu" is a source of every quiz)."""
+    from .alerts import named_assessments
+    from .library import ANN_UNIT
+
+    cid = d.get("id") or ""
+    by_rid: dict[str, dict[str, Any]] = {}             # an attached file's announcement (its link is in the text)
+    for a in d.get("announcements") or []:
+        for url in _ANN_FILE_LINK.findall(a.get("body") or ""):
+            url = url.rstrip(").,;:!?'\"]")
+            m = re.search(r"/announcements/(\d+)/file/(\d+)", url)
+            rid = f"ann-{cid}-{m.group(1)}-{m.group(2)}" if m else \
+                f"ann-{cid}-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:12]}"
+            by_rid.setdefault(rid, a)
+
+    def matches(kind: str, no: int) -> list[str]:
+        same = [e for e in plan if e["kind"] == kind]
+        return [e["key"] for e in same if e["no"] == no or ((no == 0 or e["no"] == 0) and len(same) == 1)]
+
+    out: dict[str, list[str]] = {}
+    for u in d.get("general") or []:
+        for m in u.get("materials") or []:
+            keys: list[str] = []
+            for kind, no in named_assessments(f"{m.get('title') or ''} {m.get('file_name') or ''}"):
+                keys += matches(kind, no)
+            a = by_rid.get(m["id"]) if u.get("id") == ANN_UNIT else None
+            if a is not None:
+                of_it = [e["key"] for e in plan if any(s.get("id") == a["id"] for s in e.get("sources") or [])]
+                keys += of_it if len(of_it) == 1 else []
+                for kind, no in named_assessments(a.get("title") or ""):
+                    keys += matches(kind, no)
+            if keys:
+                out[m["id"]] = list(dict.fromkeys(keys))
     return out
 
 
 def _focus(d: dict[str, Any], scope: Any) -> Optional[dict[str, Any]]:
     """The assessment the quiz prepares for (an announced one, or a syllabus exam week: the one still ahead when two
     have its name), with its learning outcomes' text (the syllabus's)."""
-    named = [x for x in assessments(d) if x["name"] == scope.focus] if scope.focus else []
+    named = [x for x in of(d) if x["name"] == scope.focus] if scope.focus else []
     e = next((x for x in named if x["ahead"]), named[0] if named else None)
     los = sorted(set(e["los"] if e else []) | set(scope.los or []))
     if not e and not los:
@@ -138,8 +263,9 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             day_week[day["date"]] = w["no"]
     items = stressed.course_items(lib, course_id)
     picked_days = {x["day_key"] for x in facts["lectures"]}
+    only = set(getattr(scope, "stressed_ids", None) or [])         # the moments the student picked ("Quiz me on these")
     mine = [it for it in stressed.ranked(items, nos, day_week)
-            if not scope.days or it["day_key"] in picked_days]
+            if (not scope.days or it["day_key"] in picked_days) and (not only or it["id"] in only)]
     refs = {x["day_key"]: x["ref"] for x in facts["lectures"]}
     lines, by_ref = stressed.prompt_lines(mine, refs, 30, [it for it in items if it["kind"] == "not_needed"
                                                          and day_week.get(it["day"]) in nos])
@@ -147,8 +273,96 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                  outcomes=d.get("outcomes_en") or d.get("outcomes_tr") or [], stressed_lines=lines,
                  stressed={ref: {k: it[k] for k in ("id", "day_key", "part", "t", "ts", "kind", "text")}
                            for ref, it in by_ref.items()},
+                 stressed_only=bool(only and by_ref),
                  one_lecture=bool(scope.days) and len(scope.days) == 1 and not scope.files)
+    if facts["one_lecture"] and facts["stressed_only"]:
+        # moments the student picked in one lecture: the slides on screen around them go with the quiz, not 40 spread
+        # over the whole lecture (a 6-part lecture's 40 were about 32k tokens, most of a quiz on 2 moments)
+        facts["near"] = [[it["part"], it["t"]] for it in by_ref.values()]
+        facts["near_slides"] = len(moment_slides(lib, course_id, scope.days[0], facts["near"]))
+    if getattr(scope, "weak", False):
+        _weak(lib, course_id, scope, facts)
     return facts
+
+
+def _weak(lib: Any, course_id: str, scope: Any, facts: dict[str, Any]) -> None:
+    """A weak-spot quiz: the student's weak spots (practice.weak_spots) in the facts, and the material narrowed to
+    where the missed questions come from (narrow); what not to ask again ("avoid": answered right twice, and the
+    missed questions themselves)."""
+    from .practice import weak_spots
+
+    w = weak_spots(lib, course_id, scope.focus or "", outcomes=facts.get("outcomes") or [])
+    facts["weak"] = {"missed": w["missed"], "los": [{"no": r["no"], "text": r.get("text", ""), "right": r["right"],
+                                                     "tried": r["tried"]} for r in w["los"]],
+                     "topics": [{"name": r["name"], "right": r["right"], "tried": r["tried"]} for r in w["topics"]]}
+    facts["avoid"] = list(dict.fromkeys([*(scope.avoid or []), *w["avoid"], *(x["q"] for x in w["missed"])]))
+    pack = narrow(lib, course_id, facts, w["missed"])
+    if pack:
+        facts.update(pack=pack, chars=len(pack), narrowed=True, one_lecture=False)
+
+
+def narrow(lib: Any, course_id: str, facts: dict[str, Any], missed: list[dict[str, Any]]) -> str:
+    """The material of a weak-spot quiz: of each file, the page a missed question comes from and the pages either
+    side; of each lecture, what was said within practice.NEAR_S seconds of where one was taught (the screens shown
+    then too). The files and lectures with nothing kept leave the facts. "" when no missed question has a source in
+    the material (the whole material is used then)."""
+    from .practice import NEAR_S
+    from .studypack import _file_head, _lecture_head, lecture_text
+
+    pages: dict[str, set[int]] = {}
+    spots: dict[str, list[tuple[int, float]]] = {}
+    by_id = {f["id"]: f for f in facts["files"]}
+    for m in missed:
+        src = m.get("source") or {}
+        if src.get("kind") == "file" and src.get("id") in by_id and src.get("page"):
+            p = int(src["page"])
+            pages.setdefault(src["id"], set()).update({p - 1, p, p + 1})
+        elif src.get("kind") == "lecture" and src.get("day_key") and src.get("t") is not None:
+            spots.setdefault(src["day_key"], []).append((int(src.get("part") or 1), float(src["t"])))
+    out: list[str] = []
+    files, lectures = [], []
+    for f in facts["files"]:
+        want = pages.get(f["id"])
+        if not want:
+            continue
+        lines = [f"[{f['ref']} p.{n}] {' '.join(text.split())}" for n, text in enumerate(lib.material_pages(f["id"]), 1)
+                 if n in want and text.strip()]
+        if lines:
+            files.append(f)
+            out.append(_file_head(f, pictures=False) + "\n".join(lines))
+    for x in facts["lectures"]:
+        near = spots.get(x["day_key"])
+        if not near:
+            continue
+        kept, part, head = [], 0, ""
+        for line in lecture_text(lib, course_id, x["day_key"]).split("\n"):
+            m = re.match(r"## Part (\d+)", line)
+            if m:
+                part, head = int(m.group(1)), line
+                continue
+            scr = re.match(r"\[Screen \d+, (\d+(?::\d{2}){1,2})-(\d+(?::\d{2}){1,2})\]", line)
+            ts = re.match(r"\[(\d+(?::\d{2}){1,2})\]", line)
+            if scr:
+                a, b = _secs(scr.group(1)) or 0.0, _secs(scr.group(2)) or 0.0
+                close = any(p == part and a - NEAR_S <= at <= b + NEAR_S for p, at in near)
+            elif ts:
+                at0 = _secs(ts.group(1)) or 0.0
+                close = any(p == part and abs(at0 - at) <= NEAR_S for p, at in near)
+            else:
+                continue
+            if close:
+                if head:
+                    kept.append(head)
+                    head = ""
+                kept.append(line)
+        if kept:
+            lectures.append(x)
+            out.append(_lecture_head(x) + "\n".join(kept))
+    if not out:
+        return ""
+    facts["files"], facts["lectures"] = files, lectures
+    facts["files_cut"], facts["cut"], facts["left_out"] = [], [], []
+    return "\n".join([facts["pack"].split("\n=== ", 1)[0].rstrip(), *out])
 
 
 # ------------------------------------------------------------------ write (AI)
@@ -175,25 +389,39 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
                          f"{kinds['problem']} worked problems" if kinds["problem"] else "") if x]
     want = ", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else parts[0]
     prio = [f"1. The material below ({facts['span']}): every question comes from it and from nothing else."]
+    weak = facts.get("weak")
+    if weak:
+        prio.append("2. The student's weak spots (below): every question tests one of them. Test the same ideas in new "
+                    "ways, and probe the same misconceptions (the wrong answers they gave), so they can see whether "
+                    "they understand it now. Start easy or medium; at most two hard questions, at the end. Never "
+                    "repeat a question listed below.")
     f = facts.get("focus")
     if f and f.get("los"):
         los = "; ".join(f"LO{x['no']}" + (f": {x['text']}" if x["text"] else "") for x in f["los"])
         name = f"{f['name']} (week {f['week']})" if f.get("name") and f.get("week") else f.get("name") or "the next exam"
-        prio.append(f"2. The student prepares for {name}, which covers these learning outcomes: {los}. Most "
-                    "questions test them; tag each question with the outcomes it tests (\"los\").")
+        prio.append(f"{len(prio) + 1}. The student prepares for {name}, which covers these learning outcomes: {los}. "
+                    "Most questions test them; tag each question with the outcomes it tests (\"los\").")
     elif f and f.get("name"):
-        prio.append(f"2. The student prepares for {f['name']}" + (f" (week {f['week']})" if f.get("week") else "") + ".")
-    if facts.get("stressed_lines"):
+        prio.append(f"{len(prio) + 1}. The student prepares for {f['name']}" +
+                    (f" (week {f['week']})" if f.get("week") else "") + ".")
+    if facts.get("stressed_only"):              # "Quiz me on these": the moments the student picked
+        prio.append(f"{len(prio) + 1}. The student picked the S moments below, where the lecturer stressed something: "
+                    "every question tests one of them, each moment before a second question on any; tag each question "
+                    "with the moments it tests (\"stressed\"). Nothing on what the lecturer said is not needed.")
+    elif facts.get("stressed_lines"):
         prio.append(f"{len(prio) + 1}. What the lecturer stressed (the S moments below): more questions on these, "
                     "the ones tied to an exam first; tag each question with the moments it tests (\"stressed\"). "
                     "Nothing on what the lecturer said is not needed.")
     prio.append(f"{len(prio) + 1}. Otherwise spread the questions over all the topics of the material, one per topic "
                 "before a second on any topic.")
     extra = f"\nThe student also asked: {scope.topics.strip()}" if (scope.topics or "").strip() else ""
-    slides = ("\nThe slides captured from the lecture video are attached as pictures, each labelled [Part n, slide m]; "
-              "the transcript's (slide m) marks show when each was on screen. Use them (formulas, figures, worked "
-              "examples), and cite the lecture moment where the slide was shown.") if facts.get("one_lecture") else ""
+    near = facts.get("near") is not None          # (a quiz on moments of one lecture: the slides around them)
+    slides = (f"\nThe slides {'on screen around the S moments' if near else 'captured from the lecture video'} are "
+              "attached as pictures, each labelled [Part n, slide m]; the transcript's (slide m) marks show when each "
+              "was on screen. Use them (formulas, figures, worked examples), and cite the lecture moment where the "
+              "slide was shown.") if facts.get("one_lecture") and (not near or facts.get("near_slides")) else ""
     lectures = " (cite the [mm:ss] time written before the passage)" if facts["lectures"] else ""
+    check = "\n" + CHECK_RULE if kinds["short"] or kinds["problem"] else ""
     return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. {quiz_languages(facts['language'], facts.get('taught_in', ''))}{extra}
 Priorities, in this order:
 {chr(10).join(prio)}
@@ -203,21 +431,69 @@ Answer with one JSON object:
  "questions": [
   {{"type": "mc", "question": "…", "options": ["…", "…", "…", "…"], "answer": "B", "explanation": "why the right option is right", "wrong": {{"A": "why this option is wrong", "C": "…", "D": "…"}}, "source": "F1 p.12", "topic": "…", "los": [3], "stressed": ["S2"], "level": "medium"}},
   {{"type": "short", "question": "…", "answer": "the model answer, 1–3 sentences", "points": ["what a full answer must say", "…"], "source": "L1 part 2 14:05", "topic": "…", "los": [], "stressed": [], "level": "easy"}},
-  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
+  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V", "of": "the voltage across R2"}}, "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
 Rules:
 - Like the questions this course's lecturer asks in a quiz or midterm: the material's own methods, examples and notation, from understanding to applying; no trivia about the material itself ("what is on slide 5", "what did the lecturer joke about").
 - Multiple choice: exactly four options, one of them right; the wrong ones are mistakes students really make; "wrong" says for each wrong option why it is wrong. The right answer's letter varies across the quiz. No "all/none of the above". In "explanation" and "wrong", never call an option by its letter or its place (the app reorders the options): say what it says.
 - Short answers: answerable in a few sentences; "points" lists what a full answer must contain.
-- Worked problems: realistic numbers, every step with its working, the result checked, units where they apply.
+- Worked problems: realistic numbers, every step with its working, the result checked, units where they apply.{check}
 - "source": where the question comes from: a file page as "F1 p.12" or a lecture moment as "L1 part 2 14:05"{lectures}. Only the references listed below.
 - "topic": the topic the question tests, written exactly as in "topics".
 - Maths in LaTeX: $...$ in a sentence, $$...$$ on a line of its own. No two questions test the same thing.{slides}
-
+{weak_blocks(facts)}
 === WHAT THE LECTURER STRESSED ===
 {facts.get('stressed_lines') or '(nothing found in these lectures)'}
 
 === COURSE MATERIAL ===
 {facts['pack']}{quiz_languages_again(facts['language'], facts.get('taught_in', ''))}"""
+
+
+def _quote(s: Any, most: int = 300) -> str:
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= most else s[:most].rsplit(" ", 1)[0] + "…"
+
+
+def weak_blocks(facts: dict[str, Any]) -> str:
+    """A weak-spot quiz's two blocks: THE STUDENT'S WEAK SPOTS (the learning outcomes and topics where they lose
+    points, each question they got wrong with the wrong answer they gave and why it is wrong) and ALREADY ASKED, DO
+    NOT REPEAT ("" for another quiz)."""
+    weak = facts.get("weak")
+    if not weak:
+        return ""
+    out = ["", "=== THE STUDENT'S WEAK SPOTS ==="]
+    if weak.get("los"):
+        out.append("Learning outcomes they lose points on: " + "; ".join(
+            f"LO{x['no']}" + (f": {x['text']}" if x.get("text") else "") + f" ({_n(x['right'])} of {x['tried']} right)"
+            for x in weak["los"]))
+    if weak.get("topics"):
+        out.append("Topics they lose points on: " + "; ".join(f"{x['name']} ({_n(x['right'])} of {x['tried']} right)"
+                                                            for x in weak["topics"]))
+    if weak.get("missed"):
+        out.append("Questions they got wrong:")
+        for m in weak["missed"]:
+            bits = [f"- Q: {_quote(m['q'])}"]
+            if m.get("skipped"):
+                bits.append("They skipped it.")
+            elif m.get("chose"):
+                bits.append(f"They chose: {_quote(m['chose'], 160)}" +
+                            (f" (wrong because: {_quote(m['why_wrong'], 200)})" if m.get("why_wrong") else ""))
+            elif m.get("typed"):
+                bits.append(f"They wrote: {_quote(m['typed'], 200)}")
+            if m.get("right"):
+                bits.append(f"Right answer: {_quote(m['right'], 200)}")
+            if m.get("los"):
+                bits.append("Tests " + ", ".join(f"LO{n}" for n in m["los"]))
+            out.append(" | ".join(bits))
+    avoid = [a for a in facts.get("avoid") or [] if a not in {m["q"] for m in weak.get("missed") or []}]
+    if avoid:
+        out += ["", "=== ALREADY ASKED, DO NOT REPEAT ===",
+                "They answered these right twice: no question that asks the same thing again."]
+        out += [f"- {_quote(a, 200)}" for a in avoid[:30]]
+    return "\n".join(out) + "\n"
+
+
+def _n(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
 
 
 # ------------------------------------------------------------------ reading the AI's answer
@@ -241,7 +517,8 @@ _KEYS = {"question": ("question", "q", "prompt", "stem", "text", "title", "soru"
          "topic": ("topic", "subject", "concept", "konu"),
          "los": ("los", "learning_outcomes", "lo", "outcomes", "learningOutcomes"),
          "stressed": ("stressed", "stressed_refs", "stressed_moments", "s_refs"),
-         "level": ("level", "difficulty")}
+         "level": ("level", "difficulty"),
+         "check": ("check", "numeric_check", "verify", "kontrol")}
 
 
 def _get(d: dict[str, Any], what: str) -> Any:
@@ -305,6 +582,11 @@ def _same(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
 
 
+def _exact(s: str) -> str:
+    """The key of "the same option or question": spaces only, since case is meaning in maths (f(2) is not F(2))."""
+    return re.sub(r"\s+", " ", str(s or "").strip())
+
+
 def _answer_index(v: Any, texts: list[str], zero: Optional[bool]) -> Optional[int]:
     """The right option from what the AI wrote: a letter ("B", "(b)", "Option B", "B) …"), the option's text, or a
     number (``zero``: the quiz counts from 0)."""
@@ -321,9 +603,11 @@ def _answer_index(v: Any, texts: list[str], zero: Optional[bool]) -> Optional[in
     s = str(v).strip()
     norm = _norm(s)
     if not re.fullmatch(r"\(?[A-Fa-f]\)?[.):]?", s):     # the option's own text ("a constant" is no letter A)
-        for i, x in enumerate(texts):
-            if norm and (_same(x) == _same(s) or _norm(x) == norm):
-                return i
+        for key in (_exact, _same, _norm):              # as written first: "F(2)" is not the option "f(2)"
+            k = key(s)
+            hits = [i for i, x in enumerate(texts) if norm and k and key(x) == k]
+            if len(hits) == 1 or (hits and key is _exact):
+                return hits[0]
     m = re.match(r"^\s*(?:(?:option|choice|answer|seçenek|şık|cevap)\s*[:\-]?\s*)?\(?([A-Fa-f])\)?(?=$|[\s.):,])", s, re.I)
     if m:
         k = _LETTERS.index(m.group(1).lower())
@@ -784,12 +1068,15 @@ def clean_question(q: dict[str, Any], zero: Optional[bool]) -> Optional[dict[str
             keep.sort()
             right = keep.index(right)
             texts, wrong = [texts[i] for i in keep], [wrong[i] for i in keep]
-        if len({_same(x) for x in texts}) < 4:
+        if len({_exact(x) for x in texts}) < 4:
             return None
         out.update(options=[_clean_tex(x) for x in texts], answer=right, wrong=[_clean_tex(x) for x in wrong])
         return out
     model = _get(q, "model") or (_get(q, "answer") if not isinstance(_get(q, "answer"), (dict, list)) else "")
     out["model"] = _clean_tex(_text(model, 3000))
+    check = numcheck.clean_check(_get(q, "check"))          # (the result as a calculation: clean_quiz confirms it)
+    if check:
+        out["check"] = check
     if kind == "problem":
         out["steps"] = [_clean_tex(x) for x in (steps or _steps(_get(q, "steps")))]
         if not out["steps"] and not out["model"]:
@@ -807,21 +1094,23 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
                seed: str = "") -> dict[str, Any]:
     """The AI's quiz, checked: usable questions only, each once; the right answers spread over A–D (not where its
     reasons name an option's letter); each with a source the app can open (the one named, else found by its words);
-    los and stressed moments only as known."""
+    los and stressed moments only as known; a worked problem's key computed again from its "check" ("verified", or
+    "unverified" when the result it states is not what its calculation gives: numcheck.check_key)."""
     qs = raw.get("questions") or []
     ints = [v for q in qs if isinstance(q, dict) for v in [_get(q, "answer")]
             if isinstance(v, int) and not isinstance(v, bool)]
     zero = True if 0 in ints else False if ints and max(ints) >= 4 else None
     known_los = set(range(1, len(facts.get("outcomes") or []) + 1)) or None
     stressed = facts.get("stressed") or {}
+    avoid = {_exact(a) for a in facts.get("avoid") or [] if _exact(a)}    # (a weak-spot quiz: asked before)
     out, seen = [], set()
     for q in qs:
         if not isinstance(q, dict):
             continue
         c = clean_question(q, zero)
-        if c is None or _same(c["q"]) in seen:
+        if c is None or _exact(c["q"]) in seen or _exact(c["q"]) in avoid:
             continue
-        seen.add(_same(c["q"]))
+        seen.add(_exact(c["q"]))
         src = check_source(parse_source(c.pop("raw_source")), facts)
         c["found"] = False
         if src is None and units:
@@ -830,6 +1119,7 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
         c["source"] = src
         c["los"] = [n for n in c["los"] if known_los is None or n in known_los]
         c["stressed"] = [stressed[r]["id"] for r in c["stressed"] if r in stressed]
+        numcheck.check_key(c)
         out.append(c)
     mcs = [c for c in out if c["type"] == "mc"]
     if seed:                                            # the right answer's letter as if drawn, the same each time
@@ -884,11 +1174,80 @@ def coverage(quiz: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
             "stressed_total": len(stressed_ids), "stressed_hit": len(hit & stressed_ids),
             "topics_missing": topics_missing[:12], "found": sum(1 for q in qs if q.get("found")),
             "no_source": sum(1 for q in qs if not q.get("source")),
+            "checked": sum(1 for q in qs if q.get("verified")), "unconfirmed": sum(1 for q in qs if q.get("unverified")),
             "materials_missing": [m["title"] for m in facts.get("materials_missing") or []],
+            "materials_students": [m["title"] for m in facts.get("materials_students") or []],
             "days_missing": [x["date"] for x in facts.get("days_missing") or []],
             "files_cut": [f["name"] for f in facts.get("files_cut") or []],
             "lectures_cut": sorted({lecture_refs[r]["date"] for r in (facts.get("cut") or []) + (facts.get("left_out") or [])
                                     if r in lecture_refs})}
+
+
+# ------------------------------------------------------------------ a key the app could not confirm, solved again
+def _fmt(v: Any) -> str:
+    if isinstance(v, complex):
+        return f"{v.real:.4g}{v.imag:+.4g}j"
+    return f"{v:.4g}" if isinstance(v, float) else str(v)
+
+
+def repair_prompt(bad: list[dict[str, Any]], language: str = "", taught_in: str = "") -> str:
+    """One request for every problem whose key disagrees with its own calculation: each with what it states and
+    what the app computed, to be solved again (no course material: a problem's statement has what it needs). With the
+    quiz's ``language`` (and the course's, ``taught_in``), its language rules as the quiz was written with them: the
+    working in "steps" in the document's language, not the problem's."""
+    langs = (f"{quiz_languages(language, taught_in)} Keep each problem's notation (maths in LaTeX)." if language else
+             "Keep each problem's language and notation (maths in LaTeX).")
+    again = quiz_languages_again(language, taught_in) if language else ""
+    rows = []
+    for q in bad:
+        ck = q.get("check") or {}
+        try:
+            got = _fmt(numcheck.evaluate(ck.get("expr")))
+        except ValueError:
+            got = "(not computable)"
+        rows.append("\n".join(x for x in (
+            f"[{q['n']}] {q['q']}",
+            "Steps given: " + " | ".join(q.get("steps") or []) if q.get("steps") else "",
+            f"Answer given: {q.get('model') or ''}",
+            f"Check given: expr = {ck.get('expr', '')}; value = {ck.get('value', '')}; unit = {ck.get('unit', '')}",
+            f"The app computes that expression to {got}: not the answer given.") if x))
+    return f"""TASK: The app computed the answer key of these practice problems again, and each disagrees with itself: the answer it states is not what its own "check" calculation gives. Solve each problem again from its statement, carefully, step by step, and give the corrected steps, the final answer and its check.
+{langs}
+{CHECK_RULE}
+Answer with one JSON object ("answer": a worked problem's final result, with units; a short answer's whole model answer again, its 1-3 sentences with the corrected result):
+{{"questions": [{{"n": 2, "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "…", "value": 0, "unit": "…", "of": "…"}}}}]}}
+
+=== PROBLEMS ===
+{chr(10).join(rows)}{again}"""
+
+
+def apply_repair(questions: list[dict[str, Any]], text: str) -> int:
+    """The AI's second solutions put in place of the keys the app could not confirm, each only when the app now
+    confirms it (else the question keeps its "unverified"). How many were fixed."""
+    data = _json_body(text)
+    items = data.get("questions") if isinstance(data, dict) else data
+    bad = {q["n"]: q for q in questions if q.get("unverified")}
+    fixed = 0
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        q = bad.get(next(iter(_ints(it.get("n"))), None))
+        model = _get(it, "model") or _get(it, "answer")
+        check = numcheck.clean_check(_get(it, "check"))
+        if q is None or not check or not model or isinstance(model, (dict, list)):
+            continue
+        if (q.get("check") or {}).get("of") and not check.get("of"):     # the same result: its name kept for the box
+            check = {**check, "of": q["check"]["of"]}
+        trial = {**q, "model": _clean_tex(_text(model, 3000)), "check": check}
+        steps = [_clean_tex(x) for x in _steps(_get(it, "steps"))]
+        if q["type"] == "problem" and steps:
+            trial["steps"] = steps
+        numcheck.check_key(trial)
+        if trial.get("verified"):
+            q.clear()
+            q.update(trial, repaired=True)
+            fixed += 1
+    return fixed
 
 
 # ------------------------------------------------------------------ the stages (run by plans.PlanRunner)
@@ -926,7 +1285,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         stage("write", 0.1, tn(n, "Writing {n} question ({model})…", "Writing {n} questions ({model})…", model=shown))
         content: list[dict[str, Any]] = [{"type": "text", "text": write_prompt(scope, facts, n, kinds)}]
         if facts.get("one_lecture") and hasattr(s, "ai_inputs"):
-            content += _slide_blocks(s, scope.days[0])
+            content += _slide_blocks(s, scope.days[0], plan["course_id"], facts.get("near"))
         ask = runner._ask_text or one_shot
         res = ask(SYSTEM, content, model, level, cancel, None)
         _usage_add(usage, "write", res)
@@ -952,6 +1311,26 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     quiz = clean_quiz(raw, facts, units, seed=pid)
     if not quiz["questions"]:
         raise RuntimeError(t("The AI's questions could not be used (no question had a clear right answer). Try again."))
+    bad = [q for q in quiz["questions"] if q.get("unverified")]
+    if bad and "repair" not in data:          # keys that disagree with their own calculation: solved again, once
+        stage("check", 0.93, tn(len(bad), "Checking {n} answer again ({model})…", "Checking {n} answers again ({model})…",
+                                model=shown))
+        ask = runner._ask_text or one_shot
+        try:
+            res = ask(REPAIR_SYSTEM, [{"type": "text", "text": repair_prompt(bad, facts.get("language") or "",
+                                                                             facts.get("taught_in") or "")}],
+                      model, level, cancel, None)
+            _usage_add(usage, "repair", res)
+            data["repair"] = res.get("text") or ""
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the quiz is usable without it: those keys say they're unconfirmed
+            log.warning("The quiz's answer key could not be checked again: %s", exc)
+            data["repair"] = ""
+        s.lib.update_plan(pid, data=data, usage=usage)
+    if bad and data.get("repair"):
+        log.info("Answer key: %d of %d unconfirmed answers fixed", apply_repair(quiz["questions"], data["repair"]),
+                 len(bad))
     title = quiz["title"] or span_title(facts)
     result = {"kind": "quiz", "title": title, "made": dt.date.today().isoformat(), "language": facts["language"],
               "questions": quiz["questions"], "topics": quiz["topics"], "coverage": coverage(quiz, facts),
@@ -961,13 +1340,38 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
                       progress=1.0, message=tn(len(quiz["questions"]), "{n} question", "{n} questions"))
 
 
-def _slide_blocks(s: Any, day_key: str) -> list[dict[str, Any]]:
+def moment_slides(lib: Any, course_id: str, day_key: str, near: Any) -> list[tuple[str, str]]:
+    """The captured slides of a lecture that were on screen within NEAR_S of these moments ([part, t]: a quiz on
+    moments the student picked), labelled as the transcript marks them ("[Part 2, slide 5]"), at most LECTURE_SLIDES."""
+    from .outputs.markdown import part_views
+    from .studypack import _lecture
+
+    try:
+        _, recs, trans, slides = _lecture(lib, course_id, day_key)
+    except Exception:  # noqa: BLE001 - a quiz without the pictures is still a quiz
+        log.debug("no slides for the moments", exc_info=True)
+        return []
+    at = [(int(p), float(x)) for p, x in near or []]
+    out: list[tuple[str, str]] = []
+    for p in part_views(recs, trans, slides):
+        seen: set[int] = set()
+        for sl in p.slides if p.transcript else []:
+            if sl.index in seen or not sl.path or not os.path.isfile(sl.path):
+                continue
+            if any(part == p.index and sl.t - NEAR_S <= x <= max(sl.end, sl.t) + NEAR_S for part, x in at):
+                seen.add(sl.index)
+                out.append((f"[Part {p.index}, slide {sl.index}]", sl.path))
+    return out[:LECTURE_SLIDES]
+
+
+def _slide_blocks(s: Any, day_key: str, course_id: str = "", near: Any = None) -> list[dict[str, Any]]:
     """A one-lecture quiz: the slides captured from its video, labelled as the transcript marks them, at most
-    LECTURE_SLIDES spread over the lecture."""
+    LECTURE_SLIDES spread over the lecture; a quiz on moments the student picked there (``near``: [part, t] of each):
+    those on screen around them (moment_slides)."""
     from .ai import image_block
 
     try:
-        _, images, _, _ = s.ai_inputs(day_key, True)
+        images = moment_slides(s.lib, course_id, day_key, near) if near is not None else s.ai_inputs(day_key, True)[1]
     except Exception:  # noqa: BLE001 - a quiz without the pictures is still a quiz
         log.debug("no slides for the quiz", exc_info=True)
         return []
@@ -994,8 +1398,9 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     n = scope.questions if scope.questions in COUNTS else DEFAULT_COUNT
     per = chars_per_token()
     slides = 0
-    if facts.get("one_lecture"):
-        slides = min(LECTURE_SLIDES, sum(p["slides"] for x in facts["lectures"] for p in x["parts"]))
+    if facts.get("one_lecture"):                 # (what the run sends: _slide_blocks)
+        slides = int(facts.get("near_slides") or 0) if facts.get("near") is not None else \
+            min(LECTURE_SLIDES, sum(p["slides"] for x in facts["lectures"] for p in x["parts"]))
     tokens_in = facts["chars"] / per + PROMPT_OVERHEAD + 2_500 + slides * 800
     tokens_out = 600 + n * 420
     a = 1 + round(n / 6)
@@ -1026,8 +1431,10 @@ def _line(md: str) -> str:
 
 
 def document_body(plan: dict[str, Any]) -> str:
-    """The quiz as a document: a cover with what it covers, the questions (room to answer), then the answers with
-    every explanation, on pages of their own. The words IEUStudia writes in it are in the quiz's language."""
+    """The quiz as a document to solve on paper: a cover with what it covers and a line for the date and the score,
+    the questions alone (room to answer, nothing that gives an answer away: their sources are in the key), then the
+    answer key on pages of its own - every answer at a glance for marking, then each one explained with where it
+    comes from. The words IEUStudia writes in it are in the quiz's language."""
     with writing_in((plan.get("result") or {}).get("language", "")):
         return _document_body(plan)
 
@@ -1041,7 +1448,9 @@ def _document_body(plan: dict[str, Any]) -> str:
     course = (r.get("course") or {}).get("code", "")
     made = date_text(r.get("made") or (plan.get("created_at") or "")[:10])
     span = (cov.get("span") or "") if writing() == "en" else weeks_text(cov.get("weeks") or [])
-    covers = [esc(word("{n} questions on {span}", n=len(r.get("questions") or []), span=span))]
+    gone = set(r.get("removed") or [])           # the questions the student removed (practice.quiz_question)
+    qs = [{**q, "n": i} for i, q in enumerate((q for q in r.get("questions") or [] if q.get("n") not in gone), 1)]
+    covers = [esc(word("{n} questions on {span}", n=len(qs), span=span))]
     if cov.get("focus") and cov["focus"].get("name"):
         covers.append(esc(word("for {name}", name=cov["focus"]["name"])))
     left = []
@@ -1058,20 +1467,24 @@ def _document_body(plan: dict[str, Any]) -> str:
            + (f'<div class="sp-sources">{word("Left out: {list}", list="; ".join(left))}</div>' if left else "")
            + '<div class="sp-sources">' + esc(word("Written by AI from your course material: check anything that "
                                                    "looks wrong against your slides and lectures.")) + " "
-           + esc(word("The answers are at the end.")) + "</div></header>"]
-    qs = r.get("questions") or []
+           + esc(word("Solve it on paper; the answer key is on the last pages.")) + "</div>"
+           + f'<div class="qz-paper"><span>{esc(word("Date"))}: <i></i></span>'
+           f'<span>{esc(word("Score"))}: <i class="short"></i> / {len(qs)}</span></div></header>']
     body = []
-    for q in qs:
+    for q in qs:                  # (no source under a question: it would say where the answer is)
         part = [f'<div class="qz-q"><div class="qz-n">{q["n"]}</div><div class="qz-body">{md_html(q["q"])}']
         if q["type"] == "mc":
             part.append('<ol class="qz-opts" type="A">' + "".join(f"<li>{_line(x)}</li>" for x in q["options"]) + "</ol>")
         else:
             part.append(f'<div class="qz-space {"big" if q["type"] == "problem" else ""}"></div>')
-        src = _src_text(q.get("source"))
-        if src:
-            part.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
         body.append("".join(part) + "</div></div>")
     out.append(f'<section class="sp-ch qz-part"><h2>{word("Questions")}</h2>{"".join(body)}</section>')
+    glance = []                   # every answer at a glance, for marking: a letter, a short result, else "see below"
+    for q in qs:
+        model = str(q.get("model") or "").strip()
+        got = (_LETTER[q["answer"]] if q["type"] == "mc" else _line(model) if model and len(model) <= 28
+               and "\n" not in model else f'<span class="qz-more">{esc(word("see below"))}</span>')
+        glance.append(f'<span class="qz-k"><b>{q["n"]}</b> {got}</span>')
     keys = []
     for q in qs:
         bits = [f'<div class="qz-q"><div class="qz-n">{q["n"]}</div><div class="qz-body">']
@@ -1093,8 +1506,14 @@ def _document_body(plan: dict[str, Any]) -> str:
                 bits.append('<ul class="qz-points">' + "".join(f"<li>{_line(x)}</li>" for x in q["points"]) + "</ul>")
             if q.get("why"):
                 bits.append(md_html(q["why"]))
+        if q.get("unverified"):
+            bits.append(f'<div class="sp-src">{esc(word("The app could not confirm this answer: check it against its source."))}</div>')
+        src = _src_text(q.get("source"))
+        if src:
+            bits.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
         keys.append("".join(bits) + "</div></div>")
-    out.append(f'<section class="sp-ch qz-part"><h2>{word("Answers")}</h2>{"".join(keys)}</section>')
+    out.append(f'<section class="sp-ch qz-part qz-answers"><h2>{word("Answer key")}</h2>'
+               f'<div class="qz-key">{"".join(glance)}</div><h3>{word("Answers explained")}</h3>{"".join(keys)}</section>')
     return "".join(out)
 
 
@@ -1106,12 +1525,24 @@ QUIZ_CSS = """
 .qz-body > p:first-child { margin-top: 3px; }
 .qz-opts { margin: 6px 0 4px; padding-left: 24px; }
 .qz-opts li { margin: 3px 0; }
-.qz-space { height: 70px; border-bottom: 1px dashed #cbd5e1; margin: 6px 0; }
-.qz-space.big { height: 190px; }
+/* room to write: ruled lines for a short answer, a box for a worked problem */
+.qz-space { height: 116px; margin: 8px 0 2px;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 28px, #cbd5e1 28px, #cbd5e1 29px);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.qz-space.big { height: 300px; background: none; border: 1px solid #cbd5e1; border-radius: 6px; }
+.qz-paper { display: flex; gap: 32px; margin-top: .9em; font-size: .92em; }
+.qz-paper i { display: inline-block; width: 150px; border-bottom: 1px solid #94a3b8; height: 1em; vertical-align: baseline; }
+.qz-paper i.short { width: 56px; }
+.qz-key { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 1.4em; }
+.qz-k { min-width: 84px; border: 1px solid #e2e2e2; border-radius: 6px; padding: 4px 9px; break-inside: avoid;
+  white-space: nowrap; }
+.qz-k b { color: #1d4ed8; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.qz-more { color: #5c5c5c; font-size: .9em; }
+.qz-answers h3 { margin-top: .4em; }
 .qz-wrong, .qz-points, .qz-steps { margin: 6px 0; padding-left: 22px; }
 .qz-part + .qz-part { break-before: page; }
 .qz-opts p, .qz-wrong p, .qz-points p, .qz-steps p { margin: 0; }
-@media print {                     /* the questions right under the cover; the answers on pages of their own */
+@media print {                     /* the questions right under the cover; the answer key on pages of its own */
   .sp-cover { padding-top: 0; }
   .sp-cover + .qz-part { break-before: auto; margin-top: 1.2em; }
 }

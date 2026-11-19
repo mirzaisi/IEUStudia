@@ -77,7 +77,6 @@ WORDS_TR = {
     "Lectures: {list}": "Dersler: {list}",
     "Written by AI from your course material: check anything that looks wrong against your slides and lectures.":
         "Ders materyalinden yapay zeka yazdı: yanlış görünen her şeyi slaytlarına ve derslerine bakarak kontrol et.",
-    "The answers are at the end.": "Cevaplar sonda.",
     "Contents": "İçindekiler",
     # boxes and alerts in the AI's Markdown (studypack.md_html, outputs/doc.py)
     "Definition": "Tanım",
@@ -121,8 +120,16 @@ WORDS_TR = {
     "From {source}": "Kaynak: {source}",
     "Lecture {date}, part {part}, {ts}": "{date} dersi, {part}. bölüm, {ts}",
     "Questions": "Sorular",
-    "Answers": "Cevaplar",
     "Answer:": "Cevap:",
+    # a practice quiz printed to solve on paper, its answer key at the end (quizzes.py)
+    "Solve it on paper; the answer key is on the last pages.": "Kâğıt üzerinde çöz; cevap anahtarı son sayfalarda.",
+    "Date": "Tarih",
+    "Score": "Puan",
+    "Answer key": "Cevap anahtarı",
+    "Answers explained": "Cevapların açıklamaları",
+    "see below": "aşağıda",
+    "The app could not confirm this answer: check it against its source.":     # (numcheck.py: a key it computed)
+        "Uygulama bu cevabı doğrulayamadı: kaynağıyla karşılaştırarak kontrol et.",
 }
 _MONTHS = {"en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
            "tr": ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")}

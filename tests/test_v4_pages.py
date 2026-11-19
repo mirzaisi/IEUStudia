@@ -85,6 +85,14 @@ def test_lectures_are_class_days_and_one_with_no_speech_is_counted_apart(tmp_pat
     assert recs["c2"]["no_sound"] and recs["c1"]["no_sound"] and not recs["d1"]["no_sound"]   # (its error says it)
 
 
+def test_a_day_with_no_speech_has_no_mark_saying_it_again(tmp_path):
+    """The Weeks tab's chip of a day with no speech showed its "No speech found" pill and a mark saying "No speech was
+    found in it"; a transcribed day with a part without speech keeps the mark (its pill says "Transcribed")."""
+    days = {d["date"]: d for d in _view(_lib(tmp_path))["days"]}
+    assert "No speech was found in it" not in days["2026-10-12"]["anomalies"] and days["2026-10-12"]["no_sound"]
+    assert "No speech was found in it" in days["2026-10-07"]["anomalies"]
+
+
 def test_a_lecture_without_speech_being_transcribed_again_by_hand_is_not_settled(tmp_path):
     v = _view(_lib(tmp_path), jobs={"c1": {"id": "c1", "stage": "transcribing", "progress": 0.2, "detail": ""}})
     day = next(d for d in v["days"] if d["date"] == "2026-10-12")
@@ -168,30 +176,16 @@ def test_home_and_the_course_page_say_class_days_and_the_lectures_with_no_speech
     assert "1/1 lecture transcribed" in out["one"]
 
 
-@node
-def test_get_ready_leaves_a_lecture_without_speech_out_of_what_is_left(tmp_path):
-    out = run(tmp_path, """
-  St.sq = { card: () => "", line: () => "" };
-  els[".modal.rd"] = el();
-  St.mocks.plan_list = () => ({ ok: true, plans: [] }); St.mocks.course_marks = () => ({ ok: true, marks: [] });
-  const day = (k, date, extra) => ({ day_key: k, date, label: date, kind_label: "Lecture", parts: 3, transcribed: false, any_done: false,
-    no_sound: false, is_new: false, mine: true, duration_s: 8000, live: false, ready: true, anomalies: [], ...extra });
-  S.courses = [{ id: "e", code: "MATH 250", display_name: "Linear Algebra", counts: {}, days: [
-    { day_key: "e|1", recordings: [{ id: "r1", part: 1, mine: true, status: "failed", no_sound: true }] },
-    { day_key: "e|2", recordings: [{ id: "r2", part: 1, mine: true, status: "done" }, { id: "r3", part: 2, mine: true, status: "failed", no_sound: true }] },
-    { day_key: "e|3", recordings: [{ id: "r4", part: 1, mine: true, status: "available" }] }] }];
-  S.cd = { e: { id: "e", general: [], outcomes_en: [], outcomes_tr: [],
-    weeks: [{ no: 1, start: "2026-09-21", end: "2026-09-27", past: true, current: false, units: [], classes: [],
-      days: [day("e|1", "2026-09-23", { no_sound: true, ready: false }), day("e|2", "2026-09-24", { transcribed: true, any_done: true, no_sound: true, ready: false })] },
-      { no: 2, start: "2026-09-28", end: "2026-10-04", past: true, current: false, units: [], classes: [], days: [day("e|3", "2026-09-30")] }],
-    alerts: { items: [], plan: [{ name: "Quiz 1", kind: "quiz", no: 1, week: 2, los: [], sources: [{ id: "a1", title: "Quiz 1" }] }], counts: {} } } };
-  await St.openReady("e", "Quiz 1"); await tick();
-  out.ready = plain(els[".modal.rd"].innerHTML).replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ");
-  out.button = (plain(els[".modal.rd"].innerHTML).match(/<button class="btn sm" data-act="rd-transcribe" title="([^"]*)"/) || [])[1];
-""")
-    assert "Lectures transcribed: 1 of 2" in out["ready"]                 # 23 Sep has no speech: not one to do
-    assert "your section, in the weeks it covers · 1 more has no speech on Panopto" in out["ready"]
-    assert out["button"] == "1 recording" and "Transcribe it" in out["ready"]   # not the parts without speech
+def test_the_exam_room_leaves_a_lecture_without_speech_out_of_what_is_left(tmp_path):
+    """Get ready's checklist (now the Exam room's material, examroom.material): a class day with no speech on Panopto
+    is said apart, not one to transcribe; one whose other parts are transcribed is transcribed."""
+    from studia import examroom, views
+
+    lib = _lib(tmp_path)
+    d = views.course_detail(lib, Settings(min_duration_s=60), "a")
+    m = examroom.material(d, {"weeks": [1, 2], "files": []})
+    assert (m["lectures"], m["transcribed"], m["silent"]) == (3, 2, 1)            # 12 Oct has no speech: not one to do
+    assert [k.split("|")[1] for k in m["todo"]] == ["2026-10-14"]                  # nor 7 Oct's part without speech
 
 
 @node

@@ -314,30 +314,35 @@ def course_items(lib: Any, settings: Any, course: Any, now: dt.datetime,
     def week_no(day: str) -> Optional[int]:
         return week_of(dt.date.fromisoformat(day), first) if first and day else None
 
-    # quizzes, midterms and finals as announced: a day, or a week
-    covered: set[int] = set()
-    for e in d["alerts"]["plan"]:
-        src = {"type": "announcement", "id": e.get("date_from") or (e["sources"][0]["id"] if e["sources"] else "")}
-        common = {**base, "id": f"{course.id}-{e['kind']}-{e['no']}", "kind": e["kind"], "title": e["name"],
-                  "los": e["los"], "source": src}
+    # quizzes, midterms and finals as announced (a day, or a week), and the syllabus' exam weeks no announcement
+    # covers: the ones the Exam room has (calendar_export.listed), each with its key; a day the student set in its
+    # Exam room is the day
+    syllabus_url = (lib.course_info(course.id).get("syllabus") or {}).get("url", "")
+    for e in calendar_export.listed(lib, course.id, d):
+        w = weeks.get(e.get("week") or 0)
+        w1 = weeks.get(e.get("first_week") or 0) or w          # (a two-week exam period: from its first week)
+        if e.get("syllabus"):
+            if not w1 or not w1["start"]:
+                continue
+            common = {**base, "id": f"{course.id}-syllabus-week{w1['no']}", "kind": "exam", "title": e["name"],
+                      "los": [], "source": {"type": "syllabus", "url": syllabus_url, "week": w1["no"]}}
+            plain = {"week": {**_week(w1), "end": _week(w)["end"]}, "days": [], "week_no": w1["no"], "sure": "syllabus"}
+        else:
+            src = {"type": "announcement", "id": e.get("date_from") or (e["sources"][0]["id"] if e["sources"] else "")}
+            common = {**base, "id": f"{course.id}-{e['kind']}-{e['no']}", "kind": e["kind"], "title": e["name"],
+                      "los": e["los"], "source": src}
+            if not e.get("date") and not e.get("yours") and (not w or not w["start"]):
+                continue
+            plain = {"week": _week(w), "week_no": w["no"], "sure": "week",
+                     "days": [x["date"] for x in w.get("classes") or []] if e["kind"] == "quiz" else []} if w else {}
+        common["key"] = e["key"]
         if e.get("date"):
             items.append({**common, "date": e["date"], "time": e.get("time") or "", "week_no": week_no(e["date"]),
                           "sure": "day"})
+        elif e.get("yours"):
+            items.append({**common, "date": e["yours"], "time": "", "week_no": week_no(e["yours"]), "sure": "set"})
         else:
-            w = weeks.get(e.get("week") or 0)
-            if not w or not w["start"]:
-                continue
-            days = [x["date"] for x in w.get("classes") or []] if e["kind"] == "quiz" else []
-            items.append({**common, "date": "", "week": _week(w), "days": days, "week_no": w["no"], "sure": "week"})
-        if e["kind"] != "quiz" and e.get("week"):
-            covered.add(e["week"])
-    syllabus_url = (lib.course_info(course.id).get("syllabus") or {}).get("url", "")
-    for w in d["weeks"]:                     # the syllabus' exam weeks no announcement covers
-        if w["exam"] and w["start"] and w["no"] not in covered:
-            items.append({**base, "id": f"{course.id}-syllabus-week{w['no']}", "kind": "exam",
-                          "title": w["exam_label"] or "Exam", "date": "", "week": _week(w), "days": [],
-                          "week_no": w["no"], "sure": "syllabus", "los": [],
-                          "source": {"type": "syllabus", "url": syllabus_url, "week": w["no"]}})
+            items.append({**common, "date": "", **plain})
     # IEULearn's assignments
     for a in lib.assignments(course.id):
         if not a["due"]:

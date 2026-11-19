@@ -304,7 +304,7 @@ def test_a_quiz_is_reminded_once_the_evening_before():
     seen = {}
     assert reminders([_quiz()], dt.datetime(2026, 10, 12, 16, 30), seen) is None          # not yet
     title, text, payload = reminders([_quiz()], dt.datetime(2026, 10, 12, 19, 0), seen)
-    assert title == "IEUStudia: coming up" and payload == "ready:b:Quiz 2"                # a click: Get ready
+    assert title == "IEUStudia: coming up" and payload == "ready:b:Quiz 2"                # a click: its Exam room
     assert text == "MATH 240: Quiz 2 may be tomorrow (Tue 13 Oct) or Thu 15 Oct, as announced. Covers LO3–LO4, LO6."
     assert reminders([_quiz()], dt.datetime(2026, 10, 12, 21, 0), seen) is None            # said once
     assert reminders([_quiz()], dt.datetime(2026, 10, 13, 9, 0), {})[1].startswith("MATH 240: Quiz 2 may be today or Thu")
@@ -324,7 +324,8 @@ def test_an_exam_week_is_reminded_once_without_a_day():
     seen = {}
     title, text, payload = reminders([mid], dt.datetime(2026, 11, 8, 20, 0), seen)
     assert text == "MATH 240: Midterm Exam is in week 8, which starts tomorrow (Mon 9 Nov). The exam schedule on IEULearn has the day."
-    assert payload == "week:b:8"                                    # the syllabus's word: Get ready doesn't know it
+    assert payload == "ready:b:syllabus:Midterm Exam:8"             # the syllabus's exam week has an Exam room too
+    assert reminders([{**mid, "key": "midterm:1"}], dt.datetime(2026, 11, 8, 20, 0), {})[2] == "ready:b:midterm:1"
     announced = {**mid, "uid": "b-midterm-1", "name": "Midterm 1", "kind": "midterm"}
     assert reminders([announced], dt.datetime(2026, 11, 9, 9, 0), seen) is None            # the same week, said once
     title, text, payload = reminders([announced, _quiz(course="EEE 215", uid="c-quiz-1", course_id="c",
@@ -728,6 +729,41 @@ def test_one_off_claude_requests_write_no_prompt_cache_and_a_chat_keeps_it(monke
     with pytest.raises(RuntimeError, match="^Claude Code could not be started: "):      # said plainly, not as an OSError
         ai.ClaudeSession("S")
     assert "DISABLE_PROMPT_CACHING" not in envs[0]
+
+
+def test_haiku_at_low_thinks_within_a_budget_and_the_rest_as_before(monkeypatch):
+    """Haiku takes no --effort, so Claude Code let it think for up to 31,999 tokens at Low: a 5-question chat quiz
+    wrote 15.2k tokens in 121 s (4.2.0's real calls; with the budget 4.4k in 38 s). Haiku at Low gets a thinking
+    budget (MAX_THINKING_TOKENS), in a one-off request and in a chat's process; other levels and models don't."""
+    import os
+    import sys
+
+    probe = ("import json, os, sys; sys.stdin.read(); print(json.dumps({'type': 'result', 'subtype': 'success', "
+             "'usage': {}, 'result': os.environ.get('MAX_THINKING_TOKENS', '')}))")
+    monkeypatch.delenv("MAX_THINKING_TOKENS", raising=False)
+    monkeypatch.setattr(ai, "_require_claude", lambda: sys.executable)
+    monkeypatch.setattr(ai, "_claude_env", lambda: {"PATH": os.environ.get("PATH", ""),
+                                                    "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")})
+    monkeypatch.setattr(ai, "_command", lambda model, effort, sp, partial=False: [sys.executable, "-c", probe])
+    budget = lambda model, effort="", **kw: ai._claude_one_shot("S", [{"type": "text", "text": "x"}], model, effort,  # noqa: E731
+                                                                  **kw)["text"]
+    assert budget("haiku") == budget("haiku", "low") == str(ai.HAIKU_LOW_THINKING) == "4000"
+    assert budget("claude-haiku-4-5", "low") == "4000"
+    assert budget("haiku", "medium") == budget("haiku", "high") == budget("sonnet", "low") == budget("opus") == ""
+    assert budget("haiku", "low", think=False) == ""                 # (no thinking at all there)
+    envs = []
+
+    def popen(cmd, **kw):                      # a chat's process: started with its level, kept for its questions
+        envs.append(kw["env"])
+        raise OSError("not started in this test")
+
+    monkeypatch.setattr(ai.subprocess, "Popen", popen)
+    for model, level in (("haiku", "low"), ("haiku", "high"), ("sonnet", "low")):
+        with pytest.raises(RuntimeError):
+            ai.ClaudeSession("S", model, level)
+    assert [e.get("MAX_THINKING_TOKENS") for e in envs] == ["4000", None, None]
+    monkeypatch.setenv("MAX_THINKING_TOKENS", "9000")               # set on this PC: left to it
+    assert ai._thinking_env("haiku", "low") == {}
 
 
 def test_study_notes_send_the_lecture_first_and_the_task_last(monkeypatch):

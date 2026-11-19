@@ -48,6 +48,19 @@
 .cat-chip.st-stressed { background: var(--amber-soft); color: var(--amber); }
 .cat-chip.st-not_needed { background: var(--surface-2); color: var(--text-2); }
 .st-not .st-week-h b { color: var(--text-2); }
+
+/* ---- quiz me from where you are: ticking stressed moments, the quiz under a chat answer, a week card's menu */
+.st-row { display: flex; align-items: flex-start; gap: 2px; border-radius: 9px; }
+.st-row.on { background: var(--blue-soft); }
+.st-row .st-item { flex: 1; min-width: 0; }
+.st-pick { display: grid; place-items: center; width: 30px; min-height: 36px; flex: none; cursor: pointer; }
+.qz-moments { margin: 4px 0 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.act-card.qz-chat > .spin, .act-card.qz-chat > svg { flex: none; }
+.qz-chip-row { margin-top: 8px; }
+.week-head .week-menu { flex: none; color: var(--text-3); }
+.week-head .week-menu:hover { color: var(--text); }
+button.pill-btn { border: 0; cursor: pointer; font-family: inherit; }
+button.pill-btn:hover { filter: brightness(.96); text-decoration: underline; }
 .st-sum { margin: 10px 0 6px; padding: 12px 14px; border-radius: var(--radius); background: var(--violet-soft);
   box-shadow: inset 3px 0 0 var(--violet); font-size: 13.5px; }
 .st-sum.busy { color: var(--text-2); }
@@ -101,7 +114,11 @@
 .qz-others ul, .qz-points, .qz-steps { margin: 6px 0; padding-left: 22px; }
 .qz-steps li, .qz-points li { margin: 4px 0; }
 .qz-final { margin-top: 6px; }
-.qz-input { width: 100%; resize: vertical; font: inherit; }
+.qz-input { width: 100%; resize: vertical; font: inherit; height: auto; padding: 8px 12px; line-height: 1.5; }
+/* a long question (a worked problem in six parts) scrolls; its buttons stay in view at the dialog's foot */
+.modal > .qz > .actions, .modal > .fc-study > .actions { position: sticky; bottom: -22px; z-index: 1; margin: 18px -24px -22px;
+  padding: 12px 24px 18px; background: var(--surface); border-radius: 0 0 14px 14px; flex-wrap: wrap; align-items: center; }
+.modal > .fc-study > .actions:not(:last-child) { margin-bottom: 0; padding-bottom: 14px; border-radius: 0; }
 .qz-your { margin: 2px 0 8px; }
 .qz-your-t { white-space: pre-wrap; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
 .qz-src { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; border: 0; background: none; padding: 4px 0;
@@ -116,10 +133,11 @@
 .qz-cover li { margin: 3px 0; }
 .qz-tries ul { margin: 4px 0 8px; padding-left: 20px; font-size: 13px; }
 .qz-results { list-style: none; margin: 6px 0; padding: 0; max-height: 280px; overflow-y: auto; }
-.qz-results li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+/* (its own rows only: an opened row's solution steps and points keep their numbers and bullets) */
+.qz-results > li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .qz-results .qz-res-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qz .fc-top > .dim { flex: none; white-space: nowrap; }
-.qz-results li.ok .i { color: var(--green); } .qz-results li.half .i { color: var(--amber); } .qz-results li.no .i { color: var(--red); }
+.qz-results > li.ok > .i { color: var(--green); } .qz-results > li.half > .i { color: var(--amber); } .qz-results > li.no > .i { color: var(--red); }
 .qz-end h2 .dim { font-weight: 500; margin-left: 4px; }
 
 /* ---- flashcards, with spaced repetition */

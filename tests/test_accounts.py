@@ -245,40 +245,58 @@ globalThis.navigator = { userAgent: "node", platform: "Win32" };
 globalThis.CSS = { escape: (s) => s };
 globalThis.addEventListener = () => {}; globalThis.matchMedia = () => ({ matches: false, addEventListener() {} });
 globalThis.requestAnimationFrame = (f) => f();
+const later = setTimeout;
 globalThis.setInterval = () => 0; globalThis.setTimeout = () => 0;
-for (const f of ["i18n.js", "icons.js", "app.js", "effort.js", "course.js"]) require(web + "/" + f);
-const St = globalThis.Studia, S = St.S;
+for (const f of ["i18n.js", "icons.js", "app.js", "effort.js", "course.js", "examroom.js"]) require(web + "/" + f);
+const St = globalThis.Studia, S = St.S, calls = [];
+// this profile's library (4.2: the ticks are kept there): what the page asks of it
+St.mocks.reads_import = (keys) => { calls.push(["import", keys]); return { ok: %(import_ok)s, added: keys.length }; };
+St.mocks.reads_set = (keys, on) => { calls.push(["set", keys, on]); return { ok: true, changed: 1 }; };
+St.mocks.exam_room = () => ({ ok: false, error: "x" });
 S.profileId = %(profile)s;                  // (boot() knows the profile only after the page's scripts have loaded)
 S.day = { dayKey: "x" };
-for (const k of %(opened)s) St.after.day({ dayKey: k });
-for (const k of %(untick)s) St.A["rd-read"]({ dataset: { day: k }, checked: false });
-fs.writeFileSync(saved, JSON.stringify(data));
-process.stdout.write(JSON.stringify(data), () => process.exit(0));      // after the output is out (Linux pipes)
+(async () => {
+  for (const k of %(opened)s) St.after.day({ dayKey: k });
+  for (const k of %(opened)s) St.after.day({ dayKey: k });          // (drawn again: asked once)
+  await new Promise((r) => later(r, 30));
+  for (const k of %(untick)s) await St.A["er-read"]({ dataset: { day: k }, checked: false });
+  fs.writeFileSync(saved, JSON.stringify(data));
+  process.stdout.write(JSON.stringify({ data, calls }), () => process.exit(0));      // after the output is out (Linux pipes)
+})();
 """
 
 
 @pytest.mark.skipif(not __import__("shutil").which("node"), reason="node is not installed")
 def test_the_days_you_read_are_ticked_for_your_profile_only(tmp_path):
     """Every profile's page shares one browser storage, and the read ticks were kept under one key: the second student's
-    Get ready showed the first one's lectures as read, and unticking one there unticked it for the first student."""
+    Get ready showed the first one's lectures as read, and unticking one there unticked it for the first student. Since
+    4.2 the ticks are kept in each profile's library; the page's old ticks go there once per profile, its own key only
+    ("studia-read" was the first profile's), and a failed import is tried again next time."""
     from pathlib import Path
 
     web = Path(paths.__file__).parent / "web"
     store = tmp_path / "storage.json"
-    store.write_text(json.dumps({"studia-read": json.dumps(["c|2026-10-07|lecture"])}), encoding="utf-8")   # (3.3.1)
+    store.write_text(json.dumps({"studia-read": json.dumps(["c|2026-10-07|lecture"]),             # (3.3.1)
+                                 "studia-read:p-1234abcd": json.dumps(["c|2026-10-09|lecture"])}), encoding="utf-8")
 
-    def launch(profile, opened=(), untick=()):
+    def launch(profile, opened=(), untick=(), import_ok=True):
         script = tmp_path / "page.js"
         script.write_text(TICKS_PAGE % {"web": json.dumps(web.as_posix()), "store": json.dumps(str(store)),
                                         "profile": json.dumps(profile), "opened": json.dumps(list(opened)),
-                                        "untick": json.dumps(list(untick))}, encoding="utf-8")
+                                        "untick": json.dumps(list(untick)), "import_ok": json.dumps(import_ok)},
+                          encoding="utf-8")
         r = subprocess.run(["node", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=60)
         assert r.returncode == 0, r.stderr
-        return {k: json.loads(v) for k, v in json.loads(r.stdout).items() if k.startswith("studia-read")}
+        out = json.loads(r.stdout)
+        return out["calls"], {k: v for k, v in out["data"].items() if k.endswith(":moved")}
 
     a, b, day = "main", "p-1234abcd", "c|2026-10-14|lecture"
-    assert launch(a, [day]) == {"studia-read": ["c|2026-10-07|lecture", day]}     # the first profile: its old key
-    assert launch(b, ["c|2026-10-21|lecture"]) == {"studia-read": ["c|2026-10-07|lecture", day],
-                                                   f"studia-read:{b}": ["c|2026-10-21|lecture"]}
-    got = launch(b, [day], untick=[day])        # the second student opens the day, then unticks it
-    assert got["studia-read"] == ["c|2026-10-07|lecture", day] and got[f"studia-read:{b}"] == ["c|2026-10-21|lecture"]
+    calls, moved = launch(a, [day], import_ok=False)                      # the library didn't take it: not marked
+    assert calls == [["import", ["c|2026-10-07|lecture"]], ["set", [day], True]] and moved == {}
+    calls, moved = launch(a, [day])
+    assert calls == [["import", ["c|2026-10-07|lecture"]], ["set", [day], True]] and moved == {"studia-read:moved": "1"}
+    calls, _ = launch(a, ["c|2026-10-16|lecture"])                         # once: never again
+    assert calls == [["set", ["c|2026-10-16|lecture"], True]]
+    calls, moved = launch(b, [day], untick=[day])        # the second student: its own ticks only, then unticks one
+    assert calls == [["import", ["c|2026-10-09|lecture"]], ["set", [day], True], ["set", [day], False]]
+    assert moved == {"studia-read:moved": "1", f"studia-read:{b}:moved": "1"}

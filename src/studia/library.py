@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS quiz_attempts(
   id TEXT PRIMARY KEY, plan_id TEXT, course_id TEXT, started_at TEXT, finished_at TEXT DEFAULT '',
   score REAL DEFAULT 0, total INTEGER DEFAULT 0, answers TEXT DEFAULT '[]', only TEXT DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS ix_quiz_attempts_plan ON quiz_attempts(plan_id);
+-- 4.2 the class days a student read (the Exam room's ticks; the page's storage kept them before, per PC)
+CREATE TABLE IF NOT EXISTS day_reads(day_key TEXT PRIMARY KEY, at TEXT);
 """
 _REC_COLS = ["delivery_id", "course_id", "folder_id", "folder_path", "name", "start", "duration_s", "viewer_url",
              "session_id", "kind", "section_tag", "is_new", "duplicate_of", "hidden", "status", "error", "first_seen",
@@ -178,7 +180,8 @@ class Library:
         for table, col, decl in (("courses", "cover_url", "TEXT DEFAULT ''"), ("courses", "progress", "INTEGER"),
                                  ("courses", "folder", "TEXT DEFAULT ''"),
                                  ("recordings", "live", "INTEGER DEFAULT 0"),
-                                 ("recordings", "uploaded", "TEXT DEFAULT ''")):
+                                 ("recordings", "uploaded", "TEXT DEFAULT ''"),
+                                 ("card_reviews", "cram", "INTEGER DEFAULT 0")):      # 4.2: a cram session's review
             if col not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
@@ -1157,6 +1160,27 @@ class Library:
                                        f"WHERE delivery_id IN ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
         return sorted(({"delivery_id": r[0], "t": r[1], "text": r[2], "note": r[3], "created_at": r[4]} for r in rows),
                       key=lambda m: (m["delivery_id"], m["t"]))
+
+    # ------------------------------------------------------------------ the class days read (the Exam room's ticks)
+    def day_reads(self, day_keys: Optional[Iterable[str]] = None) -> set[str]:
+        """The class days read, of these or all."""
+        with self._lock:
+            rows = self.db.execute("SELECT day_key FROM day_reads").fetchall()
+        got = {r[0] for r in rows}
+        return got if day_keys is None else got & set(day_keys)
+
+    def set_read(self, day_keys: Iterable[str], on: bool = True) -> int:
+        """Tick class days read (opened, or ticked by hand; the first time is kept), or untick them."""
+        keys = [str(k) for k in day_keys if k]
+        with self._lock:
+            before = self.db.total_changes
+            for k in keys:
+                if on:
+                    self.db.execute("INSERT OR IGNORE INTO day_reads(day_key, at) VALUES(?, ?)", (k, _now()))
+                else:
+                    self.db.execute("DELETE FROM day_reads WHERE day_key=?", (k,))
+            self.db.commit()
+            return self.db.total_changes - before
 
     # ------------------------------------------------------------------ IEULearn's assignments (the calendar's deadlines)
     def merge_assignments(self, course_id: str, plan: Optional[list[Any]] = None,

@@ -163,6 +163,8 @@ body.sp-page { margin: 0; background: #fff; padding: 28px 16px; }
 .pk-item:hover { background: var(--surface-2); }
 .pk-item.off { opacity: .55; cursor: default; }
 .pk-none { padding: 2px 12px 8px; }
+.pk-item > .dim.sm { flex: none; white-space: nowrap; }      /* "not on this PC", "Left out: … Include anyway": one line */
+.pk-item .link { font-size: inherit; }
 .pk-heavy { display: flex; gap: 8px; align-items: flex-start; line-height: 1.45; }
 .pk-heavy > .i { flex: none; margin-top: 2px; color: var(--amber); }
 .pk-heavy b { display: block; }

@@ -1,0 +1,8 @@
+{
+  "_unit": "4.2.0 QA of the exam kit and the pickers: a pasted answer that stops part way says so, and one made from another course's zip says where it goes",
+  "This is the prompt for ChatGPT or Claude, not its answer. Send it in the chat with the zip, then copy the chat's answer and paste that here.": "Bu, ChatGPT ya da Claude için hazırlanan talimat, sohbetin cevabı değil. Onu zip'le birlikte sohbete gönder, sonra sohbetin cevabını kopyalayıp buraya yapıştır.",
+  "You added this quiz already: it's on this course's Practice tab, called {title}.": "Bu deneme sınavını zaten eklemişsin: bu dersin Alıştırma sekmesinde, adı {title}.",
+  "This was made from your {course} zip. Open {course}'s Practice tab and paste it there.": "Bu, {course} zip'inden hazırlandı. {course} dersinin Alıştırma sekmesini aç ve oraya yapıştır.",
+  "The answer stops part way, so the rest of the quiz is missing. If the chat shows Continue, press it there, then press Undo here and paste the whole answer again.": "Cevap yarıda kesilmiş, sınavın geri kalanı eksik. Sohbette devam etme düğmesi varsa ona bas, sonra burada Geri al'a bas ve cevabın tamamını yeniden yapıştır.",
+  "The answer stops part way, so the rest of the cards are missing. If the chat shows Continue, press it there, then paste the whole answer again: the cards you have already are skipped.": "Cevap yarıda kesilmiş, kartların geri kalanı eksik. Sohbette devam etme düğmesi varsa ona bas, sonra cevabın tamamını yeniden yapıştır: zaten eklenen kartlar atlanır."
+}

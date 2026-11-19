@@ -522,3 +522,19 @@ def test_no_copy_of_a_removed_file_stays_behind(env):
     assert len(list(copies.glob("*.jpg"))) == 2
     env.svc.delete(chat["id"])
     assert not list(copies.glob("*.jpg")) and not box.exists()
+
+
+def test_an_upload_listing_students_stays_out_when_its_meta_json_cannot_be_written(tmp_path, monkeypatch):
+    """An upload from before 4.2 (no "students" in its meta.json) was checked, then the check thrown away when
+    meta.json couldn't be rewritten (read-only, a full disk): every page went to the AI on every turn."""
+    monkeypatch.setattr(chatfiles, "root", lambda: tmp_path)
+    box = chatfiles.folder("draft-0123abcd") / "u1"
+    box.mkdir(parents=True)
+    (box / "text.json").write_bytes(json.dumps(["\n".join(f"{20210600000 + n} 85" for n in range(30))]).encode())
+    m = {"id": "u1", "kind": "text", "name": "grades.csv"}
+
+    def refuse(self, *a, **k):
+        raise PermissionError("read-only")
+    monkeypatch.setattr(chatfiles.Path, "write_text", refuse)
+    assert chatfiles.students("draft-0123abcd", dict(m)) is True
+    assert chatfiles.students("draft-0123abcd", {**m, "kind": "image"}) is False

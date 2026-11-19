@@ -1,0 +1,108 @@
+/* IEUStudia — the mistake loop (mistakes.js): a quiz's answers opened beside the right ones, where a question was
+ * taught (its slide, the words around it, a clip in the player), the Practice tab's Mistakes and "Where you lose
+ * points", a missed question asked again in the flashcards, and the quiz dialog's "My weak spots". The app's colours:
+ * green right, red wrong, amber partly, blue for what you pick. */
+
+/* ---- an answer's row: the end screen and the lists */
+.qz-results li.mq, .mq-list li.mq { display: block; padding: 0; }
+.qz-results:has(.mq.open) { max-height: min(62vh, 560px); }
+.mq-list { list-style: none; margin: 4px 0; padding: 0; }
+.mq-list li.mq { border-top: 1px solid var(--border); }
+.mq-list li.mq:first-child { border-top: 0; }
+.mq-h { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 6px 4px; text-align: left;
+  color: var(--text); cursor: pointer; font: inherit; font-size: 13px; border-radius: 6px; }
+.mq-h:hover { background: var(--surface-2); }
+.mq-h .qz-res-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mq-h .qz-res-t p { margin: 0; display: inline; }
+.mq-h > .i:last-child { color: var(--text-3); flex: none; }
+.mq.ok .mq-h > .i:first-child { color: var(--green); }
+.mq.half .mq-h > .i:first-child { color: var(--amber); }
+.mq.no .mq-h > .i:first-child { color: var(--red); }
+.mq.off .mq-h { color: var(--text-3); text-decoration: line-through; }
+.mq-meta { flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mq-more { display: flex; flex-direction: column; gap: 8px; padding: 4px 4px 12px 28px; font-size: 13px; }
+.mq-cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: start; }
+.mq-box { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.mq-box.ok { background: var(--green-soft); box-shadow: inset 3px 0 0 var(--green); }
+.mq-box.no { background: var(--red-soft); box-shadow: inset 3px 0 0 var(--red); }
+.mq-box.half { background: var(--amber-soft); box-shadow: inset 3px 0 0 var(--amber); }
+.mq-box .md p { margin: 2px 0; }
+.mq-box .qz-steps, .mq-box .qz-points { margin: 4px 0; }
+.mq-lab { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); margin-bottom: 3px; }
+.mq-typed { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mq-why b { font-weight: 600; }
+.mq-why.no b { color: var(--red); }
+.mq-src { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.mq-acts { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+/* the end screen: the missed questions that joined the cards, with Undo */
+.mq-carded { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 0; color: var(--text-2); }
+.mq-carded > .i { color: var(--accent-text); flex: none; }
+
+/* ---- where it was taught */
+.modal.mq-mom-modal { width: min(780px, calc(100vw - 40px)); }
+.mq-slide { margin: 0 0 10px; }
+.mq-slide img { display: block; width: 100%; max-height: 38vh; object-fit: contain; border-radius: 8px; background: #fff;
+  border: 1px solid var(--border); }
+.mq-slide figcaption { margin-top: 5px; }
+.mq-lines { max-height: min(210px, 26vh); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+/* (on a small screen the dialog scrolls; its buttons stay in view, as other dialogs' do) */
+.mq-mom > .actions { position: sticky; bottom: -22px; margin: 14px -24px -22px; padding: 12px 24px 18px; background: var(--surface);
+  border-radius: 0 0 14px 14px; flex-wrap: wrap; }
+.mq-line { display: flex; gap: 10px; padding: 4px 6px; border-radius: 6px; font-size: calc(13px * var(--read, 1)); line-height: 1.5; }
+.mq-line.at { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--blue); }
+.mq-ts { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+/* ---- the player playing a clip */
+.lp-clip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; border-radius: var(--radius);
+  background: var(--accent-soft); font-size: 13px; flex: none; }
+.lp-clip .grow { flex: 1; min-width: 180px; }
+.lp-clip > .i { color: var(--accent-text); flex: none; }
+
+/* ---- the Practice tab: Mistakes, Where you lose points */
+.mq-card .pr-h .btn { margin-left: 0; }
+.mq-sub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); margin: 12px 2px 4px; }
+.mq-skills { display: flex; flex-direction: column; container-type: inline-size; }
+.mq-skill { border-top: 1px solid var(--border); }
+.mq-skill:first-child { border-top: 0; }
+.mq-skill-h { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; width: 100%; border: 0; background: none; padding: 7px 4px;
+  text-align: left; color: var(--text); font: inherit; font-size: 13px; border-radius: 6px; }
+button.mq-skill-h:not(:disabled) { cursor: pointer; }
+button.mq-skill-h:not(:disabled):hover { background: var(--surface-2); }
+/* the name keeps some room (it shrank to nothing and ran over the counts in the Exam room's column at 1024 px, in
+   Turkish); in a narrow column its counts go under it */
+.mq-skill-h .grow { flex: 1 1 0; min-width: 7em; overflow-wrap: anywhere; }
+.mq-skill-h .lo-no { flex: none; }
+.mq-count { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+@container (max-width: 560px) {
+  .mq-skill-h .mq-count { order: 9; flex-basis: 100%; white-space: normal; }
+}
+.pill.mq-st { flex: none; }
+.pill.mq-st.no { background: var(--red-soft); color: var(--red); }
+.pill.mq-st.half { background: var(--amber-soft); color: var(--amber); }
+.pill.mq-st.ok { background: var(--green-soft); color: var(--green); }
+.pill.mq-st.none { background: var(--surface-2); color: var(--text-2); }
+.mq-skill > .mq-list { margin: 0 0 8px 18px; }
+
+/* ---- a flashcard's menu; a missed question asked again */
+.fc-top:has(.fc-more) { justify-content: flex-start; }
+.fc-top:has(.fc-more) > .dim { margin-left: auto; }
+.fc-top .fc-more { flex: none; margin: -4px -6px -4px 0; }
+.fc-mc .fc-q { margin-bottom: 10px; }
+/* (its buttons stay in view as every card's do: practice.css) */
+.mq-ed { width: 100%; resize: vertical; font: inherit; height: auto; padding: 8px 12px; line-height: 1.5; }
+
+/* ---- the quiz dialog's "My weak spots" */
+.modal.qz-dlg .cp-modes.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* five of them (missed questions and picked moments): the last one, what it was opened for, the whole width */
+.modal.qz-dlg .cp-modes.four > .cp-mode:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.mq-weakbox { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: var(--accent-soft);
+  font-size: 13px; }
+.mq-weakbox > .i { color: var(--accent-text); flex: none; margin-top: 2px; }
+.mq-weakbox .sm { margin-top: 3px; }
+
+@media (max-width: 760px) {
+  .mq-cmp { grid-template-columns: 1fr; }
+  .modal.qz-dlg .cp-modes.four { grid-template-columns: 1fr; }
+  .mq-meta { display: none; }
+  .mq-skill-h { flex-wrap: wrap; }
+}

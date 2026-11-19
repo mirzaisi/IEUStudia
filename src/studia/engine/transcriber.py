@@ -32,6 +32,13 @@ __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "mo
 ENGINE_VERSION = "2.1"              # 2.1: numbers read out are kept whole (2.0's cleanup cut "0, 0, 0" to "0")
 UNCLEAR = "[unclear]"
 MIN_CONF = 0.38                     # below this in both languages a passage makes no sense: it becomes [unclear]
+# Silero VAD's speech threshold: a window is speech above it. A recording where it finds under 8 s of speech is "no
+# speech" (quality.analyze_audio). Measured (Nov 2026): a real lecture made as quiet as the owner's 12 "no speech"
+# recordings (speech at -64 dBFS over their own hiss), or buried in loud noise, is still found at 0.5 wherever the
+# speech model can make out words; a lower threshold found no lecture in any of them: under 0.2 near-silent audio gives
+# "speech" that is only hiss (0.15: 5 minutes of it in a 42-minute recording), which the model turns into "Thank you."
+# in every window. Those 12 were microphone-off recordings (quality.NEAR_SILENT_DBFS).
+VAD_THRESHOLD = 0.5
 Progress = Callable[[str, float, str], None]
 
 
@@ -159,7 +166,7 @@ def _units(audio: np.ndarray, cancel: Optional[threading.Event]) -> tuple[list[t
     if len(audio) < SR // 2:
         return [], []
     check(cancel)
-    opts = VadOptions(threshold=0.5, min_speech_duration_ms=200, min_silence_duration_ms=300,
+    opts = VadOptions(threshold=VAD_THRESHOLD, min_speech_duration_ms=200, min_silence_duration_ms=300,
                       speech_pad_ms=200, max_speech_duration_s=14.0)
     speech = get_speech_timestamps(audio, opts)
     check(cancel)

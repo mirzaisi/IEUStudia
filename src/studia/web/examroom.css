@@ -1,0 +1,111 @@
+/* IEUStudia — the Exam room (examroom.js): one page per coming quiz or exam, and its printed copy */
+.er-page { display: flex; flex-direction: column; gap: 12px; }
+.er-page .card { margin: 0; }
+.er-head { padding: 16px 18px 14px; position: relative; overflow: hidden; }
+.er-head::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: linear-gradient(90deg, hsl(var(--h, 220) 70% 50%), hsl(calc(var(--h, 220) + 40) 70% 52%)); }
+.er-eyebrow { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-2);
+  text-transform: none; letter-spacing: .01em; }
+.er-eyebrow .i { color: var(--red); }
+.er-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 8px; }
+.er-title h1 { margin: 0; font: 600 24px/1.2 var(--font-display); letter-spacing: -.015em; }
+.er-share { font-size: 12.5px; font-weight: 600; color: var(--text-2); background: var(--surface-2); border-radius: 999px;
+  padding: 3px 10px; box-shadow: inset 0 0 0 1px var(--border); cursor: help; }
+.er-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 13.5px; padding: 3px 0; min-width: 0; }
+.er-line > .i { color: var(--text-3); flex: none; }
+.er-line .dim { min-width: 0; }
+.er-line .link { font-size: 12.5px; }
+.er-rel { font-weight: 600; color: var(--accent-text); background: var(--accent-soft); border-radius: 6px; padding: 1px 7px; font-size: 12.5px; }
+.er-los { display: grid; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.er-lo { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--text-2); }
+.er-lo .lo-chip { flex: none; }
+
+/* readiness: three counts, side by side (never one percentage) */
+.er-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.er-count { display: flex; flex-direction: column; gap: 1px; padding: 11px 14px; border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--border); box-shadow: var(--shadow-sm); min-width: 0; }
+.er-count .er-k { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); }
+.er-count b { font: 600 19px/1.3 var(--font-display); }
+.er-count.ok { box-shadow: inset 3px 0 0 var(--green), var(--shadow-sm); }
+
+.er-missing { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.er-missing .grow, .er-tray .grow, .er-q .grow { flex: 1; min-width: 0; }
+.er-missing.ok { background: color-mix(in srgb, var(--green-soft) 70%, var(--surface)); }
+.er-ico { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; flex: none; background: var(--surface-2); color: var(--text-2); }
+.er-ico.warn { background: var(--amber-soft); color: var(--amber); }
+.er-ico.ok { background: var(--green-soft); color: var(--green); }
+
+.er-steps { padding: 12px 14px; }
+.er-h { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; flex-wrap: wrap; }
+.er-h > .i { color: var(--text-3); }
+.er-h .dim { margin-left: 2px; }
+.er-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.er-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.er-grid.one { grid-template-columns: minmax(0, 1fr); }
+.er-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.er-card { padding: 12px 14px; min-width: 0; }
+.er-sub { margin: 0 0 8px; }
+.er-item { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; background: none; border: 0; border-radius: 8px;
+  padding: 7px 8px; margin: 0 -8px; color: var(--text); font: inherit; cursor: pointer; min-width: 0; }
+.er-item:hover { background: var(--surface-2); }
+.er-item.row { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.er-item.row .er-text { flex: 1; min-width: 0; }
+.er-text { font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.er-text mark { background: var(--hit, #fcd34d); color: var(--hit-text, #1a1203); border-radius: 3px; padding: 0 2px; }
+.er-meta { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); flex-wrap: wrap; }
+.er-note { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); margin-top: 8px; flex-wrap: wrap; }
+.er-note > .i { color: var(--text-3); flex: none; }
+.er-q { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); }
+.er-q b { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.er-more { font-size: 12.5px; margin: 6px 0 2px; }
+
+.er-weeks .er-week { padding: 8px 0; border-top: 1px solid var(--border); }
+.er-week-h { display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; margin-bottom: 3px; }
+.er-week-h .grow { color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.er-day, .er-file { display: flex; align-items: center; gap: 8px; padding: 3px 2px; font-size: 13px; min-width: 0; flex-wrap: wrap; }
+.er-file > .i { color: var(--text-3); }
+.er-file .link, .er-day .link { overflow-wrap: anywhere; text-align: left; }
+.er-none { padding: 2px; }
+.er-print-tick { display: none; }
+.er-chip { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font: inherit; font-size: 12.5px; border: 0; color: var(--text); }
+.er-chip .i { color: var(--red); }
+.er-chip:hover { background: var(--surface-2); }
+.er-chip.soon { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--red) 55%, transparent); }
+.er-tray { margin: 0; }
+.er-tray-acts { display: flex; gap: 8px; margin-top: 8px; }
+.er-center { text-align: center; margin-top: -8px; }
+.er-foot { text-align: center; margin: 2px 0 6px; }
+.er-pick { max-height: 46vh; overflow-y: auto; }
+
+@media (max-width: 900px) {
+  .er-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .er-counts { grid-template-columns: minmax(0, 1fr); }
+  .er-missing { flex-wrap: wrap; }
+  .er-title h1 { font-size: 21px; }
+}
+
+/* the printed page (Print: Edge's own dialog, also "Save as PDF"): the room alone, black on white, without its
+   buttons; the read ticks and files on this PC as boxes to tick on paper */
+@media print {
+  html:has(.er-page), html:has(.er-page) body { background: #fff !important; height: auto; }
+  html:has(.er-page) .sidebar, html:has(.er-page) .topbar, html:has(.er-page) .queuebar, html:has(.er-page) .qs-pop,
+  html:has(.er-page) #toasts, html:has(.er-page) #overlay { display: none !important; }
+  html:has(.er-page) .app { display: block; height: auto; animation: none; }
+  html:has(.er-page) .main { display: block; overflow: visible; }
+  html:has(.er-page) .view { overflow: visible; padding: 0; }
+  .er-page { --text: #000; --text-2: #222; --text-3: #555; --surface: #fff; --surface-2: #f3f3f3; --border: #bbb; --accent-text: #000;
+    --accent-soft: #eee; color: #000; max-width: none; gap: 8px; font-size: 11pt; }
+  .er-page .noprint, .er-page .btn, .er-page input[type=checkbox] { display: none !important; }
+  .er-page .card, .er-count { box-shadow: none !important; border: 1px solid #bbb; }
+  .er-page .card:not(.er-weeks), .er-week { break-inside: avoid; }      /* (its weeks go on over the next page) */
+  .er-weeks > .er-h { break-after: avoid; }                              /* (never alone at a page's foot) */
+  .er-page .link { color: #000; text-decoration: none; pointer-events: none; }
+  .er-head::before { display: none; }
+  .er-grid:not(.one) { grid-template-columns: 1fr 1fr; }
+  .er-print-tick { display: inline; font-size: 12pt; }
+  .er-item { break-inside: avoid; }
+  .er-missing.ok { background: #fff; }
+}

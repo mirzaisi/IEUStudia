@@ -151,7 +151,7 @@
       ${r.days_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${leftOut(r.days_left_out)}</span></div>` : ""}
       ${r.materials_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${filesOut(r.materials_left_out)}</span></div>` : ""}
       <div class="note-sm">${I("youtube", "sm")}<span>${t("A review sheet is written only, with no videos. For YouTube videos of these weeks, make a video study plan.")}</span>
-        <button class="btn sm" data-act="plan-new" data-id="${esc(p.course_id)}" data-kind="videos" data-focus="${esc((p.scope || {}).focus || "")}" data-weeks="${esc(((p.scope || {}).weeks || []).join(","))}">${I("youtube", "sm")} ${t("Video plan")}</button></div>
+        <button class="btn sm" data-act="plan-new" data-id="${esc(p.course_id)}" data-kind="videos" data-focus="${esc((p.scope || {}).focus || "")}" data-key="${esc((p.scope || {}).focus_key || "")}" data-weeks="${esc(((p.scope || {}).weeks || []).join(","))}">${I("youtube", "sm")} ${t("Video plan")}</button></div>
       <div class="card pl-prep md">${St.mdToHtml(r.markdown || "")}</div>`;
   }
   function progressHTML(p) {
@@ -351,7 +351,15 @@
     const covered = weeks.filter((w) => w.no < cur.no && w.no > (prev ? prev.no : 0) && !w.exam && (w.start || w.topic)).map((w) => w.no);
     return covered.length ? covered : [cur.no];
   }
-  async function newPlanDialog(courseId, parent, kind, focus, weeks) {
+  // the course-wide and announcement files tied to the assessment the plan is for (its posted solutions): in the
+  // plan, also one not on this PC yet (its Download fetches it, and the plan reads it once it is in)
+  const planTied = (r, a) => (St.picks && a ? [...St.picks.tied(r, a.key), ...St.picks.tiedMissing(r, a.key)] : []);
+  const focusKey = () => ((D.opts.assessments || []).find((a) => D.scope.focus_key && a.key === D.scope.focus_key)
+    || (D.opts.assessments || []).find((a) => a.name === D.scope.focus && a.ahead !== false)
+    || (D.opts.assessments || []).find((a) => a.name === D.scope.focus) || {}).key || "";
+  const planMissing = (weeks) => [...new Set([...D.opts.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.missing),
+    ...(St.picks ? St.picks.tiedMissing(D.opts, focusKey()) : [])])];
+  async function newPlanDialog(courseId, parent, kind, focus, weeks, key) {
     const courses = S.courses.filter((c) => c.code);
     D.courseId = courseId || (S.view.name === "course" ? S.view.courseId : null) || (courses[0] || {}).id;
     if (!D.courseId) { toast(t("Sync your courses first."), "error"); return; }       // (no course yet: as the study pack's)
@@ -362,10 +370,16 @@
     if (!r.ok) { closeModal(); toast(r.error, "error"); return; }
     D.opts = r;
     const cur = r.weeks.find((w) => w.current);
-    const next = (focus && r.assessments.find((a) => a.name === focus)) || r.assessments.find((a) => !r.weeks.find((w) => w.no === a.week && w.past));
+    // as the quiz dialog's "For …": the first one still ahead (d.assessments, with the weeks it covers)
+    // (by its key first: two of one name, "Midterm Exam" in week 8 and in week 13, are two; one asked for that isn't
+    // among them, a quiz known only by its day, is not the next one: its weeks, when given, come below)
+    const next = (key && r.assessments.find((a) => a.key === key))
+      || (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
+      || (!key && !focus ? r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past)) : null);
     const base = parent ? { ...parent.scope } : null;
-    D.scope = base || (next ? { weeks: next.weeks, focus: next.name, los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week) }
-      : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", los: [], minutes: 180, deadline: "" });
+    const tied = (a) => planTied(r, a);                                       // its posted solutions (picks.js)
+    D.scope = base || (next ? { weeks: next.weeks, focus: next.name, focus_key: next.key || "", los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week), files: tied(next) }
+      : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", focus_key: "", los: [], minutes: 180, deadline: "", files: [] });
     D.scope = { kind: kind || "videos", topics: "", difficulties: "", allow_tr: false, extras: false, model: r.model || "sonnet", ...D.scope };
     // a ChatGPT plan from before reasoning levels: its Quick / Standard / Thorough, as plans.levels() reads it
     const legacy = { haiku: "low", sonnet: "medium", opus: "high" }[base && base.model];
@@ -373,6 +387,9 @@
     if (!["en", "tr", "both"].includes(D.scope.video_lang)) D.scope.video_lang = D.scope.allow_tr ? "both" : St.yt ? St.yt.lang() : "en";
     if (!D.scope.deadline) { const d = new Date(); d.setDate(d.getDate() + 7); D.scope.deadline = isoDay(d); }
     if (weeks && weeks.length && !parent) D.scope.weeks = weeks.filter((n) => r.weeks.some((w) => w.no === n));   // asked from the chat
+    // picks.js: a class list let in ("Include anyway"); a course-wide one is ticked
+    if (St.picks) St.picks.live({ open: () => !!$("#overlay #pd-cost"), redraw: () => { readInputs(); drawDialog(); estimate(); },
+      state: () => (D.opts ? { opts: D.opts, files: { add: (id) => { if ((D.opts.general || []).some((f) => f.id === id)) D.scope.files = [...new Set([...(D.scope.files || []), id])]; } } } : null) });
     drawDialog();
     estimate();
   }
@@ -391,11 +408,18 @@
     const sel = new Set(sc.weeks);
     const weeks = r.weeks.filter((w) => w.start || w.topic);
     const picked = weeks.filter((w) => sel.has(w.no));
-    const missing = [...new Set(picked.flatMap((w) => w.missing))];      // (a file of a unit for two weeks once)
+    const missing = planMissing(sel);                                     // (a file of a unit for two weeks once)
     const todo = picked.flatMap((w) => w.todo_days || []);
+    // the course-wide and announcement files (ticked: the plan reads them too), and the picked weeks' class lists
+    const gen = St.picks ? St.picks.groupHTML(r, new Set(sc.files || []), "pd-gen") : "";
+    const lists = [...new Map(picked.flatMap((w) => w.students || []).map((f) => [f.id, f])).values()];
     const empty = picked.length > 0 && picked.every(examOnly);           // a plan from nothing used the AI plan for it
     const ai = r.ai || {};
     const prep = sc.kind === "prep";
+    // a review sheet with nothing of its weeks on this PC would be written from the syllabus's topics alone
+    const bare = prep && picked.length > 0 && !empty && !picked.some((w) => w.files_ready || w.lectures_done) && !(sc.files || []).length;
+    // (an assessment that is over isn't one to prepare for, but the one this plan was made for stays)
+    const ahead = (r.assessments || []).map((a, i) => [a, i]).filter(([a]) => a.ahead !== false || sc.focus === a.name);
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
     const kinds = [["videos", "youtube", t("Video study plan"), t("Finds YouTube videos for these weeks and checks each one's transcript (captions) to see what it really teaches.")],
       ["prep", "cap", t("Exam review sheet"), t("A short written review: key ideas per learning outcome, a formula sheet, practice questions with solutions.")],
@@ -408,7 +432,7 @@
       ${D.parent ? "" : `<div class="field"><div class="cp-modes">${kinds.map(([v, ic, label, desc]) => `<button type="button" class="cp-mode ${sc.kind === v ? "on" : ""}" data-act="pd-kind" data-val="${v}">
         <span class="cp-mode-t">${I(ic, "sm")} ${label}</span><span class="cp-mode-d">${desc}</span></button>`).join("")}</div></div>
       <div class="field"><label>${t("Course")}</label><select class="input" data-act="pd-course">${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === D.courseId ? "selected" : ""}>${esc(c.code)} — ${esc(c.display_name)}</option>`).join("")}</select></div>`}
-      ${r.assessments.length ? `<div class="field"><label>${t("Prepare for")}</label><div class="pd-picks">${r.assessments.map((a, i) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
+      ${ahead.length ? `<div class="field"><label>${t("Prepare for")}</label><div class="pd-picks">${ahead.map(([a, i]) => `<button class="pd-pick ${sc.focus === a.name ? "on" : ""}" data-act="pd-assess" data-i="${i}">
         <b>${esc(a.name)}</b><span>${t("week {n}", { n: a.week })}${a.los.length ? ` · LO${a.los.join(", LO")}` : ""}</span></button>`).join("")}
         <button class="pd-pick ${!sc.focus ? "on" : ""}" data-act="pd-assess" data-i="-1"><b>${t("Just these weeks")}</b><span>${t("no quiz in mind")}</span></button></div></div>` : ""}
       <div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: sel.size })}</span><span class="cp-tools">${weeks.some((w) => w.current) ? `<button type="button" class="btn ghost sm" data-act="pd-thisweek">${t("This week")}</button>` : ""}<button type="button" class="btn ghost sm" data-act="pd-clear">${t("Clear")}</button></span></label>
@@ -417,7 +441,10 @@
           <span class="t">${esc(w.topic || "—")}${w.current ? ` <span class="pill now">${t("this week")}</span>` : ""}</span>
           <span class="st"><span class="${!w.files ? "" : w.files_ready === w.files ? "ok" : "miss"}" title="${t("Slides and PDFs on this PC / listed on IEULearn")}">${I("file", "xs")}${w.files ? `${w.files_ready}/${w.files}` : "–"}</span>
             <span class="${!w.lectures ? "" : w.lectures_done === w.lectures ? "ok" : "miss"}" title="${t("Lectures transcribed / recorded")}">${I("video", "xs")}${w.lectures ? `${w.lectures_done}/${w.lectures}` : "–"}</span></span></label>`).join("")}</div>
-        ${empty ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("An exam week has no files or lectures of its own: pick the weeks the exam covers.")}</span></div>` : ""}</div>
+        ${empty ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("An exam week has no files or lectures of its own: pick the weeks the exam covers.")}</span></div>` : ""}
+        ${bare ? `<div class="note-sm pd-exam">${I("info", "sm")}<span>${t("Nothing of these weeks is on this PC yet. Download their files or transcribe their lectures first: a review sheet needs something to read.")}</span></div>` : ""}</div>
+      ${gen ? `<div class="field"><div class="pk-material">${gen}</div></div>` : ""}
+      ${lists.map((f) => `<div class="note-sm pd-list">${I("users", "sm")}<span>${esc(f.name)}: ${St.picks.fileSub({ ...f, students: true }, "")}</span></div>`).join("")}
       ${missing.length || todo.length ? `<div class="pd-gaps">
         ${missing.length ? `<div class="pd-gap">${I("file")}<span class="grow">${missText}</span><button class="btn sm" data-act="pd-download">${I("download", "sm")} ${t("Download {n}", { n: missing.length })}</button></div>` : ""}
         ${todo.length ? `<div class="pd-gap">${I("video")}<span class="grow">${todoText}</span><button class="btn sm" data-act="pd-transcribe">${I("wave", "sm")} ${t("Transcribe {n}", { n: todo.length })}</button></div>` : ""}</div>` : ""}
@@ -438,7 +465,7 @@
       </div>
       <div class="cp-foot"><div class="cp-cost" id="pd-cost">${costHTML()}</div>
         <div class="cp-btns"><button class="btn" data-act="modal-close">${t("Cancel")}</button>
-          <button class="btn primary" data-act="pd-go" ${sel.size && !empty && ai.available && ai.can_plans !== false && !D.starting ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
+          <button class="btn primary" data-act="pd-go" ${sel.size && !empty && !bare && ai.available && ai.can_plans !== false && !D.starting ? "" : "disabled"}>${I(prep ? "cap" : "youtube", "sm")} ${prep ? (D.parent ? t("Write it again") : t("Write review sheet")) : D.parent ? t("Update plan") : t("Build plan")}</button></div></div>`);
     $(".modal").classList.add("pd");
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keepBody;
     const nw = $(".pd-weeks2"); if (nw) nw.scrollTop = keepWeeks;
@@ -513,7 +540,7 @@
 
   Object.assign(A, {
     "plan-new": (el) => newPlanDialog(el && el.dataset.id, null, el && el.dataset.kind, el && el.dataset.focus,
-      el && el.dataset.weeks ? el.dataset.weeks.split(",").map(Number).filter(Boolean) : null),
+      el && el.dataset.weeks ? el.dataset.weeks.split(",").map(Number).filter(Boolean) : null, el && el.dataset.key),
     "pd-kind": (el) => {
       if (["pack", "sheet"].includes(el.dataset.val)) { A["pack-new"]({ dataset: { id: D.courseId, kind: el.dataset.val } }); return; }    // studypack.js
       readInputs(); D.scope.kind = el.dataset.val; drawDialog(); estimate(); },
@@ -540,8 +567,16 @@
     "pd-assess": (el) => {
       readInputs();
       const a = D.opts.assessments[+el.dataset.i];
-      if (a) Object.assign(D.scope, { weeks: a.weeks, focus: a.name, los: a.los, deadline: weekEnd(D.opts.weeks, a.week) || D.scope.deadline });
-      else Object.assign(D.scope, { focus: "", los: [] });
+      const files = planTied(D.opts, a);                                          // its posted solutions: ticked
+      if (a) Object.assign(D.scope, { weeks: a.weeks, focus: a.name, focus_key: a.key || "", los: a.los, deadline: weekEnd(D.opts.weeks, a.week) || D.scope.deadline, files });
+      else Object.assign(D.scope, { focus: "", focus_key: "", los: [], files: [] });
+      drawDialog(); estimate();
+    },
+    "pd-gen": (el) => {                          // a course-wide or announcement file in, or out
+      readInputs();
+      const s = new Set(D.scope.files || []);
+      if (el.checked) s.add(el.dataset.id); else s.delete(el.dataset.id);
+      D.scope.files = [...s];
       drawDialog(); estimate();
     },
     "pd-week": (el) => {
@@ -569,8 +604,7 @@
     },
     "pd-download": async () => {
       readInputs();
-      const sel = new Set(D.scope.weeks);
-      const ids = [...new Set(D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing))];
+      const ids = planMissing(new Set(D.scope.weeks));
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file: the plan will read them once they are in", "Downloading {n} files: the plan will read them once they are in"), "success");
       else toast(r.error || t("Download failed"), "error");
@@ -592,6 +626,7 @@
     },
   });
   document.addEventListener("change", (e) => { if (e.target.closest && e.target.closest(".modal [data-pd]")) { readInputs(); estimate(); } });
+  St.inputActs = (St.inputActs || []).concat(["pd-gen"]);       // the course-wide files' ticks: app.js passes their clicks on
 
   // ------------------------------------------------------------------ browser preview (mock)
   const mockPlan = () => ({

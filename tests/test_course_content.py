@@ -709,6 +709,221 @@ def test_the_day_of_a_date_is_no_midterm_or_quiz_number():
     assert plan(table, dash) == [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 13)]
 
 
+def test_what_an_assessment_covers_is_kept_in_english_and_turkish():
+    """"Quiz 3 will cover weeks 8 and 9" was thrown away (it isn't the week Quiz 3 is held in): now it is what Quiz 3
+    covers, so every quiz, card set, pack and plan for it reads weeks 8 and 9."""
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7\nQuiz 3\nWeek 10\nAra Sınav\n8. hafta")
+
+    def covers(body, title="Quiz"):
+        return {e["name"]: e["covers"] for e in assessment_plan([table, _ann("c", title, body, "2026-10-20T09:00")])
+                if e["covers"]}
+    assert covers("Quiz 3 will cover weeks 8 and 9.") == {"Quiz 3": [8, 9]}
+    assert covers("3. quiz 8. ve 9. haftaları kapsar.") == {"Quiz 3": [8, 9]}
+    assert covers("Merhaba, 3. quizimiz 8. ve 9. haftaların konularını kapsayacaktır.") == {"Quiz 3": [8, 9]}
+    assert covers("Quiz 2 covers the topics of weeks 4-6.") == {"Quiz 2": [4, 5, 6]}
+    assert covers("It covers weeks 8 to 9.", "About Quiz 3") == {"Quiz 3": [8, 9]}        # the title names it
+    assert covers("Ara sınavın kapsamı: 1-7. haftalar.") == {"Midterm": list(range(1, 8))}
+    assert covers("Midterm is in week 8. Quiz 3 will cover weeks 8 and 9.") == {"Quiz 3": [8, 9]}   # not "quiz 8"
+    assert covers("Quizzes 1 to 3 will cover the topics of weeks 2, 5 and 8 respectively.") == \
+        {"Quiz 1": [2], "Quiz 2": [5], "Quiz 3": [8]}
+    assert covers("Quiz 1-3 sırasıyla 2., 5. ve 8. haftaların konularını kapsayacaktır.") == \
+        {"Quiz 1": [2], "Quiz 2": [5], "Quiz 3": [8]}
+    assert covers("Quizzes 2 and 3 will cover weeks 5 and 6.") == {}          # which one covers which: not said
+    assert covers("Quiz 2 - 13:30, Room D-201, in weeks 5 and 6") == {}       # not what it covers
+    plan = {e["name"]: e for e in assessment_plan([table, _ann("c", "About Quiz 3", "Quiz 3 will cover weeks 8 and 9.",
+                                                               "2026-10-20T09:00")])}
+    q3 = plan["Quiz 3"]
+    assert q3["week"] == 10 and q3["covers_from"] == "c" and [s["id"] for s in q3["sources"]] == ["c", "t"]
+    assert plan["Quiz 2"]["covers"] == [] and plan["Quiz 2"]["covers_from"] == ""
+    newer = _ann("n", "Quiz 3", "Quiz 3 will cover weeks 7, 8 and 9.", "2026-10-27T09:00")     # a newer one wins
+    assert {e["name"]: e["covers"] for e in assessment_plan([table, newer, _ann("c", "Quiz 3", "Quiz 3 will cover "
+                                                            "weeks 8 and 9.", "2026-10-20T09:00")])}["Quiz 3"] == [7, 8, 9]
+    # what it covers alone makes no assessment (it has no week), and a range is no week it is held in
+    assert assessment_plan([_ann("c", "About Quiz 3", "Quiz 3 will cover weeks 8 and 9.")]) == []
+    assert [(e["name"], e["week"]) for e in assessment_plan([_ann("m", "Ara sınav", "Ara Sınav\n1-7. haftalar")])] == []
+
+
+def test_a_range_said_with_week_twice_or_up_to_a_week_is_every_week_of_it():
+    """"up to week 7" was read as week 7 alone, "from week 1 to week 7" as week 1: the midterm then covered one week,
+    labelled as announced. One end alone ("from week 3 onwards") says no weeks."""
+    def covers(body, title="Midterm"):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    upto7 = list(range(1, 8))
+    held = "The midterm exam will be held in week 8. "
+    assert covers(held + "It will cover all topics up to week 7.") == {"Midterm": upto7}
+    assert covers(held + "It will cover all topics up to week 7.", "Announcement") == {"Midterm": upto7}
+    assert covers(held + "It will cover all the topics up to and including week 7.") == {"Midterm": upto7}
+    assert covers(held + "It will cover the topics from week 1 to week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers week 1 through week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers everything through week 7.") == {"Midterm": upto7}
+    assert covers(held + "It covers week 3 and week 5.") == {"Midterm": [3, 5]}
+    assert covers("Midterm will be held in week 8 and covers everything covered until week 6") == \
+        {"Midterm": list(range(1, 7))}
+    assert covers("1. ara sınav 8. haftada yapılacaktır. Sınav 7. haftaya kadar işlenen konuları kapsayacaktır.",
+                  "Ara sınav") == {"Midterm 1": upto7}
+    assert covers("Ara sınav 8. haftada yapılacak, 1. haftadan 7. haftaya kadar olan konuları kapsayacaktır.",
+                  "Ara sınav") == {"Midterm": upto7}
+    assert covers(held + "It will cover weeks 1-7.") == {"Midterm": upto7}          # (as before)
+    # one end alone: no weeks it covers (the guess stays)
+    assert covers(held + "It will cover the topics from week 3 onwards.") == {"Midterm": []}
+    assert covers("Ara sınav 8. haftada yapılacak, 3. haftadan sonraki konuları kapsayacaktır.", "Ara sınav") == \
+        {"Midterm": []}
+
+
+def test_a_week_it_leaves_out_is_no_week_it_covers():
+    """"It will cover all topics except week 7" gave the final week 7 alone, as announced, and every quiz, plan and
+    reminder for it aimed at the one week left out. A week left out or not covered is none it covers (the guess
+    stays); "weeks 1-7, except week 5" leaves week 5 out."""
+    def covers(body, title="Final Exam"):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    final = "The final exam will be held in week 16. "
+    assert covers(final + "It will cover all topics except week 7.") == {"Final": []}
+    assert covers(final + "It covers everything but week 7.") == {"Final": []}
+    assert covers(final + "It covers all weeks excluding week 7.") == {"Final": []}
+    assert covers(final + "It will include all topics covered except week 7.") == {"Final": []}
+    quiz5 = "Quiz 5 will be held in week 12. "
+    assert covers(quiz5 + "Quiz 5 will not cover week 11.", "Quiz 5") == {"Quiz 5": []}
+    assert covers(quiz5 + "It won't cover week 11.", "Quiz 5") == {"Quiz 5": []}
+    assert covers(quiz5 + "It won’t be covering week 11.", "Quiz 5") == {"Quiz 5": []}
+    held = "The midterm will be held in week 8. "
+    no5 = [1, 2, 3, 4, 6, 7]
+    assert covers(held + "It covers weeks 1-7, except week 5.", "Midterm") == {"Midterm": no5}
+    assert covers(held + "Except for week 5, it covers weeks 1 to 7.", "Midterm") == {"Midterm": no5}
+    assert covers(held + "It covers weeks 1 to 7 (not week 5).", "Midterm") == {"Midterm": no5}
+    # Turkish: "hariç", "dışında", "haricindeki", and a verb that says it doesn't
+    tr = "Final sınavı 16. haftada yapılacak. "
+    assert covers(tr + "Final sınavı 7. hafta hariç tüm konuları kapsayacak.") == {"Final": []}
+    assert covers(tr + "7. hafta dışında tüm konuları kapsayacak.") == {"Final": []}
+    assert covers(tr + "7. hafta haricindeki tüm konuları kapsayacak.") == {"Final": []}
+    q5 = "Quiz 5 12. haftada yapılacak. "
+    assert covers(q5 + "11. haftanın konularını kapsamayacak.", "Quiz 5") == {"Quiz 5": []}
+    assert covers(q5 + "10. ve 11. haftaları kapsamayacak.", "Quiz 5") == {"Quiz 5": []}
+    assert covers(q5 + "11. hafta konuları kapsam dışında.", "Quiz 5") == {"Quiz 5": []}
+    assert covers(q5 + "11. hafta konuları sınava dahil değildir.", "Quiz 5") == {"Quiz 5": []}
+    ara = "Ara sınav 8. haftada yapılacak. "
+    assert covers(ara + "5. hafta hariç 1-7. haftaların konularını kapsar.", "Ara sınav") == {"Midterm": no5}
+    assert covers(ara + "1-7. haftaların konularını kapsar, 5. hafta hariç.", "Ara sınav") == {"Midterm": no5}
+    # (a "not" elsewhere in the sentence is no exclusion)
+    assert covers("Quiz 3 will be held in week 10. Calculators are not allowed and it covers weeks 8 and 9.",
+                  "Quizzes") == {"Quiz 3": [8, 9]}
+
+
+def test_a_list_of_weeks_a_week_before_and_a_quiz_named_after_a_week_are_read_whole():
+    """"week 3, week 5 and week 7" read weeks 3 and 5; "before week 7" was week 7 alone; and "Quiz 2 will be held in
+    week 4. Quiz 2 will cover weeks 2 and 3." gave nothing (the sentence after "week 4." was read as going on, so
+    Quiz 2 was named twice, as if two quizzes shared the weeks)."""
+    def covers(body, title="Midterm"):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    held = "The midterm will be held in week 8. "
+    assert covers(held + "It covers week 3, week 5 and week 7.") == {"Midterm": [3, 5, 7]}
+    assert covers(held + "It covers week 3, week 5, and week 7.") == {"Midterm": [3, 5, 7]}
+    assert covers(held + "It covers weeks 3, 5, and 7.") == {"Midterm": [3, 5, 7]}
+    assert covers(held + "It covers weeks 1 to 3 and week 5.") == {"Midterm": [1, 2, 3, 5]}
+    assert covers(held + "It covers weeks 2 and 3, week 4 is a holiday.") == {"Midterm": [2, 3]}
+    assert covers(held + "It covers the topics before week 7.") == {"Midterm": [1, 2, 3, 4, 5, 6]}
+    assert covers(held + "It covers everything up to but not including week 8.") == {"Midterm": list(range(1, 8))}
+    assert covers(held + "It covers everything before week 1.") == {"Midterm": []}
+    assert covers("Ara sınav 8. haftada yapılacak. 8. haftadan önceki konuları kapsayacak.", "Ara sınav") == \
+        {"Midterm": list(range(1, 8))}
+    assert covers("Ara sınav 8. haftada yapılacak. 7. haftadan önce işlenen konuları kapsayacak.", "Ara sınav") == \
+        {"Midterm": [1, 2, 3, 4, 5, 6]}
+    assert covers("Ara sınav 8. haftada yapılacak. 8. hafta öncesi konular dahildir.", "Ara sınav") == \
+        {"Midterm": list(range(1, 8))}
+    two = "Quiz 2 will be held in week 4. Quiz 2 will cover weeks 2 and 3."
+    assert covers(two, "Quiz 2") == {"Quiz 2": [2, 3]} == covers(two, "Announcement")
+    assert covers("Quiz 3 will be held in week 10. It covers weeks 8 and 9.", "Quizzes") == {"Quiz 3": [8, 9]}
+    assert covers("Quiz 3 10. haftada yapılacak. 8. ve 9. haftaların konularını kapsayacak.", "Duyuru") == \
+        {"Quiz 3": [8, 9]}
+    # "it" after two quizzes: which one is not said
+    both = assessment_plan([_ann("c", "Quizzes", "Quiz 2 and Quiz 3 will be held in weeks 4 and 10. It covers weeks 8 "
+                                                 "and 9.")])
+    assert [(e["name"], e["week"], e["covers"]) for e in both] == [("Quiz 2", 4, []), ("Quiz 3", 10, [])]
+
+
+def test_a_later_cover_phrase_about_the_class_or_a_detail_does_not_replace_what_it_covers():
+    """The last cover phrase of an announcement won, also one about the class or a detail: "After the quiz we will
+    cover the topics of week 12" made Quiz 3 cover week 12, and every quiz, plan and reminder for it aimed there."""
+    def covers(body, title):
+        return {e["name"]: e["covers"] for e in assessment_plan([_ann("c", title, body)]) if e["week"]}
+    after = "Quiz 3 will be held in week 11 and covers weeks 8-10. After the quiz we will cover the topics of week 12."
+    assert covers(after, "Quiz 3") == {"Quiz 3": [8, 9, 10]} == covers(after, "Announcement")
+    assert covers("Quiz 3 will be held in week 11. It covers weeks 8, 9 and 10. Next lecture will cover week 11 "
+                  "material.", "Quiz 3") == {"Quiz 3": [8, 9, 10]}
+    assert covers("The midterm will be held in week 9. It covers weeks 1-8, including the lab of week 3.",
+                  "Midterm") == {"Midterm": list(range(1, 9))}
+    assert covers("3. quiz 11. haftada yapılacak ve 8. ve 9. haftaların konularını kapsayacak. 10. haftanın konusu "
+                  "quizden sonra işlenecek.", "3. Quiz") == {"Quiz 3": [8, 9]}
+    assert covers("Quiz 2 will be held in week 6 and covers weeks 1-5. The formula sheet includes the tables of "
+                  "week 4.", "Quiz 2") == {"Quiz 2": [1, 2, 3, 4, 5]}
+    # one about the class first, what it covers after; and one about the class alone is still read
+    assert covers("Quiz 3 will be held in week 10. Last week we covered week 5 topics. It will cover weeks 6 and 7.",
+                  "Quiz 3") == {"Quiz 3": [6, 7]}
+    assert covers("Quiz 3 will be held in week 10. For the quiz we will cover weeks 8 and 9.", "Quiz 3") == \
+        {"Quiz 3": [8, 9]}
+
+
+@pytest.mark.parametrize("sep", [" - ", " , ", " ve ", "  ,  ", " . - "])
+def test_a_long_run_of_numbers_in_an_announcement_is_read_at_once(sep):
+    """A list of problem numbers with a space before each separator ("1 - 2 - 3 …") was tried every way its spaces
+    could split (a second more for every two numbers): the course's pages never finished loading."""
+    import time
+    nums = sep.join(str(i % 20 + 1) for i in range(40))
+    body = f"Homework 3 is posted. Solve the problems {nums} from chapter 4 and bring them to class."
+    start = time.perf_counter()
+    assert assessment_plan([_ann("h", "Homework 3", body)]) == []
+    assert time.perf_counter() - start < 1
+    plan = assessment_plan([_ann("t", "Quizzes", "Quiz 1\nWeek 4"), _ann(
+        "c", "Quiz 1", "1. quiz 1 , 2 ve 3. haftaların konularını kapsayacak.", "2026-10-20T09:00")])
+    assert [e["covers"] for e in plan] == [[1, 2, 3]]                # (a Turkish list with spaces still reads whole)
+
+
+def _plan_of(title, body):
+    return [(e["name"], e["week"], e["date"], e["time"]) for e in
+            assessment_plan([_ann("a", title, body, "2026-11-03T09:00")])]
+
+
+def test_this_weeks_quiz_in_turkish_keeps_its_quiz_and_day():
+    """"Bu hafta 2. quiz …" lost its quiz: the "week 8. Quiz 3" guard read the Turkish "hafta" (this / next week) as
+    a sentence ending with a week."""
+    plan = _plan_of
+    assert plan("Duyuru", "Gelecek hafta 3. quizimiz 12 Kasım Perşembe günü yapılacaktır.") == \
+        [("Quiz 3", None, "2026-11-12", "")]
+    assert plan("Duyuru", "Bu hafta 2. quiz 7 Kasım Cuma günü saat 10:30'da yapılacak.") == \
+        [("Quiz 2", None, "2026-11-07", "10:30")]
+    assert plan("Duyuru", "Önümüzdeki hafta 2. quizimiz 7 Kasım Cuma günü yapılacaktır.") == \
+        [("Quiz 2", None, "2026-11-07", "")]
+    assert plan("Exams", "Midterm is in week 8. Quiz 3 will be held on Friday, November 13.") == \
+        [("Quiz 3", None, "2026-11-13", "")]                                       # (the guard's own case)
+
+
+def test_a_dash_before_a_week_is_a_range_only_between_two_weeks_three_or_more_apart():
+    """A dash before "N. hafta" was taken for a range of covered weeks: a two-week exam period ("8-9. haftalarda"),
+    a time ("14:00 - 10. hafta") and a date ("12.11.2025 - 8. hafta") lost their week."""
+    plan = _plan_of
+    assert plan("Ara sınav", "Ara sınav 8-9. haftalarda yapılacaktır.") == [("Midterm", 9, "", "")]
+    assert plan("Vize", "Vize: 8-9. haftalar") == [("Midterm", 9, "", "")]
+    assert plan("Quiz", "Quiz 3: 14:00 - 10. hafta") == [("Quiz 3", 10, "", "")]
+    assert plan("Quiz", "Quiz 2: 12.11.2025 - 8. hafta") == [("Quiz 2", 8, "", "")]
+    assert plan("Quiz", "Quiz 1: 3. hafta, Quiz 2: 6-7. hafta") == [("Quiz 1", 3, "", ""), ("Quiz 2", 7, "", "")]
+    assert plan("Ara sınav", "Ara Sınav\n1-7. haftalar") == []                       # what it covers, not its week
+
+
+def test_a_quiz_announced_only_by_its_day_gets_its_week_when_week_1_is_known():
+    from studia.quizzes import assessments
+    from studia.views import dated_plan
+
+    plan = assessment_plan([_ann("d", "Quiz 2", "Our 2nd quiz will be held on Friday, October 23.", "2026-10-12T09:00")])
+    assert [(e["name"], e["week"], e["date"]) for e in plan] == [("Quiz 2", None, "2026-10-23")]
+    weeks = [{"no": n, "past": n < 4} for n in range(1, 15)]
+    known = dated_plan(plan, dt.date(2026, 9, 14))                  # week 1 starts on 14 September: week 6
+    assert [e["week"] for e in known] == [6]
+    assert [(e["name"], e["weeks"]) for e in assessments({"weeks": weeks, "alerts": {"plan": known}})] == \
+        [("Quiz 2", [1, 2, 3, 4, 5, 6])]
+    unknown = dated_plan(plan, None)                                  # no week 1: no week, so not one to prepare for
+    assert [e["week"] for e in unknown] == [None]
+    assert assessments({"weeks": weeks, "alerts": {"plan": unknown}}) == []
+
+
 def test_turkish_and_longer_midterm_names():
     plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
     assert plan(_ann("a", "Ara Sınavı", "Ara Sınavı: 8. hafta")) == [("Midterm", 8)]     # the ı is no Roman I

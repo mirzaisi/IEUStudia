@@ -46,6 +46,7 @@ class Settings:
     doc_language: str = "course"       # study documents in: "course" (its own language) | "en" | "tr" (doclang.py)
     quiz_questions: int = 10           # a new practice quiz starts with this many questions (QUIZ_SIZES)
     cards_per_day: int = 20            # new flashcards a day per course at most (CARDS_PER_DAY; cards.py)
+    mistake_cards: bool = True         # missed quiz questions join the course's flashcards (cards.py, practice.py)
     export_prefs: dict[str, Any] = dc.field(default_factory=dict)   # the Export menu's last format per place (exports.py)
     course_prefs: dict[str, CoursePrefs] = dc.field(default_factory=dict)
 
@@ -172,7 +173,7 @@ GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     "transcription": {"settings": ("device", "capture_slides", "ask_before_closing", "min_duration_s")},
     "files": {"settings": ("write_srt", "keep_audio")},
     "ai": {"settings": ("ai_model", "plan_model", "verify_model", "ai_model_light", "ai_effort", "doc_language")},
-    "practice": {"settings": ("quiz_questions", "cards_per_day")},
+    "practice": {"settings": ("quiz_questions", "cards_per_day", "mistake_cards")},
     "notifications": {"app": ("notify_recordings", "notify_announcements", "notify_materials", "notify_reminders",
                               "sync_minutes"),
                       "reminders": ("exams", "due_days", "due_hours")},

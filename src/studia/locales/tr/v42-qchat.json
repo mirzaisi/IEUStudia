@@ -1,0 +1,7 @@
+{
+  "_unit": "4.2.0: chat quizzes polished (a new chat's practice-questions suggestion writes a quiz to play, a stopped or unread quiz has Try again)",
+  "Quiz me on this lecture: 5 scored questions.": "Bu dersten 5 soruluk puanlı bir deneme sınavı yap.",
+  "Quiz me on these lectures: 8 scored questions.": "Bu derslerden 8 soruluk puanlı bir deneme sınavı yap.",
+  "Stopped before the quiz was finished.": "Deneme sınavı yazılırken durduruldu.",
+  "The quiz in this answer could not be read, so it wasn't saved.": "Bu cevaptaki deneme sınavı okunamadı, bu yüzden kaydedilmedi."
+}

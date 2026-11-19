@@ -24,6 +24,50 @@ def test_silent_recording_raises():
         analyze_audio(np.zeros(SR * 60, dtype=np.float32), [], 60)
 
 
+def _hiss(db, seconds=120, seed=0):
+    """Noise averaging ``db`` dBFS, with one click at -46 dBFS: a microphone-off recording's hiss peaks above the
+    -50 dBFS silent line (the owner's 12 'no speech' recordings: peaks -46 to -49.8, averages -62 to -68)."""
+    rng = np.random.default_rng(seed)
+    audio = (rng.standard_normal(SR * seconds) * 10 ** (db / 20)).astype(np.float32)
+    audio[SR * 7] = 0.005
+    return audio
+
+
+def test_a_recording_without_speech_that_is_almost_silent_says_the_microphone_was_off():
+    from studia import i18n
+    from studia.quality import NEAR_SILENT_DBFS, average_dbfs
+
+    off = _hiss(-64)
+    assert abs(average_dbfs(off) - -64) < 0.5 and average_dbfs(np.zeros(0, dtype=np.float32)) < -150
+    with pytest.raises(NoSpeech) as e:
+        analyze_audio(off, [(0, SR * 3)], 120)                  # (3 s of "speech": under 8 s is none)
+    assert str(e.value).startswith("This recording is almost silent on Panopto: the microphone was probably off")
+    assert "only noise or music" not in str(e.value)
+    for db in (NEAR_SILENT_DBFS + 3, -45, -30):                # sound in the room, but no speech in it: as before
+        with pytest.raises(NoSpeech) as e:
+            analyze_audio(_hiss(db), [], 120)
+        assert str(e.value) == "No speech was found in this recording (only noise or music). Check it on Panopto."
+    with pytest.raises(NoSpeech) as e:                          # below -50 dBFS everywhere: "no sound", as before
+        analyze_audio(np.full(SR * 60, 0.001, dtype=np.float32), [], 60)
+    assert str(e.value).startswith("This recording has no sound on Panopto")
+    i18n.set_language("tr")
+    try:
+        with pytest.raises(NoSpeech) as e:
+            analyze_audio(off, [], 120)
+    finally:
+        i18n.set_language("en")
+    assert str(e.value).startswith("Bu kayıt Panopto'da neredeyse sessiz: mikrofon büyük ihtimalle kapalıydı")
+
+
+def test_quiet_speech_in_an_almost_silent_recording_is_transcribed_as_before():
+    """The average level only names why no speech was found: speech the detector finds is transcribed, however quiet
+    the rest of the recording (gain, warnings and stats as they were)."""
+    audio = _hiss(-64, seconds=600)
+    audio[SR * 60:SR * 120] += (np.sin(np.arange(SR * 60) * 0.05) * 0.003).astype(np.float32)   # a minute of "speech"
+    warnings, stats, gain = analyze_audio(audio, [(SR * 60, SR * 120)], 600)
+    assert gain > 1.0 and "quiet" in [w["code"] for w in warnings] and stats["speech_s"] == 60.0
+
+
 def test_quiet_audio_is_boosted_and_gaps_reported():
     rng = np.random.default_rng(0)
     audio = (rng.standard_normal(SR * 900) * 0.004).astype(np.float32)   # very quiet

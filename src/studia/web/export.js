@@ -2,7 +2,10 @@
  * dialog picks the weeks (Everything up to now by default) and what goes in, with the zip's size and time; while the
  * zip is made it says what it is doing (with a bar and Cancel); at the end, where the zip is and how to upload it.
  * One export at a time: a double click starts one, and the dialog opened again shows the one being made. The export
- * goes on with the dialog closed (a toast says when it is ready). Plugs in through window.Studia. */
+ * goes on with the dialog closed (a toast says when it is ready). One course's zip is an exam kit too (kit.py): "For"
+ * aims it at a coming quiz or exam (its weeks picked, its brief in the zip), and the end shows the first message and
+ * the prompts for a practice quiz, flashcards and a cheatsheet, each with Copy (what comes back is pasted on the
+ * Practice tab: kit.js). Plugs in through window.Studia. */
 (function () {
   "use strict";
   const St = window.Studia;
@@ -37,21 +40,60 @@
   // ------------------------------------------------------------------ what it holds, how big, how long
   function est() {
     const o = X.opts, inc = X.inc;
-    let bytes = o.base + (inc.notices ? o.notices : 0), screens = 0, files = 0, lectures = 0, untranscribed = 0;
+    let bytes = o.base + (inc.notices ? o.notices : 0), screens = 0, files = 0, lectures = 0, untranscribed = 0, shots = 0;
     const down = new Set();                    // (a file of a unit for two weeks is downloaded once)
+    const had = new Set();                     // (and goes in the zip once: course_export)
     for (const w of o.weeks) {
       if (!X.picked.has(w.no)) continue;
       if (inc.transcripts) bytes += w.bytes.text;
+      shots += w.bytes.screen_text + w.bytes.screens;          // (what the screens weigh, ticked or not: their row says)
       if (inc.screens) { bytes += w.bytes.screen_text + w.bytes.screens; screens += w.screens; }
-      if (inc.files) { bytes += w.bytes.files; files += w.files; w.missing.forEach((id) => down.add(id)); }
+      if (inc.files) {
+        if (w.sizes) Object.entries(w.sizes).forEach(([id, n]) => { if (!had.has(id)) { had.add(id); bytes += n; files += 1; } });
+        else { bytes += w.bytes.files; files += w.files; }
+        w.missing.forEach((id) => down.add(id));
+      }
       lectures += w.lectures; untranscribed += w.untranscribed;
     }
     if (inc.files && X.picked.size) { bytes += o.general.bytes; files += o.general.files; o.general.missing.forEach((id) => down.add(id)); }
     const dl = inc.files && X.download ? down.size : 0;
-    return { bytes, secs: 2 + bytes / (40 * MB) + screens * 0.002 + dl * 5, dl, missing: down.size, screens, files, lectures, untranscribed };
+    return { bytes, secs: 2 + bytes / (40 * MB) + screens * 0.002 + dl * 5, dl, missing: down.size, screens, files, lectures, untranscribed, shots };
   }
   const timeText = (secs) => (secs < 60 ? t("less than a minute") : t.n(Math.round(secs / 60), "about {n} minute", "about {n} minutes"));
-  const choice = () => ({ weeks: isNow() ? null : [...X.picked].sort((a, b) => a - b), ...X.inc, download: X.download });
+  const choice = () => ({ weeks: isNow() ? null : [...X.picked].sort((a, b) => a - b), ...X.inc, download: X.download, ...(X.focus ? { focus: X.focus } : {}) });
+
+  // ------------------------------------------------------------------ "For": a coming quiz or exam (kit.py)
+  // one course's zip can be aimed at one: its weeks are picked (those begun or with something in them) and the zip
+  // gets its brief, 00 Start here.md. Its screens are left out unless ticked: they are most of a kit's size (a final's:
+  // 98 of 106 MB), too big for some chats, and an AI reading the zip with code seldom looks at the pictures. Without
+  // "For" they go in as before; a tick the student gave in this dialog stays either way.
+  const forOf = () => ((X.opts || {}).assessments || []).find((e) => e.key === X.focus) || null;
+  const screensBy = () => (lastInc ? lastInc.screens !== false : true);
+  const runs = (nos) => { const out = []; [...nos].sort((a, b) => a - b).forEach((n) => { const r = out[out.length - 1]; if (r && n === r[1] + 1) r[1] = n; else out.push([n, n]); }); return out.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", "); };
+  const weeksText = (nos) => (nos.length === 1 ? t("week {n}", { n: nos[0] }) : t("weeks {weeks}", { weeks: runs(nos) }));
+  const forLabel = (e) => [e.name, e.week ? t("week {n}", { n: e.week }) : "", e.date ? dm(e.date) : ""].filter(Boolean).join(" · ");
+  function pickFor(key) {
+    X.focus = key || "";
+    const e = forOf();
+    if (!X.screensSet) X.inc.screens = e ? false : screensBy();
+    const has = (n) => { const w = X.opts.weeks.find((x) => x.no === n); return !!w && (w.now || w.lectures || w.files || w.missing.length); };
+    const nos = e ? (e.weeks || []).filter(has) : [];
+    X.picked = new Set(nos.length ? nos : nowWeeks());
+    X.toPicked = true;                         // its weeks scrolled into view (Quiz 3's 9–10 are below weeks 1–6)
+  }
+  function forHTML() {
+    const list = X.courseId ? X.opts.assessments || [] : [];
+    if (!list.length) return "";
+    const e = forOf(), weeks = e ? weeksText(e.weeks || []) : "";
+    const why = !e ? "" : e.weeks_from === "announced" ? t("It covers {weeks}, as announced.", { weeks })
+      : e.weeks_from === "yours" ? t("It covers {weeks}, as you set it.", { weeks })
+        : e.kind === "final" ? t("It covers {weeks}: the whole term.", { weeks })
+          : t("It covers {weeks}: IEUStudia's guess, so change the weeks below if it's wrong.", { weeks });
+    return `<div class="field"><label>${t("For")}</label><select class="input" data-act="cx-for">
+        <option value="" ${e ? "" : "selected"}>${t("No quiz or exam in particular")}</option>
+        ${list.map((x) => `<option value="${esc(x.key)}" ${e && x.key === e.key ? "selected" : ""}>${esc(forLabel(x))}</option>`).join("")}</select>
+      ${e ? `<div class="dim sm cx-for">${esc(why)} ${esc(t("The zip gets 00 Start here.md: what it covers, what the lecturer said and stressed, and what isn't needed."))}</div>` : ""}</div>`;
+  }
 
   // ------------------------------------------------------------------ the dialog: pick
   function weekRow(w) {
@@ -81,12 +123,14 @@
       <div class="field"><label>${t("Course")}</label><select class="input" data-act="cx-course">
         <option value="" ${all ? "selected" : ""}>${t("All courses")}</option>
         ${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === X.courseId ? "selected" : ""}>${esc(c.code)} · ${esc(c.display_name || c.name || "")}</option>`).join("")}</select></div>
+      ${forHTML()}
       <div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${isNow() ? t("everything up to now") : t.n(n, "{n} week picked", "{n} weeks picked")}</span>
         <span class="cp-tools"><button type="button" class="btn ghost sm ${isNow() ? "on" : ""}" data-act="cx-now">${t("Everything up to now")}</button><button type="button" class="btn ghost sm" data-act="cx-all">${t("Select all")}</button><button type="button" class="btn ghost sm" data-act="cx-none">${t("Clear")}</button></span></label>
         <div class="pd-weeks2 cx-weeks">${o.weeks.length ? o.weeks.map(weekRow).join("") : `<div class="dim sm cx-none">${t("No weekly plan yet: sync first.")}</div>`}</div></div>
       <div class="field"><label class="cp-label">${t("What goes in")}</label><div class="cx-incs">
         ${incRow("transcripts", "file-text", t("Lecture transcripts"), t("Everything the lecturer said, with times"))}
-        ${incRow("screens", "presentation", t("Screens with what was said"), t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. Makes the zip larger."))}
+        ${incRow("screens", "presentation", t("Screens with what was said"), n && e.shots ? esc(t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. They add about {size}.", { size: size(e.shots).replace(" ", "\u00a0") }))
+          : t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. Makes the zip larger."))}
         ${incRow("files", "layers", t("Course files"), t("The slides, PDFs and documents from IEULearn"))}
         ${incRow("notices", "megaphone", t("Announcements and deadlines"), t("The announcements and the quizzes, exams and homework IEUStudia knows about"))}</div></div>
       ${X.inc.files && e.missing ? `<div class="pd-gap cx-dl">${I("download")}<div class="grow"><div>${t.n(e.missing, "{n} course file of these weeks is not on this PC.", "{n} course files of these weeks are not on this PC.")}</div>
@@ -148,12 +192,27 @@
       <div class="cx-how"><div class="cx-how-h">${I("chat", "sm")} ${t("Upload it to ChatGPT")}</div><ol>
         <li>${t("Open ChatGPT and start a new chat.")}</li>
         <li>${t("Drag the zip into the chat (or click + and pick it). There is no need to unzip it.")}</li>
-        <li>${t("Send the first message from README.md in the zip, with your question at the end.")} <button class="btn ghost sm" data-act="cx-copy-msg">${I("copy", "sm")} ${t("Copy the first message")}</button></li></ol></div>
+        <li>${t("Send the first message from README.md in the zip, with your question at the end.")} <button class="btn ghost sm" data-act="cx-copy-msg">${I("copy", "sm")} ${t("Copy the first message")}</button>
+          ${e.first_message ? `<div class="cx-first">${esc(e.first_message)}</div>` : ""}</li></ol></div>
+      ${kitHTML(e.kit)}
       ${notes.map((x) => `<div class="note-sm">${I("info", "sm")}<span>${esc(x)}</span></div>`).join("")}</div>
       <div class="cp-foot"><div class="cp-cost"></div><div class="cp-btns">
         <button class="btn" data-act="cx-copy-path">${I("copy", "sm")} ${t("Copy path")}</button>
         <button class="btn" data-act="cx-show">${I("folder-open", "sm")} ${t("Show in folder")}</button>
         <button class="btn primary" data-act="modal-close">${t("Done")}</button></div></div>`;
+  }
+  // the exam kit's prompts (kit.py: also in the zip's Prompts folder), each to copy into the same chat; what comes back
+  // is pasted on the course's Practice tab (kit.js)
+  const PROMPTS = () => ({ quiz: [t("Practice quiz"), t("10 exam-style questions. Paste the answer back to play it here with scores.")],
+    cards: [t("Flashcards"), t("About 30 cards. Paste the answer back and they join your deck.")],
+    sheet: [t("Cheatsheet"), t("A compact page to revise from, to read in the chat.")] });
+  function kitHTML(k) {
+    if (!k || !(k.prompts || []).length) return "";
+    return `<div class="cx-how cx-kit"><div class="cx-how-h">${I("list-checks", "sm")} ${t("Then practise with it")}</div>
+      <p class="cx-kit-lead">${esc(t("Send one of these with the zip, or later in the same chat. Then copy the whole answer and press Ctrl+V on this course's Practice tab: a quiz plays there with scores and opens where each question comes from, and cards join your deck."))}</p>
+      ${k.prompts.map((p) => { const [title, about] = PROMPTS()[p.key] || [p.key, ""]; return `<div class="cx-pr"><div class="grow"><b>${esc(title)}</b><div class="dim sm">${esc(about)}</div></div>
+        <button class="btn sm" data-act="cx-copy-prompt" data-k="${esc(p.key)}">${I("copy", "sm")} ${t("Copy")}</button></div>`; }).join("")}
+      ${k.focus && k.start ? `<div class="dim sm cx-kit-note">${esc(t("00 Start here.md in the zip tells the AI what {name} covers.", { name: k.focus }))}</div>` : ""}</div>`;
   }
   function errorHTML() {
     const e = S.cexp || {};
@@ -176,9 +235,14 @@
     const nb = $(".modal .cp-scroll"), nl = $(".cx-weeks");
     if (nb) nb.scrollTop = keep[0];
     if (nl) nl.scrollTop = keep[1];
+    const first = X.toPicked && nl && nl.querySelector ? nl.querySelector(".cx-wk.on") : null;
+    if (first && first.getBoundingClientRect) nl.scrollTop += first.getBoundingClientRect().top - nl.getBoundingClientRect().top - 4;
+    if (X.view === "pick" && X.opts) X.toPicked = false;
   }
 
-  async function openDialog(courseId) {
+  // preset: {key, weeks} (an assessment's, as the Exam room and a "cx-open" button with data-key give it): "For" that
+  // one; one no longer ahead (not in "For") ticks its weeks ("9,10") instead
+  async function openDialog(courseId, preset) {
     const st = await call("course_export_state");          // one being made (also from before the page was drawn again)
     if (st && st.ok && st.running && st.export) S.cexp = S.cexp && S.cexp.id === st.export.id ? { ...S.cexp, ...st.export } : { ...st.export };
     if (running()) {
@@ -187,7 +251,7 @@
       return;
     }
     X = { courseId: courseId || "", opts: null, picked: new Set(), inc: { ...(lastInc || { transcripts: true, screens: true, files: true, notices: true }) },
-      download: true, view: "pick", id: "", starting: false, cancelling: false };
+      download: true, view: "pick", id: "", starting: false, cancelling: false, focus: "" };
     const asked = X;
     draw();
     const r = await call("course_export_options", asked.courseId);
@@ -195,6 +259,12 @@
     if (!r || !r.ok) { toast((r && r.error) || t("Export failed"), "error"); closeModal(); X = null; return; }
     X.opts = r;
     nowWeeks().forEach((no) => X.picked.add(no));
+    const key = (preset && preset.key) || "";
+    if (key && (r.assessments || []).some((e) => e.key === key)) pickFor(key);
+    else if (preset && preset.weeks) {
+      const nos = String(preset.weeks).split(",").map(Number).filter((n) => r.weeks.some((w) => w.no === n));
+      if (nos.length) { X.picked = new Set(nos); X.toPicked = true; }
+    }
     if (X.open) draw();
   }
 
@@ -226,13 +296,20 @@
   // ------------------------------------------------------------------ actions
   St.inputActs = (St.inputActs || []).concat(["cx-week", "cx-inc", "cx-dl"]);   // checkboxes and radios: app.js passes their clicks on
   Object.assign(A, {
-    "cx-open": (el) => openDialog((el && el.dataset && el.dataset.id) || ""),
+    "cx-open": (el) => { const ds = (el && el.dataset) || {}; return openDialog(ds.id || "", { key: ds.key || "", weeks: ds.weeks || "" }); },
     "cx-course": (el) => openDialog(el.value),
+    "cx-for": (el) => { if (!X || !X.opts) return; pickFor(el.value); draw(); },
     "cx-week": (el) => { const no = +el.dataset.no; if (el.checked) X.picked.add(no); else X.picked.delete(no); draw(); },
     "cx-now": () => { X.picked = new Set(nowWeeks()); draw(); },
     "cx-all": () => { X.picked = new Set(X.opts.weeks.map((w) => w.no)); draw(); },
     "cx-none": () => { X.picked = new Set(); draw(); },
-    "cx-inc": (el) => { X.inc[el.dataset.k] = !!el.checked; lastInc = { ...X.inc }; draw(); },
+    "cx-inc": (el) => {
+      const k = el.dataset.k;
+      X.inc[k] = !!el.checked;
+      if (k === "screens") X.screensSet = true;
+      lastInc = { ...X.inc, screens: X.screensSet ? X.inc.screens : screensBy() };     // (not For's own "off")
+      draw();
+    },
     "cx-dl": (el) => { X.download = el.value === "yes"; draw(); },
     "cx-go": async () => {
       // one click, one export: a double click, or a click repeated while the window is slow to answer, starts one
@@ -260,6 +337,10 @@
     "cx-show": (el) => said(call("course_export_show", (el && el.dataset && el.dataset.path) || (S.cexp || {}).path || "")),
     "cx-copy-path": () => copied((S.cexp || {}).path || "", t("Copied")),
     "cx-copy-msg": () => copied((S.cexp || {}).first_message || "", t("Copied: paste it into ChatGPT with the zip.")),
+    "cx-copy-prompt": (el) => {
+      const p = (((S.cexp || {}).kit || {}).prompts || []).find((x) => x.key === el.dataset.k);
+      if (p) copied(p.text, t("Copied: paste it into the chat with the zip."));
+    },
   });
   St.cexp = { open: openDialog };
 
@@ -274,7 +355,9 @@
     weeks: [mockWeek(1, "Sample Spaces, Events & Counting", true, 1, 1, 80), mockWeek(2, "Combinations & the First Probability Rules", true, 1, 1, 103), mockWeek(3, "Independence, Reliability & Bayes", true, 1, 1, 90),
       mockWeek(4, "Random Variables, PMF & CDF", true, 1, 1, 95), mockWeek(5, "Mean, Variance & the Named Distributions", true, 2, 1, 0), mockWeek(6, "Poisson & the Continuous Half", true, 0, 1, 0),
       mockWeek(7, "The Uniform & the Normal", true, 1, 1, 195), mockWeek(8, "Midterm Exam", false, 0, 0, 0)],
-    general: { files: 1, missing: [], bytes: 340000 }, loose: 0, base: 4000, notices: 5000, folder: "C:\\Users\\you\\Documents\\IEUStudia\\MATH 240\\Exports", free: 50e9, chatgpt_max: 512 * MB });
+    general: { files: 1, missing: [], bytes: 340000 }, loose: 0, base: 4000, notices: 5000, folder: "C:\\Users\\you\\Documents\\IEUStudia\\MATH 240\\Exports", free: 50e9, chatgpt_max: 512 * MB,
+    assessments: cid ? [{ key: "quiz:3", name: "Quiz 3", kind: "quiz", week: 8, weeks: [6, 7], weeks_from: "announced", date: "2026-11-12" },
+      { key: "syllabus:Final Exam:15", name: "Final Exam", kind: "final", week: 15, weeks: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], weeks_from: "guessed", date: "2027-01-04" }] : [] });
   St.mocks.course_export_state = () => ({ ok: true, running: false, export: null });
   St.mocks.course_export_cancel = () => { mockStop = true; return { ok: true }; };
   St.mocks.course_export_show = () => ({ ok: true });
@@ -288,7 +371,9 @@
     steps.forEach((s, k) => setTimeout(() => { if (!mockStop) window.__lsEvent({ ...base, phase: "progress", ...s }); }, 400 * (k + 1)));
     setTimeout(() => window.__lsEvent(mockStop ? { ...base, phase: "cancelled" } : { ...base, phase: "done", name: "MATH 240 - everything up to 7 Nov 2026.zip", bytes: 84031320,
       path: "C:\\Users\\you\\Documents\\IEUStudia\\MATH 240\\Exports\\MATH 240 - everything up to 7 Nov 2026.zip", untranscribed: 1, missing: 0, renamed: false,
-      first_message: "This zip holds my MATH 240 course, exported from IEUStudia: …" }), 400 * (steps.length + 1));
+      first_message: "This zip holds my MATH 240 course, exported from IEUStudia: …",
+      kit: cid ? { id: "a1b2c3d4", focus: "Quiz 3", start: true, prompts: [{ key: "quiz", text: "(From IEUStudia…) TASK: Write a practice quiz…" },
+        { key: "cards", text: "(From IEUStudia…) TASK: Make 30 flashcards…" }, { key: "sheet", text: "(From IEUStudia.) TASK: Make me a cheatsheet…" }] } : null }), 400 * (steps.length + 1));
     return { ok: true, id };
   };
 })();

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import contextlib
 import datetime as dt
 import functools
 import glob
@@ -243,6 +244,20 @@ def _command(model: str, effort: str, system_prompt_file: Path, partial: bool = 
         # its thinking as short summaries, said while the student waits (the newest models send none by default)
         cmd += ["--thinking-display", "summarized"]
     return cmd
+
+
+# Haiku takes no --effort (Claude Code gives it a fixed thinking budget, 31,999 tokens and more), so at Low it thought
+# for pages: a 5-question chat quiz wrote 15.2k tokens in 121 s. With this budget the same quiz wrote 4.4k in 38 s,
+# every key right (4.2.0's real calls). Higher levels, and Sonnet and Opus (they take --effort), are left as they were.
+HAIKU_LOW_THINKING = 4000
+
+
+def _thinking_env(model: str, effort: str) -> dict[str, str]:
+    """The thinking budget Claude Code is started with: Haiku at Low gets HAIKU_LOW_THINKING (MAX_THINKING_TOKENS, which
+    Claude Code honours for a model without --effort); any other model or level, or a budget set on this PC, nothing."""
+    if "haiku" in (model or "").lower() and (effort or "low") == "low" and not os.environ.get("MAX_THINKING_TOKENS"):
+        return {"MAX_THINKING_TOKENS": str(HAIKU_LOW_THINKING)}
+    return {}
 
 
 def _thinking_flag_refused(message: str) -> bool:
@@ -501,6 +516,13 @@ CLAUDE_OLD = N_("The Claude Code on this PC ({version}) is too old for IEUStudia
 CLAUDE_NEWER = N_("This Claude Code ({version}) is newer than this IEUStudia knows, and it turned down how IEUStudia "
                   "asks it. Look for a new version of IEUStudia in Settings → About.")
 START_FAILED = N_("Claude Code could not be started: {error} Install it again under Settings → AI.")
+# the program closed before it had read the request (Python's "[Errno 32] Broken pipe" when it is written to)
+ENDED_EARLY = N_("Claude Code closed before it could read the request. Try again. If it keeps happening, restart the "
+                 "PC, or install Claude Code again under Settings → AI.")
+CODEX_ENDED_EARLY = N_("The Codex CLI closed before it could read the request. Try again. If it keeps happening, "
+                       "restart the PC, or use plain ChatGPT (Continue with ChatGPT) in Settings → AI.")
+# any other error of this PC's (not the AI's words) met while asking it
+PC_FAILED = N_("Something on this PC stopped the request to {ai}. Try again. If it keeps happening, restart the PC.")
 _OWN = (N_("You have reached your Claude usage limit. It resets {when}."),
         N_("You have reached your Claude usage limit. It resets at {time}."),
         N_("You have reached your Claude usage limit."),
@@ -510,7 +532,64 @@ _OWN = (N_("You have reached your Claude usage limit. It resets {when}."),
         KEY_REFUSED, NO_CREDIT, TOKEN_REFUSED, UNREACHABLE, INSECURE, BLOCKED, RENEWING, CLAUDE_OLD, START_FAILED,
         N_("Claude took too long to answer. Try again; if it keeps happening, pick a lower reasoning level."),
         N_("Claude did not return a result."), CLAUDE_NEWER,
-        N_("Claude Code stopped unexpectedly. Try again."))
+        N_("Claude Code stopped unexpectedly. Try again."), ENDED_EARLY, PC_FAILED)
+# an error's own words that are Python's, not the AI's ("[Errno 32] Broken pipe", "[WinError 232] The pipe is being
+# closed"), and those of a pipe that broke
+_RAW_OS = re.compile(r"^\s*(?:\w+(?:Error|Exception):\s*)?\[(?:Errno|WinError)\s*-?\d+\]", re.I)
+_PIPE_SAID = re.compile(r"broken pipe|pipe (?:is being closed|has been ended)|\[errno (?:32|22)\]|"
+                        r"\[winerror (?:109|232|233)\]", re.I)
+_PIPE_WINERRORS = (109, 232, 233)     # ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED
+
+
+def _pipe_broke(exc: BaseException) -> bool:
+    """Writing to a program that has closed (or never read) its input: a broken pipe, or on Windows "[Errno 22]
+    Invalid argument" (with no file named: not a bad path) and the pipe's own Windows codes."""
+    import errno
+
+    return isinstance(exc, BrokenPipeError) or (isinstance(exc, OSError) and (
+        getattr(exc, "winerror", None) in _PIPE_WINERRORS or exc.errno == errno.EPIPE
+        or (exc.errno == errno.EINVAL and not exc.filename)))
+
+
+def os_failure(exc: OSError, p: str = "") -> RuntimeError:
+    """An error of this PC's met while asking the AI (``p``: its provider), in plain words with what to do, never
+    Python's own ("[Errno 32] Broken pipe"): its program closed before it read the request, a full disk, a file
+    Windows held (net.plain_error), else that something on this PC stopped it."""
+    from .net import plain_error
+
+    p = p or provider()
+    if _pipe_broke(exc):
+        text = t(ENDED_EARLY) if p == "claude" else t(CODEX_ENDED_EARLY) if p == "codex" else t(PC_FAILED, ai=ai_name())
+    else:
+        text = plain_error(exc)
+        if _RAW_OS.match(text) or text.rstrip(".") == (str(exc) or exc.__class__.__name__).rstrip("."):
+            text = t(PC_FAILED, ai=ai_name())
+    log.warning("Asking %s failed on this PC: %r", p, exc)
+    return RuntimeError(text)
+
+
+@contextlib.contextmanager
+def _plainly() -> Any:
+    """An error of this PC's that escapes asking the AI, said as os_failure says it when its words are Python's ("[Errno
+    32] Broken pipe"); one written for people already (a connection's: net.plain_error says those) goes on as it is."""
+    import requests
+
+    try:
+        yield
+    except OSError as exc:
+        if isinstance(exc, requests.RequestException) or not (_pipe_broke(exc) or _RAW_OS.match(str(exc))):
+            raise
+        raise os_failure(exc) from exc
+
+
+def _raw_os_said(m: str) -> str:
+    """Which error of this PC's an error's words are, when they are only Python's: "pipe" (the program closed before
+    it read the request), "other", or "" (they are someone's words)."""
+    if not _RAW_OS.match(m or ""):
+        return ""
+    return "pipe" if _PIPE_SAID.search(m) else "other"
+
+
 _CLAUDE_NETWORK = ("unable to connect", "connection error", "connection refused", "connection reset", "econnrefused",
                    "econnreset", "enotfound", "eai_again", "getaddrinfo", "fetch failed", "socket hang up",
                    "network is unreachable", "request timed out", "no response from api")
@@ -588,6 +667,9 @@ def friendly_error(message: str) -> str:
     service = aierrors.from_message("Claude", m)        # "API Error: 500 …", "529 Overloaded": on Anthropic's side
     if service is not None:
         return str(service)
+    raw = _raw_os_said(m)                                 # Python's words, not Claude's: "[Errno 32] Broken pipe"
+    if raw:
+        return t(ENDED_EARLY) if raw == "pipe" else t("Claude Code stopped unexpectedly. Try again.")
     return f"Claude: {m}"[:400] if m else t("Claude did not return an answer.")
 
 
@@ -729,7 +811,17 @@ def one_shot(system_prompt: str, content: list[dict[str, Any]], model: str = "so
     level (effort.resolve; "" = low for Claude, the one ``model`` meant for ChatGPT, thinking off offline).
     ``think=False``: a task that needs no extended thinking (a summary of given facts) - Claude then answers without
     it. ChatGPT only (the CLIs ask again inside): ``drops``, how many times a connection that dropped before any of
-    the answer came is asked again (None: chatgpt.one_shot's default), ``on_wait``: told before each such wait."""
+    the answer came is asked again (None: chatgpt.one_shot's default), ``on_wait``: told before each such wait.
+    An error of this PC's on the way is said in plain words (os_failure), never as "[Errno 32] Broken pipe"."""
+    with _plainly():
+        res = _one_shot(system_prompt, content, model, effort, cancel, on_text, timeout_s, think=think, drops=drops,
+                        on_wait=on_wait)
+    return res
+
+
+def _one_shot(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
+              cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]], timeout_s: int, *,
+              think: bool, drops: Optional[int], on_wait: Optional[Callable[[dict[str, Any]], None]]) -> dict[str, Any]:
     p = provider()
     if p == "chatgpt":
         kw: dict[str, Any] = {"on_wait": on_wait}
@@ -793,6 +885,28 @@ def _awake() -> float:
     return awake_time()
 
 
+def _feed(proc: subprocess.Popen, data: bytes) -> bool:
+    """The request written to the program's input, which is then closed. False when the program had closed it already
+    (it ended before it read the request: "[Errno 32] Broken pipe"): it gets a moment to end and say why on its error
+    output, which is then read as any failure's (its words, or ENDED_EARLY when it said nothing)."""
+    assert proc.stdin
+    try:
+        proc.stdin.write(data)
+        proc.stdin.close()
+        return True
+    except (OSError, ValueError) as exc:
+        log.warning("The AI's program closed before it read the request: %r", exc)
+    try:
+        proc.stdin.close()
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    return False
+
+
 def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, effort: str,
                  cancel: Optional[threading.Event], on_text: Optional[Callable[[str], None]], timeout_s: float,
                  think: bool, wait: Any) -> dict[str, Any]:
@@ -800,6 +914,8 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
     env = {**_claude_env(), "DISABLE_PROMPT_CACHING": "1"}
     if not think:
         env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
+    else:
+        env.update(_thinking_env(model, effort))
     message = {"type": "user", "message": {"role": "user", "content": turn_blocks(content)}}
     line = (json.dumps(message) + "\n").encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
@@ -815,8 +931,7 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
         assert proc.stdin and proc.stdout
         wait.begin(len(line) + len(system_prompt.encode("utf-8")), _pictures(content), provider="claude", model=model,
                    level=effort or "low")
-        proc.stdin.write(line)
-        proc.stdin.close()
+        fed = _feed(proc, line)
         result: dict[str, Any] = {}
         stream = _ClaudeStream(wait, on_text)
         killer_stop = threading.Event()
@@ -872,8 +987,10 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
         raise health.changed("claude", "answers", f"Claude Code {claude_cli_info().get('version')}'s result has no "
                                                   f"text ({', '.join(sorted(result)[:12])})")
     if not result or result.get("is_error") or result.get("subtype") not in (None, "success"):
-        msg = result.get("result") or (err.strip().splitlines() or [t("Claude did not return a result.")])[-1]
-        raise _claude_failure(msg)
+        said = result.get("result") or (err.strip().splitlines() or [""])[-1]
+        if not said and not fed:                  # it closed before it read the request, and said nothing
+            raise RuntimeError(t(ENDED_EARLY))
+        raise _claude_failure(said or t("Claude did not return a result."))
     health.ok("claude", "answers")
     return {
         "text": result.get("result") or "".join(text_parts),
@@ -906,7 +1023,7 @@ class ClaudeSession:
         try:
             self._proc = subprocess.Popen(_command(model, effort, sp, partial=True), cwd=self._work,
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                          creationflags=_NO_WINDOW, env=_claude_env())
+                                          creationflags=_NO_WINDOW, env={**_claude_env(), **_thinking_env(model, effort)})
         except OSError as exc:
             shutil.rmtree(self._work, ignore_errors=True)
             log.warning("Claude Code did not start: %r", exc)
@@ -968,7 +1085,8 @@ class ClaudeSession:
         wait = aiwait.of(stop)                   # the answer the student waits for hears every step (aiwait)
         ok = False
         try:
-            res = self._ask(content, on_text, stop, timeout_s, wait)
+            with _plainly():                     # this PC's errors in plain words (os_failure)
+                res = self._ask(content, on_text, stop, timeout_s, wait)
             ok = not res["stopped"]
             return res
         finally:
@@ -1479,7 +1597,10 @@ def _codex_error(message: str) -> str:
     if "contains a virus" in low or "potentially unwanted software" in low:
         return t("Windows Security (or your antivirus) blocked the Codex CLI. It comes from OpenAI: if your antivirus "
                  "put it in quarantine, restore it there, then try again.")
-    if "panicked at" in low:                          # the program itself crashed: its own words mean nothing here
+    raw = _raw_os_said(message)                       # Python's words, not the CLI's: "[Errno 32] Broken pipe"
+    if raw == "pipe":
+        return t(CODEX_ENDED_EARLY)
+    if "panicked at" in low or raw:                   # the program itself crashed: its own words mean nothing here
         return t("The Codex CLI stopped unexpectedly. Try again; if it keeps happening, restart the PC, or use plain "
                  "ChatGPT (Continue with ChatGPT) in Settings → AI.")
     return f"ChatGPT: {message}"[:400] if message else t("ChatGPT did not return an answer.")
@@ -1572,8 +1693,7 @@ def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, ef
             log.warning("The Codex CLI did not start: %r", exc)
             raise _start_failure("codex", exc) from None
         assert proc.stdin and proc.stdout
-        proc.stdin.write(prompt.encode("utf-8"))
-        proc.stdin.close()
+        fed = _feed(proc, prompt.encode("utf-8"))
         stop = threading.Event()
         timed_out: list[bool] = []
 
@@ -1658,6 +1778,8 @@ def _codex_run(system_prompt: str, content: list[dict[str, Any]], model: str, ef
             raise RuntimeError(_codex_old_message(version))
         if not last:
             log.warning("The Codex CLI ended with %s and said nothing: %s", proc.returncode, err[-800:])
+            if not fed:                            # it closed before it read the request
+                raise RuntimeError(t(CODEX_ENDED_EARLY))
         raise _codex_failure(last)
     health.ok("codex", "answers")
     return {"text": _join(texts), "usage": usage, "cost_usd": None, "seconds": round(_awake() - started, 1),
@@ -1721,8 +1843,9 @@ class ChatGPTSession:
             text = ((f"=== CONVERSATION SO FAR ==={convo}\n\n" if convo else "") + (f"{found}\n\n" if found else "")
                     + f"=== NEW QUESTION ===\n{question}")
             try:
-                r = self.request(self.system, [*self.slides, *turn_blocks(extra), {"type": "text", "text": text}],
-                                 self.model, self.effort, stop, on_text, timeout_s, **self._extra)
+                with _plainly():                       # this PC's errors in plain words (os_failure)
+                    r = self.request(self.system, [*self.slides, *turn_blocks(extra), {"type": "text", "text": text}],
+                                     self.model, self.effort, stop, on_text, timeout_s, **self._extra)
             except Cancelled:
                 return {"text": "", "usage": {}, "stopped": True}
             self.history.append((question, r["text"]))
@@ -1753,7 +1876,9 @@ def new_session(system_prompt: str, model: str = "sonnet", effort: str = "") -> 
         return LocalSession(system_prompt, appconfig.load().local_model, think=effort == "on")
     if p != "claude":
         raise RuntimeError(t("AI features are turned off (Settings → AI)."))
-    return ClaudeSession(system_prompt, model, effort)
+    with _plainly():                               # (its folder and system prompt are written: a full disk…)
+        session = ClaudeSession(system_prompt, model, effort)
+    return session
 
 
 # ----------------------------------------------------------------------- set-up: status, sign-in, install

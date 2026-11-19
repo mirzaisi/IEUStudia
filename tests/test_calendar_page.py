@@ -76,7 +76,7 @@ def test_the_month_shows_today_this_week_and_how_sure_each_date_is(tmp_path):
     assert "today" in out["today"] and "sel" in out["today"] and out["nowRow"]
     assert "Quiz 2" in out["band"] and "s-week" in out["band"]                 # a week's item, dashed, in its row
     assert out["dots"] == 2 and out["sel"]
-    assert "Quiz 2" in out["dayList"] and "Week from an announcement" in out["dayList"] and "Get ready" in out["dayList"]
+    assert "Quiz 2" in out["dayList"] and "Week from an announcement" in out["dayList"] and "Exam room" in out["dayList"]
     t = out["tomorrow"]
     assert "Lab 3" in t and "due 15:40" in t and "Exact time from IEULearn" in t
     assert "MATH 250 10:20–12:10" in t and "EEE 242 Lab 14:10–15:40" in t      # the day's classes on one line

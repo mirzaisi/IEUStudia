@@ -113,6 +113,7 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
         quiet = {r.delivery_id for r in scope if r.status != "done" and not r.live and r.delivery_id not in jobs
                  and no_sound(r, warnings.get(r.delivery_id, []))}
         settled = bool(scope) and len(done) + len(quiet) == len(scope)
+        silent = settled and bool(quiet) and not done        # its "No speech found" pill says what that mark would
         d = rs[0].start.date()
         day_views.append({
             "day_key": key, "date": d.isoformat(), "weekday": weekday(d, short=True), "label": _day_label(d),
@@ -126,7 +127,8 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
             "live": any(r.live for r in rs if not r.hidden),
             # finished parts still to transcribe
             "ready": any(not r.live and r.status != "done" and r.delivery_id not in quiet for r in scope),
-            "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, []))),
+            "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, [])
+                                            if not (silent and a["kind"] == "no_sound"))),
             "recordings": rviews,
         })
     day_views.sort(key=lambda d: (d["date"], d["recordings"][0]["start"]), reverse=True)
@@ -377,7 +379,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
 
     asgs = [assignment_view(a, week_of(dt.date.fromisoformat(a["due"][:10]), first) if a["due"] and first else None)
             for a in lib.assignments(course_id)]
-    return {
+    out = {
         **{k: cv[k] for k in ("id", "code", "name", "display_name", "instructor", "term", "section", "has_panopto",
                               "counts", "my_section", "cover", "lms_progress")},
         "description": syl.get("description") or ov.get("description", ""),
@@ -395,6 +397,9 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         "alerts": alerts,
         "assignments": asgs,                     # IEULearn's assignments: when each is due, and whether it was sent
     }
+    from .quizzes import assessments            # each quiz and exam with the weeks it covers: the one place for it
+    out["assessments"] = assessments(out, lib)
+    return out
 
 
 def assignment_view(a: dict[str, Any], week: Optional[int] = None) -> dict[str, Any]:

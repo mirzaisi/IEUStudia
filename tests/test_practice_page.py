@@ -150,8 +150,11 @@ def test_the_practice_page(tmp_path):
     assert "Worked problem" in out["q3"] and "Show the solution" in out["q3"]
     # the score, saved; the missed ones again, without the intro
     assert "You got 1 of 3" in out["end"] and "Try 2 missed questions" in out["end"]
-    assert out["saved"] == [{"answers": [{"n": 1, "got": 0, "chose": 1, "skipped": False}, {"n": 2, "got": 1, "chose": None, "skipped": False},
-                                         {"n": 3, "got": 0, "chose": None, "skipped": True}], "only": [], "started_at": out["saved"][0]["started_at"]}]
+    # (each answer with what was typed and who marked it: the app checks a choice, "I got it" is the student's)
+    assert out["saved"] == [{"answers": [{"n": 1, "got": 0, "chose": 1, "skipped": False, "text": "", "mark": "app"},
+                                         {"n": 2, "got": 1, "chose": None, "skipped": False, "text": "", "mark": "self"},
+                                         {"n": 3, "got": 0, "chose": None, "skipped": True, "text": "", "mark": "self"}],
+                             "only": [], "started_at": out["saved"][0]["started_at"]}]
     assert out["retryButton"] == "1,3"
     assert "Question 1 of 2" in out["retry"] and "What is $P(A|B)$?" in out["retry"]
     # flashcards: the answer, four answers with when each brings it back; a forgotten card comes back this sitting

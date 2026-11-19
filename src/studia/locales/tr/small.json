@@ -52,7 +52,6 @@
   "{course}: {n} lecture couldn’t be matched to your section, so it was left out. If it’s yours, transcribe it from the course page.": "{course}: {n} ders kaydı şubenle eşleştirilemediği için dışarıda bırakıldı. Senin şubeninse ders sayfasından yazıya dökebilirsin.",
   "Set it up…": "Ayarla…",
   "the next quiz or exam": "bir sonraki quiz ya da sınav",
-  "Open checklist": "Listeyi aç",
   "Transcribe lectures": "Dersleri yazıya dök",
   "missing lectures": "yazıya dökülmemiş dersler",
   "Transcribe…": "Yazıya dök…",
@@ -76,7 +75,6 @@
   "IEUStudia cannot do that yet.": "IEUStudia bunu henüz yapamıyor.",
   "Video study plan for this course (add a quiz name or weeks)": "Bu ders için video çalışma planı (bir quiz adı ya da hafta ekle)",
   "Exam review sheet (add a quiz or exam name)": "Sınav tekrar özeti (bir quiz ya da sınav adı ekle)",
-  "Get-ready checklist for the next quiz or exam": "Bir sonraki quiz ya da sınav için hazırlık listesi",
   "Study notes for this lecture": "Bu ders kaydı için çalışma notları",
   "Transcribe lectures (add week numbers)": "Dersleri yazıya dök (hafta numaralarını ekle)",
   "Download the files (add week numbers)": "Dosyaları indir (hafta numaralarını ekle)",
@@ -86,7 +84,6 @@
   "Search your lectures and files": "Derslerinde ve dosyalarında ara",
   "Find videos that teach these weeks, checked through their transcripts": "Bu haftaları anlatan videoları bul (altyazılarına bakılarak kontrol edilir)",
   "A written exam review sheet: key ideas, formulas and practice": "Sınav için yazılı bir tekrar özeti: temel noktalar, formüller ve alıştırmalar",
-  "What to do before the next quiz or exam": "Bir sonraki quiz ya da sınavdan önce yapılacaklar",
   "Transcribe and download what is missing": "Eksikleri yazıya dök ve indir",
   "or type / for more": "daha fazlası için / yaz"
 }

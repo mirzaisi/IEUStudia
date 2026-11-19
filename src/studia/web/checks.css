@@ -1,0 +1,36 @@
+/* IEUStudia — checked answers (checks.js): the "Final answer" box the app checks and its verdict, the key's own line
+ * (its numbers checked, or not confirmed: amber, a heads-up), the end screen's "Mark my written answers", and who
+ * marked an answer with the way to change it. Green right, red wrong, amber a heads-up, blue what you pick. */
+
+/* ---- a question */
+.ck-final { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 10px; }
+.ck-final label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.ck-final .input { flex: 1 1 200px; max-width: 340px; font-variant-numeric: tabular-nums; }
+.ck-final .dim { flex-basis: 100%; }
+.ck-final .dim .md { font-size: inherit; line-height: inherit; }   /* (the result's name: the line's own size) */
+.ck-verdict { margin-bottom: 8px; }
+.ck-mine { font-size: 13px; overflow-wrap: anywhere; }
+.ck-unknown { display: flex; gap: 6px; align-items: flex-start; margin: 10px 0 8px; font-size: 13px; color: var(--text-2); }
+.ck-unknown > .i, .ck-key > .i { flex: none; margin-top: 2px; }
+.ck-key { display: flex; gap: 6px; align-items: flex-start; margin: 8px 0 0; font-size: 12.5px; color: var(--text-2); }
+.ck-key.ok > .i { color: var(--green); }
+.ck-key.warn { color: var(--text); padding: 7px 10px; border-radius: 8px; background: var(--amber-soft);
+  box-shadow: inset 3px 0 0 var(--amber); }
+.ck-key.warn > .i { color: var(--amber); }
+.qz-fb + .ck-key { margin-top: 10px; }
+
+/* ---- the end screen (with the bar, an opened list gives it room: Close and Try stay in view at 1024×700) */
+.qz-end:has(.ck-mark, .ck-done) .qz-results:has(.mq.open) { max-height: min(46vh, 520px); }
+.ck-mark { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0 0; padding: 10px 12px;
+  border-radius: var(--radius); background: var(--surface-2); }
+.ck-mark > .dim { flex: 1 1 260px; }
+.ck-mark.busy .grow { flex: 1; min-width: 200px; }
+.ck-done { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; color: var(--text-2); }
+.ck-done > .i { color: var(--green); flex: none; }
+
+/* ---- an answer's row */
+.ck-row { display: flex; flex-direction: column; gap: 4px; }
+.ck-who b { font-weight: 600; }
+.ck-why { color: var(--text-2); }
+.ck-change { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ck-change .btn.on { background: var(--accent-soft); color: var(--accent-text); }

@@ -350,7 +350,8 @@ def test_back_to_the_defaults_puts_back_one_group(isolated_home):
     assert api.calendar_reminders()["reminders"] == r["reminders"]               # the Calendar's Reminders agree
     assert api.settings_reset("nope")["ok"] is False
     d = api.settings_defaults()
-    assert d["ok"] and d["defaults"]["practice"] == {"settings": {"quiz_questions": 10, "cards_per_day": 20}}
+    assert d["ok"] and d["defaults"]["practice"] == {"settings": {"quiz_questions": 10, "cards_per_day": 20,
+                                                                  "mistake_cards": True}}
 
 
 def test_new_flashcards_a_day_follow_the_setting(isolated_home):
@@ -406,8 +407,9 @@ def test_the_settings_page_has_practice_and_puts_a_changed_group_back(tmp_path):
     assert out["page"].count("Back to the defaults") == 1
     assert "Check IEULearn every" in out["every"] and 'value="30" selected' in out["every"] and " disabled " in out["every"]   # (background checks off)
     assert "Quizzes and exams" in out["rem"] and "2 days before" in out["rem"] and "3 hours before" in out["rem"]
-    assert out["asked"] == ["Back to the defaults for Practice? | A new quiz starts with 10 questions, and up to 20 new flashcards a day.",
-                            "reset practice"]
+    assert out["asked"] == ["Back to the defaults for Practice? | A new quiz starts with 10 questions, and up to 20 new flashcards a day. "
+                            "Missed questions join your flashcards.", "reset practice"]
+    assert "Add missed questions to my cards" in out["page"]
     assert out["after"] == [10, False]
     assert out["quiz"] == "15"                                                 # a new quiz starts from the setting
 

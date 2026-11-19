@@ -426,6 +426,7 @@ def course_doc(s: Any, course_id: str, what: str, notes: bool) -> D.Doc:
 def chat_doc(s: Any, chat_id: str) -> D.Doc:
     """A chat as it went: what you asked, what the AI answered (as it wrote it), the app's notices with it."""
     from . import ai, notices
+    from .chatquiz import readable
     from .outputs.mathmd import dollar_math
 
     chat, course = _chat_row(s, chat_id)
@@ -470,8 +471,8 @@ def chat_doc(s: Any, chat_id: str) -> D.Doc:
             continue
         blocks.append(D.Para([D.R(who)], style="who"))
         blocks += [D.Markdown(x, top=2, lang="en") for x in found]      # (the app's notices: English, labels too)
-        if text:
-            md = dollar_math(text) + (" *(stopped)*" if m.get("status") == "stopped" else "")
+        if text:                        # (a "/quiz" answer: its sentence and the quiz's name, not its JSON)
+            md = dollar_math(readable(text, usage).strip()) + (" *(stopped)*" if m.get("status") == "stopped" else "")
             blocks.append(D.Markdown(md, top=2))
             texts.append(text)
     return D.Doc(_chat_title(s, chat), kicker=f"Chat with {ais}", course=course.code or course.name,
