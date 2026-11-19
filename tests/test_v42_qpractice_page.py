@@ -159,6 +159,7 @@ def test_the_flashcards_card_says_where_its_cards_come_from_and_an_old_try_s_ans
   out.quizOnly = tab({ total: 4, today: 4, quiz: 4, lecture_days: 0, files: 0, weeks: [3] });
   out.mixed = tab({ total: 16, today: 2, quiz: 4, lecture_days: 1, files: 0, learnt: 2, weeks: [3] });
   out.lectures = tab({ total: 12, today: 2, quiz: 0, lecture_days: 1, files: 0, weeks: [3] });
+  out.oneAside = tab({ total: 12, today: 2, quiz: 0, lecture_days: 1, files: 0, weeks: [3], aside: 1 });
   const q = { n: 2, type: "short", q: "What does conditioning do?", model: "Restricts it.", points: [], source: null };
   const row = (answer) => St.mistakes.row({ cid: "c1", plan: "p1" }, q, answer);
   St.mistakes.state.open.add("p1|2");
@@ -171,6 +172,7 @@ def test_the_flashcards_card_says_where_its_cards_come_from_and_an_old_try_s_ans
     assert ("From the flashcards of 1 lecture. A few minutes a day is enough. 4 cards are questions you missed in quizzes."
             in out["mixed"])
     assert "questions you missed" not in out["lectures"]
+    assert "1 card is set aside." in out["oneAside"] and "Bring it back" in out["oneAside"]
     assert "Not kept: this try is from an older version of IEUStudia." in out["old"]
     assert "You didn&#39;t write an answer." in out["empty"] or "You didn't write an answer." in out["empty"]
     assert "it shrinks the space" in out["typed"] and "older version" not in out["typed"]

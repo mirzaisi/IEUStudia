@@ -167,7 +167,7 @@
   }
   function tabHTML(c, p) { return mistakesCard(c, p) + weakCard(c, p); }
   // the Flashcards card: cards set aside, with the way back
-  const asideLine = (c, d) => (d && d.aside ? `<div class="note-sm">${I("pause", "sm")}<span>${esc(t.n(d.aside, "{n} card is set aside.", "{n} cards are set aside."))} <button class="link" data-act="fc-bring-back" data-cid="${esc(c.id)}">${t("Bring them back")}</button></span></div>` : "");
+  const asideLine = (c, d) => (d && d.aside ? `<div class="note-sm">${I("pause", "sm")}<span>${esc(t.n(d.aside, "{n} card is set aside.", "{n} cards are set aside."))} <button class="link" data-act="fc-bring-back" data-cid="${esc(c.id)}">${t.n(d.aside, "Bring it back", "Bring them back")}</button></span></div>` : "");
 
   // ------------------------------------------------------------------ a missed multiple-choice question as a card
   const isMC = (c) => !!c && c.origin === "quiz" && !c.edited && (c.quiz || {}).type === "mc" && ((c.quiz || {}).options || []).length >= 2;
