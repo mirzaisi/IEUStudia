@@ -229,14 +229,61 @@ def test_no_speech_found_is_not_shown_as_the_microphone_being_off(tmp_path):
     duration_s: 2700, warnings: [{ level: "error", message: error }], viewer_url: "v" });
   const d = { date: "2026-10-14", day_key: "e|14", label: "Wed 14 Oct", recordings: [
     rec("a", "No speech was found in this recording (only noise or music). Check it on Panopto."),
-    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent: check it on Panopto or ask the lecturer.")] };
+    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent: check it on Panopto or ask the lecturer."),
+    rec("c", "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.")] };
   const html = plain(St.dayCardHTML(d, { show_mode: "all", available_sections: [] }));
   out.a = html.slice(html.indexOf('data-rid="a"'), html.indexOf('data-rid="b"'));
-  out.b = html.slice(html.indexOf('data-rid="b"'));
+  out.b = html.slice(html.indexOf('data-rid="b"'), html.indexOf('data-rid="c"'));
+  out.c = html.slice(html.indexOf('data-rid="c"'));
 """)
     assert "No speech found" in out["a"] and "only noise or music: check it on Panopto" in out["a"]
     assert "microphone was off" not in out["a"]
     assert "No sound on Panopto" in out["b"] and "microphone was off" in out["b"]
+    # almost silent (quality.NEAR_SILENT_DBFS): the microphone was off too, with its retry icon and nothing more
+    assert "No sound on Panopto" in out["c"] and "microphone was off" in out["c"] and "only noise" not in out["c"]
+    assert 'data-act="retry"' in out["c"] and "sensitive" not in out["c"]
+
+
+@node
+def test_a_lecture_with_no_speech_says_it_once(tmp_path):
+    """A part with no speech showed its pill, a red warning and a yellow mark that all said it, and its day a warning
+    pointing to "the notes on the transcript page" of a day with no transcript. Now the pill says it (its title holds
+    the whole note); other marks stay, and a day with a transcript still points to its notes."""
+    out = run(tmp_path, """
+  const off = "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.";
+  const rec = (id, extra) => ({ id, status: "failed", error: off, no_sound: true, part: 1, time: "09:00", end_time: "09:45",
+    duration_s: 2700, warnings: [{ level: "error", message: off }], warn_level: "error", viewer_url: "v",
+    anomalies: [{ kind: "no_sound", text: "No speech was found in it" }, { kind: "off_day", text: "Recorded on a Sunday" }], ...extra });
+  const day = (any_done, recordings) => ({ date: "2026-10-14", day_key: "e|14", label: "Wed 14 Oct", parts: recordings.length,
+    no_sound: true, transcribed: any_done, any_done, warn_level: "error", recordings });
+  out.silent = plain(St.dayCardHTML(day(false, [rec("a")]), { show_mode: "all", available_sections: [] }));
+  out.part = plain(St.dayCardHTML(day(true, [rec("a"), rec("b", { status: "done", error: "", no_sound: false, warnings: [],
+    warn_level: "", anomalies: [] })]), { show_mode: "all", available_sections: [] }));
+""")
+    head, row = out["silent"].split('data-rid="a"')
+    assert "No speech found" in head and "warn-icon" not in head          # no transcript page to see notes on
+    assert "microphone was off" in row and "warn-icon" not in row and "No speech was found in it" not in row
+    assert "Recorded on a Sunday" in row                                  # (what else looks off stays)
+    assert "See the notes on the transcript page" in out["part"].split('data-rid="a"')[0]
+
+
+@node
+def test_a_retried_lecture_shows_what_its_new_try_found_at_once(tmp_path):
+    """"Only noise or music" tried again and found almost silent: the row said "only noise or music" (its last try's
+    note) until the course list came back; now its note is the new try's at once."""
+    out = run(tmp_path, """
+  const noise = "No speech was found in this recording (only noise or music). Check it on Panopto.";
+  const off = "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.";
+  const r = { id: "c", status: "queued", error: noise, no_sound: true, part: 1, time: "12:09", end_time: "12:51", duration_s: 2520,
+    warnings: [{ level: "error", message: noise }], viewer_url: "v", mine: true };
+  const d = { date: "2026-10-02", day_key: "m|2", label: "Fri 2 Oct", parts: 1, recordings: [r] };
+  S.courses = [{ id: "m", code: "MATH 250", days: [d], show_mode: "all", available_sections: [], counts: {} }];
+  ev({ type: "job", id: "c", final: true, stage: "failed", status: "failed", title: "MATH 250 · Fri 2 Oct 12:09", error: off, no_sound: true });
+  out.row = plain(St.dayCardHTML(d, S.courses[0]));
+  out.toasts = told();
+""")
+    assert "No sound on Panopto" in out["row"] and "microphone was off" in out["row"] and "only noise" not in out["row"]
+    assert out["toasts"][-1].startswith("error: MATH 250 · Fri 2 Oct 12:09: This recording is almost silent on Panopto")
 
 
 @node

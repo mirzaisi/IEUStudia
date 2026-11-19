@@ -259,7 +259,7 @@ def test_a_few_unsure_words_with_numbers_stay_in_the_transcript(monkeypatch):
 def test_find_speech_checks_the_audio(monkeypatch):
     with pytest.raises(NoSpeech):
         tr.find_speech(np.zeros(30 * SR, dtype=np.float32))
-    monkeypatch.setattr(tr, "_units", lambda audio, cancel, threshold=0.5: ([(0, 20 * SR)], [Unit(0, 20 * SR)]))
+    monkeypatch.setattr(tr, "_units", lambda audio, cancel: ([(0, 20 * SR)], [Unit(0, 20 * SR)]))
     s = tr.find_speech(np.full(30 * SR, 0.005, dtype=np.float32), None, 30.0)
     assert s.units == [Unit(0, 20 * SR)] and s.gain > 1.0 and s.stats["speech_s"] == 20.0
 

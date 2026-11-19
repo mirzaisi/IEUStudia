@@ -18,7 +18,7 @@ from .library import ANN_UNIT
 from .outputs.common import format_ts, kind_label, lang_tag, language_shares, time_range
 from .outputs.highlights import LABELS, _tr_lower, excerpt
 from .outputs.markdown import para_spans, part_views
-from .quality import closer_listen, worst_level
+from .quality import worst_level
 from .sections import available_sections, classify, guess_my_section, parse_section_tag
 from .slides import jpeg_size
 
@@ -61,7 +61,6 @@ def recording_view(rec: Recording, settings: Settings, mine: Optional[bool], par
         "warnings": [{"level": w.get("level", "info"), "message": w.get("message", "")} for w in warnings],
         "warn_level": worst_level(warnings), "has_slides": has_slides,
         "no_sound": no_sound(rec, warnings),         # (also one that failed so before 2.3: only its error says it)
-        "closer": closer_listen(warnings) if rec.status == "failed" else "",     # Try again, more sensitive
         "anomalies": anomalies or [], "replaced": replaced,
     }
 
@@ -114,6 +113,7 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
         quiet = {r.delivery_id for r in scope if r.status != "done" and not r.live and r.delivery_id not in jobs
                  and no_sound(r, warnings.get(r.delivery_id, []))}
         settled = bool(scope) and len(done) + len(quiet) == len(scope)
+        silent = settled and bool(quiet) and not done        # its "No speech found" pill says what that mark would
         d = rs[0].start.date()
         day_views.append({
             "day_key": key, "date": d.isoformat(), "weekday": weekday(d, short=True), "label": _day_label(d),
@@ -121,16 +121,14 @@ def course_view(course: Course, recs: list[Recording], settings: Settings, jobs:
             "transcribed": settled and bool(done), "any_done": any(r.status == "done" for r in countable),
             # all of it that isn't transcribed has no speech (without "transcribed": none of it has: nothing to do)
             "no_sound": settled and bool(quiet),
-            # its parts with sound but no speech found in them: Try again, more sensitive (quality.closer_listen)
-            "closer": [r.delivery_id for r in scope if r.delivery_id in quiet and r.status == "failed"
-                       and closer_listen(warnings.get(r.delivery_id, [])) == "can"],
             "duration_s": round(sum(r.duration_s for r in countable)), "parts": len(countable),
             "is_new": any(r.is_new for r in countable),
             "warn_level": worst_level([w for r in countable for w in warnings.get(r.delivery_id, [])]),
             "live": any(r.live for r in rs if not r.hidden),
             # finished parts still to transcribe
             "ready": any(not r.live and r.status != "done" and r.delivery_id not in quiet for r in scope),
-            "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, []))),
+            "anomalies": list(dict.fromkeys(a["text"] for r in rs if not r.hidden for a in found.get(r.delivery_id, [])
+                                            if not (silent and a["kind"] == "no_sound"))),
             "recordings": rviews,
         })
     day_views.sort(key=lambda d: (d["date"], d["recordings"][0]["start"]), reverse=True)
@@ -360,7 +358,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         if n:
             week(n)["days"].append({k: d[k] for k in ("day_key", "date", "label", "kind_label", "parts", "transcribed",
                                                      "any_done", "no_sound", "is_new", "mine", "duration_s", "live",
-                                                     "ready", "anomalies", "closer")})
+                                                     "ready", "anomalies")})
     alerts = _label_other_sections(course_alerts(lib, course_id, recs), cv["days"])
     alerts = {**alerts, "plan": dated_plan(alerts.get("plan") or [], first)}
     for e in alerts.get("plan") or []:              # a week an assessment was announced for, also without a unit

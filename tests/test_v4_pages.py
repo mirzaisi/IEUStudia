@@ -85,6 +85,14 @@ def test_lectures_are_class_days_and_one_with_no_speech_is_counted_apart(tmp_pat
     assert recs["c2"]["no_sound"] and recs["c1"]["no_sound"] and not recs["d1"]["no_sound"]   # (its error says it)
 
 
+def test_a_day_with_no_speech_has_no_mark_saying_it_again(tmp_path):
+    """The Weeks tab's chip of a day with no speech showed its "No speech found" pill and a mark saying "No speech was
+    found in it"; a transcribed day with a part without speech keeps the mark (its pill says "Transcribed")."""
+    days = {d["date"]: d for d in _view(_lib(tmp_path))["days"]}
+    assert "No speech was found in it" not in days["2026-10-12"]["anomalies"] and days["2026-10-12"]["no_sound"]
+    assert "No speech was found in it" in days["2026-10-07"]["anomalies"]
+
+
 def test_a_lecture_without_speech_being_transcribed_again_by_hand_is_not_settled(tmp_path):
     v = _view(_lib(tmp_path), jobs={"c1": {"id": "c1", "stage": "transcribing", "progress": 0.2, "detail": ""}})
     day = next(d for d in v["days"] if d["date"] == "2026-10-12")

@@ -7,7 +7,6 @@ Warnings are dicts: ``{"code", "level" ("info"|"warning"|"error"), "message", "s
 from __future__ import annotations
 
 import math
-import re
 from typing import TYPE_CHECKING, Any, Iterable, Optional, Sequence
 
 from .i18n import num, t
@@ -19,49 +18,16 @@ SR = 16000
 
 
 class NoSpeech(Exception):
-    """Nothing to transcribe: the recording is silent or has no usable audio. ``noise``: it has sound, but no speech
-    was found in it (only noise or music, or a far or quiet microphone): it can be listened to more closely."""
-
-    def __init__(self, message: str = "", noise: bool = False) -> None:
-        super().__init__(message)
-        self.noise = noise
+    """Nothing to transcribe: the recording is silent or has no usable audio."""
 
 
 SILENT_DBFS = -50.0
 MIN_SPEECH_S = 8.0          # less speech than this in a whole recording: "no speech" (noise, music, a far microphone)
-HEARD_WORDS = 12            # a closer listen (Engine.transcribe sensitive) must find this many different words
-# a "no speech" warning saved before 4.2 (without its "noise" flag) about a recording with sound: its words
-_NOISE_WORDS = re.compile(r"only noise or music|yalnızca gürültü", re.I)
-
-
-def still_no_speech() -> NoSpeech:
-    """A lecture listened to more closely (Try again, more sensitive) that still has no speech in it."""
-    return NoSpeech(t("Still no speech found, even listening more closely (only noise or music). Check it on Panopto."),
-                    noise=True)
-
-
-def closer_listen(warnings: Iterable[dict[str, Any]]) -> str:
-    """Try again, more sensitive, for a recording whose last try found no speech (its "no_speech" warning, see
-    jobs._warn_no_sound): "can" when it has sound but no speech was found in it, "tried" when listening more closely
-    found none either, else "" (a silent one, or one with speech)."""
-    for w in warnings:
-        if w.get("code") == "no_speech":
-            if w.get("sensitive"):
-                return "tried"
-            if w.get("noise") or _NOISE_WORDS.search(str(w.get("message") or "")):
-                return "can"
-    return ""
-
-
-def heard_speech(segments: Iterable[Any], unclear: str = "[unclear]") -> bool:
-    """After a closer listen (a lower speech-detection threshold): the transcript has real speech in it. Over noise the
-    speech model writes a few passages, often one phrase again and again ("Thank you.", "Okay."), or nothing it can
-    make sense of ([unclear]): those are not a lecture. Real speech is at least MIN_SPEECH_S of passages with text and
-    HEARD_WORDS different words in them."""
-    real =[s for s in segments if (s.text or "").strip() and s.text.strip() != unclear]
-    seconds = sum(max(0.0, s.end - s.start) for s in real)
-    words = {w for s in real for w in re.findall(r"\w+", s.text.lower()) if not w.isdigit()}
-    return seconds >= MIN_SPEECH_S and len(words) >= HEARD_WORDS
+# A recording without speech whose average level stays below this is one made with the microphone off: its hiss can
+# peak just above SILENT_DBFS. Measured (Nov 2026): the owner's 12 "only noise or music" recordings averaged -62 to
+# -68 dBFS (peaks -46 to -49.8), while the quietest lecture with speech on that PC averaged -41 dBFS and the quietest
+# tenth of its seconds, the room between sentences, -55 dBFS.
+NEAR_SILENT_DBFS = -60.0
 
 
 def peak(audio: np.ndarray) -> float:
@@ -76,6 +42,16 @@ def is_silent(audio: np.ndarray) -> bool:
 
 def _db(x: float) -> float:
     return 20.0 * math.log10(max(x, 1e-9))
+
+
+def average_dbfs(audio: np.ndarray) -> float:
+    """The recording's average level (its RMS, from about 4 million of its samples to keep it fast)."""
+    import numpy as np
+
+    if not audio.size:
+        return _db(0.0)
+    some = audio[::max(1, len(audio) // 4_000_000)]
+    return _db(float(np.sqrt(np.mean(np.square(some, dtype=np.float64)))))
 
 
 def _mmss(sec: float) -> str:
@@ -115,8 +91,10 @@ def analyze_audio(audio: np.ndarray, speech: Sequence[tuple[int, int]], expected
         raise NoSpeech(t("This recording has no sound on Panopto (the microphone was probably off). "
                          "All available audio streams are silent: check it on Panopto or ask the lecturer."))
     if speech_s < MIN_SPEECH_S:
-        raise NoSpeech(t("No speech was found in this recording (only noise or music). Check it on Panopto."),
-                       noise=True)
+        if average_dbfs(audio) < NEAR_SILENT_DBFS:
+            raise NoSpeech(t("This recording is almost silent on Panopto: the microphone was probably off, so there is "
+                             "no speech to transcribe. Check it on Panopto or ask the lecturer."))
+        raise NoSpeech(t("No speech was found in this recording (only noise or music). Check it on Panopto."))
 
     # loudness of the speech parts (sampled to keep it fast)
     mask = np.zeros(n, dtype=bool)
