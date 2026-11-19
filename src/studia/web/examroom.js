@@ -145,7 +145,8 @@
     const row = (a) => {
       const lecture = a.source === "lecture";
       const target = lecture ? `data-day="${esc(a.day_key)}" data-part="${a.part}" data-t="${a.t}"` : `data-cid="${esc(c.id)}" data-ann="${esc(a.announcement_id)}"`;
-      const meta = lecture ? `${I("video", "xs")} ${esc(t("Lecture"))} · ${esc(dmw(a.date))}${a.part ? ` · ${esc(t("part {n}", { n: a.part }))}` : ""} · ${esc(a.ts || "")}`
+      const meta = lecture ? `${I("video", "xs")} ${esc(t("Lecture"))} · ${esc(dmw(a.date))}${a.part ? ` · ${esc(t("part {n}", { n: a.part }))}` : ""} · ${esc(a.ts || "")}${a.other_section
+        ? ` <span class="pill other-sec" title="${esc(t("Heard in another section's lecture: dates and details may differ for your section"))}">${esc(a.other_section)}</span>` : ""}`
         : `${I("megaphone", "xs")} ${esc(t("Announcement"))} · ${esc(dmw(a.date))}`;
       return `<button class="er-item" data-act="alert-open" ${target}><span class="er-text">${lecture ? "“" : `<b>${esc(a.title || "")}</b>: `}${markHL(a.text || "", a.hl)}${lecture ? "”" : ""}</span>
         <span class="er-meta">${meta}</span></button>`;

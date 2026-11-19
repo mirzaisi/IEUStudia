@@ -310,6 +310,19 @@ def test_an_announced_day_offers_no_day_to_set(tmp_path):
     assert 'data-act="er-day"' not in out["html"] and "the day announced" in text_of(out["html"])
 
 
+@node
+def test_a_heads_up_from_another_sections_lecture_says_so(tmp_path):
+    out = run(tmp_path, """
+  const said = [{ source: "lecture", day_key: DAY, part: 1, t: 60, ts: "01:00", date: "2026-11-16", text: "The quiz is on Wednesday",
+    categories: ["quiz"], other_section: "Section 2", other_section_en: "Section 2" }];
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { said }) });
+  A["ready-open"]({ dataset: { cid: "c", key: "quiz:3" } }); await tick();
+  out.html = view();
+""")
+    assert 'class="pill other-sec"' in out["html"] and ">Section 2</span>" in out["html"]
+    assert "Heard in another section&#39;s lecture" in out["html"] or "Heard in another section's lecture" in out["html"]
+
+
 def text_of(h):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", h)).strip()
 
