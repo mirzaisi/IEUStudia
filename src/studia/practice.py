@@ -774,7 +774,7 @@ class PracticeApi:
             return {"ok": False, "error": t("This course is no longer in your list.")}
         los = None
         if focus:
-            named = [e for e in quizzes.assessments(d) if e["name"] == focus]
+            named = [e for e in quizzes.of(d) if e["name"] == focus]
             e = next((x for x in named if x["ahead"]), named[0] if named else None)
             los = list(e["los"]) if e else None
         m = mastery(self._s.lib, course_id, focus, los=los, outcomes=d.get("outcomes_en") or d.get("outcomes_tr") or [])
