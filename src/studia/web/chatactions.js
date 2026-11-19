@@ -34,9 +34,43 @@
     })[a.action];
   }
 
+  // ---------------------------------------------------------------- "/quiz": a quiz from the chat (chatquiz.py)
+  // The answer to "/quiz" (or to "Quiz me on this") is a sentence and the quiz's JSON block: while it is written, the
+  // sentence and a "Writing your quiz" card (never the half-written block); once it is done and saved, a card to play
+  // it. A quiz that could not be read leaves the answer as it was written, with a line that says so.
+  const canQuiz = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
+  const messages = () => ((S.chat && S.chat.data) || {}).messages || [];
+  function quizTurn(seq) {            // the answer to a "/quiz"
+    const all = messages(), i = all.findIndex((x) => x.seq === seq), q = i > 0 ? all[i - 1] : null;
+    return !!q && q.role === "user" && /^\s*\/quiz\b/i.test(q.text || "");
+  }
+  function quizCard(text, m, streaming) {
+    const u = (m && m.usage) || {}, made = u.quiz, cut = text.indexOf("```");
+    // the sentence before the quiz (its first paragraph: never a question or its answer, however the AI wrote it)
+    const intro = (cut >= 0 ? text.slice(0, cut) : text.replace(/[{[][\s\S]*$/, "")).trim().split(/\n\s*\n/)[0].trim();
+    if (streaming) {
+      return { text: intro, html: `<div class="act-cards"><div class="act-card qz-chat">${St.SPIN ? St.SPIN() : ""}<div class="grow"><b>${esc(t("Writing your quiz…"))}</b><div class="d">${esc(t("You can play it here when it's done. It's saved to Practice too."))}</div></div></div></div>` };
+    }
+    if (made) {
+      return { text: intro, html: `<div class="act-cards"><div class="act-card qz-chat"><span class="act-ico">${I("list-checks", "sm")}</span><div class="grow"><b>${esc(made.title || t("Practice quiz"))}</b>
+        <div class="d">${esc(t.n(made.questions, "{n} question", "{n} questions"))} · ${esc(t("saved to Practice"))}</div></div>
+        <button class="btn primary sm" data-act="qz-play" data-id="${esc(made.id)}">${I("play", "sm")} ${t("Play quiz")}</button></div></div>` };
+    }
+    if (m && m.status === "stopped") return { text: intro, html: `<div class="note-sm">${I("info", "sm")}<span>${esc(t("Stopped before the quiz was finished. Type /quiz to try again."))}</span></div>` };
+    return { text, html: u.quiz_error ? `<div class="note-sm">${I("info", "sm")}<span>${esc(t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again."))}</span></div>` : "" };
+  }
+  // "Quiz me on this" under the last answer: a quiz on what the chat just covered (a "/quiz" sent as a question)
+  function quizChip(seq, m, streaming) {
+    const all = messages(), last = all[all.length - 1];
+    if (streaming || !m || m.status !== "done" || !last || last.seq !== seq || !canQuiz()) return "";
+    return `<div class="qz-chip-row"><button class="btn ghost sm" data-act="chat-quiz" title="${esc(t("A few practice questions on this answer, scored and saved to Practice"))}">${I("list-checks", "sm")} ${t("Quiz me on this")}</button></div>`;
+  }
+
   // ---------------------------------------------------------------- AI-suggested actions in answers
-  St.actionCards = (text, seq, streaming) => {
-    if (!text || !text.includes("```ieustudia")) return { text, html: "" };
+  // m: the message (its usage says whether its "/quiz" was saved)
+  St.actionCards = (text, seq, streaming, m) => {
+    if (text && quizTurn(seq)) return quizCard(text, m, streaming);
+    if (!text || !text.includes("```ieustudia")) return { text, html: text ? quizChip(seq, m, streaming) : "" };
     const cards = [];
     const clean = text.replace(/```ieustudia\s*([\s\S]*?)(```|$)/g, (_, body) => {
       if (streaming) return "";
@@ -53,7 +87,7 @@
       return `<div class="act-card"><span class="act-ico">${I(ICON[a.action] || "zap", "sm")}</span><div class="grow"><b>${esc(title)}</b><div class="d">${esc(d)}</div></div>
         <button class="btn primary sm" data-act="chat-action" data-key="${seq}:${i}">${esc(label)}</button></div>`;
     }).join("")}</div>` : "";
-    return { text: clean.trim(), html };
+    return { text: clean.trim(), html: html + quizChip(seq, m, streaming) };
   };
 
   async function detail(cid) {
@@ -120,6 +154,7 @@
   // ---------------------------------------------------------------- "/" commands and quick actions
   // the command words are typed, so they stay English; the descriptions are shown (made when drawn, after the table arrives)
   const CMDS = () => [
+    ["quiz", "quiz", t("A practice quiz on this chat, scored and saved to Practice (add how many questions)")],
     ["plan", "video_plan", t("Video study plan for this course (add a quiz name or weeks)")],
     ["prep", "prep_pack", t("Exam review sheet (add a quiz or exam name)")],
     ["ready", "get_ready", t("Get-ready checklist for the next quiz or exam")],
@@ -155,6 +190,11 @@
   St.slashCommand = (text) => {
     const a = parse(text);
     if (!a) return false;
+    if (a.action === "quiz") {            // "/quiz [n]": sent to the AI as it is (chat.py makes it the quiz's turn)
+      if (canQuiz()) return false;
+      toast((S.system.ai || {}).provider === "local" ? t("Quizzes need ChatGPT or Claude (the offline model is too small for them).") : St.aiHint(), "info");
+      return true;
+    }
     run(a);
     return true;
   };
@@ -195,5 +235,6 @@
     "chat-action": (el) => { const a = found[el.dataset.key]; if (a) run(a); },
     "chat-cmd": (el) => { const a = parse(`/${el.dataset.cmd}`); if (a) run(a); },
     "chat-cmd-pick": (el) => { const ta = $("#chat-input"); if (ta) { ta.value = `/${el.dataset.cmd} `; S.chat.input = ta.value; ta.focus(); drawMenu(); } },
+    "chat-quiz": () => A["chat-suggest"]({ dataset: { text: "/quiz" } }),        // sent as a question (sendChat)
   });
 })();
