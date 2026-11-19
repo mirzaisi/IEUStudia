@@ -54,22 +54,33 @@ when it was on screen (PowerPoint lectures give the exact second and the slide's
 inside IEUStudia, with the slide and the transcript following along. One search box covers all your lectures, the
 words on their slides and your course files, in English or Turkish. A long queue can be paused, the lectures you ask for go before a
 full sync's batch, and if you close IEUStudia before it's done, it offers to go on next time. Mark a paragraph to come
-back to it, with a note if you like; your marks show up again in *Get ready* for the weeks a quiz covers.
+back to it, with a note if you like; your marks are listed at the top of the lecture.
 
 **Don't miss a quiz.** Whenever a lecture or an announcement mentions a quiz, the midterm, the final, homework or a
-change in the schedule, it shows up on the course page. Before a quiz, *Get ready* lists the lectures to catch up on,
-the files to download and what the lecturer said about it. The Calendar shows the whole term: quizzes, exams,
-IEULearn assignment deadlines with their time, class days, make-up and cancelled classes, and entries of your own.
-IEUStudia reminds you before them (you choose how early), all of it can go into Google Calendar or Outlook, and a
-weekly digest sums up what happened.
+change in the schedule, it shows up on the course page. Each coming quiz, midterm and final, even a final that's only
+in the syllabus, gets an *Exam room*: the weeks it covers (the ones your lecturer announced, or a guess you can
+change), the day and how many days are left, its share of your grade, what's still missing (*Get everything*
+transcribes and downloads it), what the lecturer said and stressed about it, and how much you've practised. Its
+buttons open a practice quiz, your flashcards, a cheatsheet, a review sheet, a chat or an export already set to those
+weeks, and the page prints. The Calendar shows the whole term: quizzes, exams, IEULearn assignment deadlines with
+their time, class days, make-up and cancelled classes, and entries of your own. IEUStudia reminds you before them (you
+choose how early), all of it can go into Google Calendar or Outlook, and a weekly digest sums up what happened. If you
+know the exact day of an exam, set it once in its Exam room and the Calendar and your reminder follow it.
 
-**Practise for exams.** Practice quizzes for the next quiz or midterm, for weeks you pick or for one lecture, where
-every question points to the slide or the lecture moment it comes from. Flashcards with spaced repetition, made from
-your lectures and files, that you can also send to Anki. And a list of what the lecturer stressed in class, week by
-week, with the quote and the time; that one needs no AI.
+**Practise for exams.** Practice quizzes for a coming quiz or exam, for weeks you pick, for one lecture or for the
+moments your lecturer stressed (or type `/quiz` in a chat), where every question points to the slide or the lecture
+moment it comes from. After a quiz, a question you got wrong shows why, with a button that plays the minute of the
+lecture where it was taught. The questions you miss come back as flashcards, the Practice tab shows where you lose
+points, and *My weak spots* writes a new quiz around them. Worked problems have a *Final answer* box that checks your
+result, IEUStudia works out the AI's answer to each problem again so a wrong one is fixed or flagged, and the AI can
+mark your written answers. Flashcards with spaced repetition, made from your lectures and files, that you can also
+send to Anki. And a list of what the lecturer stressed in class, week by week, with the quote and the time; that one
+needs no AI.
 
 **Save it the way you need it.** A lecture, a week, a whole course or a chat can be saved as PDF, Word, Markdown, text
-or subtitles, straight into the course's folder.
+or subtitles, straight into the course's folder. *Export for AI chat* makes a zip for ChatGPT or Claude on the web;
+pick a quiz or your final under *For* and it adds a one-page brief and ready prompts for a practice quiz, flashcards
+and a cheatsheet. Paste what they write back on the Practice tab: quizzes play with scores and cards join your deck.
 
 **Get a notification when something new appears.** If you want, IEUStudia keeps checking IEULearn every half hour
 after you close its window (its icon stays next to the clock) and shows a Windows notification for new recordings,
@@ -94,7 +105,7 @@ is optional, see [AI features](#ai-features).
     <td width="50%"><img src="docs/screenshots/transcript.png" alt="A transcribed lecture"><br><sub>A transcribed lecture. A timestamp opens the recording at that moment.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/screenshots/get-ready.png" alt="The Get ready checklist"><br><sub>Getting ready for a quiz.</sub></td>
+    <td width="50%"><img src="docs/screenshots/exam-room.png" alt="The Exam room of a quiz"><br><sub>A quiz's Exam room: what it covers, what's missing and how you've practised.</sub></td>
     <td width="50%"><img src="docs/screenshots/plan.png" alt="A video study plan"><br><sub>A video study plan, with the caption quotes it relied on.</sub></td>
   </tr>
 </table>
@@ -194,7 +205,7 @@ AI is optional. Transcripts, heads-ups, search and everything else work without 
 | Claude | A Claude Pro or Max subscription | The same features. |
 | ChatGPT through the Codex CLI | A ChatGPT plan with Codex (Free and Go have smaller limits) | The same features, for people who already use OpenAI's Codex CLI. |
 | Offline model | Nothing to pay for, but at least 8 GB of memory | Short notes and simple questions, on your PC (Qwen3 1.7B or 4B). No study plans. |
-| No AI | Nothing | The AI buttons are hidden. What the lecturer stressed, the Calendar and the lecture player still work. |
+| No AI | Nothing | The AI buttons are hidden. The Exam room, what the lecturer stressed, the Calendar, the lecture player and Export for AI chat still work. |
 
 You can change your choice any time in *Settings → AI*.
 
@@ -221,7 +232,8 @@ Node.js), opens its sign-in and sends a short test message.
 
 If something goes wrong, the step that failed says why, and *Settings → AI* has the same checklist for later.
 
-AI only runs when you ask for something, and it counts against your plan's normal usage limits. AI can also be wrong.
+AI only runs when you ask for something, and it counts against your plan's normal usage limits. Class lists with
+student numbers stay out of everything sent to an AI and out of export zips. AI can also be wrong.
 Answers point to the lecture moments they're based on so you can check them, and video study plans show the caption
 quotes behind every video they recommend.
 
