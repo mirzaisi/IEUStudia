@@ -28,6 +28,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from . import numcheck
 from .cancel import Cancelled
 from .doclang import (date_text, day_text, document_language, span_title, taught_in, weeks_text, word, writing,
                       writing_in)
@@ -49,6 +50,16 @@ _QUANT = re.compile(r"^(?:MATH|EEE|EE|ELEC|PHYS|PHY|CE|ME|MECH|IE|ISE|CHEM|CHE|S
 SYSTEM = ("You are an experienced university lecturer writing practice exam questions for a student, only from the "
           "course material you are given (lecture transcripts may mishear names and symbols: fix them from context). "
           "You write exactly what is asked, maths in LaTeX, and never ask questions back.")
+# a worked problem's (and a numeric short answer's) result as an expression the app computes (numcheck.py): the key
+# is confirmed when it gives the result the answer states
+CHECK_RULE = ('- "check" (every worked problem, and a short answer whose answer is one number): the final result as a '
+              'calculation the app can do to confirm your answer: "expr" uses only numbers, + - * / ^ ( ), sqrt, sin, '
+              'cos, tan, asin, acos, atan (radians), exp, ln, log10, log2, abs, arg, comb, factorial, pi, e and j for '
+              'the imaginary unit (no letters for quantities, no units); "value" is its result as a number in "unit"; '
+              '"unit" like "V", "mA", "kΩ", "Hz", "%" ("" for none). Your "answer" states that same result. Leave '
+              '"check" out when the answer is not one number (a formula, a proof, several values).')
+REPAIR_SYSTEM = ("You are an experienced university lecturer checking the answer key of practice problems: you solve "
+                 "each one again carefully, step by step, maths in LaTeX, and never ask questions back.")
 
 
 # ------------------------------------------------------------------ gather (no AI)
@@ -380,6 +391,7 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
               "the transcript's (slide m) marks show when each was on screen. Use them (formulas, figures, worked "
               "examples), and cite the lecture moment where the slide was shown.") if facts.get("one_lecture") else ""
     lectures = " (cite the [mm:ss] time written before the passage)" if facts["lectures"] else ""
+    check = "\n" + CHECK_RULE if kinds["short"] or kinds["problem"] else ""
     return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. {quiz_languages(facts['language'], facts.get('taught_in', ''))}{extra}
 Priorities, in this order:
 {chr(10).join(prio)}
@@ -389,12 +401,12 @@ Answer with one JSON object:
  "questions": [
   {{"type": "mc", "question": "…", "options": ["…", "…", "…", "…"], "answer": "B", "explanation": "why the right option is right", "wrong": {{"A": "why this option is wrong", "C": "…", "D": "…"}}, "source": "F1 p.12", "topic": "…", "los": [3], "stressed": ["S2"], "level": "medium"}},
   {{"type": "short", "question": "…", "answer": "the model answer, 1–3 sentences", "points": ["what a full answer must say", "…"], "source": "L1 part 2 14:05", "topic": "…", "los": [], "stressed": [], "level": "easy"}},
-  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
+  {{"type": "problem", "question": "a problem with numbers to work out", "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V"}}, "source": "F2 p.4", "topic": "…", "los": [], "stressed": [], "level": "hard"}}]}}
 Rules:
 - Like the questions this course's lecturer asks in a quiz or midterm: the material's own methods, examples and notation, from understanding to applying; no trivia about the material itself ("what is on slide 5", "what did the lecturer joke about").
 - Multiple choice: exactly four options, one of them right; the wrong ones are mistakes students really make; "wrong" says for each wrong option why it is wrong. The right answer's letter varies across the quiz. No "all/none of the above". In "explanation" and "wrong", never call an option by its letter or its place (the app reorders the options): say what it says.
 - Short answers: answerable in a few sentences; "points" lists what a full answer must contain.
-- Worked problems: realistic numbers, every step with its working, the result checked, units where they apply.
+- Worked problems: realistic numbers, every step with its working, the result checked, units where they apply.{check}
 - "source": where the question comes from: a file page as "F1 p.12" or a lecture moment as "L1 part 2 14:05"{lectures}. Only the references listed below.
 - "topic": the topic the question tests, written exactly as in "topics".
 - Maths in LaTeX: $...$ in a sentence, $$...$$ on a line of its own. No two questions test the same thing.{slides}
@@ -475,7 +487,8 @@ _KEYS = {"question": ("question", "q", "prompt", "stem", "text", "title", "soru"
          "topic": ("topic", "subject", "concept", "konu"),
          "los": ("los", "learning_outcomes", "lo", "outcomes", "learningOutcomes"),
          "stressed": ("stressed", "stressed_refs", "stressed_moments", "s_refs"),
-         "level": ("level", "difficulty")}
+         "level": ("level", "difficulty"),
+         "check": ("check", "numeric_check", "verify", "kontrol")}
 
 
 def _get(d: dict[str, Any], what: str) -> Any:
@@ -1024,6 +1037,9 @@ def clean_question(q: dict[str, Any], zero: Optional[bool]) -> Optional[dict[str
         return out
     model = _get(q, "model") or (_get(q, "answer") if not isinstance(_get(q, "answer"), (dict, list)) else "")
     out["model"] = _clean_tex(_text(model, 3000))
+    check = numcheck.clean_check(_get(q, "check"))          # (the result as a calculation: clean_quiz confirms it)
+    if check:
+        out["check"] = check
     if kind == "problem":
         out["steps"] = [_clean_tex(x) for x in (steps or _steps(_get(q, "steps")))]
         if not out["steps"] and not out["model"]:
@@ -1041,7 +1057,8 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
                seed: str = "") -> dict[str, Any]:
     """The AI's quiz, checked: usable questions only, each once; the right answers spread over A–D (not where its
     reasons name an option's letter); each with a source the app can open (the one named, else found by its words);
-    los and stressed moments only as known."""
+    los and stressed moments only as known; a worked problem's key computed again from its "check" ("verified", or
+    "unverified" when the result it states is not what its calculation gives: numcheck.check_key)."""
     qs = raw.get("questions") or []
     ints = [v for q in qs if isinstance(q, dict) for v in [_get(q, "answer")]
             if isinstance(v, int) and not isinstance(v, bool)]
@@ -1065,6 +1082,7 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
         c["source"] = src
         c["los"] = [n for n in c["los"] if known_los is None or n in known_los]
         c["stressed"] = [stressed[r]["id"] for r in c["stressed"] if r in stressed]
+        numcheck.check_key(c)
         out.append(c)
     mcs = [c for c in out if c["type"] == "mc"]
     if seed:                                            # the right answer's letter as if drawn, the same each time
@@ -1119,12 +1137,73 @@ def coverage(quiz: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
             "stressed_total": len(stressed_ids), "stressed_hit": len(hit & stressed_ids),
             "topics_missing": topics_missing[:12], "found": sum(1 for q in qs if q.get("found")),
             "no_source": sum(1 for q in qs if not q.get("source")),
+            "checked": sum(1 for q in qs if q.get("verified")), "unconfirmed": sum(1 for q in qs if q.get("unverified")),
             "materials_missing": [m["title"] for m in facts.get("materials_missing") or []],
             "materials_students": [m["title"] for m in facts.get("materials_students") or []],
             "days_missing": [x["date"] for x in facts.get("days_missing") or []],
             "files_cut": [f["name"] for f in facts.get("files_cut") or []],
             "lectures_cut": sorted({lecture_refs[r]["date"] for r in (facts.get("cut") or []) + (facts.get("left_out") or [])
                                     if r in lecture_refs})}
+
+
+# ------------------------------------------------------------------ a key the app could not confirm, solved again
+def _fmt(v: Any) -> str:
+    if isinstance(v, complex):
+        return f"{v.real:.4g}{v.imag:+.4g}j"
+    return f"{v:.4g}" if isinstance(v, float) else str(v)
+
+
+def repair_prompt(bad: list[dict[str, Any]]) -> str:
+    """One request for every problem whose key disagrees with its own calculation: each with what it states and
+    what the app computed, to be solved again (no course material: a problem's statement has what it needs)."""
+    rows = []
+    for q in bad:
+        ck = q.get("check") or {}
+        try:
+            got = _fmt(numcheck.evaluate(ck.get("expr")))
+        except ValueError:
+            got = "(not computable)"
+        rows.append("\n".join(x for x in (
+            f"[{q['n']}] {q['q']}",
+            "Steps given: " + " | ".join(q.get("steps") or []) if q.get("steps") else "",
+            f"Answer given: {q.get('model') or ''}",
+            f"Check given: expr = {ck.get('expr', '')}; value = {ck.get('value', '')}; unit = {ck.get('unit', '')}",
+            f"The app computes that expression to {got}: not the answer given.") if x))
+    return f"""TASK: The app computed the answer key of these practice problems again, and each disagrees with itself: the answer it states is not what its own "check" calculation gives. Solve each problem again from its statement, carefully, step by step, and give the corrected steps, the final answer and its check.
+Keep each problem's language and notation (maths in LaTeX).
+{CHECK_RULE}
+Answer with one JSON object:
+{{"questions": [{{"n": 2, "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "…", "value": 0, "unit": "…"}}}}]}}
+
+=== PROBLEMS ===
+{chr(10).join(rows)}"""
+
+
+def apply_repair(questions: list[dict[str, Any]], text: str) -> int:
+    """The AI's second solutions put in place of the keys the app could not confirm, each only when the app now
+    confirms it (else the question keeps its "unverified"). How many were fixed."""
+    data = _json_body(text)
+    items = data.get("questions") if isinstance(data, dict) else data
+    bad = {q["n"]: q for q in questions if q.get("unverified")}
+    fixed = 0
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        q = bad.get(next(iter(_ints(it.get("n"))), None))
+        model = _get(it, "model") or _get(it, "answer")
+        check = numcheck.clean_check(_get(it, "check"))
+        if q is None or not check or not model or isinstance(model, (dict, list)):
+            continue
+        trial = {**q, "model": _clean_tex(_text(model, 3000)), "check": check}
+        steps = [_clean_tex(x) for x in _steps(_get(it, "steps"))]
+        if q["type"] == "problem" and steps:
+            trial["steps"] = steps
+        numcheck.check_key(trial)
+        if trial.get("verified"):
+            q.clear()
+            q.update(trial, repaired=True)
+            fixed += 1
+    return fixed
 
 
 # ------------------------------------------------------------------ the stages (run by plans.PlanRunner)
@@ -1188,6 +1267,24 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
     quiz = clean_quiz(raw, facts, units, seed=pid)
     if not quiz["questions"]:
         raise RuntimeError(t("The AI's questions could not be used (no question had a clear right answer). Try again."))
+    bad = [q for q in quiz["questions"] if q.get("unverified")]
+    if bad and "repair" not in data:          # keys that disagree with their own calculation: solved again, once
+        stage("check", 0.93, tn(len(bad), "Checking {n} answer again ({model})…", "Checking {n} answers again ({model})…",
+                                model=shown))
+        ask = runner._ask_text or one_shot
+        try:
+            res = ask(REPAIR_SYSTEM, [{"type": "text", "text": repair_prompt(bad)}], model, level, cancel, None)
+            _usage_add(usage, "repair", res)
+            data["repair"] = res.get("text") or ""
+        except Cancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the quiz is usable without it: those keys say they're unconfirmed
+            log.warning("The quiz's answer key could not be checked again: %s", exc)
+            data["repair"] = ""
+        s.lib.update_plan(pid, data=data, usage=usage)
+    if bad and data.get("repair"):
+        log.info("Answer key: %d of %d unconfirmed answers fixed", apply_repair(quiz["questions"], data["repair"]),
+                 len(bad))
     title = quiz["title"] or span_title(facts)
     result = {"kind": "quiz", "title": title, "made": dt.date.today().isoformat(), "language": facts["language"],
               "questions": quiz["questions"], "topics": quiz["topics"], "coverage": coverage(quiz, facts),
@@ -1337,6 +1434,8 @@ def _document_body(plan: dict[str, Any]) -> str:
                 bits.append('<ul class="qz-points">' + "".join(f"<li>{_line(x)}</li>" for x in q["points"]) + "</ul>")
             if q.get("why"):
                 bits.append(md_html(q["why"]))
+        if q.get("unverified"):
+            bits.append(f'<div class="sp-src">{esc(word("The app could not confirm this answer: check it against its source."))}</div>')
         src = _src_text(q.get("source"))
         if src:
             bits.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
