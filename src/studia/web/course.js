@@ -527,7 +527,7 @@
     const cn = c.content || {};
     const fresh = (c.counts.new || 0) + (cn.materials_new || 0) + (cn.announcements_new || 0);
     const heads = d && d.alerts ? d.alerts.items.filter((a) => isKey(a) && daysAgo(a.date) <= RECENT_DAYS).length : 0;
-    const exam = d && d.weeks.find((x) => x.exam && !x.past);
+    const exam = syllabusExam(d);
     const next = upcoming(d)[0];
     const k = lectureCounts(c), done = k.total ? Math.round((100 * k.done) / k.total) : 0;
     const barTip = t("Lectures transcribed in IEUStudia") + (k.silent ? ` · ${t.n(k.silent, "{n} more has no speech on Panopto", "{n} more have no speech on Panopto")}` : "");
@@ -546,10 +546,22 @@
         </span>
         <span class="cc-foot">${heads ? `<span class="cc-heads">${I("alert", "xs")}${t("{n} heads-up", { n: heads })}</span>` : ""}
           ${next ? `<span class="exam-chip" title="${esc(next.los.length ? loTitle(d, next.los) : next.sources[0].title)}">${I("cap", "xs")}${esc(next.name)}${nextWhen(d, next)}${next.los.length ? ` · ${esc(loLabel(next.los))}` : ""}</span>`
-            : exam ? `<span class="exam-chip">${I("cap", "xs")}${esc(exam.exam_label || exam.topic_en || exam.topic_tr || t("Exam"))} · ${t("week {n}", { n: exam.no })}</span>` : ""}
+            : exam ? `<span class="exam-chip">${I("cap", "xs")}${esc(exam.name)} · ${esc(exam.when)}</span>` : ""}
           <span class="spacer"></span><span class="cc-go">${I("arrow-right", "sm")}</span></span>
       </span></button>`;
   }
+  // the course card's chip when no announced assessment is ahead: the syllabus's next exam week, on the day set in its
+  // Exam room if one was ("Final Exam · Mon 11 Jan", "· today"; one whose day is over is done), else "· week 16"
+  function syllabusExam(d) {
+    for (const w of d ? d.weeks.filter((x) => x.exam && !x.past) : []) {
+      const e = (d.assessments || []).find((x) => x.syllabus && (x.first_week || x.week) <= w.no && w.no <= x.week);
+      const own = e ? ownDay(d, e.key) : "", r = own ? planRel(d, { ...e, date: own }) : null;
+      if (r && r.past) continue;
+      return { name: w.exam_label || w.topic_en || w.topic_tr || t("Exam"), when: r ? (r.code === "today" ? r.rel : dmw(own)) : t("week {n}", { n: w.no }) };
+    }
+    return null;
+  }
+  St.syllabusExam = syllabusExam;    // (the tests)
   // the course card's next assessment: " · Fri 6 Nov" (" · today") when an announcement gave its day, else " · next
   // week" (or its week)
   function nextWhen(d, e) {

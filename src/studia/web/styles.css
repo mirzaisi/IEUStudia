@@ -390,7 +390,8 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .ch-top { display: flex; align-items: center; gap: 8px; }
 .ch-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
 .ch-title h2 { margin: 0; font: 600 16.5px var(--font-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.model-sel { width: auto; height: 30px; font-size: 12.5px; padding: 0 26px 0 10px; }
+.model-btn { flex: none; gap: 4px; padding: 0 8px 0 10px; font-size: 12.5px; }
+.model-btn .i { color: var(--text-3); }
 .ch-scope { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; }
 .ch-scope .spacer { flex: 1; }
 .ch-meta { color: var(--text-3); margin-left: 4px; }

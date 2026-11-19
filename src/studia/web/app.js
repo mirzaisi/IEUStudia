@@ -1609,8 +1609,10 @@
     const days = d ? d.labels : c.days;
     const chips = days.slice(0, 6).map((day) => `<button class="day-chip ${day.gone ? "gone" : ""}" data-act="chat-day" data-key="${esc(day.key)}" title="${esc(t("{day}: open the transcript", { day: day.long || day.label }))}">${days.length > 1 ? `<b>L${day.n}</b>` : ""}${esc(day.label)} · ${esc(day.kind)}</button>`).join("")
       + (days.length > 6 ? `<span class="dim">${t("+{n} more", { n: days.length - 6 })}</span>` : "");
-    const model = x.model || "sonnet";
-    const sel = isChatGPT() ? "" : `<select class="input model-sel" data-act="${d ? "draft-model" : "chat-model"}" title="${esc(t("Model"))}">${modelsFor().map(([v, l, h]) => `<option value="${v}" ${v === model ? "selected" : ""}>${l} · ${h}</option>`).join("")}</select>`;
+    // the model: its name on a button, each model with what it is for in its menu (a <select> is as wide as its longest
+    // option, "Opus · best, uses the most", and cut the chat's name short)
+    const [, mName, mHint] = modelsFor().find(([v]) => v === (x.model || "sonnet")) || ["", x.model || "", ""];
+    const sel = isChatGPT() ? "" : `<button type="button" class="btn ghost sm model-btn" data-act="chat-model" aria-haspopup="menu" title="${esc(t("Model"))}: ${esc(mName)}${mHint ? ` · ${esc(mHint)}` : ""}">${esc(mName)}${I("chevron-down", "xs")}</button>`;
     // the video's slides that go: next to the chosen slide files, fewer than were captured (chatfiles.js reads it)
     const fit = d && (d.slides && d.videoFit != null ? d.videoFit : Math.min(d.slidesTotal, 60));
     const slides = d ? (d.slidesTotal ? `<label class="mini-toggle" title="${esc(t("Attach the slide images (≈{k} more tokens)", { k: fmtK(fit * 800) }))}"><input type="checkbox" class="switch sm" data-act="draft-slides" ${d.slides ? "checked" : ""}>${t("Slides ({n})", { n: fit })}</label>` : "")
@@ -1736,6 +1738,18 @@
     renderSidebar(); renderTop();
     if (inChat) renderChatMain(); else { renderView(); loadChats(); }
     focusComposer(); estimateDraft();
+  }
+  // a model picked in the header's menu: a new chat's (each model holds its own amount: estimated again), or this
+  // chat's next answers (one too big for it is refused: the model kept)
+  async function chatModel(v) {
+    const d = S.chat.draft, c = S.chat.data;
+    const back = () => { const b = $('#chat-head [data-act="chat-model"]'); if (b) b.focus({ preventScroll: true }); };   // (as the menu's Escape)
+    if (d) { d.model = v; renderChatHead(); back(); estimateDraft(); return; }
+    if (!c || v === c.model) { back(); return; }
+    const r = await call("chat_update", c.id, { model: v });
+    if (!r.ok) { toast(r.error, "error"); back(); return; }
+    c.model = r.chat.model; renderChatHead(); back(); loadChats();
+    if (c.messages.length) toast(t("Next answers use {model}. {ai} reads the lectures again once.", { model: levelLabel(v), ai: aiName() }), "info");
   }
   async function estimateDraft() {
     const d = S.chat.draft; if (!d) return;
@@ -2747,14 +2761,10 @@
       if (!r.ok) { toast(r.error, "error"); return; }
       c.title = r.chat.title; renderChatHead(); loadChats();
     },
-    "chat-model": async (el) => {
-      const c = S.chat.data; if (!c) return;
-      const r = await call("chat_update", c.id, { model: el.value });
-      if (!r.ok) { toast(r.error, "error"); el.value = c.model; return; }     // (too big for it: the menu shows the model kept)
-      c.model = r.chat.model; loadChats();
-      if (c.messages.length) toast(t("Next answers use {model}. {ai} reads the lectures again once.", { model: levelLabel(el.value), ai: aiName() }), "info");
+    "chat-model": (el) => {
+      const x = S.chat.draft || S.chat.data, now = (x && x.model) || "sonnet";
+      if (x) menu(el, modelsFor().map(([v, l, h]) => ({ id: v, icon: v === now ? "check" : "ai", label: l, desc: h, run: () => chatModel(v) })));
     },
-    "draft-model": (el) => { if (S.chat.draft) { S.chat.draft.model = el.value; estimateDraft(); if (Studia.chatSideRender) Studia.chatSideRender(); } },   // each model holds its own amount
     "draft-slides": (el) => { const d = S.chat.draft; if (d) { d.slides = el.checked; estimateDraft(); } },
     "draft-change": () => { const d = S.chat.draft; if (d) chatPicker(d.course_id, d); },
     "chat-menu": (el) => menu(el, [

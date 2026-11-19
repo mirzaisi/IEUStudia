@@ -174,6 +174,7 @@
   const cardBtn = (c) => (c ? `<button class="btn ghost icon sm fc-more" data-act="fc-card-menu" title="${esc(t("Edit, set aside or delete this card"))}" aria-label="${esc(t("Edit, set aside or delete this card"))}">${I("more", "sm")}</button>` : "");
   function studyHTML(X, c, code) {
     const qz = c.quiz, pick = X.picked, shown = pick != null, right = shown && pick === qz.answer, left = X.queue.length - X.pos;
+    const done = St.practice && St.practice.doneCards ? St.practice.doneCards(X) : X.done;     // (cards, not answers)
     const opts = qz.options.map((o, i) => {
       const st = !shown ? "" : i === qz.answer ? "right" : pick === i ? "wrong" : "dim";
       const mark = shown && i === qz.answer ? I("check", "sm") : shown && pick === i ? I("x", "sm") : "";
@@ -184,7 +185,7 @@
     const src = shown && c.source && c.source.kind ? (c.source.kind === "file"
       ? `<button class="qz-src" data-act="pr-page" data-cid="${esc(X.cid)}" data-id="${esc(c.source.id)}" data-page="${c.source.page}">${I("file-text", "xs")}<span>${esc(t("From {file}, page {page}", { file: c.source.name, page: c.source.page }))}</span></button>`
       : `<button class="qz-src" data-act="pr-moment" data-day="${esc(c.source.day_key)}" data-part="${c.source.part || 1}" data-t="${c.source.t || 0}">${I("video", "xs")}<span>${esc(t("From the lecture of {day}, part {part}, {time}", { day: dmw(c.source.date), part: c.source.part || 1, time: c.source.ts || "" }))}</span></button>`) : "";
-    return `<div class="fc fc-study fc-mc"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${cardBtn(c)}</div>
+    return `<div class="fc fc-study fc-mc"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${X.cram ? t("cram") : t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${done ? ` · ${esc(t("{n} done", { n: done }))}` : ""}</span>${cardBtn(c)}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
       <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}${c.cram && !X.cram ? ` · ${esc(t("Not due yet"))}` : ""}</div>
       <div class="fc-q md">${md(c.q)}</div><div class="qz-opts">${opts}</div>${why}

@@ -129,7 +129,7 @@
     return `<div class="card er-steps noprint"><div class="er-h">${I("zap", "sm")}<b>${t("Get ready for it")}</b><span class="dim sm">${esc(t("each one opens set to these weeks"))}</span></div>
       <div class="er-btns">
         <button class="btn ${ready ? "primary" : ""}" data-act="er-quiz" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("Exam-style questions on these weeks, written by {ai}", { ai: St.aiName() })))}">${I("list-checks", "sm")} ${t("Practice quiz for it")}</button>
-        ${cards.total ? `<button class="btn" data-act="er-cram" title="${esc(t("Every flashcard of these weeks, due or not. When cards come back stays as it was."))}">${I("layers", "sm")} ${esc(t.n(cards.total, "Cram {n} card", "Cram {n} cards"))}</button>`
+        ${cards.total ? `<button class="btn" data-act="er-cram" title="${esc(t("Go through all these weeks' flashcards, due or not. Their schedule doesn't change."))}">${I("layers", "sm")} ${esc(t.n(cards.total, "Cram {n} card", "Cram {n} cards"))}</button>`
           : `<button class="btn" data-act="fc-make" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("No flashcards from these weeks yet: {ai} makes them from the files you pick", { ai: St.aiName() })))}">${I("layers", "sm")} ${t("Cards from files")}</button>`}
         <button class="btn" data-act="er-sheet" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("The formulas and rules of these weeks on a few pages")))}">${I("sigma", "sm")} ${t("Cheatsheet")}</button>
         <button class="btn" data-act="er-prep" ${St.aiBtn(canAI(), true)} title="${esc(aiTip(t("What to know for it, with practice questions")))}">${I("cap", "sm")} ${t("Review sheet")}</button>
