@@ -1,7 +1,7 @@
 """The material pickers (4.2.0, item 1), in node with app.js: the course-wide and announcement files are offered
 unticked (a quiz's posted solutions ticked for it), a class list is left out with "Include anyway" (asked first), the
-quiz and cards dialogs have the plan dialog's Download and Transcribe rows, and the quiz dialog, the plan dialog and
-Get ready show the same weeks (d.assessments)."""
+quiz and cards dialogs have the plan dialog's Download and Transcribe rows, and the quiz dialog and the plan dialog
+show the same weeks (d.assessments; the Exam room's too: test_examroom.py)."""
 
 import json
 import shutil
@@ -141,7 +141,7 @@ def test_the_cards_dialog_offers_them_too_with_download(tmp_path):
 
 
 @node
-def test_the_quiz_dialog_the_plan_dialog_and_get_ready_show_the_same_weeks(tmp_path):
+def test_the_quiz_dialog_and_the_plan_dialog_show_the_same_weeks(tmp_path):
     out = run(tmp_path, """
   await A["qz-new"]({ dataset: { cid: "c" } }); await tick();
   out.quiz = text(html()).match(/The weeks it covers: ([^·]*?) Weeks you pick/)[1].trim();
@@ -153,16 +153,9 @@ def test_the_quiz_dialog_the_plan_dialog_and_get_ready_show_the_same_weeks(tmp_p
   out.planGen = { ann: box("ann1", "pd-gen"), ann2: box("ann2", "pd-gen"), syl: box("syl", "pd-gen"), text: text(html()) };
   A["pd-assess"]({ dataset: { i: "-1" } });
   out.planNone = box("ann1", "pd-gen");
-  els[".modal.rd"] = el();
-  St.mocks.plan_list = () => ({ ok: true, plans: [] }); St.mocks.course_marks = () => ({ ok: true, marks: [] });
-  S.cd = { c: { id: "c", general: [], outcomes_en: [], outcomes_tr: [], weeks: weeks.map((w) => ({ ...w, end: "", units: [], classes: [], days: [] })),
-    alerts: { items: [], plan: [QUIZ3], counts: {} }, assessments: [QUIZ3, FINAL] } };
-  await St.openReady("c", "Quiz 3"); await tick();
-  out.ready = text(els[".modal.rd"].innerHTML);
 """)
     assert out["quiz"] == "weeks 9–10"
-    assert out["plan"] == [9, 10]
-    assert "covers weeks 9–10" in out["ready"]
+    assert out["plan"] == [9, 10]                    # (the Exam room's weeks: test_examroom.py, from the same list)
     assert "checked" in out["planGen"]["ann"] and "checked" not in out["planGen"]["syl"]   # For Quiz 3: its solutions
     assert "checked" in out["planGen"]["ann2"] and "Download 1" in out["planGen"]["text"]  # (read once it is in)
     assert "Lab Grades.pdf: Left out: it lists students Include anyway" in out["planGen"]["text"]

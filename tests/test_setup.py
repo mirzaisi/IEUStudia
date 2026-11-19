@@ -304,7 +304,7 @@ def test_a_quiz_is_reminded_once_the_evening_before():
     seen = {}
     assert reminders([_quiz()], dt.datetime(2026, 10, 12, 16, 30), seen) is None          # not yet
     title, text, payload = reminders([_quiz()], dt.datetime(2026, 10, 12, 19, 0), seen)
-    assert title == "IEUStudia: coming up" and payload == "ready:b:Quiz 2"                # a click: Get ready
+    assert title == "IEUStudia: coming up" and payload == "ready:b:Quiz 2"                # a click: its Exam room
     assert text == "MATH 240: Quiz 2 may be tomorrow (Tue 13 Oct) or Thu 15 Oct, as announced. Covers LO3–LO4, LO6."
     assert reminders([_quiz()], dt.datetime(2026, 10, 12, 21, 0), seen) is None            # said once
     assert reminders([_quiz()], dt.datetime(2026, 10, 13, 9, 0), {})[1].startswith("MATH 240: Quiz 2 may be today or Thu")
@@ -324,7 +324,7 @@ def test_an_exam_week_is_reminded_once_without_a_day():
     seen = {}
     title, text, payload = reminders([mid], dt.datetime(2026, 11, 8, 20, 0), seen)
     assert text == "MATH 240: Midterm Exam is in week 8, which starts tomorrow (Mon 9 Nov). The exam schedule on IEULearn has the day."
-    assert payload == "week:b:8"                                    # the syllabus's word: Get ready doesn't know it
+    assert payload == "ready:b:Midterm Exam"                        # the syllabus's exam week has an Exam room too
     announced = {**mid, "uid": "b-midterm-1", "name": "Midterm 1", "kind": "midterm"}
     assert reminders([announced], dt.datetime(2026, 11, 9, 9, 0), seen) is None            # the same week, said once
     title, text, payload = reminders([announced, _quiz(course="EEE 215", uid="c-quiz-1", course_id="c",

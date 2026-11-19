@@ -26,7 +26,8 @@ const el = () => ({ innerHTML: "", style: {}, dataset: {}, classList: { toggle()
 const toasts = [];
 const els = { "#top": el(), "#view": el(), "#overlay": el(), "#toasts": { appendChild: (b) => toasts.push(b.innerHTML) } };
 globalThis.document = new Proxy({}, { get: (t, k) => k === "compatMode" ? "CSS1Compat" : k === "activeElement" ? null : k === "hidden" ? false
-  : k === "createElement" ? () => el() : k === "querySelector" ? (s) => (s in els ? els[s] : stub())
+  : k === "createElement" ? () => ({ ...el(), querySelector: () => el() })          // (a toast's button)
+  : k === "querySelector" ? (s) => (s in els ? els[s] : stub())
   : k === "getElementById" ? (id) => els["#" + id] || null : k === "querySelectorAll" ? () => []
   : k === "addEventListener" ? () => {} : stub() });
 globalThis.localStorage = { getItem: () => null, setItem() {} };
@@ -215,6 +216,9 @@ def test_ticked_moments_become_a_quiz_and_one_week_s_cards_are_studied(tmp_path)
   items[1].run(); await tick();
   out.session = called("cards_session");
   out.toast = toasts.slice(-1)[0] || "";
+  // nothing due from it today: its toast offers them all (a cram session: the schedule left alone, the Exam room's)
+  await A["fc-cram"]({ dataset: { cid: "c1", weeks: "6" } }); await tick();
+  out.cram = called("cards_session").slice(-1)[0];
 """)
     assert out["boxes"] == 2 and out["button"] and out["weekBtn"]
     assert 'cp-mode on" data-act="qz-mode" data-val="stressed"' in out["all"] and "2 moments the lecturer stressed" in out["all"]
@@ -225,6 +229,8 @@ def test_ticked_moments_become_a_quiz_and_one_week_s_cards_are_studied(tmp_path)
     assert out["cleared"]
     assert out["weeks"] == [["Week 5", "3 to study today"], ["Week 6", "4 cards, done for today"]]
     assert out["session"] == [["c1", [6], []]] and "Nothing from week 6 to study today." in out["toast"]
+    assert 'data-act="fc-cram" data-cid="c1" data-weeks="6"' in out["toast"] and "Go through them all" in out["toast"]
+    assert out["cram"] == ["c1", [6], [], True]
 
 
 @node

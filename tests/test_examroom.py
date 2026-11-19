@@ -113,6 +113,8 @@ def test_the_weeks_say_where_they_come_from_and_the_student_can_change_them(api)
     assert (a["weeks"], a["weeks_from"], a["guessed"]) == ([10, 11], "announced", [9, 10, 11, 12])
     assert a["origin"] == {"from": "announced", "since": "Midterm", "announcement": {"id": "a2", "title": "About Quiz 3"}}
     assert [x["no"] for x in a["los"]] == [2, 3] and a["los"][0]["en"] == "use Bayes"
+    for rows in (api.quiz_options("c")["assessments"], api.plan_options("c")["assessments"]):    # the same list
+        assert next(e for e in rows if e["key"] == "quiz:3")["weeks"] == a["weeks"]
     r = api.exam_set_weeks("c", "quiz:3", [9, 10, 11])
     assert r["room"]["assessment"]["weeks"] == [9, 10, 11] and r["room"]["assessment"]["weeks_from"] == "yours"
     assert api.exam_set_weeks("c", "quiz:3", [])["room"]["assessment"]["weeks_from"] == "announced"
