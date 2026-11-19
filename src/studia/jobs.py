@@ -243,8 +243,6 @@ class Job:
     attempts: int = 0
     holds_audio: bool = False        # one of the DECODED_MAX places for decoded audio
     no_sound: bool = False           # failed because the recording has no sound (the page shows it by this flag)
-    sensitive: bool = False          # Try again, more sensitive: its speech is found listening more closely
-    closer: str = ""                 # failed with no speech: "can" be listened to more closely, or "tried" (views.py)
     no_audio: set = dc.field(default_factory=set)    # Panopto streams found without sound: not fetched again
     unwritten: bool = False          # done, but its files in the output folder could not be written yet
     prev_status: str = "available"
@@ -296,7 +294,7 @@ class Job:
         return {"id": self.id, "title": self.title, "course_code": self.course_code, "course_id": self.course_id,
                 "stage": self.stage, "progress": round(self.progress, 3), "detail": detail, "eta_s": eta,
                 "error": self.error, "local": self.local_path is not None, "first": self.rank < NOW,
-                "day": self.day_key or self.id, "no_sound": self.no_sound, "closer": self.closer,
+                "day": self.day_key or self.id, "no_sound": self.no_sound,
                 # the jobs pane: its steps (seconds after it was queued), the download, the model, warnings
                 "step": self.step, "steps": [[s, round(at - self.started, 1)] for s, at in self.steps],
                 "age_s": round(time.monotonic() - self.started, 1), "slides": self.slides is not None,
@@ -380,10 +378,9 @@ class JobManager:
                              daemon=True).start()
         threading.Thread(target=self._finish_loop, name="finish", daemon=True).start()
 
-    def enqueue(self, ids: list[str], batch: bool = False, sensitive: bool = False) -> int:
+    def enqueue(self, ids: list[str], batch: bool = False) -> int:
         """Queue lectures. ``batch``: a full or course sync's; lectures asked for one by one go before those (one
-        already waiting in such a batch moves ahead). Returns how many were queued or moved. ``sensitive``: Try again,
-        more sensitive (a lecture where no speech was found): its speech is found listening more closely.
+        already waiting in such a batch moves ahead). Returns how many were queued or moved.
 
         Newest lecture first: a batch is ordered by the recordings' start (a later sync's newer lecture goes before
         the older ones still waiting), and one request's lectures go newest first, after those asked for earlier."""
@@ -397,8 +394,6 @@ class JobManager:
             for did in sorted(recs, key=lambda d: recs[d].start if recs[d] else dt.datetime.min, reverse=True):
                 if did in self._jobs:
                     job = self._jobs[did]
-                    if sensitive and job.where == "dl" and not job.finished:      # (not downloaded yet)
-                        job.sensitive = True
                     if not batch and job.rank >= BATCH and not job.finished and job.where != "run":
                         with self._q:
                             job.rank, job.seq = NOW, next(self._seqs)
@@ -414,7 +409,7 @@ class JobManager:
                           course_id=rec.course_id, course_code=code, prev_status=rec.status,
                           duration_s=max(0.0, rec.duration_s), rank=BATCH if batch else NOW,
                           seq=-int(rec.start.timestamp()) if batch else next(self._seqs), day_key=rec.day_key,
-                          anomalies=odd.get(did, []), sensitive=sensitive)
+                          anomalies=odd.get(did, []))
                 self._jobs[did] = job
                 self.lib.set_status(did, "queued")
                 self._put_dl(job)
@@ -1173,10 +1168,8 @@ class JobManager:
         then waits for its turn as int16."""
         find = self._speech_finder(self.settings())
         if find is not None:
-            self._update(job, "downloading", 1.0, t("Listening more closely for speech") if job.sensitive
-                         else t("Finding speech"), force=True, step="speech")
-            closer = {"sensitive": True} if job.sensitive else {}
-            job.speech = find(job.audio, job.cancel, self._meta(job).get("expected_duration", 0.0), **closer)
+            self._update(job, "downloading", 1.0, t("Finding speech"), force=True, step="speech")
+            job.speech = find(job.audio, job.cancel, self._meta(job).get("expected_duration", 0.0))
             job.passages = [0, len(getattr(job.speech, "units", None) or [])]
         job.audio = _to_int16(job.audio)
 
@@ -1200,27 +1193,19 @@ class JobManager:
             meta.update(expected_duration=float(d.get("Duration") or 0.0), recording_name=d.get("SessionName", ""))
         if job.local_path is not None:
             meta["source_path"] = str(job.local_path)
-        if job.sensitive:                       # (the engine finds its speech so when no download thread did)
-            meta["sensitive"] = True
         return meta
 
     def _no_speech(self, job: Job, exc: NoSpeech) -> None:
         if job.local_path is None:
-            noise = getattr(exc, "noise", False)
             job.no_sound = True
-            job.closer = "tried" if job.sensitive else "can" if noise else ""
-            self._warn_no_sound(job, str(exc), noise, job.sensitive)
+            self._warn_no_sound(job, str(exc))
         self._finish(job, "failed", str(exc))
 
-    def _warn_no_sound(self, job: Job, message: str, noise: bool = False, sensitive: bool = False) -> None:
-        """The lecture's "no speech" warning (the page knows it by its code). ``noise``: it has sound, but no speech
-        was found in it (Try again, more sensitive, is offered: quality.closer_listen); ``sensitive``: listening more
-        closely found none either. A library write that fails (a full disk) is logged: the lecture still ends
-        (_finish), and the worker's thread goes on."""
-        w = {"code": "no_speech", "level": "error", "message": message,
-             **({"noise": True} if noise else {}), **({"sensitive": True} if sensitive else {})}
+    def _warn_no_sound(self, job: Job, message: str) -> None:
+        """The lecture's "no speech" warning (the page knows it by its code). A library write that fails (a full disk)
+        is logged: the lecture still ends (_finish), and the worker's thread goes on."""
         try:
-            self.lib.set_warnings(job.id, [w])
+            self.lib.set_warnings(job.id, [{"code": "no_speech", "level": "error", "message": message}])
         except Exception:  # noqa: BLE001
             self.log.warning("Saving the no-speech note of %s failed", job.id, exc_info=True)
 

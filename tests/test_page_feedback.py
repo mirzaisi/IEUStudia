@@ -229,14 +229,19 @@ def test_no_speech_found_is_not_shown_as_the_microphone_being_off(tmp_path):
     duration_s: 2700, warnings: [{ level: "error", message: error }], viewer_url: "v" });
   const d = { date: "2026-10-14", day_key: "e|14", label: "Wed 14 Oct", recordings: [
     rec("a", "No speech was found in this recording (only noise or music). Check it on Panopto."),
-    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent: check it on Panopto or ask the lecturer.")] };
+    rec("b", "This recording has no sound on Panopto (the microphone was probably off). All available audio streams are silent: check it on Panopto or ask the lecturer."),
+    rec("c", "This recording is almost silent on Panopto: the microphone was probably off, so there is no speech to transcribe. Check it on Panopto or ask the lecturer.")] };
   const html = plain(St.dayCardHTML(d, { show_mode: "all", available_sections: [] }));
   out.a = html.slice(html.indexOf('data-rid="a"'), html.indexOf('data-rid="b"'));
-  out.b = html.slice(html.indexOf('data-rid="b"'));
+  out.b = html.slice(html.indexOf('data-rid="b"'), html.indexOf('data-rid="c"'));
+  out.c = html.slice(html.indexOf('data-rid="c"'));
 """)
     assert "No speech found" in out["a"] and "only noise or music: check it on Panopto" in out["a"]
     assert "microphone was off" not in out["a"]
     assert "No sound on Panopto" in out["b"] and "microphone was off" in out["b"]
+    # almost silent (quality.NEAR_SILENT_DBFS): the microphone was off too, with its retry icon and nothing more
+    assert "No sound on Panopto" in out["c"] and "microphone was off" in out["c"] and "only noise" not in out["c"]
+    assert 'data-act="retry"' in out["c"] and "sensitive" not in out["c"]
 
 
 @node

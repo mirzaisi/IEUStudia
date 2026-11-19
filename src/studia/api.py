@@ -1439,17 +1439,16 @@ class Api(PracticeApi, ExamRoomApi, ChecksApi):
 
     # ------------------------------------------------------------------ transcription
     @safe
-    def transcribe(self, ids: list[str], sensitive: bool = False) -> dict[str, Any]:
+    def transcribe(self, ids: list[str]) -> dict[str, Any]:
         """Queue lectures you asked for: they go before a full or course sync's batch. One still being recorded can't
-        be: said when nothing else was asked for. ``sensitive``: Try again, more sensitive, on lectures where no speech
-        was found (their speech is found listening more closely: jobs.enqueue)."""
+        be: said when nothing else was asked for."""
         ids = [str(i) for i in ids]
         live = [i for i in ids if (r := self._s.lib.get_recording(i)) is not None and r.live]
         if live and len(live) == len(ids):
             return {"ok": False, "error": tn(len(live), "This lecture is still being recorded. It can be transcribed "
                                              "once Panopto has finished it.", "These lectures are still being recorded. "
                                              "They can be transcribed once Panopto has finished them.")}
-        n = self._s.jobs.enqueue([i for i in ids if i not in live], **({"sensitive": True} if sensitive else {}))
+        n = self._s.jobs.enqueue([i for i in ids if i not in live])
         self._courses_dirty.set()
         self._push(self._s.jobs.queue_event())
         return {"ok": True, "queued": n}
