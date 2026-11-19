@@ -119,6 +119,7 @@ class Scope:
     qtypes: str = ""             # and which kinds: "mixed", "mc", "short", "problems"
     weak: bool = False           # a quiz on the student's weak spots (practice.weak_spots): the material narrowed
     avoid: list[str] = dc.field(default_factory=list)   # questions such a quiz must not ask again (right twice)
+    stressed_ids: list[str] = dc.field(default_factory=list)   # a quiz on the stressed moments the student picked
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> "Scope":
@@ -137,6 +138,7 @@ class Scope:
         s.days = [str(x) for x in s.days or []]
         s.weak = bool(s.weak)
         s.avoid = [str(x)[:600] for x in s.avoid or [] if str(x).strip()][:60]
+        s.stressed_ids = [str(x) for x in s.stressed_ids or []][:40]
         return s
 
     def to_json(self) -> dict[str, Any]:

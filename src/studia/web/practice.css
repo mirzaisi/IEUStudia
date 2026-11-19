@@ -48,6 +48,19 @@
 .cat-chip.st-stressed { background: var(--amber-soft); color: var(--amber); }
 .cat-chip.st-not_needed { background: var(--surface-2); color: var(--text-2); }
 .st-not .st-week-h b { color: var(--text-2); }
+
+/* ---- quiz me from where you are: ticking stressed moments, the quiz under a chat answer, a week card's menu */
+.st-row { display: flex; align-items: flex-start; gap: 2px; border-radius: 9px; }
+.st-row.on { background: var(--blue-soft); }
+.st-row .st-item { flex: 1; min-width: 0; }
+.st-pick { display: grid; place-items: center; width: 30px; min-height: 36px; flex: none; cursor: pointer; }
+.qz-moments { margin: 4px 0 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.act-card.qz-chat > .spin, .act-card.qz-chat > svg { flex: none; }
+.qz-chip-row { margin-top: 8px; }
+.week-head .week-menu { flex: none; color: var(--text-3); }
+.week-head .week-menu:hover { color: var(--text); }
+button.pill-btn { border: 0; cursor: pointer; font-family: inherit; }
+button.pill-btn:hover { filter: brightness(.96); text-decoration: underline; }
 .st-sum { margin: 10px 0 6px; padding: 12px 14px; border-radius: var(--radius); background: var(--violet-soft);
   box-shadow: inset 3px 0 0 var(--violet); font-size: 13.5px; }
 .st-sum.busy { color: var(--text-2); }

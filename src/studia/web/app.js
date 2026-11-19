@@ -886,12 +886,18 @@
     const d = S.day; if (!d) return "";
     const ai = S.system.ai || {};
     const hasText = d.parts.some((p) => p.paragraphs.length);
-    return `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>
+    // with ChatGPT or Claude in the app, "Quiz me" is the lecture's first button (practice.js's quiz dialog, set to
+    // this lecture) and Copy for AI, an icon beside the files, takes its room (the row stays one line at 1024 px);
+    // without, Copy for AI stays first
+    const quiz = !!(Studia.practice && Studia.practice.quizDialog) && ai.available && ai.can_plans !== false;
+    const copy = quiz ? `<button class="btn ghost sm" data-act="menu-copy" ${hasText ? "" : "disabled"} title="${esc(t("Copy for AI"))}" aria-label="${esc(t("Copy for AI"))}">${I("copy", "sm")}${I("chevron-down", "sm caret")}</button>`
+      : `<button class="btn primary sm" data-act="menu-copy" ${hasText ? "" : "disabled"}>${I("copy", "sm")} ${t("Copy for AI")} ${I("chevron-down", "sm caret")}</button>`;
+    return `${quiz ? `<button class="btn primary sm" data-act="day-quiz" ${hasText ? "" : "disabled"} title="${esc(t("Practice questions on this lecture and its slides, written by {ai}: scored and saved to Practice", { ai: aiName() }))}">${I("list-checks", "sm")} ${t("Quiz me")}</button>` : copy}
       ${Studia.exportBtn ? Studia.exportBtn("day", d.day_key, false, !hasText) : ""}
       ${Studia.player && Studia.player.btn ? Studia.player.btn(!d.parts.length) : ""}
       <button class="btn grad sm" data-act="ask-day" ${aiBtn(hasText && ai.available)} title="${ai.available ? t.html("Chat with {ai} about this lecture ({plan})", { ai: aiName(), plan: aiPlan() }) : aiHint()}">${I("chat", "sm")} ${t.html("Ask {ai}", { ai: aiName() })}</button>
       <button class="btn sm" data-act="claude" ${hasText && ai.available && S.ai.running && S.ai.dayKey !== d.day_key ? whyOff(t("{ai} is still writing for another lecture. Try again when it's done.", { ai: aiName() })) : aiBtn(hasText && ai.available && !S.ai.running)} title="${ai.available ? t.html("Write study notes with {plan}", { plan: aiPlan() }) : aiHint()}">${I("ai", "sm")} ${t("Study notes")}</button>
-      <span class="spacer"></span>
+      <span class="spacer"></span>${quiz ? copy : ""}
       ${d.files.pdf ? `<button class="btn ghost sm" data-act="file" data-what="pdf">${I("file", "sm")} PDF</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="md" ${d.files.md ? "" : "disabled"} title="${t("The transcript as a text file (Markdown) in your IEUStudia folder")}">${I("file-text", "sm")} ${t("Text file")}</button>
       <button class="btn ghost sm" data-act="file" data-what="folder">${I("folder-open", "sm")} ${t("Folder")}</button>`;
@@ -1617,11 +1623,11 @@
     const c = S.chat.data, isLast = !!c && c.messages.length > 0 && c.messages[c.messages.length - 1].seq === m.seq;
     if (m.role === "user") return `<div class="msg user" data-seq="${m.seq}"><div class="bubble">${esc(m.text)}</div></div>`;
     const u = m.usage || {}, streaming = m.status === "streaming", tok = tokensText(u);
-    const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming) : { text: m.text, html: "" };   // buttons the AI suggested
+    const acts = Studia.actionCards ? Studia.actionCards(m.text, m.seq, streaming, m) : { text: m.text, html: "" };   // buttons the AI suggested, a quiz
     const reading = Studia.chatReadingHTML ? Studia.chatReadingHTML(m) : { body: "", foot: "" };   // "Read everything" (chatfiles.js)
     // before its words come: the reading's progress, else what the AI does now (sending, thinking: waits.js)
     const waiting = streaming && !acts.text && !reading.body && m.wait && Studia.waitHTML ? Studia.waitHTML(m.wait) : "";
-    const body = acts.text ? mdToHtml(acts.text, { cites: true, streaming }) + acts.html : reading.body || waiting || (streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "");
+    const body = acts.text || acts.html ? (acts.text ? mdToHtml(acts.text, { cites: true, streaming }) : "") + acts.html : reading.body || waiting || (streaming ? `<div class="typing"><i></i><i></i><i></i></div>` : "");
     const notes = Studia.chatNotices ? Studia.chatNotices(m, isLast) : {};    // the app's notices with this answer (notices.js)
     const line = streaming && m.text && m.wait && Studia.waitLine ? Studia.waitLine(m.wait) : "";
     const foot = streaming ? (waiting ? "" : line ? `<span class="dim">${SPIN()} ${line}</span>` : `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`)
@@ -2519,35 +2525,6 @@
     await draw();
   }
 
-  function practise() {   // the lecture's flashcards one at a time; the ones you didn't know come back at the end
-    const n = S.day && (S.day.notes || []).find((x) => x.kind === "flashcards");
-    if (!n || !(n.cards || []).length) return;
-    const st = { order: n.cards.map((_, i) => i), pos: 0, shown: false, again: new Set() };
-    const draw = () => {
-      if (st.pos >= st.order.length) {
-        const missed = st.again.size;
-        modal(`<div class="fc"><h2>${I("check-circle")} ${t.n(n.cards.length, "All {n} card done", "All {n} cards done")}</h2>
-          <p class="lead">${missed ? t.n(missed, "{n} card needed another look. Going through them once more tomorrow helps them stick.", "{n} cards needed another look. Going through them once more tomorrow helps them stick.") : t("You knew every one of them.")}</p>
-          <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button><button class="btn primary" data-act="fc-restart" autofocus>${I("retry", "sm")} ${t("Start again")}</button></div></div>`);
-        return;
-      }
-      const c = n.cards[st.order[st.pos]];
-      modal(`<div class="fc"><div class="fc-top"><b>${I("list-checks", "sm")} ${esc(S.day.title)} · ${t("flashcards")}</b><span class="dim sm">${t("{n} of {total}", { n: st.pos + 1, total: st.order.length })}</span></div>
-        <div class="fc-bar"><i style="width:${Math.round((100 * st.pos) / st.order.length)}%"></i></div>
-        <div class="fc-q md">${mdToHtml(c.q, { cites: true })}</div>
-        ${st.shown ? `<div class="fc-a md">${mdToHtml(c.a, { cites: true })}</div>` : `<div class="fc-hint dim sm">${t("Think of the answer first.")}</div>`}
-        <div class="actions">${st.shown ? `<button class="btn" data-act="fc-again">${I("retry", "sm")} ${t("Again later")}</button><button class="btn primary" data-act="fc-knew" autofocus>${I("check", "sm")} ${t("I knew it")}</button>`
-          : `<button class="btn ghost" data-act="modal-close">${t.c("flashcards", "Stop")}</button><button class="btn primary" data-act="fc-show" autofocus>${t("Show the answer")}</button>`}</div></div>`);
-    };
-    window.__fc = {
-      show: () => { st.shown = true; draw(); },
-      knew: () => { st.pos++; st.shown = false; draw(); },
-      again: () => { st.again.add(st.order[st.pos]); st.order.push(st.order[st.pos]); st.pos++; st.shown = false; draw(); },
-      restart: () => { st.order = n.cards.map((_, i) => i); st.pos = 0; st.shown = false; st.again = new Set(); draw(); },
-    };
-    draw();
-  }
-
   window.LSRender = { md: mdToHtml, tex: texToHtml };   // renderer hooks (used by the UI tests)
 
   // ------------------------------------------------------------------ actions
@@ -2682,7 +2659,9 @@
     "cl-go": () => window.__cl.go(),
     "cl-open": () => window.__cl.open(),
     "notes-kind": (el) => { S.notesKind = el.dataset.val; renderNotes(); },
-    "cards-practise": () => practise(),
+    // the lecture's own flashcards in the course's deck (practice.js), so their grades keep their schedule
+    "cards-practise": () => { if (S.day && Studia.practice) Studia.practice.study(S.day.course.id, { days: [S.day.day_key] }); },
+    "day-quiz": () => { if (S.day && Studia.practice) Studia.practice.quizDialog(S.day.course.id, { mode: "lecture", day: S.day.day_key }); },
     mark: async (el) => {
       const on = !el.classList.contains("on"), first = !((S.day || {}).marks || []).length;
       const saved = await setMark(+el.dataset.part, +el.dataset.t, on);      // "Marked." only once it is saved
@@ -2707,8 +2686,6 @@
       S.chat.input = t("I marked these passages of the lecture. Explain each one clearly, with what I need to know about it:") + "\n" + lines.join("\n");
       const ta = $("#chat-input"); if (ta) { ta.value = S.chat.input; autosize(ta); }
     },
-    "fc-show": () => window.__fc.show(), "fc-knew": () => window.__fc.knew(), "fc-again": () => window.__fc.again(),
-    "fc-restart": () => window.__fc.restart(),
     "ask-day": () => {
       const d = S.day; if (!d) return;
       const iso = d.day_key.split("|")[1] || "";

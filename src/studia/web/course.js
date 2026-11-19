@@ -379,7 +379,8 @@
     const title = w.topic_en || unitTitle || w.topic_tr || t("Week {n}", { n: w.no });
     const sub = [range(w.start, w.end), unitTitle && unitTitle !== title ? `IEULearn: ${unitTitle}` : (w.topic_tr && w.topic_tr !== title ? w.topic_tr : "")].filter(Boolean).join(" · ");
     const due = ((d.alerts && d.alerts.plan) || []).filter((e) => e.week === w.no);
-    const duePills = due.map((e) => `<span class="pill due kind-${e.kind}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: e.sources[0].title }))}">${I("cap")}${esc(e.name)}${e.date ? ` · ${esc(dayAt({ date: e.date, time: e.time }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</span>`).join("");
+    // an assessment's pill opens what to do before it (Get ready, the Exam room's way in: "ready-open")
+    const duePills = due.map((e) => `<button class="pill due kind-${e.kind} pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: (e.sources[0] || {}).title || "" }))}">${I("cap")}${esc(e.name)}${e.date ? ` · ${esc(dayAt({ date: e.date, time: e.time }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</button>`).join("");
     const asgPills = St.calWeekPills ? St.calWeekPills(d, w) : "";          // the week's assignments (calendar.js)
     const quiet = !w.current && !mats.length && !w.days.length && !due.length;
     const foldable = w.past && !w.current && !quiet;
@@ -393,6 +394,7 @@
         <div class="week-no">${t.html("<b>{n}</b><span>week</span>", { n: w.no })}</div>
         <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<span class="pill processing">${I("cap")}${t("Exam")}</span>` : "")}${asgPills}</div>
           <div class="s">${esc(sub)}${shut && summary ? ` · <span class="week-sum">${esc(summary)}</span>` : ""}</div></div>
+        ${quiet ? "" : `<button class="btn ghost icon sm week-menu" data-act="menu-week" data-cid="${esc(c.id)}" data-no="${w.no}" aria-haspopup="menu" title="${esc(t("Quiz me, cards and more for this week"))}" aria-label="${esc(t("Quiz me, cards and more for this week"))}">${I("more", "sm")}</button>`}
         ${foldable ? `<span class="week-fold">${I(shut ? "chevron-down" : "chevron-up", "sm")}</span>` : ""}
       </div>
       ${w.readings && !quiet && !shut ? `<div class="week-read">${I("book", "sm")}<span>${esc(w.readings)}</span></div>` : ""}
@@ -897,6 +899,29 @@
       renderView();
       const head = kb && $(`#week-${no} .week-head`);                   // the keyboard stays where it was
       if (head) head.focus({ preventScroll: true });
+    },
+    // a week card's menu: a quiz on the week, its flashcards (practice.js), a chat about its lectures, and getting what
+    // it still misses (its files, its lectures transcribed)
+    "menu-week": (el) => {
+      const c = St.findCourse(el.dataset.cid), d = S.cd[el.dataset.cid], no = +el.dataset.no;
+      const w = d && d.weeks.find((x) => x.no === no);
+      if (!c || !w) return;
+      const ai = S.system.ai || {}, P = St.practice;
+      const done = w.days.filter((x) => x.any_done && (x.mine !== false || !mineOnly(c))).map((x) => x.day_key);
+      const todo = w.days.filter((x) => x.mine !== false && x.parts && !x.transcribed && !x.no_sound && !x.live).length;
+      const all = w.units.flatMap((u) => u.materials);
+      const mats = all.filter((m) => !m.downloaded && !m.gone && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
+      const readable = done.length || all.some((m) => m.downloaded && m.text === "done");     // (something to quiz on)
+      St.menu(el, [
+        ...(P && ai.available && ai.can_plans !== false && readable ? [{ id: "quiz", icon: "list-checks", label: t("Quiz me on this week"), desc: t("Practice questions from its files and lectures"),
+          run: () => P.quizDialog(c.id, { mode: "weeks", weeks: [no] }) }] : []),
+        ...(P ? [{ id: "cards", icon: "layers", label: t("Study this week's cards"), run: () => P.study(c.id, { weeks: [no] }) }] : []),
+        ...(ai.available && done.length ? [{ id: "ask", icon: "chat", label: t("Ask about this week"), desc: t.n(done.length, "{n} transcribed lecture", "{n} transcribed lectures"),
+          run: () => St.chatPicker(c.id, { days: done, focus: "full", slides: false, model: (S.settings || {}).ai_model || "sonnet" }) }] : []),
+        ...(mats.length || todo ? ["-"] : []),
+        ...(mats.length ? [{ id: "dl", icon: "download", label: t.n(mats.length, "Download {n} file", "Download {n} files"), run: () => download(mats.map((m) => m.id), false) }] : []),
+        ...(todo ? [{ id: "tx", icon: "wave", label: t.n(todo, "Transcribe {n} lecture", "Transcribe {n} lectures"), run: () => St.runAction({ action: "transcribe", weeks: [no] }, c.id) }] : []),
+      ]);
     },
     "lo-lang": (el) => { S.loLang = el.dataset.val; renderView(); },
     "mat-get": (el) => download([el.dataset.id], false),

@@ -16,7 +16,8 @@
   const mdLine = (s) => md(s).replace(/^<p>([\s\S]*)<\/p>$/, "$1");       // one paragraph, inline (beside a label)
   const math = () => { const m = $("#overlay .modal"); if (m && St.renderMath) St.renderMath(m); };
   const score = (x) => t.num(x, x % 1 ? 1 : 0);
-  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, runs: {}, study: null };
+  const P = S.practice = { summary: null, course: {}, failed: {}, busy: {}, week: {}, more: new Set(), stressing: null, run: null, runs: {}, study: null,
+    picked: {} };       // the stressed moments ticked for "Quiz me on these", by course
   // a quiz in progress (answered, not finished): P.run is the one open last; another quiz opened meanwhile keeps it
   // in P.runs, so each one goes on where it was left
   const runOf = (id) => (P.run && P.run.id === id ? P.run : P.runs[id]) || null;
@@ -118,6 +119,7 @@
 
   function quizScope(q) {
     const bits = [q.days && q.days.length === 1 && !(q.weeks || []).length ? t("one lecture") : weekSpan(q.weeks)];
+    if (q.source === "chat") bits.unshift(t("From a chat"));           // "/quiz" in Ask AI (chatquiz.py)
     if (q.focus) bits.push(t("for {name}", { name: q.focus }));
     if (q.questions) bits.push(t.n(q.questions, "{n} question", "{n} questions"));
     return bits.join(" · ");
@@ -172,6 +174,7 @@
       ${d.total ? `<p class="pr-sub">${esc(from)}${d.learnt ? ` ${esc(t.n(d.learnt, "{n} card learnt.", "{n} cards learnt."))}` : ""}</p>` : empty}
       ${making}${St.mistakes ? St.mistakes.asideLine(c, d) : ""}
       <div class="pr-acts"><button class="btn primary" data-act="fc-study" data-cid="${esc(c.id)}" ${d.today ? "" : "disabled"}>${I("play", "sm")} ${d.today ? esc(t.n(d.today, "Study {n} card", "Study {n} cards")) : t("Nothing to study today")}</button>
+        ${(d.weeks || []).length > 1 ? `<button class="btn" data-act="menu-fc-week" data-cid="${esc(c.id)}" aria-haspopup="menu" title="${esc(t("Only the cards of the week you pick"))}">${I("calendar", "sm")} ${t("Study one week")} ${I("chevron-down", "sm caret")}</button>` : ""}
         <button class="btn" data-act="fc-make" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("{ai} makes cards from the files you pick", { ai: St.aiName() }) : St.aiHint())}">${I("ai", "sm")} ${t("Make cards from files")}</button>
         <button class="btn ghost" data-act="fc-export" data-cid="${esc(c.id)}" ${d.total ? "" : "disabled"} title="${esc(t("Your cards as an Anki deck"))}">${I("download", "sm")} ${t("Export to Anki")}</button></div></div>`;
   }
@@ -182,14 +185,26 @@
     if (!hl || !(hl[1] > hl[0])) return esc(text);
     return esc(text.slice(0, hl[0])) + `<mark>${esc(text.slice(hl[0], hl[1]))}</mark>` + esc(text.slice(hl[1]));
   }
-  function stItem(it) {
+  function stItem(it, cid) {          // cid: a moment that can be ticked for "Quiz me on these" (not one "not needed")
     const [label, icon] = KIND()[it.kind] || KIND().stressed;
     const said = it.n > 1 ? ` · ${esc(t("said {n} times", { n: it.n }))}` : "";
-    return `<button class="alert-item st-item" data-act="pr-moment" data-day="${esc(it.day_key)}" data-part="${it.part}" data-t="${it.t}" title="${esc(t("Read it in the transcript"))}">
+    const btn = `<button class="alert-item st-item" data-act="pr-moment" data-day="${esc(it.day_key)}" data-part="${it.part}" data-t="${it.t}" title="${esc(t("Read it in the transcript"))}">
       <span class="cat-chip st-${esc(it.kind)}">${I(icon, "xs")}${esc(label)}</span>
       <span class="alert-main"><span class="alert-text">“${markHL(it.text, it.hl)}”${it.lang === "tr" ? ` <span class="tag-tr">TR</span>` : ""}</span>
       <span class="alert-meta">${I("video", "xs")} ${esc(t("Lecture"))} · ${esc(dmw(it.day))} · ${esc(t("part {n}", { n: it.part }))} · ${esc(it.ts)}${said}</span></span>
       <span class="alert-go">${I("chevron-right", "sm")}</span></button>`;
+    if (!cid) return btn;
+    const on = !!P.picked[cid] && P.picked[cid].has(it.id);
+    return `<div class="st-row ${on ? "on" : ""}"><label class="st-pick" title="${esc(t("Pick it for a quiz"))}"><input type="checkbox" class="check" data-act="st-pick" data-cid="${esc(cid)}" data-id="${esc(it.id)}" ${on ? "checked" : ""} aria-label="${esc(t("Pick it for a quiz"))}"></label>${btn}</div>`;
+  }
+  // "Quiz me on these": the moments ticked, else those that stand out in the weeks shown (the most important first)
+  function quizMoments(cid) {
+    const s = (P.course[cid] || {}).stressed || { weeks: [] }, f = P.week[cid] || "all";
+    const all = s.weeks.flatMap((w) => w.items);
+    const ticked = P.picked[cid] && P.picked[cid].size ? all.filter((it) => P.picked[cid].has(it.id)) : null;
+    const shown = s.weeks.filter((w) => f === "all" || String(w.no == null ? "other" : w.no) === f)
+      .flatMap((w) => w.items.filter((it) => it.top || w.items.every((x) => !("top" in x))));
+    return (ticked || [...shown].sort((a, b) => (b.score || 1) - (a.score || 1)).slice(0, 12)).slice(0, 40);
   }
   function citeChip(items, id) {
     const it = items.find((x) => x.id === id);
@@ -217,7 +232,7 @@
       const open = P.more.has(`${c.id}|${key(w)}`), items = w.items.filter((it) => open || it.top || w.items.every((x) => !("top" in x)));
       const more = w.items.length - items.length;
       return `<div class="st-week"><div class="st-week-h"><b>${w.no == null ? t("Other") : t("Week {n}", { n: w.no })}</b>${w.topic ? ` <span class="dim">· ${esc(w.topic)}</span>` : ""}</div>
-        ${items.map(stItem).join("") || `<div class="dim sm st-quiet">${esc(t("Only said in passing this week."))}</div>`}
+        ${items.map((it) => stItem(it, c.id)).join("") || `<div class="dim sm st-quiet">${esc(t("Only said in passing this week."))}</div>`}
         ${more ? `<button class="link sm st-more" data-act="st-more" data-key="${esc(`${c.id}|${key(w)}`)}">${esc(t.n(more, "Show {n} more moment said in passing", "Show {n} more moments said in passing"))}</button>`
           : open && w.items.some((it) => !it.top) ? `<button class="link sm st-more" data-act="st-more" data-key="${esc(`${c.id}|${key(w)}`)}">${esc(t("Show only those that stand out"))}</button>` : ""}</div>`;
     }).join("");
@@ -225,11 +240,13 @@
     const ai = St.isChatGPT() && St.effortInline && canAI() ? St.effortInline("st", "chat") : "";
     const sumBtn = s.total ? `${ai}<button class="btn sm" data-act="st-sum" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true) || (P.stressing === c.id ? "disabled" : P.stressing ? St.whyOff(t("{ai} is still ranking another course's moments. Try again when it's done.", { ai: St.aiName() })) : "")} title="${esc(canAI() ? t("One short request to {ai}: a ranked list of what to know, each point with the moments it comes from", { ai: St.aiName() }) : St.aiHint())}">${I("ai", "sm")} ${s.summary ? t("Sum it up again") : t("Sum it up with AI")}</button>` : "";
     const left = s.untranscribed ? `<div class="note-sm">${I("info", "sm")}<span>${esc(t.n(s.untranscribed, "{n} lecture of yours isn't transcribed yet, so what was said there isn't here.", "{n} lectures of yours aren't transcribed yet, so what was said there isn't here."))}</span></div>` : "";
-    return `<div class="card pr-card"><div class="pr-h">${I("star")}<b>${t("What the lecturer stressed")}</b>${s.total ? `<span class="dim">${esc(t.n(s.total, "{n} moment", "{n} moments"))}</span>` : ""}<span class="spacer"></span>${sumBtn}</div>
+    const ticked = (P.picked[c.id] || new Set()).size;
+    const quizBtn = s.total ? `<button class="btn sm ${ticked ? "primary" : ""}" data-act="st-quiz" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("A practice quiz on these moments, written by {ai}. Tick some to pick them.", { ai: St.aiName() }) : St.aiHint())}">${I("list-checks", "sm")} ${ticked ? esc(t.n(ticked, "Quiz me on {n} moment", "Quiz me on {n} moments")) : t("Quiz me on these")}</button>` : "";
+    return `<div class="card pr-card"><div class="pr-h">${I("star")}<b>${t("What the lecturer stressed")}</b>${s.total ? `<span class="dim">${esc(t.n(s.total, "{n} moment", "{n} moments"))}</span>` : ""}<span class="spacer"></span>${quizBtn}${sumBtn}</div>
       <p class="pr-sub">${esc(t("Found in your transcribed lectures, free and without AI: when the lecturer said something is important, a common mistake, or on the exam. Repeats are shown once. Click one to read it in the transcript."))}</p>
       ${summaryHTML(c, s, items)}${chips}
       ${list || (s.total ? "" : `<p class="pr-empty">${esc(t("Nothing stressed in the transcribed lectures yet."))}</p>`)}
-      ${nn.length ? `<div class="st-week st-not"><div class="st-week-h"><b>${t("The lecturer said these are not needed")}</b></div>${nn.map(stItem).join("")}</div>` : ""}
+      ${nn.length ? `<div class="st-week st-not"><div class="st-week-h"><b>${t("The lecturer said these are not needed")}</b></div>${nn.map((it) => stItem(it)).join("")}</div>` : ""}
       ${left}</div>`;
   }
 
@@ -276,8 +293,9 @@
     const upTo = weeks.filter((w) => w.past || w.current), pick = [...upTo].reverse().find(ready) || weeks.find(ready);
     return pick || weeks.find((w) => w.current) || upTo[upTo.length - 1] || weeks[0];
   }
-  function lectures() {       // the transcribed lectures (your section's), newest first
-    return Q.opts.weeks.flatMap((w) => w.days.filter((d) => d.ready && d.mine).map((d) => ({ ...d, week: w.no }))).sort((a, b) => b.date.localeCompare(a.date));
+  function lectures() {       // the transcribed lectures (your section's, and the one it was opened from), newest first
+    const from = (Q.preset || {}).day;
+    return Q.opts.weeks.flatMap((w) => w.days.filter((d) => d.ready && (d.mine || d.day_key === from)).map((d) => ({ ...d, week: w.no }))).sort((a, b) => b.date.localeCompare(a.date));
   }
   function pickWeek(no, on) {   // as the study pack's dialog: a week's files on this PC and your section's lectures
     const w = Q.opts.weeks.find((x) => x.no === no); if (!w) return;
@@ -286,16 +304,18 @@
     w.files.forEach((f) => { if (on && f.ready && !f.students) Q.files.add(f.id); else if (!on && !kept.has(f.id)) Q.files.delete(f.id); });
     w.days.forEach((d) => { if (on && d.ready && d.mine) Q.days.add(d.day_key); else if (!on) Q.days.delete(d.day_key); });
   }
-  function setMode(mode) {
+  function setMode(mode, weeks) {
     Q.mode = mode; Q.weeks = new Set(); Q.files = new Set(); Q.days = new Set();
     if (mode === "next") {
       const e = nextExam(Q.opts) || { weeks: [] };
       e.weeks.forEach((n) => pickWeek(n, true));
       if (St.picks) St.picks.tied(Q.opts, e.key).forEach((id) => Q.files.add(id));     // its posted solutions
-    } else if (mode === "weeks") {
+    } else if (mode === "weeks" && (weeks || []).length) weeks.forEach((n) => pickWeek(n, true));     // a week card's
+    else if (mode === "weeks") {
       const cur = latestReady(Q.opts.weeks, (w) => w.files.some((f) => f.ready) || w.days.some((d) => d.ready && d.mine));
       if (cur) pickWeek(cur.no, true);
-    } else if (mode === "lecture") {
+    } else if (mode === "stressed") Q.stressed.days.forEach((k) => Q.days.add(k));       // the lectures they were said in
+    else if (mode === "lecture") {
       const days = lectures();
       Q.day = days.some((d) => d.day_key === Q.day) ? Q.day : (days[0] || {}).day_key || "";
     }
@@ -303,25 +323,39 @@
   function qScope() {
     const e = Q.mode === "next" ? nextExam(Q.opts) : null;
     const day = Q.mode === "lecture" ? lectures().find((d) => d.day_key === Q.day) : null;
+    if (Q.mode === "stressed") {            // "Quiz me on these": their lectures, the moments as the priorities
+      const weeks = Q.opts.weeks.filter((w) => w.days.some((d) => Q.days.has(d.day_key))).map((w) => w.no);
+      return { kind: "quiz", weeks, files: [], days: [...Q.days], picked: true, focus: "", los: [], stressed_ids: Q.stressed.ids,
+        questions: Q.count, qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "" };
+    }
     const weak = Q.mode === "weak";             // (the files and lectures of the missed questions: practice.weak_scope)
     return { kind: "quiz", weeks: day ? [day.week] : weak ? [] : [...Q.weeks].sort((a, b) => a - b), files: day || weak ? [] : [...Q.files],
       days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", los: e ? e.los : Q.los || [], questions: Q.count,
       qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "", ...(weak ? { weak: true } : {}) };
   }
-  async function quizDialog(cid, preset) {     // preset: {mode, los, topics} (mistakes.js: "My weak spots", "Quiz this LO")
+  // the new-quiz dialog; preset: where it was opened from, as St.practice.quizDialog is called: {mode: "lecture", day}
+  // (a lecture's page), {mode: "weeks", weeks} (a week card), {mode: "stressed", ids, days, items} (the moments
+  // picked on the Practice tab), {mode: "weak"} or {los, topics} (mistakes.js: "My weak spots", "Quiz this LO")
+  async function quizDialog(cid, preset) {
     const courses = S.courses.filter((c) => c.code);
     cid = cid || S.view.courseId || (courses[0] || {}).id;
     if (!cid) { toast(t("Sync your courses first."), "error"); return; }
-    Q = { cid, opts: null, mode: "", weeks: new Set(), files: new Set(), days: new Set(), day: "", count: +(S.settings || {}).quiz_questions || 10,     // (Settings → Practice)
-      kinds: "mixed", topics: "", model: "", effort: (Q && Q.effort) || "", est: null, starting: false, fetching: new Set() };
+    preset = preset && (preset.mode || preset.los) ? preset : null;
+    Q = { cid, opts: null, mode: "", weeks: new Set(), files: new Set(), days: new Set(), day: (preset && preset.day) || "", count: +(S.settings || {}).quiz_questions || 10,     // (Settings → Practice)
+      kinds: "mixed", topics: "", model: "", effort: (Q && Q.effort) || "", est: null, starting: false, fetching: new Set(),
+      preset, stressed: preset && preset.mode === "stressed" && (preset.ids || []).length ? preset : null };
     modal(`<div class="cp-scroll"><h2>${I("list-checks")} ${t("New practice quiz")}</h2>${skeleton()}</div>`);
     $(".modal").classList.add("pd", "pk", "qz-dlg");
     const r = await call("quiz_options", cid);
     if (!Q || Q.cid !== cid) return;
     if (!r.ok) { toast(r.error, "error"); closeModal(); return; }
     Q.opts = r; Q.model = r.model || "sonnet";
-    const pre = preset || {}, weak = St.mistakes && (pre.mode === "weak" ? (r.weak || {}).missed > 0 : !pre.los && St.mistakes.weakFirst(r));
-    setMode(weak ? "weak" : nextExam(r) ? "next" : "weeks");
+    // with no preset, "My weak spots" comes first once there are misses after two tries (mistakes.js)
+    const pre = preset || {}, weak = St.mistakes && (pre.mode === "weak" ? (r.weak || {}).missed > 0 : !pre.mode && !pre.los && St.mistakes.weakFirst(r));
+    if (Q.stressed) setMode("stressed");
+    else if (pre.mode === "lecture" && lectures().some((d) => d.day_key === pre.day)) setMode("lecture");
+    else if (pre.mode === "weeks") setMode("weeks", pre.weeks);
+    else setMode(weak ? "weak" : nextExam(r) ? "next" : "weeks");
     if (pre.los) { Q.los = pre.los; Q.topics = pre.topics || ""; }
     // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked
     if (St.picks) St.picks.live({ state: () => Q, open: () => !!$("#overlay #qz-cost"), refetch: () => call("quiz_options", Q.cid), tie: qTie, redraw: () => { readQuiz(); drawQuiz(); estimateQuiz(); } });
@@ -345,9 +379,10 @@
     const mode = (k, title, desc, ok = true) => `<button type="button" class="cp-mode ${Q.mode === k ? "on" : ""}" data-act="qz-mode" data-val="${k}" ${ok ? "" : "disabled"}><span class="cp-mode-t">${title}</span><span class="cp-mode-d">${desc}</span></button>`;
     const los = e && e.los.length ? ` · LO${e.los.join(", LO")}` : "";
     const weakBtn = St.mistakes ? St.mistakes.weakModeBtn(Q, mode) : "";            // "My weak spots" (mistakes.js)
-    const modes = `<div class="cp-modes ${weakBtn ? "four" : ""}">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
+    const modes = `<div class="cp-modes ${weakBtn || Q.stressed ? "four" : ""}">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
       ${mode("weeks", esc(t("Weeks you pick")), esc(t("Their files and lectures")))}
-      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}${weakBtn}</div>`;
+      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}${weakBtn}
+      ${Q.stressed ? mode("stressed", esc(t("The moments you picked")), esc(t.n(Q.stressed.ids.length, "{n} moment the lecturer stressed", "{n} moments the lecturer stressed"))) : ""}</div>`;
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="qz-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
@@ -359,8 +394,12 @@
         ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("")
       + (pk ? pk.groupHTML(r, Q.files, "qz-item", Q.fetching) : "");         // course-wide and announcement files
     // what the picked weeks still miss, with Download and Transcribe (as the plan dialog)
-    const gaps = pk && Q.mode !== "lecture" && Q.mode !== "weak" ? pk.gapsHTML(qMissing(), [...new Set(picked.flatMap((w) => w.todo_days || []))], { download: "qz-download", transcribe: "qz-transcribe" }) : "";
-    const where = Q.mode === "weak" ? St.mistakes.weakWhere(r) : Q.mode === "lecture"
+    const gaps = pk && (Q.mode === "next" || Q.mode === "weeks") ? pk.gapsHTML(qMissing(), [...new Set(picked.flatMap((w) => w.todo_days || []))], { download: "qz-download", transcribe: "qz-transcribe" }) : "";
+    const short = (s) => (s.length > 140 ? s.slice(0, 137).trimEnd() + "…" : s);
+    const where = Q.mode === "weak" ? St.mistakes.weakWhere(r) : Q.mode === "stressed"
+      ? `<div class="field"><label class="cp-label">${t("Questions on these moments")} <span class="dim sm">${esc(t.n(Q.days.size, "from {n} lecture", "from {n} lectures"))}</span></label>
+          <ul class="qz-moments">${(Q.stressed.items || []).map((it) => `<li>“${esc(short(it.text || ""))}” <span class="dim sm">${esc(dmw(it.day))} · ${esc(it.ts || "")}</span></li>`).join("")}</ul></div>`
+      : Q.mode === "lecture"
       ? `<div class="field"><label>${t("Which lecture?")}</label><select class="input" data-act="qz-day">${lectures().map((d) => `<option value="${esc(d.day_key)}" ${d.day_key === Q.day ? "selected" : ""}>${esc(t("Week {n}", { n: d.week }))} · ${esc(d.label)} · ${esc(d.kind)}</option>`).join("")}</select></div>`
       : `<div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: Q.weeks.size })}</span></label>
           <div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${Q.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="qz-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
@@ -556,10 +595,18 @@
     if (s < 86400) return t("{h} h", { h: Math.round(s / 3600) });
     return s < 86400 * 45 ? t.n(days, "{n} day", "{n} days") : t.n(months, "{n} month", "{n} months");
   }
-  async function study(cid) {
-    const r = await call("cards_session", cid);
+  // a sitting with the course's cards due today (their grades kept in its schedule); o.weeks: only those weeks' cards
+  // (the Practice tab's "Study one week", a week card's menu), o.days: only those lectures' own flashcards (a lecture's
+  // page). (The Exam room's cram session, every card of its weeks with the schedule left alone, adds its flag here.)
+  async function study(cid, o = {}) {
+    const r = await call("cards_session", cid, o.weeks || [], o.days || []);
     if (!r.ok) { toast(r.error, "error"); return; }
-    if (!r.cards.length) { toast(t("Nothing to study in this course today."), "info"); return; }
+    if (!r.cards.length) {
+      toast(o.days ? (r.total ? t("You know this lecture's cards for now: each comes back just before you would forget it.") : t("This lecture's cards aren't in your deck yet."))
+        : o.weeks ? (r.total ? t("Nothing from {weeks} to study today.", { weeks: weekSpan(o.weeks) }) : t("No flashcards from {weeks} yet.", { weeks: weekSpan(o.weeks) }))
+          : t("Nothing to study in this course today."), "info");
+      return;
+    }
     P.study = { cid, queue: r.cards.slice(), pos: 0, shown: false, done: 0, again: 0 };
     drawStudy();
   }
@@ -715,8 +762,10 @@
   });
 
   // ------------------------------------------------------------------ wiring
-  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, gradeCard, drawStudy,
-    showRun: (R) => { P.run = R; drawRun(); St.onModalClose = () => { if (onTab(R.cid)) renderView(); }; } };   // (mistakes.js)
+  // (quizDialog(cid, preset) and study(cid, {weeks, days}): a lecture's page and a week card open them; refresh,
+  // gradeCard, drawStudy and showRun: mistakes.js)
+  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, study, gradeCard, drawStudy,
+    showRun: (R) => { P.run = R; drawRun(); St.onModalClose = () => { if (onTab(R.cid)) renderView(); }; } };
   St.views.practice = practiceView;
   St.crumbs.practice = () => `${I("target")} ${t("Practice")}`;
   St.onGo.practice = () => loadSummary(true);
@@ -753,8 +802,10 @@
     if (row) Object.assign(row, { status: e.status, stage: e.stage, progress: e.progress, message: e.message, error: e.error, title: e.title || row.title, wait: e.wait || null });
     if (going && (!onTab(e.course_id) || inPlace(row))) return;          // (the Practice page shows only that it runs)
     if (e.status === "done") {
-      toast(e.kind === "quiz" ? t("Quiz ready: {title}", { title: e.title || "" }) : t("New cards: {title}", { title: e.title || "" }), "success",
-        e.kind === "quiz" ? { label: t("Practise"), act: "qz-play", data: { id: e.id } } : null);
+      if (e.source !== "chat") {          // (a chat's "/quiz": its card under the answer says so)
+        toast(e.kind === "quiz" ? t("Quiz ready: {title}", { title: e.title || "" }) : t("New cards: {title}", { title: e.title || "" }), "success",
+          e.kind === "quiz" ? { label: t("Practise"), act: "qz-play", data: { id: e.id } } : null);
+      }
       refresh(e.course_id);
     } else if (e.status === "error") {
       toast(e.kind === "quiz" ? t("Quiz: {error}", { error: e.error || t("failed") }) : setError(e), "error");
@@ -773,7 +824,7 @@
     }
     if (onTab(e.course_id)) renderView();
   };
-  St.inputActs = (St.inputActs || []).concat(["qz-item", "fm-item"]);    // checkboxes: app.js passes their clicks on
+  St.inputActs = (St.inputActs || []).concat(["qz-item", "fm-item", "st-pick"]);    // checkboxes: app.js passes their clicks on
 
   Object.assign(A, {
     "pr-open": (el) => go({ name: "course", courseId: el.dataset.cid, tab: "practice" }),
@@ -811,6 +862,7 @@
       asked.starting = false;
       if (!r.ok) { toast(r.error, "error"); if (asked === Q) drawQuiz(); return; }
       closeModal();
+      if (asked.mode === "stressed") delete P.picked[cid];          // (its ticks are done with)
       const p = P.course[cid];
       if (p && r.plan && !p.quizzes.some((x) => x.id === r.plan.id)) p.quizzes.unshift({ ...r.plan, weeks: (r.plan.scope || {}).weeks || [], days: (r.plan.scope || {}).days || [], focus: (r.plan.scope || {}).focus || "", questions: (r.plan.scope || {}).questions || 0, tries: 0 });
       // no toast: the quiz's own row says it is being written and that the app can be used meanwhile (at 1024×700 the
@@ -863,6 +915,14 @@
     },
     // flashcards
     "fc-study": (el) => study(el.dataset.cid),
+    "menu-fc-week": (el) => {             // "Study one week": each week with what it has to study today
+      const cid = el.dataset.cid, d = (P.course[cid] || {}).deck || {}, each = d.week_counts || {};
+      St.menu(el, (d.weeks || []).map((no) => {
+        const n = each[String(no)] || {};
+        return { id: `w${no}`, icon: "layers", label: t("Week {n}", { n: no }), run: () => study(cid, { weeks: [no] }),
+          desc: n.today ? t.n(n.today, "{n} to study today", "{n} to study today") : t.n(n.total || 0, "{n} card, done for today", "{n} cards, done for today") };
+      }));
+    },
     "fc-flip": () => { if (P.study) { P.study.shown = true; drawStudy(); } },
     "fc-grade": (el) => gradeCard(el.dataset.g),
     "fc-close": () => { const X = P.study; P.study = null; closeModal(); if (X && X.done) refresh(X.cid); },
@@ -903,6 +963,17 @@
     },
     // what the lecturer stressed
     "st-week": (el) => { P.week[el.dataset.cid] = el.dataset.week; renderView(); },
+    "st-pick": (el) => {
+      const set = P.picked[el.dataset.cid] || (P.picked[el.dataset.cid] = new Set());
+      if (el.checked) set.add(el.dataset.id); else set.delete(el.dataset.id);
+      renderView();
+    },
+    "st-quiz": (el) => {                  // a quiz on the moments ticked (or those that stand out in the weeks shown)
+      const cid = el.dataset.cid, items = quizMoments(cid);
+      if (!items.length) { toast(t("Tick the moments you want questions on."), "info"); return; }
+      quizDialog(cid, { mode: "stressed", ids: items.map((it) => it.id), days: [...new Set(items.map((it) => it.day_key))],
+        items: items.map((it) => ({ id: it.id, text: it.text, day: it.day, ts: it.ts })) });
+    },
     "st-more": (el) => { const k = el.dataset.key; if (P.more.has(k)) P.more.delete(k); else P.more.add(k); renderView(); },
     "st-sum": async (el) => {
       const cid = el.dataset.cid;

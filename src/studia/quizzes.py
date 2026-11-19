@@ -229,8 +229,9 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
             day_week[day["date"]] = w["no"]
     items = stressed.course_items(lib, course_id)
     picked_days = {x["day_key"] for x in facts["lectures"]}
+    only = set(getattr(scope, "stressed_ids", None) or [])         # the moments the student picked ("Quiz me on these")
     mine = [it for it in stressed.ranked(items, nos, day_week)
-            if not scope.days or it["day_key"] in picked_days]
+            if (not scope.days or it["day_key"] in picked_days) and (not only or it["id"] in only)]
     refs = {x["day_key"]: x["ref"] for x in facts["lectures"]}
     lines, by_ref = stressed.prompt_lines(mine, refs, 30, [it for it in items if it["kind"] == "not_needed"
                                                          and day_week.get(it["day"]) in nos])
@@ -238,6 +239,7 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                  outcomes=d.get("outcomes_en") or d.get("outcomes_tr") or [], stressed_lines=lines,
                  stressed={ref: {k: it[k] for k in ("id", "day_key", "part", "t", "ts", "kind", "text")}
                            for ref, it in by_ref.items()},
+                 stressed_only=bool(only and by_ref),
                  one_lecture=bool(scope.days) and len(scope.days) == 1 and not scope.files)
     if getattr(scope, "weak", False):
         _weak(lib, course_id, scope, facts)
@@ -363,7 +365,11 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
     elif f and f.get("name"):
         prio.append(f"{len(prio) + 1}. The student prepares for {f['name']}" +
                     (f" (week {f['week']})" if f.get("week") else "") + ".")
-    if facts.get("stressed_lines"):
+    if facts.get("stressed_only"):              # "Quiz me on these": the moments the student picked
+        prio.append(f"{len(prio) + 1}. The student picked the S moments below, where the lecturer stressed something: "
+                    "every question tests one of them, each moment before a second question on any; tag each question "
+                    "with the moments it tests (\"stressed\"). Nothing on what the lecturer said is not needed.")
+    elif facts.get("stressed_lines"):
         prio.append(f"{len(prio) + 1}. What the lecturer stressed (the S moments below): more questions on these, "
                     "the ones tied to an exam first; tag each question with the moments it tests (\"stressed\"). "
                     "Nothing on what the lecturer said is not needed.")

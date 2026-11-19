@@ -136,7 +136,7 @@ def quiz_brief(plan: dict[str, Any], tries: list[dict[str, Any]], kept: Optional
     return {"id": plan["id"], "course_id": plan["course_id"], "title": plan.get("title") or "", "status": plan["status"],
             "stage": plan.get("stage", ""), "progress": plan.get("progress", 0), "message": plan.get("message", ""),
             "error": plan.get("error", ""), "created_at": plan.get("created_at", ""), "weeks": sc.get("weeks") or [],
-            "days": sc.get("days") or [], "focus": sc.get("focus") or "",
+            "days": sc.get("days") or [], "focus": sc.get("focus") or "", "source": sc.get("source") or "",
             "questions": kept if kept is not None else sc.get("questions") or 0,
             "tries": len(tries), "last": tries[0] if tries else None, "best": best}
 
@@ -558,7 +558,7 @@ class PracticeApi:
     def practice_course(self, course_id: str) -> dict[str, Any]:
         """A course's Practice tab: its deck today, its quizzes (newest first, with their tries), the card sets being
         made from files, and what the lecturer stressed (by week, with the AI's summary if one was made)."""
-        from .cards import summary
+        from .cards import summary, week_counts
         from .views import course_detail
 
         lib = self._s.lib
@@ -575,8 +575,10 @@ class PracticeApi:
                  "progress": p.get("progress", 0), "error": p.get("error", ""), "created_at": p.get("created_at", "")}
                 for p in plans if (p.get("scope") or {}).get("kind") == "cards"]
         weeks = sorted({c["week"] for c in cards if c.get("week")})
+        each = week_counts(lib, cards, course_id, new_per_day=self._s.settings.cards_per_day)    # ("Study one week")
         return {"ok": True, "deck": {**summary(lib, cards, course_id, new_per_day=self._s.settings.cards_per_day),
-                                     "weeks": weeks}, "quizzes": quizzes,
+                                     "weeks": weeks, "week_counts": {str(w): n for w, n in each.items()}},
+                "quizzes": quizzes,
                 "card_sets": sets, "stressed": self._stressed(course_id, d),
                 "mistakes": mistakes(lib, course_id)[:40],
                 "weak": mastery(lib, course_id, outcomes=d.get("outcomes_en") or d.get("outcomes_tr") or [])}
@@ -813,13 +815,18 @@ class PracticeApi:
 
     # ---- flashcards
     @_safe
-    def cards_session(self, course_id: str, weeks: Optional[list[int]] = None) -> dict[str, Any]:
-        from .cards import session
+    def cards_session(self, course_id: str, weeks: Optional[list[int]] = None,
+                      day_keys: Optional[list[str]] = None) -> dict[str, Any]:
+        """The cards to study now (``weeks``: only those weeks'; ``day_keys``: only those lectures' own flashcards),
+        and how many such cards there are in all (``total``: a lecture's cards that are all learnt is said so)."""
+        from .cards import picked, session
 
-        cards = session(self._s.lib, self._deck(course_id), course_id,
-                        weeks={int(w) for w in weeks or [] if str(w).isdigit()} or None,
-                        new_per_day=self._s.settings.cards_per_day)
-        return {"ok": True, "cards": cards}
+        deck = self._deck(course_id)
+        weeks_ = {int(w) for w in weeks or [] if str(w).isdigit()} or None
+        days = {str(k) for k in day_keys or [] if k} or None
+        cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,
+                        days=days)
+        return {"ok": True, "cards": cards, "total": len(picked(deck, weeks_, days))}
 
     @_safe
     def cards_grade(self, course_id: str, card_id: str, grade: str) -> dict[str, Any]:
