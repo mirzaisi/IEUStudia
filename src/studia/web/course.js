@@ -391,7 +391,7 @@
     const sub = [range(w.start, w.end), unitTitle && unitTitle !== title ? `IEULearn: ${unitTitle}` : (w.topic_tr && w.topic_tr !== title ? w.topic_tr : "")].filter(Boolean).join(" · ");
     const due = ((d.alerts && d.alerts.plan) || []).filter((e) => e.week === w.no);
     // an assessment's pill opens its Exam room ("ready-open": examroom.js)
-    const duePills = due.map((e) => `<button class="pill due kind-${e.kind} pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: (e.sources[0] || {}).title || "" }))}">${I("cap")}${esc(e.name)}${e.date ? ` · ${esc(dayAt({ date: e.date, time: e.time }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</button>`).join("");
+    const duePills = due.map((e) => `<button class="pill due kind-${e.kind} pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(e.name)}" title="${esc(e.los.length ? loTitle(d, e.los) : t("From “{title}”", { title: (e.sources[0] || {}).title || "" }))}">${I("cap")}${esc(e.name)}${e.date || ownDay(d, `${e.kind}:${e.no}`) ? ` · ${esc(dayAt({ date: e.date || ownDay(d, `${e.kind}:${e.no}`), time: e.date ? e.time : "" }))}` : ""}${e.los.length ? ` · ${esc(loLabel(e.los))}` : ""}</button>`).join("");
     const asgPills = St.calWeekPills ? St.calWeekPills(d, w) : "";          // the week's assignments (calendar.js)
     const quiet = !w.current && !mats.length && !w.days.length && !due.length;
     const foldable = w.past && !w.current && !quiet;

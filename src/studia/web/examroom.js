@@ -175,7 +175,7 @@
     const quizState = (q) => (q.status === "done" ? (q.best ? ` · ${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}` : q.tries ? "" : ` · ${esc(t("not taken yet"))}`)
       : busyQ(q) ? ` · ${esc(t("being written"))}` : "");
     const quizWhy = (q) => (q.status === "done" || busyQ(q) ? "" : `<div class="sm">${q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message || t("Stopped"))}</div>`);
-    const quiz = (q) => `<div class="er-q"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(span(q.weeks))}${q.focus ? ` · ${esc(t("for {name}", { name: q.focus }))}` : ""}${quizState(q)}</div>${quizWhy(q)}</div>
+    const quiz = (q) => `<div class="er-q ${q.status === "done" ? "" : "noprint"}"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(span(q.weeks))}${q.focus ? ` · ${esc(t("for {name}", { name: q.focus }))}` : ""}${quizState(q)}</div>${quizWhy(q)}</div>
       ${q.status === "done" ? `<button class="btn sm noprint" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${q.tries ? t("Practise again") : t("Practise")}</button>`
         : busyQ(q) ? `<span class="dim sm">${SPIN()}</span>` : `<button class="btn sm noprint" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>`}</div>`;
     const cardLine = cards.total ? [t.n(cards.total, "{n} flashcard from these weeks", "{n} flashcards from these weeks"), cards.due ? t.n(cards.due, "{n} due today", "{n} due today") : "",
@@ -186,7 +186,7 @@
       ${untested.length ? `<div class="mq-sub">${t("Not tested yet")}</div><div class="mq-skills">${untested.map((x) => `<div class="mq-skill"><div class="mq-skill-h"><span class="lo-no">LO${x.no}</span><span class="grow">${esc(x.text || "")}</span>
           <button class="btn ghost sm noprint" data-act="mq-quiz-lo" data-cid="${esc(c.id)}" data-key="${esc(r.assessment.key)}" data-no="${x.no}" data-text="${esc(x.text || "")}" ${St.aiBtn(canAI(), true)}>${t("Quiz this LO")}</button></div></div>`).join("")}</div>` : ""}
       ${p.missed ? `<div class="er-note">${I("retry", "sm")}<span>${esc(t.n(p.missed, "{n} question you missed is still open.", "{n} questions you missed are still open."))}</span> <button class="link noprint" data-act="er-practice" data-cid="${esc(c.id)}">${t("Go over them")}</button></div>` : ""}
-      ${p.quizzes.length ? `<div class="mq-sub">${t("Its quizzes")}</div>${p.quizzes.slice(0, 5).map(quiz).join("")}` : ""}
+      ${p.quizzes.length ? `<div class="mq-sub ${p.quizzes.slice(0, 5).some((q) => q.status === "done") ? "" : "noprint"}">${t("Its quizzes")}</div>${p.quizzes.slice(0, 5).map(quiz).join("")}` : ""}
       <div class="er-note">${I("layers", "sm")}<span>${esc(cardLine)}</span></div></div>`;
   }
   const KIND = () => ({ sheet: [t("Cheatsheet"), "sigma"], prep: [t("Review sheet"), "cap"], pack: [t("Study pack"), "book"], videos: [t("Video plan"), "youtube"] });

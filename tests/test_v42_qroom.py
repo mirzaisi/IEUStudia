@@ -162,6 +162,25 @@ def test_the_day_set_in_the_room_is_the_calendars_the_files_and_the_reminders(li
 
 # ------------------------------------------------------------------ the page
 @node
+def test_the_course_page_says_the_day_set_in_the_room(tmp_path):
+    """The room and its chip said the day the student set; the Coming up strip and the week card's pill kept the week."""
+    out = run(tmp_path, """
+  const day = inDays(4), w12 = { no: 12, start: inDays(-2), end: inDays(4), current: true, past: false, exam: false, topic_en: "Bayes",
+    topic_tr: "", units: [], days: [], classes: [] };
+  S.cd = { c: { id: "c", code: "MATH 240", general: [], outcomes_en: [], outcomes_tr: [], grading: [], syllabus: {}, materials: { total: 0, downloaded: 0, new: 0 },
+    announcements: [], counts: {}, weeks: [w12],
+    alerts: { items: [], counts: {}, plan: [{ kind: "quiz", no: 3, name: "Quiz 3", week: 12, los: [], sources: [{ id: "a2", title: "About Quiz 3" }] }] },
+    assessments: [{ ...QUIZ3, on: { date: day, time: "", from: "yours", others: [] } }] } };
+  S.view = { name: "course", courseId: "c" };
+  out.page = text(St.views.course(S.view)); out.day = t.date(day, "dmw");
+  out.rel = St.planRel(S.cd.c, S.cd.c.alerts.plan[0]);
+""")
+    assert f"Quiz 3 {out['day']}" in out["page"]                          # Coming up
+    assert out["page"].count(f"Quiz 3 · {out['day']}") == 1                # the week card's pill
+    assert out["rel"]["date"] == out["rel"]["days"][0] and out["rel"]["time"] == ""
+
+
+@node
 def test_a_stopped_or_failed_quiz_in_the_room_can_be_resumed_and_stressed_is_short(tmp_path):
     out = run(tmp_path, """
   const base = room(QUIZ3), q = (id, status, extra) => ({ id, course_id: "c", title: "", status, weeks: [9, 10], days: [], focus: "Quiz 3",

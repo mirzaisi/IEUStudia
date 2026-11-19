@@ -101,6 +101,7 @@
   .er-page .noprint, .er-page .btn, .er-page input[type=checkbox] { display: none !important; }
   .er-page .card, .er-count { box-shadow: none !important; border: 1px solid #bbb; }
   .er-page .card:not(.er-weeks), .er-week { break-inside: avoid; }      /* (its weeks go on over the next page) */
+  .er-weeks > .er-h { break-after: avoid; }                              /* (never alone at a page's foot) */
   .er-page .link { color: #000; text-decoration: none; pointer-events: none; }
   .er-head::before { display: none; }
   .er-grid:not(.one) { grid-template-columns: 1fr 1fr; }
