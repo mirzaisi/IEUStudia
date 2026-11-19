@@ -114,7 +114,11 @@ button.pill-btn:hover { filter: brightness(.96); text-decoration: underline; }
 .qz-others ul, .qz-points, .qz-steps { margin: 6px 0; padding-left: 22px; }
 .qz-steps li, .qz-points li { margin: 4px 0; }
 .qz-final { margin-top: 6px; }
-.qz-input { width: 100%; resize: vertical; font: inherit; }
+.qz-input { width: 100%; resize: vertical; font: inherit; height: auto; padding: 8px 12px; line-height: 1.5; }
+/* a long question (a worked problem in six parts) scrolls; its buttons stay in view at the dialog's foot */
+.modal > .qz > .actions, .modal > .fc-study > .actions { position: sticky; bottom: -22px; z-index: 1; margin: 18px -24px -22px;
+  padding: 12px 24px 18px; background: var(--surface); border-radius: 0 0 14px 14px; flex-wrap: wrap; align-items: center; }
+.modal > .fc-study > .actions:not(:last-child) { margin-bottom: 0; padding-bottom: 14px; border-radius: 0; }
 .qz-your { margin: 2px 0 8px; }
 .qz-your-t { white-space: pre-wrap; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
 .qz-src { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; border: 0; background: none; padding: 4px 0;
@@ -129,10 +133,11 @@ button.pill-btn:hover { filter: brightness(.96); text-decoration: underline; }
 .qz-cover li { margin: 3px 0; }
 .qz-tries ul { margin: 4px 0 8px; padding-left: 20px; font-size: 13px; }
 .qz-results { list-style: none; margin: 6px 0; padding: 0; max-height: 280px; overflow-y: auto; }
-.qz-results li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+/* (its own rows only: an opened row's solution steps and points keep their numbers and bullets) */
+.qz-results > li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .qz-results .qz-res-t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qz .fc-top > .dim { flex: none; white-space: nowrap; }
-.qz-results li.ok .i { color: var(--green); } .qz-results li.half .i { color: var(--amber); } .qz-results li.no .i { color: var(--red); }
+.qz-results > li.ok > .i { color: var(--green); } .qz-results > li.half > .i { color: var(--amber); } .qz-results > li.no > .i { color: var(--red); }
 .qz-end h2 .dim { font-weight: 500; margin-left: 4px; }
 
 /* ---- flashcards, with spaced repetition */

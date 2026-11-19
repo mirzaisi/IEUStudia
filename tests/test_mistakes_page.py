@@ -96,7 +96,8 @@ const out = {};
   A["qz-skip"](); A["qz-next"](); await tick();
   out.end = shown.html;
   out.saved = calls.filter((c) => c[0] === "quiz_attempt").map((c) => c[2].answers);
-  out.carded = toasts.find((x) => x[3] === "mq-uncard") || null;
+  out.carded = toasts.find((x) => x[3] === "mq-uncard") || null;     // (said on the end screen, not in a toast)
+  out.cardedLine = (shown.html.match(/<p class="mq-carded[\s\S]*?<\/p>/) || [""])[0];
   // the first row opened: your answer beside the right one, why yours is wrong, the page it comes from
   A["mq-row"]({ dataset: { key: "q1|1" } });
   out.row1 = shown.html;
@@ -197,7 +198,9 @@ def test_the_mistake_loop_on_the_page(tmp_path):
     assert out["saved"] == [[{"got": 0, "chose": 1, "n": 1, "skipped": False, "text": "", "mark": "app"},
                              {"got": 0, "text": "it adds up the parts", "n": 2, "chose": None, "skipped": False, "mark": "self"},
                              {"got": 0, "skipped": True, "chose": None, "n": 3, "text": "", "mark": "app"}]]
-    assert out["carded"] == ["3 missed questions join your flashcards: they come back tomorrow.", "info", "Undo", "mq-uncard"]
+    assert out["carded"] is None
+    assert "3 missed questions join your flashcards: they come back tomorrow." in out["cardedLine"]
+    assert 'data-act="mq-uncard" data-cid="c1" data-ids="qx1,qx2,qx3"' in out["cardedLine"] and "Undo" in out["cardedLine"]
     row1 = out["row1"]
     assert "Your answer" in row1 and "<b>B</b> P(A)P(B)" in row1 and "Right answer" in row1 and "<b>A</b> P(A and B)/P(B)" in row1
     assert "Why yours is wrong:</b> Only when independent." in row1 and "Why:</b> The definition." in row1

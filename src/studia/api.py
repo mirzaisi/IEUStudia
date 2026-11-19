@@ -1543,6 +1543,7 @@ class Api(PracticeApi, ExamRoomApi, ChecksApi):
         for n in detail["notes"]:
             if n["kind"] == "flashcards":                                  # to practise them one by one
                 n["cards"] = parse_cards(n["md"])
+                n["practise"] = self._lecture_cards(day_key)               # ("Practise N cards": its session's)
         worker = getattr(self._s, "screens", None)                         # (screens.py) captured again: which now
         detail["screens_again"] = worker.state() if worker is not None else {}
         return {"ok": True, "day": detail}

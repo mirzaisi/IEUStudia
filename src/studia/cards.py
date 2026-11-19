@@ -457,12 +457,29 @@ def _asked_again(c: dict[str, Any], state: Optional[dict[str, Any]]) -> dict[str
     return {**c, "quiz": {**qz, "options": opts, "answer": right, "wrong": wrong}}
 
 
+def lecture_fronts(svc: Any, day_keys: Any) -> set[str]:
+    """The fronts (as ``norm`` writes them) of these lectures' own Flashcards notes. The deck keeps a card once, under
+    the first lecture that has it, so a card another lecture's notes also hold is found by its front."""
+    out: set[str] = set()
+    for day in day_keys or ():
+        try:
+            path = svc.day_files(day).get("notes:flashcards")
+        except (KeyError, OSError, AttributeError):
+            continue
+        if path:
+            out |= {norm(c["q"]) for c in _cards_in(path) if norm(c.get("q"))}
+    return out
+
+
 def picked(cards: list[dict[str, Any]], weeks: Optional[set[int]] = None,
-           days: Optional[set[str]] = None) -> list[dict[str, Any]]:
-    """The cards of those weeks, and of those lectures (``days``: their day keys; a lecture's own flashcards); not
-    the ones set aside."""
+           days: Optional[set[str]] = None, fronts: Optional[set[str]] = None,
+           aside: bool = False) -> list[dict[str, Any]]:
+    """The cards of those weeks, and of those lectures (``days``: their day keys: the lecture's own flashcards, the
+    missed quiz questions it taught, and (``fronts``, lecture_fronts) its cards the deck keeps under another lecture);
+    not the ones set aside (``aside``: only those)."""
     return [c for c in cards if (not weeks or c.get("week") in weeks)
-            and (not days or (c.get("source") or {}).get("day_key") in days) and not c.get("aside")]
+            and (not days or (c.get("source") or {}).get("day_key") in days or norm(c.get("q")) in (fronts or ()))
+            and bool(c.get("aside")) == aside]
 
 
 def week_counts(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
@@ -489,24 +506,35 @@ def week_counts(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Opti
 
 def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
             weeks: Optional[set[int]] = None, new_per_day: Optional[int] = None,
-            days: Optional[set[str]] = None, cram: bool = False) -> list[dict[str, Any]]:
+            days: Optional[set[str]] = None, cram: bool = False,
+            fronts: Optional[set[str]] = None) -> list[dict[str, Any]]:
     """The cards to study now, in order: the ones in learning that are due, the reviews due today (the most overdue
     first), then today's new cards; each with its state and what each answer would do. ``weeks``, ``days``: only the
-    cards of those weeks, or of those lectures (their own flashcards). Not the ones set aside; a missed
-    multiple-choice question with its options reordered. ``cram`` (the Exam room's "Cram these weeks"): every card
-    of them, due or not, in the deck's order; their answers leave the schedule alone (grade)."""
+    cards of those weeks, or of those lectures (picked: their own flashcards, ``fronts``, and the questions missed
+    there). Not the ones set aside; a missed multiple-choice question with its options reordered. ``cram`` (the Exam
+    room's "Cram these weeks"): every card of them, due or not, in the deck's order; their answers leave the schedule
+    alone (grade).
+    A lecture's cards (``days``, its page's "Practise N cards") always come, all of them: the ones due and all its new
+    ones (the student asked for this lecture, so the day's new-card limit doesn't hold them back), then the ones not
+    due yet, each "cram" (its answer leaves its schedule as it is)."""
     now = now or dt.datetime.now()
     st = states(lib, course_id)
     end = study_day(now)[1].isoformat(timespec="seconds")
-    pick = picked(cards, weeks, days)
+    pick = picked(cards, weeks, days, fronts)
+    early = lambda c: {**_asked_again(c, st.get(c["id"])), "state": st.get(c["id"]), "next": {}, "cram": True}  # noqa: E731
     if cram:
-        return [{**_asked_again(c, st.get(c["id"])), "state": st.get(c["id"]), "next": {}, "cram": True} for c in pick]
+        return [early(c) for c in pick]
     due = sorted((c for c in pick if c["id"] in st and (st[c["id"]]["due"] or "") < end),
                  key=lambda c: (int(st[c["id"]]["step"]) < 0, st[c["id"]]["due"]))
-    left = summary(lib, cards, course_id, now, new_per_day)["new"]
-    fresh = [c for c in pick if c["id"] not in st][:left]
+    fresh = [c for c in pick if c["id"] not in st]
+    rest: list[dict[str, Any]] = []
+    if days:
+        taken = {c["id"] for c in due + fresh}
+        rest = [early(c) for c in pick if c["id"] not in taken]
+    else:
+        fresh = fresh[:summary(lib, cards, course_id, now, new_per_day)["new"]]
     return [{**_asked_again(c, st.get(c["id"])), "state": st.get(c["id"]), "next": preview(st.get(c["id"]), now)}
-            for c in due + fresh]
+            for c in due + fresh] + rest
 
 
 def grade(lib: Any, course_id: str, card_id: str, how: str, now: Optional[dt.datetime] = None,

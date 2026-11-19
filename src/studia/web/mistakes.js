@@ -34,8 +34,11 @@
       const mine = a.skipped || a.chose == null ? `<span class="dim">${esc(t("You skipped it."))}</span>` : `<div class="md">${opt(q, a.chose)}</div>`;
       return `<div class="mq-cmp">${box(tone(g), t("Your answer"), mine)}${g >= 1 ? "" : box("ok", t("Right answer"), `<div class="md">${opt(q, q.answer)}</div>`)}</div>`;
     }
+    // (a try saved before 4.2 kept no "text": what was written then is not known)
+    // (only a result typed in the "Final answer" box: that result is the answer)
     const typed = a.text ? `<div class="mq-typed">${esc(a.text)}</div>`
-      : `<span class="dim">${esc(a.skipped ? t("You skipped it.") : t("You didn't write an answer."))}</span>`;
+      : a.final ? `<div class="mq-typed">${esc(t("Your result: {result}", { result: a.final }))}</div>`
+        : `<span class="dim">${esc(a.skipped ? t("You skipped it.") : !("text" in a) ? t("Not kept: this try is from an older version of IEUStudia.") : t("You didn't write an answer."))}</span>`;
     const good = q.type === "problem"
       ? `${(q.steps || []).length ? `<ol class="qz-steps">${q.steps.map((s) => `<li class="md">${md(s)}</li>`).join("")}</ol>` : ""}${q.model ? `<div class="qz-final"><b>${t("Answer:")}</b> <span class="md">${mdLine(q.model)}</span></div>` : ""}`
       : `${q.model ? `<div class="md">${md(q.model)}</div>` : ""}${(q.points || []).length ? `<div class="dim sm qz-points-h">${t("A full answer says:")}</div><ul class="qz-points">${q.points.map((x) => `<li class="md">${md(x)}</li>`).join("")}</ul>` : ""}`;
@@ -74,14 +77,21 @@
     const res = R.quiz.result || {};
     return row({ cid: R.cid, plan: R.id, removed: new Set(res.removed || []), notHere: new Set(res.not_here || []) }, q, R.answers[q.n]);
   }
-  // a try saved: its missed questions joined the cards (Undo takes them out again)
+  // a try saved: its missed questions joined the cards (Undo takes them out again). Said on the end screen itself (a
+  // toast lay over its buttons, and over the replay's, at 1024×700); a toast only when the quiz was closed meanwhile
+  const cardedText = (n) => t.n(n, "{n} missed question joins your flashcards: it comes back tomorrow.", "{n} missed questions join your flashcards: they come back tomorrow.");
   function saved(R, r) {
     R.attemptId = (r.attempt || {}).id || "";
     const ids = r.carded || [];
-    if (ids.length) {
-      toast(t.n(ids.length, "{n} missed question joins your flashcards: it comes back tomorrow.", "{n} missed questions join your flashcards: they come back tomorrow."), "info",
-        { label: t("Undo"), act: "mq-uncard", data: { cid: R.cid, ids: ids.join(",") } });
+    R.carded = ids.length ? ids : null;
+    if (ids.length && !(PR().run === R && $("#overlay .qz-end"))) {
+      toast(cardedText(ids.length), "info", { label: t("Undo"), act: "mq-uncard", data: { cid: R.cid, ids: ids.join(",") } });
     }
+  }
+  function cardedLine(R) {
+    const ids = R.carded || [];
+    return ids.length ? `<p class="mq-carded sm">${I("layers", "sm")}<span>${esc(cardedText(ids.length))}</span>
+      <button class="link sm" data-act="mq-uncard" data-cid="${esc(R.cid)}" data-ids="${esc(ids.join(","))}">${t("Undo")}</button></p>` : "";
   }
   // the end screen or the course tab drawn again, where it was scrolled to
   function redraw() {
@@ -157,7 +167,7 @@
   }
   function tabHTML(c, p) { return mistakesCard(c, p) + weakCard(c, p); }
   // the Flashcards card: cards set aside, with the way back
-  const asideLine = (c, d) => (d && d.aside ? `<div class="note-sm">${I("pause", "sm")}<span>${esc(t.n(d.aside, "{n} card is set aside.", "{n} cards are set aside."))} <button class="link" data-act="fc-bring-back" data-cid="${esc(c.id)}">${t("Bring them back")}</button></span></div>` : "");
+  const asideLine = (c, d) => (d && d.aside ? `<div class="note-sm">${I("pause", "sm")}<span>${esc(t.n(d.aside, "{n} card is set aside.", "{n} cards are set aside."))} <button class="link" data-act="fc-bring-back" data-cid="${esc(c.id)}">${t.n(d.aside, "Bring it back", "Bring them back")}</button></span></div>` : "");
 
   // ------------------------------------------------------------------ a missed multiple-choice question as a card
   const isMC = (c) => !!c && c.origin === "quiz" && !c.edited && (c.quiz || {}).type === "mc" && ((c.quiz || {}).options || []).length >= 2;
@@ -176,7 +186,7 @@
       : `<button class="qz-src" data-act="pr-moment" data-day="${esc(c.source.day_key)}" data-part="${c.source.part || 1}" data-t="${c.source.t || 0}">${I("video", "xs")}<span>${esc(t("From the lecture of {day}, part {part}, {time}", { day: dmw(c.source.date), part: c.source.part || 1, time: c.source.ts || "" }))}</span></button>`) : "";
     return `<div class="fc fc-study fc-mc"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${cardBtn(c)}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
-      <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}</div>
+      <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}${c.cram && !X.cram ? ` · ${esc(t("Not due yet"))}` : ""}</div>
       <div class="fc-q md">${md(c.q)}</div><div class="qz-opts">${opts}</div>${why}
       <div class="fc-meta">${src}</div>
       <div class="actions">${shown ? `<span class="dim sm qz-self-q">${esc(right ? t("The app marks it Good.") : t("The app marks it Again: it comes back soon."))}</span><button class="btn primary" data-act="fc-mc-next" autofocus>${t("Next card")}</button>`
@@ -213,7 +223,8 @@
     X.queue = X.queue.filter((x, i) => i < X.pos || x.id !== c.id);
     X.picked = null; X.shown = false;
     St.practice.drawStudy();
-    toast(off === "aside" ? t("Set aside. You can bring it back from the Flashcards card.") : t("Card deleted."), "success");
+    toast(off === "aside" ? t("Set aside. You can bring it back from the Flashcards card.") : t("Card deleted."), "success",
+      off === "aside" ? { label: t("Undo"), act: "fc-unaside", data: { cid: X.cid, id: c.id } } : undefined);
     St.practice.refresh(X.cid);
   }
 
@@ -267,9 +278,12 @@
       St.practice.refresh(cid);
     },
     "mq-uncard": async (el) => {
-      const r = await call("mistakes_uncard", el.dataset.cid, String(el.dataset.ids || "").split(",").filter(Boolean));
+      const ids = String(el.dataset.ids || "").split(",").filter(Boolean);
+      const r = await call("mistakes_uncard", el.dataset.cid, ids);
       if (!r.ok) { toast(r.error, "error"); return; }
       toast(t("They are out of your flashcards again."), "success");
+      const R = PR().run;
+      if (R && (R.carded || []).join(",") === ids.join(",")) { R.carded = null; if ($("#overlay .qz-end")) redraw(); }
       St.practice.refresh(el.dataset.cid);
     },
     "mq-weak": (el) => St.practice.quizDialog(el.dataset.cid, { mode: "weak" }),
@@ -299,6 +313,12 @@
       toast(t("Card saved."), "success");
       St.practice.refresh(X.cid);
     },
+    "fc-unaside": async (el) => {             // a card just set aside, back in the deck (its toast's Undo)
+      const r = await call("cards_edit", el.dataset.cid, el.dataset.id, { off: "" });
+      if (!r.ok) { toast(r.error, "error"); return; }
+      toast(t("It's back in your deck."), "success");
+      St.practice.refresh(el.dataset.cid);
+    },
     "fc-bring-back": async (el) => {
       const r = await call("cards_bring_back", el.dataset.cid);
       if (!r.ok) { toast(r.error, "error"); return; }
@@ -307,7 +327,7 @@
     },
   });
 
-  const M = St.mistakes = { rowParts: [yoursPart, whyPart, sourcePart, actsPart], row, endRow, saved, tabHTML, asideLine,
+  const M = St.mistakes = { rowParts: [yoursPart, whyPart, sourcePart, actsPart], row, endRow, saved, cardedLine, tabHTML, asideLine,
     isMC, cardBtn, studyHTML, studyKey, weakFirst, weakModeBtn, weakWhere, replay, state: MQ,
     skillRow };          // (the Exam room's "How well you know it": examroom.js)
 })();

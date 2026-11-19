@@ -62,7 +62,7 @@
 
 /* the paste dialog on the Practice tab (kit.js) */
 .modal.kit h2 { display: flex; gap: 8px; align-items: center; }
-.kit-text { width: 100%; box-sizing: border-box; min-height: 170px; resize: vertical; font: 12.5px/1.45 var(--mono); }
+.kit-text { width: 100%; box-sizing: border-box; min-height: 170px; resize: vertical; font: 12.5px/1.45 var(--mono); padding: 8px 12px; }
 .kit-err { margin-top: 10px; }
 .modal.kit .note-sm { margin-top: 10px; }
 .kit-head { font-size: 13.5px; margin-top: 2px; }

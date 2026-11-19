@@ -34,6 +34,9 @@
 .mq-why.no b { color: var(--red); }
 .mq-src { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .mq-acts { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+/* the end screen: the missed questions that joined the cards, with Undo */
+.mq-carded { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0 0; color: var(--text-2); }
+.mq-carded > .i { color: var(--accent-text); flex: none; }
 
 /* ---- where it was taught */
 .modal.mq-mom-modal { width: min(780px, calc(100vw - 40px)); }
@@ -80,12 +83,13 @@ button.mq-skill-h:not(:disabled):hover { background: var(--surface-2); }
 .fc-top:has(.fc-more) > .dim { margin-left: auto; }
 .fc-top .fc-more { flex: none; margin: -4px -6px -4px 0; }
 .fc-mc .fc-q { margin-bottom: 10px; }
-.fc-mc > .actions { position: sticky; bottom: -22px; z-index: 1; margin: 14px -24px 0; padding: 12px 24px 14px; background: var(--surface);
-  align-items: center; }
-.mq-ed { width: 100%; resize: vertical; font: inherit; }
+/* (its buttons stay in view as every card's do: practice.css) */
+.mq-ed { width: 100%; resize: vertical; font: inherit; height: auto; padding: 8px 12px; line-height: 1.5; }
 
 /* ---- the quiz dialog's "My weak spots" */
 .modal.qz-dlg .cp-modes.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* five of them (missed questions and picked moments): the last one, what it was opened for, the whole width */
+.modal.qz-dlg .cp-modes.four > .cp-mode:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .mq-weakbox { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: var(--accent-soft);
   font-size: 13px; }
 .mq-weakbox > .i { color: var(--accent-text); flex: none; margin-top: 2px; }

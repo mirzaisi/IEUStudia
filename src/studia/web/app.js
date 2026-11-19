@@ -921,11 +921,13 @@
     const shown = writing ? { kind: S.ai.kind, label: S.ai.label, md: S.ai.text } : notes.find((n) => n.kind === S.notesKind) || notes[0];
     if (!shown) return "";
     const kinds = !writing && notes.length > 1 ? `<span class="seg sm">${notes.map((n) => `<button class="${n.kind === shown.kind ? "on" : ""}" data-act="notes-kind" data-val="${n.kind}">${esc(n.label)}</button>`).join("")}</span>` : "";
-    const cards = !writing && shown.kind === "flashcards" ? (shown.cards || []).length : 0;
+    // the cards "Practise N cards" opens: its session's (Python counts them: the lecture's cards in the deck and the quiz
+    // questions missed on it), else the notes' own
+    const cards = !writing && shown.kind === "flashcards" ? (shown.practise >= 0 ? shown.practise : (shown.cards || []).length) : 0;
     const step = writing && S.ai.wait && Studia.waitShort ? Studia.waitShort(S.ai.wait) : "";     // (waits.js)
     return `<div class="card notes-card"><h3>${I("ai")} ${esc(shown.label || t("Study notes"))} ${writing ? `<span class="pill active">${SPIN()} ${step ? esc(step) : t.html("{ai} is writing…", { ai: aiName() })}</span>
       <button class="btn ghost sm" data-act="ai-cancel">${t("Stop")}</button>` : `<span class="pill done">${I("check")}${t("Saved")}</span>${kinds}
-      ${cards >= 3 ? `<button class="btn sm" data-act="cards-practise" title="${t("One card at a time: think of the answer, then check it")}">${I("list-checks", "sm")} ${t("Practise {n} cards", { n: cards })}</button>` : ""}
+      ${cards > 0 ? `<button class="btn sm" data-act="cards-practise" title="${t("One card at a time: think of the answer, then check it")}">${I("list-checks", "sm")} ${t.n(cards, "Practise {n} card", "Practise {n} cards")}</button>` : ""}
       <button class="btn ghost sm" data-act="file" data-what="notes:${esc(shown.kind)}">${I("file-text", "sm")} ${t("Open file")}</button>`}</h3>
       ${writing && shown.md && S.ai.wait && Studia.waitLine ? `<div class="aw-slot">${Studia.waitLine(S.ai.wait, { bare: true })}</div>` : ""}
       <div class="notes-body md">${shown.md ? mdToHtml(shown.md, { cites: true, streaming: writing, base: (d.files || {})["notes:" + shown.kind] }) : writing && S.ai.wait && Studia.waitHTML ? Studia.waitHTML(S.ai.wait) : `<div class="skel" style="height:14px;width:60%"></div>`}</div></div>`;
@@ -2846,7 +2848,7 @@
   };
   // what the other UI files may use (their actions go into A, their views into Studia.views)
   Object.assign(Studia, { S, call, esc, I, SPIN, fmtDur, rel, pct, toast, modal, closeModal, ask, menu, go, render,
-    renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
+    renderView, renderSidebar, renderTop, renderNotes, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
     otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, closerBtn, applyTheme, aiBtn, whyOff });
