@@ -112,7 +112,7 @@
       loadCourse(c.id);
       return skeleton();
     }
-    return `<div class="pr-tab">${quizzesHTML(c, p)}${cardsHTML(c, p)}${stressedHTML(c, p)}</div>`;
+    return `<div class="pr-tab">${quizzesHTML(c, p)}${St.mistakes ? St.mistakes.tabHTML(c, p) : ""}${cardsHTML(c, p)}${stressedHTML(c, p)}</div>`;   // (mistakes.js)
   }
   const tabCount = (cid) => (((P.course[cid] || {}).deck || {}).today) || ((((P.summary || {}).courses || []).find((r) => r.id === cid) || {}).deck || {}).today || 0;
 
@@ -170,7 +170,7 @@
     return `<div class="card pr-card"><div class="pr-h">${I("layers")}<b>${t("Flashcards")}</b>${d.total ? `<span class="dim">${esc(t.n(d.total, "{n} card", "{n} cards"))}</span>` : ""}<span class="spacer"></span>
         ${d.today ? `<span class="pill due">${esc(t.n(d.today, "{n} to study today", "{n} to study today"))}</span>` : d.total ? `<span class="pill done">${I("check")}${t("Done for today")}</span>` : ""}</div>
       ${d.total ? `<p class="pr-sub">${esc(from)}${d.learnt ? ` ${esc(t.n(d.learnt, "{n} card learnt.", "{n} cards learnt."))}` : ""}</p>` : empty}
-      ${making}
+      ${making}${St.mistakes ? St.mistakes.asideLine(c, d) : ""}
       <div class="pr-acts"><button class="btn primary" data-act="fc-study" data-cid="${esc(c.id)}" ${d.today ? "" : "disabled"}>${I("play", "sm")} ${d.today ? esc(t.n(d.today, "Study {n} card", "Study {n} cards")) : t("Nothing to study today")}</button>
         <button class="btn" data-act="fc-make" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("{ai} makes cards from the files you pick", { ai: St.aiName() }) : St.aiHint())}">${I("ai", "sm")} ${t("Make cards from files")}</button>
         <button class="btn ghost" data-act="fc-export" data-cid="${esc(c.id)}" ${d.total ? "" : "disabled"} title="${esc(t("Your cards as an Anki deck"))}">${I("download", "sm")} ${t("Export to Anki")}</button></div></div>`;
@@ -292,7 +292,7 @@
     else if (mode === "weeks") {
       const cur = latestReady(Q.opts.weeks, (w) => w.files.some((f) => f.ready) || w.days.some((d) => d.ready && d.mine));
       if (cur) pickWeek(cur.no, true);
-    } else {
+    } else if (mode === "lecture") {
       const days = lectures();
       Q.day = days.some((d) => d.day_key === Q.day) ? Q.day : (days[0] || {}).day_key || "";
     }
@@ -300,11 +300,12 @@
   function qScope() {
     const e = Q.mode === "next" ? nextExam(Q.opts) : null;
     const day = Q.mode === "lecture" ? lectures().find((d) => d.day_key === Q.day) : null;
-    return { kind: "quiz", weeks: day ? [day.week] : [...Q.weeks].sort((a, b) => a - b), files: day ? [] : [...Q.files],
-      days: day ? [day.day_key] : [...Q.days], picked: true, focus: e ? e.name : "", los: e ? e.los : [], questions: Q.count,
-      qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "" };
+    const weak = Q.mode === "weak";             // (the files and lectures of the missed questions: practice.weak_scope)
+    return { kind: "quiz", weeks: day ? [day.week] : weak ? [] : [...Q.weeks].sort((a, b) => a - b), files: day || weak ? [] : [...Q.files],
+      days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", los: e ? e.los : Q.los || [], questions: Q.count,
+      qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "", ...(weak ? { weak: true } : {}) };
   }
-  async function quizDialog(cid) {
+  async function quizDialog(cid, preset) {     // preset: {mode, los, topics} (mistakes.js: "My weak spots", "Quiz this LO")
     const courses = S.courses.filter((c) => c.code);
     cid = cid || S.view.courseId || (courses[0] || {}).id;
     if (!cid) { toast(t("Sync your courses first."), "error"); return; }
@@ -316,14 +317,16 @@
     if (!Q || Q.cid !== cid) return;
     if (!r.ok) { toast(r.error, "error"); closeModal(); return; }
     Q.opts = r; Q.model = r.model || "sonnet";
-    setMode(nextExam(r) ? "next" : "weeks");
+    const pre = preset || {}, weak = St.mistakes && (pre.mode === "weak" ? (r.weak || {}).missed > 0 : !pre.los && St.mistakes.weakFirst(r));
+    setMode(weak ? "weak" : nextExam(r) ? "next" : "weeks");
+    if (pre.los) { Q.los = pre.los; Q.topics = pre.topics || ""; }
     drawQuiz(); estimateQuiz();
   }
   function quizCost() {
     const e = Q.est, ai = Q.opts.ai || {};
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Quizzes need ChatGPT or Claude (the offline model is too small for them).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
     const sc = qScope();
-    if (!sc.files.length && !sc.days.length) return `<span class="dim">${t("Pick at least one file or lecture.")}</span>`;
+    if (!sc.files.length && !sc.days.length && !sc.weak) return `<span class="dim">${t("Pick at least one file or lecture.")}</span>`;
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     const more = St.effortCostNote ? St.effortCostNote(e, { kind: "quiz", effort: Q.effort }) : "";    // (a heavy level's note)
     const big = e.main_input + e.main_output >= 40000;        // (a midterm's eight weeks: about 70k)
@@ -336,9 +339,10 @@
     const old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
     const mode = (k, title, desc, ok = true) => `<button type="button" class="cp-mode ${Q.mode === k ? "on" : ""}" data-act="qz-mode" data-val="${k}" ${ok ? "" : "disabled"}><span class="cp-mode-t">${title}</span><span class="cp-mode-d">${desc}</span></button>`;
     const los = e && e.los.length ? ` · LO${e.los.join(", LO")}` : "";
-    const modes = `<div class="cp-modes">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
+    const weakBtn = St.mistakes ? St.mistakes.weakModeBtn(Q, mode) : "";            // "My weak spots" (mistakes.js)
+    const modes = `<div class="cp-modes ${weakBtn ? "four" : ""}">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
       ${mode("weeks", esc(t("Weeks you pick")), esc(t("Their files and lectures")))}
-      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}</div>`;
+      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}${weakBtn}</div>`;
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="qz-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
@@ -347,14 +351,14 @@
         ${w.files.map((f) => item("file", f.id, Q.files.has(f.id), f.ready, f.name, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : f.downloaded ? t("not read yet") : t("not on this PC"))).join("")}
         ${w.days.filter((d) => d.mine || Q.days.has(d.day_key)).map((d) => item("day", d.day_key, Q.days.has(d.day_key), d.ready, `${d.label} · ${d.kind}`, d.ready ? t("transcribed") : t("not transcribed"))).join("")}
         ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("");
-    const where = Q.mode === "lecture"
+    const where = Q.mode === "weak" ? St.mistakes.weakWhere(r) : Q.mode === "lecture"
       ? `<div class="field"><label>${t("Which lecture?")}</label><select class="input" data-act="qz-day">${lectures().map((d) => `<option value="${esc(d.day_key)}" ${d.day_key === Q.day ? "selected" : ""}>${esc(t("Week {n}", { n: d.week }))} · ${esc(d.label)} · ${esc(d.kind)}</option>`).join("")}</select></div>`
       : `<div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: Q.weeks.size })}</span></label>
           <div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${Q.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="qz-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
         ${picked.length ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(Q.files.size, "{n} file", "{n} files")} · ${t.n(Q.days.size, "{n} lecture", "{n} lectures")}</span></label><div class="pk-material">${material}</div></div>` : ""}`;
     const kinds = [["mixed", t("Mixed")], ["mc", t("Multiple choice")], ["short", t("Short answers")], ...(r.quant ? [["problems", t("Worked problems")]] : [])];
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
-    const sc = qScope(), ready = (sc.files.length || sc.days.length) && canAI() && !Q.starting;
+    const sc = qScope(), ready = (sc.files.length || sc.days.length || sc.weak) && canAI() && !Q.starting;
     modal(`<div class="cp-scroll">
       <h2>${I("list-checks")} ${t("New practice quiz")}</h2>
       <p class="pk-lead">${t("Exam-style questions from your course material: multiple choice with why each wrong answer is wrong, short answers, and worked problems for maths and engineering. Every question says where it comes from.")}</p>
@@ -381,7 +385,7 @@
     Q.est = null;
     const box = $("#qz-cost"); if (box) box.innerHTML = quizCost();
     const sc = qScope();
-    if (!sc.files.length && !sc.days.length) return;
+    if (!sc.files.length && !sc.days.length && !sc.weak) return;
     const asked = Q;
     estTimer = setTimeout(async () => {
       const r = await call("quiz_estimate", asked.cid, sc);
@@ -395,7 +399,8 @@
   async function playQuiz(id, only) {
     const r = await call("quiz_get", id);
     if (!r.ok) { toast(r.error, "error"); return; }
-    const quiz = r.quiz, qs = ((quiz.result || {}).questions) || [];
+    const quiz = r.quiz, all = ((quiz.result || {}).questions) || [], off = new Set((quiz.result || {}).removed || []);
+    const qs = all.filter((q) => !off.has(q.n));                 // (not the ones removed: mistakes.js)
     if (!qs.length) { toast(t("This quiz has no questions."), "error"); return; }
     const kept = runOf(id), resume = kept && !kept.saved && !only;
     if (P.run && P.run.id !== id && inProgress(P.run)) P.runs[P.run.id] = P.run;     // the one left: kept for its Continue
@@ -403,7 +408,7 @@
     if (resume) P.run = kept;
     else {
       const pick = only && only.length ? qs.filter((q) => only.includes(q.n)) : qs;
-      P.run = { id, cid: quiz.course_id, order: pick.map((q) => qs.indexOf(q)), pos: only && only.length ? 0 : -1, answers: {},
+      P.run = { id, cid: quiz.course_id, order: pick.map((q) => all.indexOf(q)), pos: only && only.length ? 0 : -1, answers: {},
         picked: null, checked: false, text: "", only: only || [], started: new Date().toISOString(), saved: false };
     }
     P.run.quiz = quiz; P.run.attempts = r.attempts || [];
@@ -488,19 +493,20 @@
       <div class="actions">${acts}</div></div>`;
   }
   function endHTML(R) {
-    const qs = R.quiz.result.questions, ids = R.order.map((i) => qs[i].n);
+    const qs = R.quiz.result.questions, ids = R.order.map((i) => qs[i].n), off = new Set(R.quiz.result.removed || []);
     const got = ids.reduce((s, n) => s + ((R.answers[n] || {}).got || 0), 0);
-    const missed = ids.filter((n) => ((R.answers[n] || {}).got || 0) < 1);
+    const missed = ids.filter((n) => ((R.answers[n] || {}).got || 0) < 1 && !off.has(n));
     const share = ids.length ? got / ids.length : 0;
     const say = share >= 0.9 ? t("Excellent: you know this well.") : share >= 0.6 ? t("Good. Go over the ones you missed, then try them again.")
       : t("Keep going: read the sources of the ones you missed, then try them again.");
     const rows = R.order.map((i) => {
       const q = qs[i], a = R.answers[q.n] || {}, g = a.got || 0;
+      if (St.mistakes) return St.mistakes.endRow(R, q);       // (opens: your answer, the right one, where it was taught)
       const first = String(q.q).split("\n")[0];                            // its first line, formulas drawn
       return `<li class="${g >= 1 ? "ok" : g > 0 ? "half" : "no"}">${I(g >= 1 ? "check" : g > 0 ? "minus" : "x", "sm")}<span class="qz-res-t md">${mdLine(first)}</span></li>`;
     }).join("");
     return `<div class="qz qz-end"><h2>${I("check-circle")} ${esc(t("You got {score} of {total}", { score: score(got), total: ids.length }))} <span class="dim">${t.pct(share)}</span></h2>
-      <p class="lead">${esc(say)}</p><ol class="qz-results">${rows}</ol>
+      <p class="lead">${esc(say)}</p>${St.mistakes ? `<p class="dim sm">${esc(t("Open a question to see your answer beside the right one, and where it was taught."))}</p>` : ""}<ol class="qz-results">${rows}</ol>
       ${R.saved ? "" : `<p class="dim sm">${SPIN()} ${t("Saving…")}</p>`}
       <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button>
         ${missed.length ? `<button class="btn primary" data-act="qz-retry" data-id="${esc(R.id)}" data-only="${missed.join(",")}" autofocus>${I("retry", "sm")} ${esc(t.n(missed.length, "Try {n} missed question", "Try {n} missed questions"))}</button>` : ""}</div></div>`;
@@ -517,11 +523,13 @@
   }
   async function saveRun(R) {
     R.saving = true;
-    const answers = R.order.map((i) => { const q = R.quiz.result.questions[i], a = R.answers[q.n] || {}; return { n: q.n, got: a.got || 0, chose: a.chose ?? null, skipped: !!a.skipped }; });
+    // each answer with what was typed and who marked it (practice.MARKS: the app checks a choice; "I got it" is yours)
+    const answers = R.order.map((i) => { const q = R.quiz.result.questions[i], a = R.answers[q.n] || {}; return { ...a, n: q.n, got: a.got || 0, chose: a.chose ?? null, skipped: !!a.skipped, text: a.text || "", mark: a.mark || (q.type === "mc" ? "app" : "self") }; });
     const r = await call("quiz_attempt", R.id, { answers, only: R.only, started_at: R.started });
     R.saving = false;
     if (!r.ok) { toast(r.error, "error"); return; }
     R.saved = true;
+    if (St.mistakes) St.mistakes.saved(R, r);                   // (its missed questions joined the cards: Undo)
     if (P.run === R && R.pos >= R.order.length && $("#overlay .qz-end")) drawRun();
     refresh(R.cid);
   }
@@ -552,9 +560,11 @@
         <div class="actions"><button class="btn primary" data-act="fc-close" autofocus>${t("Close")}</button></div></div>`);
       return;
     }
+    // a missed multiple-choice question: asked with its options, marked by the app (mistakes.js)
+    if (St.mistakes && St.mistakes.isMC(c)) { modal(St.mistakes.studyHTML(X, c, code)); $(".modal").classList.add("fc-modal"); math(); return; }
     const left = X.queue.length - X.pos, nx = c.next || {};
     const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${esc(ivl(nx[g] || 0))}</span></button>`;
-    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span></div>
+    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
       <div class="fc-q md">${md(c.q)}</div>
       ${X.shown ? `<div class="fc-a md">${md(c.a)}</div>` : `<div class="fc-hint dim sm">${t("Think of the answer, then show it.")}</div>`}
@@ -668,6 +678,7 @@
     const onButton = tgt.tagName === "BUTTON";       // (Enter and Space on a button press it already)
     if (m.querySelector(".fc-study") && P.study && !typing) {
       const X = P.study;
+      if (St.mistakes && St.mistakes.studyKey(e, X)) return;       // (a missed multiple-choice question's keys)
       if (!X.shown && (e.key === " " || e.key === "Enter") && !onButton) { e.preventDefault(); X.shown = true; drawStudy(); }
       else if (X.shown && ["1", "2", "3", "4"].includes(e.key)) { e.preventDefault(); gradeCard(["again", "hard", "good", "easy"][+e.key - 1]); }
       return;
@@ -683,7 +694,8 @@
   });
 
   // ------------------------------------------------------------------ wiring
-  St.practice = { tab, homeNote, tabCount, load: loadCourse };
+  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, gradeCard, drawStudy,
+    showRun: (R) => { P.run = R; drawRun(); St.onModalClose = () => { if (onTab(R.cid)) renderView(); }; } };   // (mistakes.js)
   St.views.practice = practiceView;
   St.crumbs.practice = () => `${I("target")} ${t("Practice")}`;
   St.onGo.practice = () => loadSummary(true);

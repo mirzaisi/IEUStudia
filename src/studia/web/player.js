@@ -6,8 +6,9 @@
  * typing); it goes on where you stopped (per lecture, on this PC; else where Panopto last had you); "Open in Panopto
  * at this moment". The sound-only podcast shows the screens as its picture; the copy on this PC plays when Panopto
  * can't be reached. Opened by Play on a lecture's transcript page (app.js), from a search hit, and by
- * Studia.player.open(dayKey, part, seconds) (the screens' "Play from here"). Plugs in through window.Studia as the
- * "player" view. */
+ * Studia.player.open(dayKey, part, seconds) (the screens' "Play from here"). A clip: open(dayKey, part, seconds,
+ * {until, back: {label, run}}) stops by itself at "until" and offers the way back (a quiz's results: mistakes.js);
+ * Back runs it too. Plugs in through window.Studia as the "player" view. */
 (function () {
   "use strict";
   const St = window.Studia;
@@ -48,11 +49,14 @@
   const isAudio = (p) => !!p.info && (p.info.kind === "audio" || p.noPicture);
 
   // ------------------------------------------------------------------ open and close
-  async function open(dayKey, part, seconds) {
+  async function open(dayKey, part, seconds, opts) {
     if (!dayKey) return;
     const at = seconds == null || seconds === "" || !isFinite(+seconds) ? null : Math.max(0, +seconds);
     part = +part || 0;
+    const clip = opts && isFinite(+opts.until) && at != null ? { from: at, until: +opts.until, back: opts.back || null, ended: false } : null;
     if (P && P.dayKey === dayKey && S.view.name === "player") {          // this lecture is open: there, or its other part
+      P.clip = clip;
+      drawClip();
       if (!part || part === P.part) { if (at != null) jump(at); return; }
       if (!partOf({ day: P.day, part })) return;
       keep(P);
@@ -65,7 +69,7 @@
     const from = S.view.name === "player" ? S.view.from : { ...S.view, scroll: ($("#view") || {}).scrollTop || 0 };
     stop();
     const p = P = { dayKey, part: part || +store.get(`studia-play-part:${dayKey}`) || 1, at, day, info: null, screens: [],
-      paras: [], cur: -1, scr: -1, loading: true, error: "", userAt: 0, savedAt: 0, retried: false, video: makeVideo() };
+      paras: [], cur: -1, scr: -1, loading: true, error: "", userAt: 0, savedAt: 0, retried: false, video: makeVideo(), clip };
     p.watch = setInterval(watch, 1000);
     St.go({ name: "player", dayKey, from });
     if (!p.day) {
@@ -231,6 +235,8 @@
     }
     const k = Math.max(0, lastAtOrBefore(p.screens, sec + 0.3, "t0"));
     if (p.screens.length && k !== p.scr) { p.scr = k; drawScreen(); }
+    const c = p.clip;                    // a clip: it stops by itself at its end, once
+    if (c && !c.ended && !c.free && sec >= c.until) { c.ended = true; p.video.pause(); drawClip(); }
     if (p.info && p.info.kind === "video" && !p.soundChecked && sec - (p.startedAt ?? sec) > 3) soundCheck(p);
     if (p.startedAt == null && !p.video.paused) p.startedAt = sec;
     if (now() - p.savedAt > 5000 && !p.video.paused) keep(p);
@@ -257,6 +263,20 @@
     if (el) el.innerHTML = screenHTML(P);
     const pic = $("#lp-pic");
     if (pic) pic.outerHTML = pictureHTML(P);
+  }
+  function clipHTML(p) {               // above the video: what the clip is, and the way back
+    const c = p && p.clip;
+    if (!c) return "";
+    const range = `${clock(c.from)}–${clock(c.until)}`;
+    const back = c.back ? `<button class="btn primary sm" data-act="lp-clip-back">${I("arrow-left", "sm")} ${esc(c.back.label || t("Back"))}</button>` : "";
+    if (c.free) return back ? `<span class="grow"></span>${back}` : "";
+    return c.ended ? `${I("check-circle", "sm")}<span class="grow">${esc(t("That was the part where it was taught ({range}).", { range }))}</span><button class="btn sm" data-act="lp-clip-more">${I("play", "sm")} ${esc(t("Keep playing"))}</button>${back}`
+      : `${I("target", "sm")}<span class="grow">${esc(t("Playing the part where it was taught ({range}). It stops by itself.", { range }))}</span>${back}`;
+  }
+  function drawClip() {
+    const el = $("#lp-clip"), html = clipHTML(P);
+    if (el && html) el.innerHTML = html;
+    else if (!!el !== !!html && P && S.view.name === "player") St.renderView();
   }
   function jump(sec, play = true) {
     const p = P;
@@ -339,7 +359,8 @@
     const side = !p.error && p.screens.length > 0;            // (sound only: the slide is the picture, its words here)
     const rate = p.video && p.info ? p.video.playbackRate || speed() : speed();
     const ready = !!p.info && !p.error;
-    return `<div class="lp no-math">
+    const clip = clipHTML(p);
+    return `<div class="lp no-math">${clip ? `<div class="lp-clip" id="lp-clip" role="status">${clip}</div>` : ""}
       <div class="lp-top ${side ? "" : "solo"}">
         <div class="lp-stage ${isAudio(p) ? "audio" : ""} ${p.error ? "failed" : ""}" id="lp-stage">${stageHTML(p)}</div>
         ${side ? `<div class="lp-screen" id="lp-screen" aria-live="polite">${screenHTML(p)}</div>` : ""}
@@ -455,15 +476,25 @@
     "lp-back": () => {                  // back where you came from; the transcript at the moment you were at
       const p = P, v = p && p.video, part = p && partOf(p);
       const at = v && isFinite(v.currentTime) && v.currentTime > 0 ? v.currentTime : null;
-      const f = S.view.from;
+      const f = S.view.from, then = p && p.clip && p.clip.back && p.clip.back.run;     // (a clip's way back: its results)
       stop();
       if (f && f.name === "day" && St.openDay) {
         S.view = f;
         St.openDay(f.dayKey, false, at != null && part ? { t: at, id: part.id } : null);
-        return;
+      } else {
+        St.go({ ...(f || { name: "home" }), jumpWeek: false });
+        if (f && f.scroll) { const view = $("#view"); if (view) view.scrollTo({ top: f.scroll, behavior: "instant" }); }
       }
-      St.go({ ...(f || { name: "home" }), jumpWeek: false });
-      if (f && f.scroll) { const view = $("#view"); if (view) view.scrollTo({ top: f.scroll, behavior: "instant" }); }
+      if (typeof then === "function") then();
+    },
+    "lp-clip-back": () => A["lp-back"](),
+    "lp-clip-more": () => {             // the clip ended: on from there, its way back kept
+      const p = P;
+      if (!p || !p.clip) return;
+      p.clip.free = true;
+      drawClip();
+      const go = p.video && p.video.play();
+      if (go && go.catch) go.catch(() => {});
     },
     "lp-hit": (el) => {                 // Play beside a moment of a lecture in the search results
       const it = (S.search.items || [])[+el.dataset.i], m = it && (it.moments || [])[+el.dataset.m];
