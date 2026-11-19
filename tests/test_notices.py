@@ -156,6 +156,7 @@ globalThis.katex = require(web + "/vendor/katex/katex.min.js");
 require(web + "/math.js");
 const St = globalThis.Studia;
 St.aiName = () => "Claude";            // the error names the AI that failed: that one is said
+St.S.system.ai = { ...St.S.system.ai, available: true };    // (set up: Try again is offered only while the AI can answer)
 const out = {};
 out.md = cases.md.map(([s, o]) => LSRender.md(s, o || {}));
 out.chat = cases.chat.map(([m, last]) => St.chatNotices(m, last));

@@ -246,6 +246,32 @@ def test_a_review_sheet_needs_something_to_read_and_doesn_t_offer_an_exam_that_i
 
 
 @node
+def test_a_failed_answer_offers_try_again_only_while_the_ai_can_answer(tmp_path):
+    """With the AI turned off, an old chat's failed '/quiz 5' still had a primary Try again; pressing it replaced
+    the answer's own reason with 'AI isn't set up on this PC'."""
+    import test_notices as tn
+
+    script = tn.SCRIPT.split("const out = {};")[0] + """
+const out = {};
+const failed = { seq: 4, role: "assistant", status: "error", text: "", usage: { error: "Claude couldn't finish." } };
+St.S.system.ai = { available: false, provider: "none" };
+out.off = St.chatNotices(failed, true).error;
+St.S.system.ai = { available: true, provider: "claude" };
+out.on = St.chatNotices(failed, true).error;
+console.log(JSON.stringify(out));
+"""
+    f = tmp_path / "notices.js"
+    (tmp_path / "cases.json").write_text("{}", encoding="utf-8")
+    f.write_text(script % {"web": json.dumps(tn.WEB.as_posix()), "cases": json.dumps((tmp_path / "cases.json").as_posix())},
+                 encoding="utf-8")
+    r = subprocess.run(["node", str(f)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert 'data-act="chat-retry"' not in out["off"] and "Claude couldn" in out["off"]     # (its reason stays)
+    assert 'data-act="chat-retry"' in out["on"]
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

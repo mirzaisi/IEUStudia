@@ -1653,7 +1653,7 @@
     const line = streaming && m.text && m.wait && Studia.waitLine ? Studia.waitLine(m.wait) : "";
     const foot = streaming ? (waiting ? "" : line ? `<span class="dim">${SPIN()} ${line}</span>` : `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`)
       : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${reading.foot}${m.text && !acts.noCopy ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
-    const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
+    const retry = isLast && (S.system.ai || {}).available !== false ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
     const err = m.status === "error" ? notes.error || `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${notes.before || ""}${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
   }

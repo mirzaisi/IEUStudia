@@ -120,7 +120,8 @@
     const u = m.usage || {}, answered = answeredBy(u);
     const before = listHTML((u.notices || []).map((n, i) => chatNotice(n, m.seq, i, answered)).filter(Boolean));
     if (m.status !== "error") return { before };
-    const again = isLast ? { label: t("Try again"), icon: "retry", primary: true, act: "chat-retry", data: { seq: m.seq } } : null;
+    // (with the AI off it can't work, and pressing it replaced the answer's own reason with "AI isn't set up")
+    const again = isLast && ((S.system || {}).ai || {}).available !== false ? { label: t("Try again"), icon: "retry", primary: true, act: "chat-retry", data: { seq: m.seq } } : null;
     return { before, error: noticeHTML(explain(u.error || "", again, answered)) };
   };
 
