@@ -2896,7 +2896,7 @@
     if (!el) return;
     // dropdowns act on "change" only: handling their click re-rendered the page and closed the list
     if (el.tagName === "SELECT" || el.tagName === "OPTION") return;
-    if (el.tagName === "INPUT" && el.type !== "button" && !["sel", "sel-day", "set-bool", "cl-slides", "cp-day", "cp-slides", "draft-slides", "pd-week", "plan-mark", "cu-pick", "cu-mats", "rd-read", ...(Studia.inputActs || [])].includes(el.dataset.act)) return;
+    if (el.tagName === "INPUT" && el.type !== "button" && !["sel", "sel-day", "set-bool", "cl-slides", "cp-day", "cp-slides", "draft-slides", "pd-week", "plan-mark", "cu-pick", "cu-mats", ...(Studia.inputActs || [])].includes(el.dataset.act)) return;
     if (el.dataset.aiOff) { aiOffAsk(el.dataset.aiOff === "plans"); return; }        // an AI button without its AI (aiBtn)
     if (el.dataset.why) { toast(el.dataset.why, "info"); return; }                   // greyed out for another reason (whyOff)
     const fn = A[el.dataset.act];
