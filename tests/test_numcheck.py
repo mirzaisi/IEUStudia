@@ -85,6 +85,19 @@ def test_complex_results_and_polar_form():
     assert nc.parse_quantity("2∠1.5708 rad").value == pytest.approx(2j, abs=1e-4)
 
 
+@pytest.mark.parametrize("text", ["$\\mathbf{V}_C = -j5\\angle 0^\\circ$ V", "$\\mathbf{I} = j2\\angle 30^\\circ$ A",
+                                  "(3+4j)∠30°", "-j5∠0° V", "3 km^400", "3 mm^-400"])
+def test_a_complex_magnitude_or_a_huge_unit_power_is_no_result_not_an_error(text):
+    """A complex magnitude in polar form raised "not a real number" and "km^400" an OverflowError, through
+    quizzes.clean_quiz: the whole quiz was lost after it was paid for."""
+    assert nc.parse_quantity(text) is None
+    assert nc.unit("km^400") is None and nc.unit("mm^-400") is None
+    nc.stated(text)                                                                    # (no error)
+    assert "numeric" not in nc.check_key({"type": "problem", "model": text})
+    nc.check_key({"type": "problem", "model": text, "check": {"expr": "3", "unit": "km"}})
+    nc.check_key({"type": "short", "model": "3 km", "check": {"expr": "3", "unit": "km^400"}})
+
+
 @pytest.mark.parametrize("text", ["x = 2, y = 3", "x1 = 2; x2 = 3", "x = 2 or x = -3", "x = 2 ve y = 3", "±2", "2, 3",
                                   "2 and 3", "f(x) = 3x^2 + 2", "about 8 V", "The current is 2.5 mA.", "", "   ",
                                   "1,5,3", "$\\alpha$", "1500 rpm", "8 bananas"])

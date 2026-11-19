@@ -252,7 +252,10 @@ def unit(label: str, known: tuple[str, ...] = ()) -> Optional[Unit]:
             power = int(m.group(2) or 1) * (-1 if k else 1)
             if b[0]:
                 dims[b[0]] = dims.get(b[0], 0) + power
-            factor *= b[1] ** power
+            try:
+                factor *= b[1] ** power
+            except OverflowError:                      # ("km^400": no unit anyone writes)
+                return None
     return Unit(tuple(sorted((u, p) for u, p in dims.items() if p)), factor, s)
 
 
@@ -407,10 +410,10 @@ def _polar(s: str, known: tuple[str, ...]) -> Optional[tuple[Num, Optional[Unit]
     if m.group(3).strip() and u is None:
         return None
     try:
-        r, a = evaluate(mag), float(m.group(1))
+        r, a = _real(evaluate(mag)), float(m.group(1))       # (a complex magnitude, "-j5∠0°": not one it reads)
     except ValueError:
         return None
-    return _tidy(_real(r) * cmath.exp(1j * (a if m.group(2) == "rad" else a * _DEG))), u
+    return _tidy(r * cmath.exp(1j * (a if m.group(2) == "rad" else a * _DEG))), u
 
 
 def _quantity(s: str, known: tuple[str, ...]) -> Optional[Quantity]:
@@ -608,13 +611,17 @@ def check_key(q: dict[str, Any]) -> dict[str, Any]:
     q.pop("numeric", None)
     if q.get("type") not in ("short", "problem"):
         return q
-    state = verify(q.get("check"), q.get("model")) if q.get("check") else ""
-    if state == "ok":
-        q["verified"] = True
-    elif state == "bad":
-        q["unverified"] = True
-    if reference(q) is not None:
-        q["numeric"] = True
+    try:
+        state = verify(q.get("check"), q.get("model")) if q.get("check") else ""
+        if state == "ok":
+            q["verified"] = True
+        elif state == "bad":
+            q["unverified"] = True
+        if reference(q) is not None:
+            q["numeric"] = True
+    except (ValueError, ArithmeticError):             # a key it can't read: the student marks it, the quiz stays
+        for k in ("verified", "unverified", "numeric"):
+            q.pop(k, None)
     return q
 
 

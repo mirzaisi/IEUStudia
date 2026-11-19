@@ -60,6 +60,21 @@ def test_the_check_is_kept_and_the_key_confirmed_or_flagged():
     assert (cov["checked"], cov["unconfirmed"]) == (2, 1)
 
 
+def test_a_key_the_app_cannot_read_leaves_the_quiz_whole(monkeypatch):
+    """A phasor answer ("-j5∠0° V") raised "not a real number" in clean_quiz: the paid quiz, a resume and a pasted
+    quiz were all lost. Such a key is left for the student to mark; any other error in checking one is too."""
+    facts = {"files": [], "lectures": []}
+    phasor = {**GOOD, "question": "Find the capacitor's phasor voltage.",
+              "answer": "$\\mathbf{V}_C = -j5\\angle 0^\\circ$ V", "check": {"expr": "-5j", "unit": "V"}}
+    huge = {**GOOD, "question": "How far is it, in km^400?", "answer": "3 km^400", "check": None}
+    qs = quizzes.clean_quiz({"questions": [GOOD, phasor, huge]}, facts)
+    g, p, k = qs["questions"]
+    assert g["verified"] and "verified" not in p and "numeric" not in k
+    monkeypatch.setattr(numcheck, "verify", lambda *a: (_ for _ in ()).throw(OverflowError("odd")))
+    q = numcheck.check_key({**GOOD, "model": GOOD["answer"]})
+    assert not {"verified", "unverified", "numeric"} & set(q)
+
+
 def test_a_repaired_key_replaces_the_old_one_only_when_the_app_confirms_it():
     facts = {"files": [], "lectures": []}
     qs = quizzes.clean_quiz({"questions": [BAD, {**BAD, "question": "Another power question, 20 mA through 1 kΩ?",
