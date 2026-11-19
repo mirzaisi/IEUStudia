@@ -291,7 +291,7 @@
     if (onMaterial) onMaterial(e);
     if (S.view.name === "exam" && ER.room && ER.room.material.files.some((f) => f.id === e.id)) { if (e.state === "done") reloadSoon(); else renderView(); }
   };
-  St.onStudied = (cid) => { if (cid === ER.cid) reloadSoon(); };          // a flashcard sitting ended (practice.js)
+  St.onPracticed = (cid) => { if (cid === ER.cid) reloadSoon(); };        // a flashcard sitting or a quiz try ended (practice.js)
   const onPlan = St.onEvents.plan;
   St.onEvents.plan = (e) => { if (onPlan) onPlan(e); if (e && ["done", "error", "queued", "paused"].includes(e.status)) reloadSoon(); };
 
