@@ -7,6 +7,7 @@
 .ck-final label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
 .ck-final .input { flex: 1 1 200px; max-width: 340px; font-variant-numeric: tabular-nums; }
 .ck-final .dim { flex-basis: 100%; }
+.ck-final .dim .md { font-size: inherit; line-height: inherit; }   /* (the result's name: the line's own size) */
 .ck-verdict { margin-bottom: 8px; }
 .ck-mine { font-size: 13px; overflow-wrap: anywhere; }
 .ck-unknown { display: flex; gap: 6px; align-items: flex-start; margin: 10px 0 8px; font-size: 13px; color: var(--text-2); }
