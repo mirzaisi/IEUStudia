@@ -526,8 +526,8 @@ def _ranges(text: str) -> str:
         return m.group(0) if re.search(r"\d\s*\.?\s*[-–]\s*$", text[:m.start()]) else f"1-{m.group(1)}"
 
     def chain(m: re.Match) -> str:                     # "weeks 3 and 5 and week 7" → "weeks 3 and 5 and 7"
-        head = re.match(r"weeks?\s*\d{1,2}", m.group(0)).group(0)
-        return "weeks" + head[4:].lstrip("s") + re.sub(r"(?:the\s+)?weeks?\s*(?=\d)", "", m.group(0)[len(head):])
+        first = re.match(r"weeks?\s*(\d{1,2})", m.group(0))
+        return f"weeks {first.group(1)}" + re.sub(r"(?:the\s+)?weeks?\s*(?=\d)", "", m.group(0)[first.end():])
 
     def before(m: re.Match, form: str) -> str:         # "before week 8" → weeks 1 to 7 (not "before week 1")
         n = int(m.group(1))
