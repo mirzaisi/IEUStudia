@@ -2357,7 +2357,8 @@ class Api(PracticeApi):
                           "exam": w["exam"], "files": len(mats),
                           "files_ready": sum(1 for m in mats if m["downloaded"] and m["text"] == "done"),
                           "missing": [m["id"] for m in mats if not m["downloaded"]],
-                          "students": [m["id"] for m in mats if m["downloaded"] and left_out(self._s.lib, m["id"])],
+                          "students": [{"id": m["id"], "name": m["file_name"] or m["title"]} for m in mats
+                                       if m["downloaded"] and left_out(self._s.lib, m["id"])],   # (class lists: left out)
                           "lectures": len(own), "lectures_done": sum(1 for x in own if x["any_done"]),
                           "todo_days": [x["day_key"] for x in own if not x["transcribed"]]})
         return {"ok": True, "course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks,

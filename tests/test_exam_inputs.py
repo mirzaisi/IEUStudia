@@ -162,7 +162,8 @@ def test_a_class_list_is_kept_away_from_every_ai_tool(course, tmp_path):
     # the dialogs mark it, so it isn't ticked
     week7 = next(w for w in course.quiz_options("c")["weeks"] if w["no"] == 7)
     assert {x["id"]: x["students"] for x in week7["files"]} == {"w7": False, "g7": True}
-    assert next(w for w in course.plan_options("c")["weeks"] if w["no"] == 7)["students"] == ["g7"]
+    assert next(w for w in course.plan_options("c")["weeks"] if w["no"] == 7)["students"] == \
+        [{"id": "g7", "name": "Lab Grades.pdf"}]
     # "Include anyway"
     assert course.students_include("g7")["ok"]
     f = studypack.gather(lib, s, "c", Scope(kind="quiz", weeks=[7]))

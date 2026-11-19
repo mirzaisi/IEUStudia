@@ -1,0 +1,13 @@
+{
+  "_unit": "4.2.0: the inputs of every exam tool (course-wide and announcement files in the pickers, class lists kept away from the AI with Include anyway)",
+  "Course-wide and announcement files": "Ders geneli ve duyuru dosyaları",
+  "Tick the ones you want.": "İstediklerini işaretle.",
+  "From an announcement, week {n}": "Bir duyurudan, {n}. hafta",
+  "Left out: it lists students": "Eklenmiyor: öğrenci listesi",
+  "Include anyway": "Yine de ekle",
+  "Include this file?": "Bu dosya eklensin mi?",
+  "{name} seems to list students by their numbers (grades or groups). Your classmates' details shouldn't go to the AI. Include it only if it isn't a class list.": "{name} öğrencileri numaralarıyla listeliyor gibi görünüyor (notlar ya da gruplar). Sınıf arkadaşlarının bilgileri yapay zekaya gitmemeli. Yalnızca bir sınıf listesi değilse ekle.",
+  "This file": "Bu dosya",
+  "Lists of students, kept away from the AI: {list}": "Yapay zekaya gönderilmeyen öğrenci listeleri: {list}",
+  "{name} isn't sent: it lists students by number.": "{name} gönderilmiyor: öğrencileri numaralarıyla listeliyor."
+}

@@ -55,6 +55,7 @@
     const pick = [cur, ...[...r.weeks].reverse().filter((w) => w.past)].find((w) => w && has(w))
       || cur || [...r.weeks].reverse().find((w) => w.past) || r.weeks[0];
     if (pick) pickWeek(pick.no, true);
+    if (St.picks) St.picks.live({ state: () => P, open: dialogOpen, redraw: () => { readInputs(); draw(); estimate(); } });   // (Include anyway)
     draw();
     estimate();
   }
@@ -69,7 +70,7 @@
     const w = P.opts.weeks.find((x) => x.no === no); if (!w) return;
     if (on) P.weeks.add(no); else P.weeks.delete(no);
     const kept = new Set(P.opts.weeks.filter((x) => P.weeks.has(x.no)).flatMap((x) => x.files.map((f) => f.id)));   // a unit for two weeks
-    w.files.forEach((f) => { if (on && f.ready) P.files.add(f.id); else if (!on && !kept.has(f.id)) P.files.delete(f.id); });
+    w.files.forEach((f) => { if (on && f.ready && !f.students) P.files.add(f.id); else if (!on && !kept.has(f.id)) P.files.delete(f.id); });
     w.days.forEach((d) => { if (on && d.ready && d.mine) P.days.add(d.day_key); else if (!on) P.days.delete(d.day_key); });
   }
   function costHTML() {
@@ -98,10 +99,12 @@
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="pk-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
         ${I(kind === "file" ? "file-text" : "video", "sm")}<span class="grow">${esc(label)}</span><span class="dim sm">${sub}</span></label>`;
+    const pk = St.picks, sub = (f, s) => (pk ? pk.fileSub(f, s) : s);       // (picks.js: a class list's mark)
     const material = picked.map((w) => `<div class="pk-week"><div class="pk-week-h">${t("Week {n}", { n: w.no })} <span class="dim">${esc(w.topic || "")}</span></div>
-        ${w.files.map((f) => item("file", f.id, P.files.has(f.id), f.ready, f.name, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : P.fetching.has(f.id) ? t("downloading…") : f.downloaded ? t("not read yet") : t("not on this PC"))).join("")}
+        ${w.files.map((f) => item("file", f.id, P.files.has(f.id), f.ready && !f.students, f.name, sub(f, f.ready ? t.n(f.pages, "{n} page", "{n} pages") : P.fetching.has(f.id) ? t("downloading…") : f.downloaded ? t("not read yet") : t("not on this PC")))).join("")}
         ${w.days.filter((d) => d.mine || P.days.has(d.day_key)).map((d) => item("day", d.day_key, P.days.has(d.day_key), d.ready, `${d.label} · ${d.kind}`, d.ready ? t("transcribed") : silent(d) ? t("no speech on Panopto") : t("not transcribed"))).join("")}
-        ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("");
+        ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("")
+      + (pk ? pk.groupHTML(r, P.files, "pk-item", P.fetching) : "");           // course-wide and announcement files
     modal(`<div class="cp-scroll">
       <h2>${heading()}</h2>
       <p class="pk-lead">${sheet() ? t("Every formula, definition, rule, unit and standard method of the material you pick, on one or two A4 pages for a few weeks: grouped by topic, with what the symbols mean and when each one applies. Read it here or save it as a PDF.")
@@ -109,7 +112,7 @@
       <div class="field"><label>${t("Course")}</label><select class="input" data-act="pk-course">${courses.map((c) => `<option value="${esc(c.id)}" ${c.id === P.courseId ? "selected" : ""}>${esc(c.code)} — ${esc(c.display_name)}</option>`).join("")}</select></div>
       <div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: P.weeks.size })}</span></label>
         <div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${P.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="pk-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
-      ${picked.length ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(P.files.size, "{n} file", "{n} files")} · ${t.n(P.days.size, "{n} lecture", "{n} lectures")}</span></label>
+      ${material ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(P.files.size, "{n} file", "{n} files")} · ${t.n(P.days.size, "{n} lecture", "{n} lectures")}</span></label>
         <div class="pk-material">${material}</div></div>` : ""}
       ${missing.length || todo.length ? `<div class="pd-gaps">
         ${missing.length ? `<div class="pd-gap">${I("file")}<span class="grow">${t.n(missing.length, "{n} file of these weeks is not on this PC.", "{n} files of these weeks are not on this PC.")}</span><button class="btn sm" data-act="pk-download">${I("download", "sm")} ${t("Download {n}", { n: missing.length })}</button></div>` : ""}
@@ -244,7 +247,8 @@
   // a file of the dialog that came in (its Download, or any other): the weeks are asked for again (a file can come in
   // without text to read), and the newly ready files of the picked weeks are ticked; the student's own ticks stay.
   // Only while the dialog is open (closing it keeps P, and draw() would open it again)
-  function dialogOpen() { return !!document.querySelector("#overlay .modal.pk"); }
+  // (the quiz and cards dialogs are .modal.pk too: this one is the one with #pk-cost)
+  function dialogOpen() { return !!document.querySelector("#overlay .modal.pk") && !!document.querySelector("#overlay #pk-cost"); }
   const onMaterial = St.onEvents.material;
   let matTimer = null;
   St.onEvents.material = (e) => {
@@ -259,9 +263,9 @@
       if (asked !== P || !r.ok || !dialogOpen()) return;
       const was = new Set(asked.opts.weeks.flatMap((w) => w.files.filter((f) => f.ready).map((f) => f.id)));
       readInputs();
-      asked.opts = { ...asked.opts, weeks: r.weeks };
+      asked.opts = { ...asked.opts, weeks: r.weeks, general: r.general || asked.opts.general };
       r.weeks.forEach((w) => w.files.forEach((f) => { if (f.downloaded) asked.fetching.delete(f.id); }));
-      r.weeks.filter((w) => asked.weeks.has(w.no)).forEach((w) => w.files.forEach((f) => { if (f.ready && !was.has(f.id)) asked.files.add(f.id); }));
+      r.weeks.filter((w) => asked.weeks.has(w.no)).forEach((w) => w.files.forEach((f) => { if (f.ready && !f.students && !was.has(f.id)) asked.files.add(f.id); }));
       draw(); estimate();
     }, 300);
   };
@@ -331,6 +335,7 @@
     },
   });
   document.addEventListener("change", (e) => { if (P && e.target.closest && e.target.closest(".modal [data-pk]")) { readInputs(); estimate(); } });
+  St.inputActs = (St.inputActs || []).concat(["pk-item"]);       // its file and lecture ticks: app.js passes their clicks on
 
   // ------------------------------------------------------------------ browser preview (mock)
   const mockDoc = `<header class="sp-cover"><div class="sp-kicker">MATH 240 · Study pack</div><h1>Conditional probability and Bayes' theorem</h1>
