@@ -243,7 +243,7 @@ def test_its_buttons_open_the_tools_set_to_its_weeks(tmp_path):
     assert out["grades"] == [["c", "k1", "again", True]] and out["queue"].count("k1") == 2     # again in this sitting
     assert out["packed"] == {"id": "c", "kind": "sheet", "weeks": "9,10"}
     assert out["planned"] == {"id": "c", "kind": "prep", "focus": "Quiz 3"}
-    assert out["exported"] == {"id": "c", "for": "quiz:3", "weeks": "9,10"}
+    assert out["exported"] == {"id": "c", "key": "quiz:3", "weeks": "9,10"}
     assert out["chat"] == ["c", ["c|2026-11-16|lecture"]] and out["printed"] == 1
 
 

@@ -321,7 +321,7 @@
       const days = r.material.days.filter((x) => x.any_done).map((x) => x.day_key);
       St.chatPicker(ER.cid, { days, focus: "full", slides: false, model: (S.settings || {}).ai_model || "sonnet" });
     },
-    "er-export": () => ER.room && A["cx-open"]({ dataset: { id: ER.cid, for: ER.key, weeks: ER.room.assessment.weeks.join(",") } }),
+    "er-export": () => ER.room && A["cx-open"]({ dataset: { id: ER.cid, key: ER.key, weeks: ER.room.assessment.weeks.join(",") } }),   // (export.js: "For" it)
     "er-read": async (el) => {
       const r = await call("reads_set", [el.dataset.day], !!el.checked);
       if (!r.ok) { toast(r.error, "error"); return; }

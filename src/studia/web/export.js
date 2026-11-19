@@ -225,7 +225,8 @@
     if (nl) nl.scrollTop = keep[1];
   }
 
-  // preset: {key} (an assessment's, as the Exam room and a "cx-open" button with data-key give it): "For" that one
+  // preset: {key, weeks} (an assessment's, as the Exam room and a "cx-open" button with data-key give it): "For" that
+  // one; one no longer ahead (not in "For") ticks its weeks ("9,10") instead
   async function openDialog(courseId, preset) {
     const st = await call("course_export_state");          // one being made (also from before the page was drawn again)
     if (st && st.ok && st.running && st.export) S.cexp = S.cexp && S.cexp.id === st.export.id ? { ...S.cexp, ...st.export } : { ...st.export };
@@ -245,6 +246,10 @@
     nowWeeks().forEach((no) => X.picked.add(no));
     const key = (preset && preset.key) || "";
     if (key && (r.assessments || []).some((e) => e.key === key)) pickFor(key);
+    else if (preset && preset.weeks) {
+      const nos = String(preset.weeks).split(",").map(Number).filter((n) => r.weeks.some((w) => w.no === n));
+      if (nos.length) X.picked = new Set(nos);
+    }
     if (X.open) draw();
   }
 
@@ -276,7 +281,7 @@
   // ------------------------------------------------------------------ actions
   St.inputActs = (St.inputActs || []).concat(["cx-week", "cx-inc", "cx-dl"]);   // checkboxes and radios: app.js passes their clicks on
   Object.assign(A, {
-    "cx-open": (el) => openDialog((el && el.dataset && el.dataset.id) || "", { key: (el && el.dataset && el.dataset.key) || "" }),
+    "cx-open": (el) => { const ds = (el && el.dataset) || {}; return openDialog(ds.id || "", { key: ds.key || "", weeks: ds.weeks || "" }); },
     "cx-course": (el) => openDialog(el.value),
     "cx-for": (el) => { if (!X || !X.opts) return; pickFor(el.value); draw(); },
     "cx-week": (el) => { const no = +el.dataset.no; if (el.checked) X.picked.add(no); else X.picked.delete(no); draw(); },
