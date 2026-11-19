@@ -105,6 +105,28 @@ DAY_KEY = "c1|2026-10-07|lecture"
 
 
 @node
+def test_a_lecture_s_run_marks_the_cards_not_due_yet_and_keeps_their_schedule(tmp_path):
+    out = _page(tmp_path, """
+  SESSION = { ok: true, cards: [card("n1", { cram: false, state: null, next: { again: 60, hard: 300, good: 600, easy: 345600 } }), card("e1")], total: 2, aside: 0, cram: false };
+  const before = toasts.length;
+  await St.practice.study("c1", { days: [DAY] }); await tick();
+  out.toasts = toasts.length - before;
+  out.first = shown.html;
+  A["fc-flip"](); await A["fc-grade"]({ dataset: { g: "good" } }); await tick();
+  out.second = shown.html;
+  A["fc-flip"](); out.secondShown = shown.html; await A["fc-grade"]({ dataset: { g: "good" } }); await tick();
+  out.grades = calls.filter((c) => c[0] === "cards_grade").map((c) => c.slice(1));
+  out.end = shown.html;
+""")
+    assert out["toasts"] == 0
+    assert "MATH 240 · flashcards" in out["first"] and "Not due yet" not in out["first"] and "New" in out["first"]
+    assert "Not due yet" in out["second"] and "Front e1" in out["second"]
+    assert "10 min" not in out["secondShown"] and "Good" in out["secondShown"]
+    assert out["grades"] == [["c1", "n1", "good"], ["c1", "e1", "good", True]]
+    assert "Done for today" in out["end"]
+
+
+@node
 def test_a_card_set_aside_comes_back_with_undo_and_a_missed_question_says_so(tmp_path):
     out = _page(tmp_path, """
   SESSION = { ok: true, cards: [card("q1", { origin: "quiz", cram: false, state: null, next: { good: 600 },

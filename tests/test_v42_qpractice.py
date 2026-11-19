@@ -80,7 +80,13 @@ def test_a_lecture_s_cards_open_past_the_day_s_new_card_limit(api):
 
 def test_a_lecture_with_nothing_due_opens_its_cards_without_changing_their_schedule(api):
     d1 = api.days[0]
-    for c in api.cards_session("c", [], [d1])["cards"]:
+    first = api.cards_session("c", [], [d1])["cards"]
+    api.cards_grade("c", first[0]["id"], "easy")            # one learnt (back in 4 days), two still new
+    mixed = api.cards_session("c", [], [d1])
+    assert [c["id"] for c in mixed["cards"]] == [c["id"] for c in first[1:]] + [first[0]["id"]]
+    assert [bool(c.get("cram")) for c in mixed["cards"]] == [False, False, True] and not mixed["cram"]
+    assert mixed["cards"][2]["next"] == {} and mixed["cards"][0]["next"]          # (the early one: no intervals)
+    for c in mixed["cards"][:2]:
         api.cards_grade("c", c["id"], "easy")
     before = cards.states(api._s.lib, "c")
     again = api.cards_session("c", [], [d1])
@@ -108,10 +114,11 @@ def test_a_lecture_s_run_holds_its_cards_kept_under_another_lecture_and_the_ques
          "points": ["renormalises"], "source": src, "los": [], "topic": "Conditional probability"}]})
     assert api.quiz_attempt("qz", {"answers": [{"n": 1, "got": 0, "text": "no idea", "mark": "self"}]})["carded"]
     run = api.cards_session("c", [], [d3])
-    assert len(run["cards"]) == 2 and run["total"] == 3     # (the missed one is due tomorrow: in the run then)
-    tomorrow = cards.study_day(dt.datetime.now())[1] + dt.timedelta(hours=2)
+    assert len(run["cards"]) == 3 and run["total"] == 3 and api._lecture_cards(d3) == 3
+    assert [(c["q"], bool(c.get("cram"))) for c in run["cards"]][-1] == ("Why is $P(B)$ in the denominator?", True)
+    tomorrow = cards.study_day(dt.datetime.now())[1] + dt.timedelta(hours=2)        # (due tomorrow: in its place then)
     later = cards.session(lib, api._deck("c"), "c", tomorrow, days={d3}, fronts=cards.lecture_fronts(api._s, [d3]))
-    assert "Why is $P(B)$ in the denominator?" in [c["q"] for c in later]
+    assert [(c["q"], bool(c.get("cram"))) for c in later][0] == ("Why is $P(B)$ in the denominator?", False)
 
 
 def test_cards_set_aside_are_said_so_and_left_out(api):

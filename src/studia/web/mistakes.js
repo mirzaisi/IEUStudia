@@ -186,7 +186,7 @@
       : `<button class="qz-src" data-act="pr-moment" data-day="${esc(c.source.day_key)}" data-part="${c.source.part || 1}" data-t="${c.source.t || 0}">${I("video", "xs")}<span>${esc(t("From the lecture of {day}, part {part}, {time}", { day: dmw(c.source.date), part: c.source.part || 1, time: c.source.ts || "" }))}</span></button>`) : "";
     return `<div class="fc fc-study fc-mc"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${cardBtn(c)}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
-      <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}</div>
+      <div class="qz-kind">${esc(t("A question you missed"))}${qz.title ? ` · ${esc(qz.title)}` : ""}${c.cram && !X.cram ? ` · ${esc(t("Not due yet"))}` : ""}</div>
       <div class="fc-q md">${md(c.q)}</div><div class="qz-opts">${opts}</div>${why}
       <div class="fc-meta">${src}</div>
       <div class="actions">${shown ? `<span class="dim sm qz-self-q">${esc(right ? t("The app marks it Good.") : t("The app marks it Again: it comes back soon."))}</span><button class="btn primary" data-act="fc-mc-next" autofocus>${t("Next card")}</button>`

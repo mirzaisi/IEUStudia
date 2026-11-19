@@ -607,9 +607,9 @@
   }
   // a sitting with the course's cards due today (their grades kept in its schedule); o.weeks: only those weeks' cards
   // (the Practice tab's "Study one week", a week card's menu), o.days: a lecture's cards (its page's "Practise N
-  // cards": all of them always come, cards.session). o.cram (the Exam room's "Cram", or a week with nothing due
-  // today): every card of those weeks, due or not; the schedule is left as it was (cards.py). A lecture whose cards
-  // are all learnt and not due yet comes as such a run too (r.cram)
+  // cards": all of them always come, cards.session; those not due yet last, each "cram"). o.cram (the Exam room's
+  // "Cram", or a week with nothing due today): every card of those weeks, due or not; the schedule is left as it was
+  // (cards.py). A lecture whose cards are all learnt and not due yet comes as such a run too (r.cram)
   async function study(cid, o = {}) {
     const r = await call("cards_session", cid, o.weeks || [], o.days || [], ...(o.cram ? [true] : []));
     if (!r.ok) { toast(r.error, "error"); return; }
@@ -649,14 +649,15 @@
     }
     // a missed multiple-choice question: asked with its options, marked by the app (mistakes.js)
     if (St.mistakes && St.mistakes.isMC(c)) { modal(St.mistakes.studyHTML(X, c, code)); $(".modal").classList.add("fc-modal"); math(); return; }
-    const left = X.queue.length - X.pos, nx = c.next || {};
-    const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${X.cram ? "" : esc(ivl(nx[g] || 0))}</span></button>`;
+    // (a lecture's card not due yet, after its due and new ones: its answer leaves its schedule alone, as a cram's)
+    const left = X.queue.length - X.pos, nx = c.next || {}, early = X.cram || !!c.cram;
+    const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${early ? "" : esc(ivl(nx[g] || 0))}</span></button>`;
     modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${X.cram ? t("cram") : t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
       ${c.origin === "quiz" ? `<div class="qz-kind">${esc(t("A question you missed"))}${(c.quiz || {}).title ? ` · ${esc(c.quiz.title)}` : ""}</div>` : ""}
       <div class="fc-q md">${md(c.q)}</div>
       ${X.shown ? `<div class="fc-a md">${md(c.a)}</div>` : `<div class="fc-hint dim sm">${t("Think of the answer, then show it.")}</div>`}
-      <div class="fc-meta">${c.stressed ? `<span class="pill due">${I("star")}${t("Stressed by the lecturer")}</span>` : ""}${!c.state ? `<span class="pill">${t.c("card", "New")}</span>` : ""}${X.shown ? sourceHTML(c.source, X.cid) : ""}</div>
+      <div class="fc-meta">${c.stressed ? `<span class="pill due">${I("star")}${t("Stressed by the lecturer")}</span>` : ""}${!c.state ? `<span class="pill">${t.c("card", "New")}</span>` : ""}${c.cram && !X.cram ? `<span class="pill" title="${esc(t("Going over it now doesn't change when it comes back."))}">${t("Not due yet")}</span>` : ""}${X.shown ? sourceHTML(c.source, X.cid) : ""}</div>
       <div class="actions">${X.shown ? `${grade("again", t("Again"), "again")}${grade("hard", t("Hard"), "hard")}${grade("good", t("Good"), "good")}${grade("easy", t("Easy"), "easy")}`
         : `<button class="btn ghost" data-act="fc-close">${t.c("flashcards", "Stop")}</button><button class="btn primary" data-act="fc-flip" autofocus>${t("Show the answer")}</button>`}</div>
       <div class="fc-keys dim sm">${X.shown ? t("Keys: 1 Again, 2 Hard, 3 Good, 4 Easy") : t("Key: Space shows the answer")}</div></div>`);
@@ -667,7 +668,7 @@
     const X = P.study; if (!X || X.grading) return;
     const c = X.queue[X.pos]; if (!c) return;
     X.grading = true;
-    const r = await call("cards_grade", X.cid, c.id, g, ...(X.cram ? [true] : []));
+    const r = await call("cards_grade", X.cid, c.id, g, ...(X.cram || c.cram ? [true] : []));
     X.grading = false;
     if (!r.ok) { toast(r.error, "error"); return; }
     X.done++;
