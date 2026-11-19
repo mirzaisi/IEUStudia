@@ -174,7 +174,7 @@
     const busyQ = (q) => ["running", "queued"].includes(q.status);
     const quizState = (q) => (q.status === "done" ? (q.best ? ` · ${esc(t("Best: {score} of {total}", { score: score(q.best.score), total: q.best.total }))}` : q.tries ? "" : ` · ${esc(t("not taken yet"))}`)
       : busyQ(q) ? ` · ${esc(t("being written"))}` : "");
-    const quizWhy = (q) => (q.status === "done" || busyQ(q) ? "" : `<div class="sm">${q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message || t("Stopped"))}</div>`);
+    const quizWhy = (q) => (q.status === "done" || busyQ(q) ? "" : `<div class="sm">${q.status === "error" ? `<span class="err-txt">${I("alert-circle", "xs")} ${esc(q.error || t("failed"))}</span>` : esc(q.message ? t(q.message) : t("Stopped"))}</div>`);
     const quiz = (q) => `<div class="er-q ${q.status === "done" ? "" : "noprint"}"><div class="grow"><b>${esc(q.title || t("Practice quiz"))}</b><div class="dim sm">${esc(span(q.weeks))}${q.focus ? ` · ${esc(t("for {name}", { name: q.focus }))}` : ""}${quizState(q)}</div>${quizWhy(q)}</div>
       ${q.status === "done" ? `<button class="btn sm noprint" data-act="qz-play" data-id="${esc(q.id)}">${I("play", "sm")} ${q.tries ? t("Practise again") : t("Practise")}</button>`
         : busyQ(q) ? `<span class="dim sm">${SPIN()}</span>` : `<button class="btn sm noprint" data-act="plan-resume" data-id="${esc(q.id)}">${I("retry", "sm")} ${t("Resume")}</button>`}</div>`;
