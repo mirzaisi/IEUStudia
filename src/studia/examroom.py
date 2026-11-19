@@ -125,17 +125,49 @@ def grade_share(grading: Iterable[dict[str, Any]], e: dict[str, Any]) -> Optiona
 
 
 # ------------------------------------------------------------------ which one
+_SYLLABUS_KEY = re.compile(r"syllabus:(.*):(\d{1,2})")
+
+
 def find(d: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
     """The course's assessment with this key (quizzes.assessment_key), or this name (the one still ahead when two
-    have it: "ready:<course>:<name>" from a notification, Get ready's old way in)."""
+    have it: "ready:<course>:<name>" from a notification, Get ready's old way in). A syllabus exam week's key
+    ("syllabus:<its label>:<its week>", as the week cards and the Calendar give it) is the assessment it is part of:
+    a two-week exam period, or the announced exam of its kind a week away it was folded into. A quiz announced only
+    by its day (week 1's date unknown: no week, so not among quizzes.assessments) gets a room without weeks."""
     from . import quizzes
 
     every = quizzes.of(d)
+    key = str(key or "").strip()
     hit = next((e for e in every if e.get("key") == key), None)
     if hit is not None:
         return hit
-    named = [e for e in every if e["name"].casefold() == str(key or "").strip().casefold()]
-    return next((e for e in named if e.get("ahead")), named[0] if named else None)
+    m = _SYLLABUS_KEY.fullmatch(key)
+    if m:
+        no, kind = int(m.group(2)), "final" if re.search(r"f[iİı]nal", m.group(1), re.I) else "midterm"
+        near = [e for e in every if e["kind"] != "quiz" and (e.get("first_week") or e["week"]) - 1 <= no <= e["week"] + 1]
+        near.sort(key=lambda e: (e["kind"] != kind, not (e.get("first_week") or e["week"]) <= no <= e["week"],
+                                 abs(e["week"] - no)))
+        if near:
+            return near[0]
+        key = m.group(1)
+    named = [e for e in every if e["name"].casefold() == key.casefold()]
+    if named:
+        return next((e for e in named if e.get("ahead")), named[0])
+    for e in (d.get("alerts") or {}).get("plan") or []:
+        if not e.get("week") and key.casefold() in (e["name"].casefold(), quizzes.assessment_key(e)):
+            covers = sorted({int(n) for n in e.get("covers") or [] if 1 <= int(n) <= 30})
+            return {**e, "key": quizzes.assessment_key(e), "weeks": covers, "weeks_from": "announced" if covers else
+                    "guessed", "guessed": [], "covers": covers, "covers_from": e.get("covers_from") or "", "files": [],
+                    "ahead": (e.get("date") or "9999") >= dt.date.today().isoformat()}
+    return None
+
+
+def event_key(event: dict[str, Any]) -> str:
+    """What finds a reminder's (calendar_export's) quiz or exam: a syllabus exam week by its label and week, the
+    rest by name."""
+    if event.get("kind") == "exam" and event.get("week"):
+        return f"syllabus:{event.get('name') or ''}:{event['week']}"
+    return str(event.get("name") or "")
 
 
 def _covered(d: dict[str, Any], e: dict[str, Any]) -> list[dict[str, Any]]:
@@ -369,7 +401,7 @@ def reminder_note(lib: Any, settings: Any, event: dict[str, Any]) -> str:
     if event.get("kind") in ("assignment", "own") or not event.get("course_id"):
         return ""
     d = course_detail(lib, settings, event["course_id"])
-    e = find(d, event.get("name") or "") if d else None
+    e = find(d, event_key(event)) if d else None
     if e is None or not e.get("weeks"):
         return ""
     m = material(d, e)

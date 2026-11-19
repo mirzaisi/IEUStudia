@@ -353,7 +353,9 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     if kinds & {"assignment", "own"}:                     # the Calendar page has it (and how sure it is)
         payload = f"calendar:{e['uid']}" if len(due) == 1 else "calendar"
     elif len(due) == 1 and e.get("course_id"):           # its Exam room (a syllabus's exam week has one too)
-        payload = f"ready:{e['course_id']}:{e['name']}"
+        from .examroom import event_key
+
+        payload = f"ready:{e['course_id']}:{event_key(e)}"
     return title, "\n".join(lines[:4]) + ("\n" + t("+{n} more", n=len(lines) - 4) if len(lines) > 4 else ""), payload
 
 

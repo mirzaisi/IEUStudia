@@ -193,8 +193,10 @@
       .map((w) => ({ w, name: w.exam_label || t("Exam"), r: weekRel(d, w.no, "exam") })).filter((x) => x.r.now || x.r.code === "next-week");
   }
   St.examWeeks = examWeeks;          // (the tests)
-  // a quiz or an exam opens its Exam room (examroom.js: "ready-open", by its name), a syllabus's exam week too
-  const examPill = (c, x) => `<button class="plan-pill ${x.r.now ? "now" : ""} kind-midterm" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(x.name)}" title="${esc(range(x.w.start, x.w.end))}">
+  // a quiz or an exam opens its Exam room (examroom.js: "ready-open", by its name), a syllabus's exam week too (by
+  // its label and week: examroom.find gives the exam it is part of)
+  const examKey = (w) => `syllabus:${w.exam_label || t("Exam")}:${w.no}`;
+  const examPill = (c, x) => `<button class="plan-pill ${x.r.now ? "now" : ""} kind-midterm" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(examKey(x.w))}" data-name="${esc(x.name)}" title="${esc(range(x.w.start, x.w.end))}">
       <b>${esc(x.name)}</b><span>${t("week {n}", { n: x.w.no })}${x.r.rel ? ` · ${esc(x.r.rel)}` : ""}</span></button>`;
   const readyTip = (d, e) => t("Open its Exam room: what it covers, what is still missing and how to practise") + (e.los.length ? "\n" + loTitle(d, e.los) : "");
   function planPill(c, d, e) {
@@ -393,7 +395,7 @@
     return `<div class="card week ${w.current ? "current" : ""} ${w.past ? "past" : ""} ${w.exam ? "exam" : ""} ${quiet ? "quiet" : ""} ${shut ? "shut" : ""}" id="week-${w.no}">
       <div class="week-head" ${foldable ? `data-act="week-toggle" data-no="${w.no}" tabindex="0" role="button" aria-expanded="${!shut}" title="${shut ? t("Show this week's files and lectures") : t("Hide this week's files and lectures")}"` : ""}>
         <div class="week-no">${t.html("<b>{n}</b><span>week</span>", { n: w.no })}</div>
-        <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<button class="pill processing pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-name="${esc(w.exam_label || t("Exam"))}" title="${esc(t("Open its Exam room: what it covers, what is still missing and how to practise"))}">${I("cap")}${t("Exam")}</button>` : "")}${asgPills}</div>
+        <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<button class="pill processing pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(examKey(w))}" data-name="${esc(w.exam_label || t("Exam"))}" title="${esc(t("Open its Exam room: what it covers, what is still missing and how to practise"))}">${I("cap")}${t("Exam")}</button>` : "")}${asgPills}</div>
           <div class="s">${esc(sub)}${shut && summary ? ` · <span class="week-sum">${esc(summary)}</span>` : ""}</div></div>
         ${quiet ? "" : `<button class="btn ghost icon sm week-menu" data-act="menu-week" data-cid="${esc(c.id)}" data-no="${w.no}" aria-haspopup="menu" title="${esc(t("Quiz me, cards and more for this week"))}" aria-label="${esc(t("Quiz me, cards and more for this week"))}">${I("more", "sm")}</button>`}
         ${foldable ? `<span class="week-fold">${I(shut ? "chevron-down" : "chevron-up", "sm")}</span>` : ""}

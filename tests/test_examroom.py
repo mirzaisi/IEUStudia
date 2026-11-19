@@ -9,7 +9,7 @@ import datetime as dt
 
 import pytest
 
-from studia import agent, cards, examroom, practice
+from studia import agent, cards, examroom, practice, quizzes
 from studia.coursesite import Announcement, Resource, Unit
 from studia.domain import Course, Recording
 from studia.plans import Scope
@@ -135,6 +135,48 @@ def test_its_share_of_the_grade(grading, kind, want):
 
 
 # ------------------------------------------------------------------ material, read ticks and Get everything
+def _course(labels, plan=(), n=16):
+    """A course dict as views.course_detail gives it: 16 weeks from START, the syllabus's exam labels by week."""
+    weeks = [{"no": no, "start": (START + dt.timedelta(weeks=no - 1)).isoformat(),
+              "end": (START + dt.timedelta(weeks=no - 1, days=6)).isoformat(), "exam": no in labels,
+              "exam_label": labels.get(no, ""), "past": False, "classes": []} for no in range(1, n + 1)]
+    return {"id": "c", "weeks": weeks, "alerts": {"plan": [
+        {"kind": k, "no": no, "name": name, "week": week, "los": [], "sources": [{"id": "a", "title": "A"}],
+         "date": date, "time": "", "covers": [], "covers_from": ""} for k, no, name, week, date in plan]}}
+
+
+def test_a_syllabus_exam_week_opens_the_exam_it_is_part_of():
+    """The week cards, Home and the Calendar opened a syllabus exam week by its label: one folded into an announced
+    exam a week away (or a two-week period's first week) said "no longer in the course's plan", and of two
+    same-named weeks the first opened. By its label and week, each finds its own."""
+    d = _course({8: "Midterm Exam", 15: "Final Exam", 16: "Final Exam"},
+                [("midterm", 0, "Midterm", 9, ""), ("final", 0, "Final", 16, "")])
+    assert [e["key"] for e in quizzes.of(d)] == ["midterm:0", "final:0"]
+    assert examroom.find(d, "syllabus:Midterm Exam:8")["key"] == "midterm:0"
+    assert examroom.find(d, "syllabus:Final Exam:15")["key"] == "final:0"
+    period = _course({15: "Final Exam", 16: "Final Exam"})
+    assert examroom.find(period, "syllabus:Final Exam:15")["key"] == "syllabus:Final Exam:16"
+    two = _course({7: "Midterm Exam", 12: "Midterm Exam"})
+    assert examroom.find(two, "syllabus:Midterm Exam:12")["week"] == 12
+    assert examroom.find(two, "syllabus:Midterm Exam:7")["week"] == 7
+    assert examroom.find(two, "syllabus:Quiz Day:3") is None
+    # a reminder of a syllabus week finds it, and its click opens that one
+    ev = {"kind": "exam", "name": "Midterm Exam", "week": 12, "course_id": "c"}
+    assert examroom.event_key(ev) == "syllabus:Midterm Exam:12"
+    assert examroom.event_key({"kind": "quiz", "name": "Quiz 3", "week": 12}) == "Quiz 3"
+
+
+def test_a_quiz_announced_only_by_its_day_still_has_a_room():
+    """Week 1's date unknown: no week, so not among the assessments; its pill and Calendar row opened "no longer in
+    the course's plan"."""
+    d = _course({}, [("quiz", 2, "Quiz 2", None, "2099-11-20")])
+    assert quizzes.of(d) == []
+    e = examroom.find(d, "Quiz 2")
+    assert (e["key"], e["weeks"], e["ahead"]) == ("quiz:2", [], True)
+    assert examroom.find(d, "quiz:2")["name"] == "Quiz 2"
+    assert examroom.when(d, e, None)["from"] == "announced"
+
+
 def test_the_material_of_its_weeks_as_counts(api):
     m = _room(api, "quiz:3")["material"]
     assert [x["day_key"] for x in m["days"]] == [_day(16), _day(18), _day(25)]       # 23 Nov has no speech: apart

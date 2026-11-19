@@ -146,7 +146,7 @@ def test_every_way_in_that_opened_get_ready_opens_the_room(tmp_path):
   const page = St.views.course(S.view);
   out.chip = (page.match(/<button class="stat er-chip[^>]*>.*?<\\/button>/s) || [""])[0];
   out.pills = [...page.matchAll(/data-act="ready-open" data-cid="c" data-name="([^"]+)"/g)].map((m) => m[1]);
-  out.examPill = page.includes('data-act="ready-open" data-cid="c" data-name="Final Exam"');
+  out.examPill = page.includes('data-act="ready-open" data-cid="c" data-key="syllabus:Final Exam:16" data-name="Final Exam"');
   out.near = St.examroom.chip(S.courses[0], { assessments: [{ ...QUIZ3, on: { date: inDays(1), from: "class" } }] });
   out.far = St.examroom.chip(S.courses[0], { assessments: [{ ...QUIZ3, on: { date: inDays(40), from: "class" } }] });
   out.none = St.examroom.chip(S.courses[0], { assessments: [{ ...QUIZ3, on: { date: inDays(-1), from: "class" } }] });
