@@ -611,7 +611,7 @@
     return `<div class="pk-heavy light">${I("info", "sm")}<div><b>${t.html("Uses a little of your {ai} plan.", { ai: St.aiName() })}</b>
       ${esc(t.n(e.requests, "About {k} tokens in {n} request, {minutes}.", "About {k} tokens in {n} requests, {minutes}.", { k: St.fmtK(e.main_input + e.main_output), minutes: e.minutes }))}
       <div class="dim sm">${esc(t.n(e.pages, "Up to about {n} cards from {pages} page; cards your deck already has are left out.", "Up to about {n} cards from {pages} pages; cards your deck already has are left out.", { n: e.cards, pages: e.pages }))}</div>
-      ${St.docLangLine ? St.docLangLine(e) : ""}</div></div>`;
+      ${St.docLangLine ? St.docLangLine(e, { cards: true }) : ""}</div></div>`;
   }
   function drawMake() {
     const r = M.opts, old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;

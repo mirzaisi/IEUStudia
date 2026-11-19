@@ -6,6 +6,7 @@
   "Written in {language}": "{language} yazılır",
   "Written in {language}, exam terms in {course}": "{language} yazılır, sınav terimleri {course}",
   "Questions in {course}, explanations in {language}": "Sorular {course}, açıklamalar {language}",
+  "Front in {course}, back in {language}": "Ön yüz {course}, arka yüz {language}",
   "change in Settings": "Ayarlar'dan değiştir",
   "Study documents go back to the course's language.": "Çalışma belgeleri yine dersin dilinde yazılır."
 }

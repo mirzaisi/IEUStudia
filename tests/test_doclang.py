@@ -145,6 +145,30 @@ def test_a_quiz_s_two_languages_are_said_again_after_the_material():
     same = quizzes.write_prompt(Scope(kind="quiz"), {**facts, "language": "English"}, 5, kinds)
     assert same.endswith("Ohm's law: V = IR.") and "=== LANGUAGES ===" not in same
 
+def test_flashcards_for_a_course_taught_in_another_language_keep_their_fronts_in_the_course_s_language():
+    """As the quiz: a Turkish deck for a course taught in English had its fronts in Turkish too, but the exam names
+    the term and asks the question in English. Now a card's front stays in the course's language and its back (and
+    topic) is in the document's, said again after the pages (Haiku followed only the last words for the quiz, #8).
+    With the two the same the prompt is word for word as before."""
+    tr, en = prompts.cards_languages("Turkish", "English"), prompts.cards_languages("English", "Turkish")
+    assert tr.startswith('Write each card\'s "front" (the term or the question) in English, as the exams ask it, and '
+                         'its "back" and "topic" in Turkish.')
+    assert tr.count(RULE_TR) == 1 and tr.endswith(RULE_TR)
+    assert '"front" (the term or the question) in Turkish' in en and '"topic" in English.' in en and en.endswith(RULE_EN)
+    assert prompts.cards_languages("English", "English") == "Write them in English (the language this course is taught in)."
+    assert prompts.cards_languages("Turkish", "") == prompts.cards_languages("Turkish", "Turkish")
+    assert prompts.cards_languages_again("English", "English") == "" == prompts.cards_languages_again("Turkish", "")
+    again = prompts.cards_languages_again("Turkish", "English")
+    assert again == '\n\n=== LANGUAGES ===\n"front" in English; "back" and "topic" in Turkish.'
+    facts = {"span": "week 3", "language": "Turkish", "taught_in": "English", "stressed_lines": ""}
+    batch = {"text": "[F1 p.3] Ohm's law: V = IR.", "pages": 1}
+    text = cards.cards_prompt(facts, batch, 10, [])
+    assert tr in text and text.endswith("Ohm's law: V = IR." + again)
+    same = cards.cards_prompt({**facts, "language": "English"}, batch, 10, [])
+    assert "Write them in English (the language this course is taught in)." in same
+    assert same.endswith("Ohm's law: V = IR.") and "=== LANGUAGES ===" not in same
+
+
 # ------------------------------------------------------------------ the setting
 def test_the_setting_saves_stays_valid_and_goes_back_with_the_ai_group(isolated_home):
     from studia.api import Api
@@ -336,6 +360,7 @@ PAGE = r"""
   out.trSame = plain(St.docLangLine({ language: "English", taught_in: "English" }));
   out.trQuiz = plain(St.docLangLine({ language: "Turkish", taught_in: "English" }, { quiz: true }));
   out.trQuizSame = plain(St.docLangLine({ language: "Turkish", taught_in: "Turkish" }, { quiz: true }));
+  out.trCards = plain(St.docLangLine({ language: "Turkish", taught_in: "English" }, { cards: true }));
 """
 
 
@@ -358,7 +383,8 @@ def test_settings_has_the_row_and_each_document_dialog_names_the_language(tmp_pa
     assert out["lines"] == ["Written in English · change in Settings",
                             "Written in Turkish, exam terms in English · change in Settings", ""]
     assert "Questions in English, explanations in Turkish · change in Settings" in out["quiz"], out["quiz"]
-    for kind in ("sheet", "prep", "cards"):
+    assert "Front in English, back in Turkish · change in Settings" in out["cards"], out["cards"]
+    for kind in ("sheet", "prep"):
         assert "Written in Turkish, exam terms in English · change in Settings" in out[kind], (kind, out[kind])
     assert out["went"] == "settings"
     assert "Çalışma belgelerinin dili" in out["trRow"] and "Dersin dili" in out["trRow"]
@@ -366,3 +392,4 @@ def test_settings_has_the_row_and_each_document_dialog_names_the_language(tmp_pa
     assert out["trSame"] == "İngilizce yazılır · Ayarlar'dan değiştir"
     assert out["trQuiz"] == "Sorular İngilizce, açıklamalar Türkçe · Ayarlar'dan değiştir"
     assert out["trQuizSame"] == "Türkçe yazılır · Ayarlar'dan değiştir"
+    assert out["trCards"] == "Ön yüz İngilizce, arka yüz Türkçe · Ayarlar'dan değiştir"

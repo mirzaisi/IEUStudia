@@ -70,6 +70,7 @@
     const L = LANG_NAME(), lang = L[e.language] || e.language, other = e.taught_in && e.taught_in !== e.language;
     const course = other ? L[e.taught_in] || e.taught_in : "";
     const say = other && o.quiz ? t("Questions in {course}, explanations in {language}", { language: lang, course })
+      : other && o.cards ? t("Front in {course}, back in {language}", { language: lang, course })
       : other ? t("Written in {language}, exam terms in {course}", { language: lang, course })
       : t("Written in {language}", { language: lang });
     return `<div class="dim sm doclang-line">${I("globe", "xs")} ${esc(say)} · <button type="button" class="link" data-act="doclang-settings">${t("change in Settings")}</button></div>`;
