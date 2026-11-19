@@ -22,7 +22,7 @@
     return ({
       video_plan: [t("Video study plan"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
       prep_pack: [t("Exam review sheet"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
-      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open the exam room")],
+      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open the Exam room")],
       transcribe: [t("Transcribe lectures"), `${code} · ${a.date || w || t("missing lectures")}`, t("Transcribe…")],
       download_files: [t("Download files"), `${code} · ${w || t("all weeks")}`, t("Download…")],
       study_notes: [t("Study notes"), `${code} · ${a.date || ""}`, t("Open")],
@@ -165,7 +165,7 @@
     ["quiz", "quiz", t("A practice quiz on this chat, scored and saved to Practice (add how many questions)")],
     ["plan", "video_plan", t("Video study plan for this course (add a quiz name or weeks)")],
     ["prep", "prep_pack", t("Exam review sheet (add a quiz or exam name)")],
-    ["ready", "get_ready", t("The exam room of the next quiz or exam")],
+    ["ready", "get_ready", t("The Exam room of the next quiz or exam")],
     ["notes", "study_notes", t("Study notes for this lecture")],
     ["transcribe", "transcribe", t("Transcribe lectures (add week numbers)")],
     ["files", "download_files", t("Download the files (add week numbers)")],

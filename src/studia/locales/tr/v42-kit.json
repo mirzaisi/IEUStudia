@@ -21,7 +21,7 @@
   "00 Start here.md in the zip tells the AI what {name} covers.": "Zip'teki 00 Start here.md, {name} kapsamını yapay zekaya anlatır.",
   "Copied: paste it into the chat with the zip.": "Kopyalandı: zip'in olduğu sohbete yapıştır.",
   "It covers {weeks}, as announced.": "Kapsamı: {weeks}, duyurulduğu gibi.",
-  "It covers {weeks}, as you set it.": "Kapsamı: {weeks}, senin ayarladığın gibi.",
+  "It covers {weeks}, as you set it.": "Kapsamı: {weeks}, senin seçtiğin gibi.",
   "It covers {weeks}: the whole term.": "Kapsamı: {weeks}, yani bütün dönem.",
   "It covers {weeks}: IEUStudia's guess, so change the weeks below if it's wrong.": "Kapsamı: {weeks}. Bu IEUStudia'nın tahmini, yanlışsa aşağıdan haftaları değiştir.",
   "For": "Hangi sınav için",

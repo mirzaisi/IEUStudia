@@ -255,7 +255,7 @@ def test_the_mistake_loop_on_the_page(tmp_path):
     assert out["bringBack"] == ["cards_bring_back", "c1"]
     # in Turkish
     tr = out["trTab"]
-    for bit in ("Üzerinden geçmen gereken hatalar", "Nerede puan kaybediyorsun"):
+    for bit in ("Üzerinden geçmen gereken hatalar", "Puan kaybettiğin yerler"):
         assert bit in tr, bit
 
 
