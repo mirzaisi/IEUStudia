@@ -312,7 +312,7 @@
     h += `<div class="nav-section">${t("Courses")}</div>`;
     if (!S.courses.length) h += `<div class="nav-item" style="cursor:default"><span class="label"><span class="sub">${S.sync.running ? t("Loading your courses…") : t("No courses yet")}</span></span></div>`;
     const item = (c, dim) => {
-      const active = v.name === "course" && v.courseId === c.id;
+      const active = (v.name === "course" || v.name === "exam") && v.courseId === c.id;     // (its Exam room: examroom.js)
       const n = dim ? 0 : courseNew(c);
       const badge = n ? `<span class="count new" title="${t("New recordings, materials and announcements")}">${n}</span>` : "";
       const sub = courseSub(c);
@@ -3099,8 +3099,8 @@
       <div class="actions"><button class="btn ghost" data-act="update-page">${I("external", "sm")} ${t("Release page")}</button><span class="spacer"></span>
         <button class="btn primary" data-act="modal-close">${t("OK")}</button></div>`);
   }
-  // what a notification opens: "course:<id>[:<tab>]", "day:<class day>", "ready:<course id>:<assessment>" (Get
-  // ready), "week:<course id>:<week>", "update" or "home"
+  // what a notification opens: "course:<id>[:<tab>]", "day:<class day>", "ready:<course id>:<assessment>" (its Exam
+  // room: examroom.js), "week:<course id>:<week>", "update" or "home"
   function openTarget(target) {
     if (S.mode !== "app" || !target) return;
     const [kind, id, ...rest] = String(target).split(":");
@@ -3110,7 +3110,7 @@
       if (tabs) tabs.scrollIntoView({ block: "start", behavior: "instant" });        // what it's about, in view
     } else if (kind === "day") openDay(String(target).slice(4));
     else if (kind === "week" && findCourse(id)) go({ name: "course", courseId: id, jumpWeek: +rest[0] || "now" });
-    else if (kind === "ready" && findCourse(id) && Studia.openReady) { go({ name: "course", courseId: id }); Studia.openReady(id, rest.join(":")); }
+    else if (kind === "ready" && findCourse(id) && Studia.openReady) Studia.openReady(id, rest.join(":"));
     else if (kind === "calendar") go({ name: "calendar", focus: [id, ...rest].filter(Boolean).join(":") });   // calendar.js
     else if (kind === "update") { go({ name: "home" }); updateModal(); }
     else go({ name: "home" });

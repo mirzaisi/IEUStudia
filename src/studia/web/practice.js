@@ -287,7 +287,9 @@
 
   // ------------------------------------------------------------------ the new-quiz dialog
   let Q = null;
-  const nextExam = (r) => (r.assessments || []).find((e) => e.ahead && (e.weeks || []).length);
+  // the next quiz or exam; the Exam room's own one ({mode: "next", key}: "Practice quiz for it")
+  const nextExam = (r) => { const all = r.assessments || [], key = Q && Q.preset && Q.preset.key;
+    return (key && all.find((e) => e.key === key && (e.weeks || []).length)) || all.find((e) => e.ahead && (e.weeks || []).length); };
   // the week a dialog starts at: this week, or the latest one so far, that has something to read
   function latestReady(weeks, ready) {
     const upTo = weeks.filter((w) => w.past || w.current), pick = [...upTo].reverse().find(ready) || weeks.find(ready);
@@ -597,17 +599,19 @@
   }
   // a sitting with the course's cards due today (their grades kept in its schedule); o.weeks: only those weeks' cards
   // (the Practice tab's "Study one week", a week card's menu), o.days: only those lectures' own flashcards (a lecture's
-  // page). (The Exam room's cram session, every card of its weeks with the schedule left alone, adds its flag here.)
+  // page). o.cram (the Exam room's "Cram", or a week with nothing due today): every card of those weeks, due or not;
+  // the schedule is left as it was (cards.py)
   async function study(cid, o = {}) {
-    const r = await call("cards_session", cid, o.weeks || [], o.days || []);
+    const r = await call("cards_session", cid, o.weeks || [], o.days || [], ...(o.cram ? [true] : []));
     if (!r.ok) { toast(r.error, "error"); return; }
     if (!r.cards.length) {
+      const cram = o.weeks && !o.cram && r.total ? { label: t("Go through them all"), act: "fc-cram", data: { cid, weeks: o.weeks.join(",") } } : undefined;
       toast(o.days ? (r.total ? t("You know this lecture's cards for now: each comes back just before you would forget it.") : t("This lecture's cards aren't in your deck yet."))
         : o.weeks ? (r.total ? t("Nothing from {weeks} to study today.", { weeks: weekSpan(o.weeks) }) : t("No flashcards from {weeks} yet.", { weeks: weekSpan(o.weeks) }))
-          : t("Nothing to study in this course today."), "info");
+          : t("Nothing to study in this course today."), "info", cram);
       return;
     }
-    P.study = { cid, queue: r.cards.slice(), pos: 0, shown: false, done: 0, again: 0 };
+    P.study = { cid, queue: r.cards.slice(), pos: 0, shown: false, done: 0, again: 0, cram: !!o.cram };
     drawStudy();
   }
   function drawStudy() {
@@ -616,16 +620,16 @@
     St.onModalClose = () => { const Y = P.study; P.study = null; if (Y && Y.done) refresh(Y.cid); };
     const c = X.queue[X.pos], code = (St.findCourse(X.cid) || {}).code || "";
     if (!c) {
-      modal(`<div class="fc fc-study"><h2>${I("check-circle")} ${t("Done for today")}</h2>
-        <p class="lead">${esc(t.n(X.done, "You went through {n} card.", "You went through {n} cards."))} ${esc(t("Each card comes back just before you would forget it, so a few minutes a day keeps it all fresh."))}</p>
+      modal(`<div class="fc fc-study"><h2>${I("check-circle")} ${X.cram ? t("Done with these weeks' cards") : t("Done for today")}</h2>
+        <p class="lead">${esc(t.n(X.done, "You went through {n} card.", "You went through {n} cards."))} ${esc(X.cram ? t("Cramming doesn't change when your cards come back.") : t("Each card comes back just before you would forget it, so a few minutes a day keeps it all fresh."))}</p>
         <div class="actions"><button class="btn primary" data-act="fc-close" autofocus>${t("Close")}</button></div></div>`);
       return;
     }
     // a missed multiple-choice question: asked with its options, marked by the app (mistakes.js)
     if (St.mistakes && St.mistakes.isMC(c)) { modal(St.mistakes.studyHTML(X, c, code)); $(".modal").classList.add("fc-modal"); math(); return; }
     const left = X.queue.length - X.pos, nx = c.next || {};
-    const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${esc(ivl(nx[g] || 0))}</span></button>`;
-    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
+    const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${X.cram ? "" : esc(ivl(nx[g] || 0))}</span></button>`;
+    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${X.cram ? t("cram") : t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
       <div class="fc-q md">${md(c.q)}</div>
       ${X.shown ? `<div class="fc-a md">${md(c.a)}</div>` : `<div class="fc-hint dim sm">${t("Think of the answer, then show it.")}</div>`}
@@ -640,7 +644,7 @@
     const X = P.study; if (!X || X.grading) return;
     const c = X.queue[X.pos]; if (!c) return;
     X.grading = true;
-    const r = await call("cards_grade", X.cid, c.id, g);
+    const r = await call("cards_grade", X.cid, c.id, g, ...(X.cram ? [true] : []));
     X.grading = false;
     if (!r.ok) { toast(r.error, "error"); return; }
     X.done++;
@@ -915,6 +919,7 @@
     },
     // flashcards
     "fc-study": (el) => study(el.dataset.cid),
+    "fc-cram": (el) => study(el.dataset.cid, { weeks: String(el.dataset.weeks || "").split(",").map(Number).filter(Boolean), cram: true }),
     "menu-fc-week": (el) => {             // "Study one week": each week with what it has to study today
       const cid = el.dataset.cid, d = (P.course[cid] || {}).deck || {}, each = d.week_counts || {};
       St.menu(el, (d.weeks || []).map((no) => {

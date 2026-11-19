@@ -36,7 +36,7 @@
   // the same dialog makes a cheatsheet (kind "sheet", cheatsheet.js): only its texts and the scope's kind differ
   const sheet = () => P.kind === "sheet";
   const heading = () => sheet() ? `${I("sigma")} ${t("New cheatsheet")}` : `${I("book")} ${t("New study pack")}`;
-  async function packDialog(courseId, kind) {
+  async function packDialog(courseId, kind, weeks) {        // weeks: the ones to start with (the Exam room's)
     const courses = S.courses.filter((c) => c.code);
     courseId = courseId || (S.view.courseId) || (courses[0] || {}).id;
     if (!courseId) { toast(t("Sync your courses first."), "error"); return; }
@@ -54,7 +54,9 @@
     const has = (w) => w.files.length > 0 || w.days.some((d) => d.mine && !silent(d));
     const pick = [cur, ...[...r.weeks].reverse().filter((w) => w.past)].find((w) => w && has(w))
       || cur || [...r.weeks].reverse().find((w) => w.past) || r.weeks[0];
-    if (pick) pickWeek(pick.no, true);
+    const asked = (weeks || []).filter((n) => r.weeks.some((w) => w.no === n));
+    if (asked.length) asked.forEach((n) => pickWeek(n, true));
+    else if (pick) pickWeek(pick.no, true);
     if (St.picks) St.picks.live({ state: () => P, open: dialogOpen, redraw: () => { readInputs(); draw(); estimate(); } });   // (Include anyway)
     draw();
     estimate();
@@ -280,7 +282,7 @@
   St.pack = { stateHTML, weekSpan, loadDoc, docLang, cutNote, pdfActs, pdfBtn };       // for cheatsheet.js and plans.js
 
   Object.assign(A, {
-    "pack-new": (el) => packDialog(el && el.dataset.id, el && el.dataset.kind),
+    "pack-new": (el) => packDialog(el && el.dataset.id, el && el.dataset.kind, el && el.dataset.weeks ? el.dataset.weeks.split(",").map(Number).filter(Boolean) : null),
     "pk-course": (el) => packDialog(el.value, P && P.kind),
     "pk-week": (el) => { readInputs(); const no = +el.dataset.no; pickWeek(no, !P.weeks.has(no)); draw(); estimate(); },
     "pk-item": (el) => {

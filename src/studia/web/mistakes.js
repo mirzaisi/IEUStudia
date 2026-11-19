@@ -307,5 +307,6 @@
   });
 
   const M = St.mistakes = { rowParts: [yoursPart, whyPart, sourcePart, actsPart], row, endRow, saved, tabHTML, asideLine,
-    isMC, cardBtn, studyHTML, studyKey, weakFirst, weakModeBtn, weakWhere, replay, state: MQ };
+    isMC, cardBtn, studyHTML, studyKey, weakFirst, weakModeBtn, weakWhere, replay, state: MQ,
+    skillRow };          // (the Exam room's "How well you know it": examroom.js)
 })();
