@@ -1299,9 +1299,11 @@ class ChatService:
                                                        labels=read["unread"][:12])], history)
             scope = chat.get("scope") or {}
             found, sources = "", []
-            try:                                            # course files and other lectures that match the question
-                if not quiz or quiz["topics"]:              # ("/quiz" alone matches nothing: the chat's material)
-                    found, sources = retrieve(self.lib, chat["course_id"], quiz["topics"] if quiz else question,
+            # course files and other lectures that match the question; none for "/quiz" ("/quiz 5 Bayes" too): a quiz
+            # is on the chat's own material, and its sources must be ones the app can open (chatquiz.facts)
+            try:
+                if not quiz:
+                    found, sources = retrieve(self.lib, chat["course_id"], question,
                                               skip_days=self._skip_days(chat, session))
             except Exception:  # noqa: BLE001 - the answer works without it
                 log.debug("retrieval failed", exc_info=True)
@@ -1312,7 +1314,7 @@ class ChatService:
             # the offline model: the passages of the student's files that match the question (and the one before it),
             # first, so that its small window keeps them before the other passages
             asked = " ".join([question] + [m.get("text") or "" for m in history[-2:] if m.get("role") == "user"])
-            mine = chatfiles.local_pick(getattr(session, "upload_passages", None) or [], asked)
+            mine = "" if quiz else chatfiles.local_pick(getattr(session, "upload_passages", None) or [], asked)
             if mine:
                 content.append({"type": "text", "text": mine})
             if found:

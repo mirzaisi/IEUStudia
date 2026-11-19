@@ -201,6 +201,23 @@ def test_a_question_with_code_in_it_keeps_the_chat_quiz_whole():
     assert json.loads(chatquiz.block(glued)) == CODE_QUIZ
 
 
+def test_a_quiz_with_topics_gets_no_passages_from_outside_the_chat(env):
+    """"/quiz 3 Bayes" in a one-lecture chat added up to 7,000 characters of other lectures and course files found by
+    the topics' words: the quiz instruction forbids using them, and their questions could not be given a source."""
+    _lecture(env.lib, "r2", dt.datetime(2026, 9, 30, 9, 0), [
+        (0, "Bayes theorem reverses a conditional probability: posterior from prior and likelihood, Bayes again.")])
+    chat = env.svc.create("c", [DAY])
+    e, fake = ask(env, chat["id"], "What does Bayes theorem say?", "It reverses a conditional probability.")
+    assert any("Passages from the course files" in b.get("text", "") for b in fake.got[0])   # a question: found
+    assert e["usage"].get("sources")
+    answer = "Here is your quiz.\n```ieustudia-quiz\n" + json.dumps(QUIZ) + "\n```"
+    e, fake = ask(env, chat["id"], "/quiz 3 Bayes", answer)
+    sent = [b.get("text", "") for b in fake.got[0]]
+    assert len(sent) == 1 and sent[0].startswith("(From the IEUStudia app")          # the quiz's instruction only
+    assert "The student also asked: Bayes" in sent[0] and "Passages from" not in sent[0]
+    assert "sources" not in e["usage"] and e["usage"]["quiz"]["questions"] == 3
+
+
 # ------------------------------------------------------------------ a quiz on the moments the student picked
 def test_a_quiz_on_picked_stressed_moments(env):
     from studia import stressed
