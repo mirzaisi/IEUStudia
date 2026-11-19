@@ -128,14 +128,14 @@ def _own_day(e: dict[str, Any]) -> str:
 
 def choices(d: dict[str, Any]) -> list[dict[str, Any]]:
     """What the export dialog's "For" offers: the assessments still ahead (syllabus finals too), each with the weeks
-    it covers, where they come from and its day (the announced one, else the one the student set, else its week's
-    first)."""
+    it covers, where they come from and its day as the Exam room says it (examroom.when: the announced one, else the
+    one the student set, else its week's class day or first day)."""
     from .quizzes import of
 
     weeks = {w["no"]: w for w in d.get("weeks") or []}
     return [{"key": e["key"], "name": e["name"], "kind": e["kind"], "week": e["week"], "weeks": list(e.get("weeks") or []),
              "weeks_from": e.get("weeks_from") or "",
-             "date": e.get("date") or _own_day(e) or (weeks.get(e["week"]) or {}).get("start") or ""}
+             "date": e.get("date") or (e.get("on") or {}).get("date") or (weeks.get(e["week"]) or {}).get("start") or ""}
             for e in of(d) if e.get("ahead")]
 
 

@@ -272,7 +272,7 @@
     const r = ER.room; if (!r) return;
     const w = r.when;
     St.modal(`<h2>${I("calendar")} ${t.html("When is {name}?", { name: r.assessment.name })}</h2>
-      <p class="lead">${esc(t("Set the day once you know it (the exam schedule on IEULearn has the midterms' and finals'). The room counts the days to it."))}</p>
+      <p class="lead">${esc(t("Set the day once you know it (the exam schedule on IEULearn has the midterms' and finals'). This page, the Calendar and your reminders use it."))}</p>
       <div class="field"><label for="er-day-in">${t("Day")}</label><input class="input" type="date" id="er-day-in" value="${esc(w.date || "")}"></div>
       <div class="actions">${w.from === "yours" ? `<button class="btn ghost" data-act="er-day-clear">${t("Forget the day I set")}</button><span class="spacer"></span>` : ""}
         <button class="btn" data-act="modal-close">${t("Cancel")}</button><button class="btn primary" data-act="er-day-save">${t("Save")}</button></div>`);
@@ -282,6 +282,7 @@
     St.closeModal();
     ER.room = r.room; ER.pick = null;
     renderView();
+    if (St.reloadCourse) St.reloadCourse(ER.cid);       // (Home's Coming up and the course page's top: the new day)
   }
 
   // ------------------------------------------------------------------ wiring

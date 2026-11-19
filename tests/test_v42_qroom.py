@@ -81,6 +81,15 @@ def test_a_moment_said_about_it_is_not_repeated_under_stressed(monkeypatch):
     assert [m["id"] for m in examroom.stressed_moments(None, "c", d, quiz3)] == ["s1", "s2"]
 
 
+def test_the_export_dialogs_for_says_the_day_the_room_says():
+    """The room said "Fri 11 Dec" (its week's class day) and the export dialog's "For" said 7 Dec (the week's start)."""
+    d = _said_course()
+    d["weeks"][9]["classes"] = [{"date": _wk(10, 4), "end": "12:00"}]                 # (week 10's Friday class)
+    on = {e["key"]: e["on"]["date"] for e in quizzes.assessments(d)}
+    got = {c["key"]: c["date"] for c in kit.choices(d)}
+    assert got["quiz:3"] == on["quiz:3"] == _wk(10, 4) and got["quiz:2"] == _wk(5)
+
+
 # ------------------------------------------------------------------ the day set in a room: Calendar, .ics, reminders
 @pytest.fixture
 def lib(tmp_path):

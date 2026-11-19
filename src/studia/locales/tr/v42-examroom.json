@@ -90,7 +90,7 @@
   "Back to the announced weeks ({weeks})": "Duyurulan haftalara dön ({weeks})",
   "Back to the guessed weeks ({weeks})": "Tahmin edilen haftalara dön ({weeks})",
   "When is {name}?": "{name} ne zaman?",
-  "Set the day once you know it (the exam schedule on IEULearn has the midterms' and finals'). The room counts the days to it.": "Günü öğrenince buraya yaz (ara sınavların ve finallerin günü IEULearn'deki sınav takviminde). Sayfa kalan günleri sayar.",
+  "Set the day once you know it (the exam schedule on IEULearn has the midterms' and finals'). This page, the Calendar and your reminders use it.": "Günü öğrenince buraya yaz (ara sınavların ve finallerin günü IEULearn'deki sınav takviminde). Bu sayfa, Takvim ve hatırlatmalar bu günü kullanır.",
   "Forget the day I set": "Yazdığım günü unut",
   "Pick a day first.": "Önce bir gün seç.",
   "{n} file downloading": "{n} dosya iniyor",

@@ -681,6 +681,7 @@
   // ------------------------------------------------------------------ wiring
   St.views.course = coursePage;
   St.hue = hue;                      // (the search's results: a course's colour on its code)
+  St.reloadCourse = (cid) => loadCourse(cid, true);    // (the Exam room: a day or weeks set there show on Home at once)
   St.views.home = homeView;
   St.onGo.course = (v) => {
     if (!v.tab && v.jumpWeek === undefined) { v.jumpWeek = "now"; St.after.course(v); }   // this week, not week 1
