@@ -49,7 +49,7 @@
         : item.kind === "download" ? (g.getting.has(item.resource_id) ? `<button class="btn ghost sm" disabled>${SPIN()} ${t("Downloading")}</button>`
           : `<button class="btn ghost sm" data-act="dg-get" data-id="${esc(item.resource_id)}">${I("download", "sm")} ${t.c("button", "Download")}</button>`)
           : item.kind === "assignment" ? (item.url ? `<button class="btn ghost sm" data-act="url" data-url="${esc(item.url)}" title="${t("Open it on IEULearn")}">${I("external", "sm")} ${t("Open")}</button>` : "")
-          : item.kind === "prepare" ? (item.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(item.course_id)}" data-name="${esc(item.name)}">${I("cap", "sm")} ${t("Exam room")}</button>`
+          : item.kind === "prepare" ? (item.name ? `<button class="btn ghost sm" data-act="ready-open" data-cid="${esc(item.course_id)}"${item.key ? ` data-key="${esc(item.key)}"` : ""} data-name="${esc(item.name)}">${I("cap", "sm")} ${t("Exam room")}</button>`
             : `<button class="btn ghost sm" data-act="plan-new" data-id="${esc(item.course_id)}">${I("youtube", "sm")} ${t("Make a plan")}</button>`) : "";
       return `<div class="dg-todo"><span class="dg-code">${esc(item.course)}</span><span class="grow">${esc(item.text)}</span>${act}</div>`;
     }).join("");

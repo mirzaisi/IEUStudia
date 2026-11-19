@@ -96,7 +96,7 @@ def test_a_syllabus_exam_week_no_announcement_covers_is_in_the_digest(tmp_path):
     (c,) = [c for c in dg["courses"] if c["code"] == "MATH 111"]
     assert [(e["name"], e["week"], e["this_week"], e["done"]) for e in c["coming"]] == [("Midterm", 8, True, False)]
     (todo,) = [x for x in dg["todo"] if x["kind"] == "prepare"]
-    assert todo["course"] == "MATH 111" and "name" not in todo        # (Get ready reads the plan: Make a plan instead)
+    assert todo["course"] == "MATH 111" and (todo["name"], todo["key"]) == ("Midterm", "syllabus:Midterm:8")  # its Exam room
     assert "TO DO: MATH 111: Midterm is this week" in digest_prompt(dg)
     before = weekly_digest(lib, Settings(), -1, now=dt.datetime(2026, 11, 9, 12, 0))    # the week before: coming
     assert [(e["name"], e["this_week"]) for e in next(c for c in before["courses"] if c["code"] == "MATH 111")["coming"]] \

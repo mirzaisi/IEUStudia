@@ -83,6 +83,7 @@ def _week(weeks: list[dict[str, Any]], no: Any) -> Optional[dict[str, Any]]:
 
 def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.date] = None,
                   now: Optional[dt.datetime] = None) -> dict[str, Any]:
+    from .quizzes import assessment_key
     from .views import classes_over, course_detail
 
     if now is None:
@@ -140,18 +141,25 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
         anns = [{"id": a["id"], "title": a["title"], "posted_at": a["posted_at"]} for a in d["announcements"]
                 if _in(a.get("posted_at") or "", mon, sun)]
         coming = []
+        rooms = {a["key"]: a for a in d.get("assessments") or []}      # (the Exam room's: its key, the day set there)
         for e in (d.get("alerts") or {}).get("plan") or []:
             w = _week(d["weeks"], e.get("week"))
             if not (w and w["start"]):
                 continue
-            # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule
+            key = assessment_key(e)
+            on = (rooms.get(key) or {}).get("on") or {}
+            # a quiz is held in one of the week's classes; midterms and finals follow the exam schedule; the day the
+            # student set in its Exam room is the day
             classes = (w.get("classes") or []) if e.get("kind", "quiz") == "quiz" else []
-            first, last = (classes[0]["date"], classes[-1]["date"]) if classes else (w["start"], w["end"] or w["start"])
+            mine = on["date"] if on.get("from") == "yours" else ""
+            first, last = ((mine, mine) if mine else (classes[0]["date"], classes[-1]["date"]) if classes
+                           else (w["start"], w["end"] or w["start"]))
             if mon.isoformat() <= last and first <= horizon.isoformat():
-                coming.append({"name": e["name"], "week": e["week"], "start": w["start"], "end": w["end"], "los": e["los"],
-                               "this_week": first <= sun.isoformat() and last >= mon.isoformat(),
-                               "dates": [x["date"] for x in classes],
-                               "done": (w["end"] or w["start"]) < today.isoformat() or classes_over(classes, now)})
+                coming.append({"name": e["name"], "key": key, "week": e["week"], "start": w["start"], "end": w["end"],
+                               "los": e["los"], "this_week": first <= sun.isoformat() and last >= mon.isoformat(),
+                               "dates": [] if mine else [x["date"] for x in classes], "set": mine,
+                               "done": last < today.isoformat() if mine
+                               else (w["end"] or w["start"]) < today.isoformat() or classes_over(classes, now)})
         # IEULearn's assignments still to send, due from this week (not before today) to the end of the next one: a
         # to-do with the day and time
         for a in d.get("assignments") or []:
@@ -164,13 +172,18 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                          "text": t(say, title=a["title"], day=date_short(day), time=a["time"]),
                          "en": say.format(title=a["title"], time=a["time"],
                                           day=f"{WEEKDAYS_SHORT[day.weekday()]} {day.day} {MONTHS[day.month - 1][:3]}")})
-        planned = {e.get("week") for e in (d.get("alerts") or {}).get("plan") or [] if e.get("kind") != "quiz"}
-        for w in d["weeks"]:        # an exam week of the syllabus no announcement covers (the calendar has it too)
-            last = w["end"] or w["start"]
-            if w.get("exam") and w["start"] and w["no"] not in planned and mon.isoformat() <= last \
-                    and w["start"] <= horizon.isoformat():
-                coming.append({"name": w.get("exam_label") or "Exam", "week": w["no"], "start": w["start"], "end": w["end"],
-                               "los": [], "this_week": w["start"] <= sun.isoformat(), "dates": [],
+        # the syllabus's exam weeks no announcement covers, as the Exam room and the Calendar have them (a two-week exam
+        # period is one; a week from an announced exam of its kind is that exam), on the day set in its room if one was
+        for e in (x for x in d.get("assessments") or [] if x.get("syllabus")):
+            w1, w = _week(d["weeks"], e.get("first_week") or e["week"]), _week(d["weeks"], e["week"])
+            if not (w1 and w1["start"] and w):
+                continue
+            on = e.get("on") or {}
+            mine = on["date"] if on.get("from") == "yours" else ""
+            first, last = (mine, mine) if mine else (w1["start"], w["end"] or w["start"])
+            if mon.isoformat() <= last and first <= horizon.isoformat():
+                coming.append({"name": e["name"], "key": e["key"], "week": w1["no"], "start": w1["start"], "end": w["end"],
+                               "los": [], "this_week": first <= sun.isoformat(), "dates": [], "set": mine,
                                "done": last < today.isoformat(), "exam_week": True})
         # (the excerpts are cut at a word already, with "…": only their line breaks go, which broke the file's list)
         said = [{"category": a["category"], "text": _one_line(a["text"]), "date": a["date"], "source": a["source"],
@@ -197,7 +210,7 @@ def weekly_digest(lib: Any, settings: Any, offset: int = 0, today: Optional[dt.d
                 say = N_("{name} is this week ({los})") if e["los"] else N_("{name} is this week")
                 values = {"name": e["name"], "los": "LO" + ", LO".join(map(str, e["los"]))}     # the name is an id
                 todo.insert(0, {"kind": "prepare", "course": c["code"], "course_id": c["id"],
-                                **({} if e.get("exam_week") else {"name": e["name"]}),   # (Get ready reads the plan)
+                                "name": e["name"], "key": e.get("key") or "",       # (its Exam room: a syllabus's too)
                                 "text": t(say, **values), "en": say.format(**values)})
     # what has a day first: a quiz or an exam this week, then the assignments to send (soonest first), then the rest
     todo.sort(key=lambda x: (0, "") if x["kind"] == "prepare" else (1, x["due"]) if x["kind"] == "assignment" else (2, ""))
@@ -226,6 +239,7 @@ def digest_prompt(digest: dict[str, Any]) -> str:
         for e in c["coming"]:
             lines.append(f"  {'done' if e['done'] else 'coming'}: {e['name']} in week {e['week']} ({e['start']}–{e['end']})"
                          + (f", class days {', '.join(e['dates'])}" if e["dates"] else "")
+                         + (f", on {e['set']} (the day the student set)" if e.get("set") else "")
                          + (f", LO{', LO'.join(map(str, e['los']))}" if e["los"] else ""))
         for s in c["said"]:
             if s["source"] == "announcement":

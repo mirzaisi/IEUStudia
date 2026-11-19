@@ -160,6 +160,23 @@ def test_the_day_set_in_the_room_is_the_calendars_the_files_and_the_reminders(li
     assert _exams(agenda.build(lib, Settings(), now=NOW))["c-quiz-3"]["sure"] == "week"
 
 
+def test_the_digest_opens_the_room_of_a_syllabus_exam_and_says_its_set_day(lib):
+    """The digest's to-do for a syllabus's exam this week offered "Make a plan" instead of its Exam room, listed a
+    syllabus week folded into an announced exam as an exam of its own, and kept the week of a day set in the room."""
+    from studia.digest import digest_prompt, weekly_digest
+
+    dg = weekly_digest(lib, Settings(), 0, now=dt.datetime(2026, 11, 4, 10, 0))          # week 8: the midterm
+    assert [e["name"] for e in dg["courses"][0]["coming"]] == ["Midterm"]               # (not week 9's "Midterm Exam")
+    dg = weekly_digest(lib, Settings(), 0, now=dt.datetime(2026, 12, 23, 10, 0))         # week 15: the exam period
+    todo = next(x for x in dg["todo"] if x["kind"] == "prepare")
+    assert (todo["name"], todo["key"]) == ("Final Exam", "syllabus:Final Exam:16")
+    examroom.set_day(lib, "c", "quiz:3", "2026-12-03")
+    dg = weekly_digest(lib, Settings(), 0, now=dt.datetime(2026, 12, 1, 10, 0))           # week 12
+    quiz = next(e for e in dg["courses"][0]["coming"] if e["key"] == "quiz:3")
+    assert (quiz["set"], quiz["this_week"], quiz["done"]) == ("2026-12-03", True, False)
+    assert "Quiz 3 in week 12 (2026-11-30–2026-12-06), on 2026-12-03 (the day the student set)" in digest_prompt(dg)
+
+
 # ------------------------------------------------------------------ the page
 @node
 def test_the_course_page_says_the_day_set_in_the_room(tmp_path):
