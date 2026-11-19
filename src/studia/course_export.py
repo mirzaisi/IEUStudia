@@ -1194,7 +1194,7 @@ def course_readme(w: "_CourseWriter", choice: Choice, today: dt.date, message: s
             lines.append("  - " + t("Lectures/<date>/Screens/: the screens as pictures."))
         if choice.files:
             lines.append("  - " + t("Course files/: the week's slides and documents from IEULearn."))
-    if choice.files and p.general:
+    if choice.files and any(week == 0 for week, _ in w._where.values()):     # (not when its only file was left out)
         lines.append("- " + t("General course files/: files for the whole course, not for one week."))
     if p.loose:
         lines.append("- " + t("Other lectures/: lectures IEUStudia couldn't place in a week."))

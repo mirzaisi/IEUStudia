@@ -69,6 +69,16 @@ def test_an_announcement_that_lists_students_stays_out_of_the_zip_and_the_brief(
     assert "Quiz 2 will be in week 4" in read(out, "00 Start here.md")            # the other announcement still is
 
 
+def test_the_readme_lists_no_course_wide_folder_when_its_only_file_was_left_out(env):
+    """EEE 215's only course-wide file is its lab grades: the README still listed "General course files/", a folder
+    the zip didn't have."""
+    env.lib.set_material_text("r9", ["\n".join(f"{20210600000 + 37 * n} {60 + n % 40}" for n in range(30))])
+    out = export(env, weeks=[2, 3])
+    assert not any(n.startswith("General course files/") for n in names(out)) and out["students"] == 1
+    readme = read(out, "README.md")
+    assert "General course files/" not in readme and "Formulas.pdf was left out" in readme
+
+
 def _ole(*parts):
     """An old Office file's bytes: its compound-file header and the records or text given."""
     return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + b"".join(parts) + b"\x00" * 64
@@ -142,6 +152,25 @@ def test_a_pasted_answer_that_stops_part_way_keeps_its_title_and_says_so(env):
     r = kit.pasted(env.api, "c", cards_cut)
     assert r["ok"] and r["kind"] == "cards" and r["cards"] == 2 and r["cut"]
     assert not kit.was_cut("| Front | Back |\n|---|---|\n| a card | its back |")
+
+
+def test_a_quiz_from_another_courses_zip_says_where_it_goes(env):
+    """A quiz from the EEE 215 zip's chat, pasted on MATH 240's Practice tab, was saved under MATH 240 with its
+    "F3 p.8" opening MATH 240's F3: the wrong file's page, shown as the question's source."""
+    from studia.domain import Course
+
+    env.lib.upsert_courses([Course(id="c", title="2026-1 MATH 240 Olasılık 1", code="MATH 240", name="Probability",
+                                   term="2026-2027 Fall"),
+                            Course(id="e", title="2026-1 EEE 215 Devreler 1", code="EEE 215", name="Circuits",
+                                   term="2026-2027 Fall")])
+    kit.save(env.lib, {"id": "e1e2e3e4", "course_id": "e", "made": "2026-10-08", "weeks": [2], "key": "", "focus": "",
+                       "refs": {}, "stressed": {}})
+    r = kit.pasted(env.api, "c", CHATGPT % {"kit": "e1e2e3e4"})
+    assert not r["ok"] and r["error"] == "This was made from your EEE 215 zip. Open EEE 215's Practice tab and paste " \
+                                         "it there."
+    assert not [p for p in env.lib.plans("c") if (p.get("scope") or {}).get("source") == "import"]
+    k = export(env, weeks=[2, 3], focus="quiz:2")["kit"]                      # its own course's: as before
+    assert kit.pasted(env.api, "c", CHATGPT % {"kit": k["id"]})["ok"]
 
 
 def test_a_source_naming_a_file_of_an_older_zip_opens_it(env):

@@ -904,6 +904,13 @@ def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str =
         return {"ok": False, "error": t("Paste the answer first.")}
     if len(text) > PASTE_MOST:
         return {"ok": False, "error": t("This is too long to be one quiz. Paste one answer at a time.")}
+    # made from another course's zip (pasted on the wrong course's tab): its F and L numbers are that course's, so
+    # here each source would open another file's page
+    other = _meta(lib, KIT.format(str(export_id or "") or kit_in(text)), {}).get("course_id") or ""
+    if other and other != course_id and lib.get_course(other) is not None:
+        c = lib.get_course(other)
+        return {"ok": False, "error": t("This was made from your {course} zip. Open {course}'s Practice tab and paste it "
+                                        "there.", course=c.code or c.name)}
     kind = "cards" if want == "cards" else kind_of(text)
     try:
         if kind == "cards":
