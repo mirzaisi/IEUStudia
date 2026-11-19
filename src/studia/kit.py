@@ -416,7 +416,8 @@ def load(lib: Any, course_id: str, kit_id: str = "") -> Optional[dict[str, Any]]
 
 
 # ------------------------------------------------------------------ reading what was pasted
-_FENCE = re.compile(r"```[ \t]*([\w+-]*)[^\n]*\n(.*?)(?:```|\Z)", re.S)
+# (its closing fence ends a line: a question's own code, "```java" inside a JSON string, doesn't close it)
+_FENCE = re.compile(r"```[ \t]*([\w+-]*)[^\n]*\n(.*?)(?:(?:\n|(?<=[}\]]))[ \t]*```[ \t\r]*$|\Z)", re.S | re.M)
 _KIT_ID = re.compile(r"[\"']?\bkit[\"']?\s*[:=]\s*[\"']?([0-9a-f]{8})\b", re.I)
 _TR = str.maketrans("çğıöşüâîûÇĞIİÖŞÜ", "cgiosuaiucgiiosu")
 TR_KEYS = {

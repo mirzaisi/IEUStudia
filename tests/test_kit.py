@@ -468,6 +468,20 @@ def test_what_a_paste_holds(env):
     assert kit.read_quiz(CHATGPT % {"kit": "ab12cd34"})["kit"] == "ab12cd34"
 
 
+def test_a_pasted_quiz_with_code_in_a_question_is_read_whole():
+    """A question holding a code block ("```java" inside its JSON string) cut the pasted block there: "found no quiz
+    and no flashcards in what you pasted"."""
+    quiz = {"questions": [
+        {"type": "mc", "question": "What does this print?\n\n```java\nint x = 5;\nSystem.out.println(x + 1);\n```",
+         "options": ["6", "5", "x + 1", "nothing"], "answer": "A", "source": "L1"},
+        {"type": "mc", "question": "Which keyword makes a constant in Java?", "options": ["final", "static", "const",
+                                                                                    "var"], "answer": "A", "source": "L1"}]}
+    for fence in ("json", "ieustudia-quiz", ""):
+        text = f"Here is the quiz.\n\n```{fence}\n{json.dumps(quiz, indent=2)}\n```\nAnything else?"
+        assert kit.kind_of(text) == "quiz", fence
+        assert [q["question"][:9] for q in kit.read_quiz(text)["questions"]] == ["What does", "Which key"], fence
+
+
 def test_sources_as_web_chats_write_them():
     names = [("bayes theorem.pdf", "F3"), ("bayes theorem", "F3")]
     assert kit.normal_source("F3 - Bayes theorem.pdf, page 12", names) == "F3 p.12"

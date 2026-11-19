@@ -183,6 +183,24 @@ def test_the_chat_quiz_prompt_names_each_reference_as_the_chat_does():
     assert chatquiz.block("```json\n[]\n```") == "```json\n[]\n```"
 
 
+CODE_QUIZ = {"questions": [
+    {"type": "mc", "question": "What does this print?\n\n```java\nint x = 5;\nSystem.out.println(x + 1);\n```",
+     "options": ["6", "5", "x + 1", "nothing"], "answer": "A", "source": "L1"},
+    {"type": "mc", "question": "Which keyword makes a constant in Java?", "options": ["final", "static", "const", "var"],
+     "answer": "A", "source": "L1"}]}
+
+
+def test_a_question_with_code_in_it_keeps_the_chat_quiz_whole():
+    """A question holding a code block ("```java" inside its JSON string) closed the ```ieustudia-quiz block there:
+    the quiz in the answer "could not be read" and nothing was saved."""
+    for body in (json.dumps(CODE_QUIZ, indent=2), json.dumps(CODE_QUIZ)):
+        answer = f"Here is your quiz.\n\n```ieustudia-quiz\n{body}\n```\nGood luck!"
+        assert json.loads(chatquiz.block(answer)) == CODE_QUIZ
+        assert len(quizzes.read_answer(chatquiz.block(answer))["questions"]) == 2
+    glued = f"Here is your quiz.\n\n```ieustudia-quiz\n{json.dumps(CODE_QUIZ)}```"     # (its fence right after it)
+    assert json.loads(chatquiz.block(glued)) == CODE_QUIZ
+
+
 # ------------------------------------------------------------------ a quiz on the moments the student picked
 def test_a_quiz_on_picked_stressed_moments(env):
     from studia import stressed

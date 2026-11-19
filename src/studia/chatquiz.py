@@ -28,7 +28,8 @@ log = logging.getLogger("studia")
 COMMAND = re.compile(r"^\s*/quiz\b[ \t]*(\d{1,2})?[ \t]*(.*)$", re.I | re.S)
 DEFAULT_N = 5
 MOST = 20
-FENCE = re.compile(r"```[ \t]*ieustudia-quiz[ \t]*\n?(.*?)(?:```|$)", re.S | re.I)
+# (its closing fence ends a line: a question's own code, "```java" inside a JSON string, doesn't close it)
+FENCE = re.compile(r"```[ \t]*ieustudia-quiz[ \t]*\n?(.*?)(?:(?:\n|(?<=[}\]]))[ \t]*```[ \t\r]*$|\Z)", re.S | re.I | re.M)
 _PART_ONLY = re.compile(r"^\s*\[?\s*(?:P|part\s*|bölüm\s*)(\d{1,2})\b", re.I)
 
 
