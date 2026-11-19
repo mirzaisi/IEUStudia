@@ -306,7 +306,9 @@
 
   // ------------------------------------------------------------------ wiring
   St.views.exam = view;
-  St.crumbs.exam = (v) => { const c = St.findCourse(v.courseId); return `<button class="btn ghost sm" data-act="er-back">${I("arrow-left", "sm")} ${t("Back")}</button> ${c ? esc(c.code) : ""} <span class="dim">· ${t("Exam room")}</span>`; };
+  // the page's name first, the course's code after it (cut with "…" when the bar is full: Turkish at 1024 px cut the
+  // name to "Sınav…"; the code is on the page itself too)
+  St.crumbs.exam = (v) => { const c = St.findCourse(v.courseId); return `<button class="btn ghost sm" data-act="er-back">${I("arrow-left", "sm")} ${t("Back")}</button> ${t("Exam room")}${c ? ` <span class="dim">· ${esc(c.code)}</span>` : ""}`; };
   St.onGo.exam = (v) => {
     if (ER.cid !== v.courseId || ER.key !== (v.key || "")) ER.allStressed = false;
     ER.cid = v.courseId; ER.key = v.key || "";

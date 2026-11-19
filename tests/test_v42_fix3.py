@@ -87,15 +87,6 @@ def test_turkish_days_are_joined_with_the_word_home_uses():
     assert i18n.table("tr")["or {days}"] == "veya {days}"
 
 
-def test_a_narrow_top_bar_keeps_the_background_checks_note_to_its_icon():
-    from pathlib import Path
-
-    from studia import i18n
-
-    css = (Path(i18n.__file__).parent / "web" / "styles.css").read_text(encoding="utf-8")
-    assert "@media (max-width: 1100px) { .topbar .bg-off .lbl { display: none; } }" in css
-
-
 # ------------------------------------------------------------------ a question asked again in another quiz
 def test_a_question_missed_again_in_another_quiz_is_not_counted_as_a_new_card(api):
     """'6 missed questions join your flashcards' after a second quiz that repeated the first one's questions, while

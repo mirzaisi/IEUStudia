@@ -335,6 +335,17 @@ def test_the_quiz_dialog_says_what_to_do_when_there_is_nothing_to_pick(tmp_path)
 
 
 @node
+def test_the_exam_room_s_crumb_puts_the_page_s_name_before_the_course_code(tmp_path):
+    """Turkish at 1024 px cut 'MATH 240 · Sınava hazırlık' to 'MATH 240 · Sınav…': the name comes first now and the
+    code (also on the page) is what gets cut."""
+    out = room_run(tmp_path, """
+  out.crumb = St.crumbs.exam({ name: "exam", courseId: "c", key: "quiz:3" });
+""")
+    after = out["crumb"].split("</button>", 1)[1]
+    assert after.strip().startswith("Exam room") and '<span class="dim">· MATH 240</span>' in after
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();
