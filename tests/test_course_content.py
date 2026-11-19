@@ -840,6 +840,21 @@ def test_a_list_of_weeks_a_week_before_and_a_quiz_named_after_a_week_are_read_wh
     assert [(e["name"], e["week"], e["covers"]) for e in both] == [("Quiz 2", 4, []), ("Quiz 3", 10, [])]
 
 
+@pytest.mark.parametrize("sep", [" - ", " , ", " ve ", "  ,  ", " . - "])
+def test_a_long_run_of_numbers_in_an_announcement_is_read_at_once(sep):
+    """A list of problem numbers with a space before each separator ("1 - 2 - 3 …") was tried every way its spaces
+    could split (a second more for every two numbers): the course's pages never finished loading."""
+    import time
+    nums = sep.join(str(i % 20 + 1) for i in range(40))
+    body = f"Homework 3 is posted. Solve the problems {nums} from chapter 4 and bring them to class."
+    start = time.perf_counter()
+    assert assessment_plan([_ann("h", "Homework 3", body)]) == []
+    assert time.perf_counter() - start < 1
+    plan = assessment_plan([_ann("t", "Quizzes", "Quiz 1\nWeek 4"), _ann(
+        "c", "Quiz 1", "1. quiz 1 , 2 ve 3. haftaların konularını kapsayacak.", "2026-10-20T09:00")])
+    assert [e["covers"] for e in plan] == [[1, 2, 3]]                # (a Turkish list with spaces still reads whole)
+
+
 def _plan_of(title, body):
     return [(e["name"], e["week"], e["date"], e["time"]) for e in
             assessment_plan([_ann("a", title, body, "2026-11-03T09:00")])]

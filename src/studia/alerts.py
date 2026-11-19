@@ -326,7 +326,7 @@ _NOT_ON = re.compile(r"make-?up|telafi|mazeret|b[uü]t[uü]nleme|results?|grades
 # topics of weeks 1-4", "3. quiz 8. ve 9. haftaları kapsar", "Quiz 1-4 sırasıyla 2., 4., 6. ve 8. haftaların konularını
 # kapsayacaktır", "Ara sınavın kapsamı: 1-7. haftalar" (folded text)
 _EN_LIST = r"(\d{1,2}(?:\s*(?:,\s*and|,|and|&|-|–|to|through)\s*\d{1,2}\b(?![./:]\d))*)"     # ("3, 5, and 7" too)
-_TR_LIST = r"(\d{1,2}(?:\s*\.?\s*(?:,|ve|-|–|ile)\s*\d{1,2})*)"
+_TR_LIST = r"(\d{1,2}(?:\s*(?:\.\s*)?(?:,|ve|-|–|ile)\s*\d{1,2})*)"   # (each gap read one way only: no blow-up)
 _COVER_WEEKS = re.compile(r"\b(?:cover\w*|includ\w*)\s+(?:(?!(?:held|given|take|taken|place|scheduled|be|on|during)\b)"
                           r"\w+\s+){0,6}?weeks?\s+" + _EN_LIST + r"\b"
                           r"|(?<![\d.])" + _TR_LIST + r"\s*\.\s*hafta\w*\s+(?:\w+\s+){0,2}?(?:konu|kapsa|i[sş]len)"
