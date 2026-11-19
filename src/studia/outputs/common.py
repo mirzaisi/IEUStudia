@@ -167,6 +167,11 @@ def language_shares(transcripts: Iterable[Transcript]) -> dict[str, float]:
     return {k: v / total for k, v in sorted(totals.items(), key=lambda kv: -kv[1])}
 
 
+def main_language(transcripts: Iterable[Transcript]) -> str:
+    """The language most of the speech is in: "en", "tr" ("" with none)."""
+    return next(iter(language_shares(transcripts)), "")
+
+
 def format_language_shares(shares: Mapping[str, float]) -> str:
     """``English 96 % · Turkish 4 %`` (tiny shares shown as ``<1 %``, never "100 %" next to another)."""
     items = [(k, v) for k, v in shares.items() if v > 0]

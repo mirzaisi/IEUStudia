@@ -1392,7 +1392,7 @@ def prep_pdf(s: Any, plan: dict[str, Any]) -> Optional[Path]:
     course = s.lib.get_course(plan["course_id"])
     title = md_path.stem.split(" - ", 1)[-1] if " - " in md_path.stem else (r.get("title") or "Review sheet")
     day = made_on(plan)
-    doc = D.Doc(title, kicker=" · ".join(x for x in (course.code if course else "", "Review sheet") if x),
+    doc = D.Doc(title, kicker="Review sheet", course=course.code if course else "",
                 subtitle=f"Made with IEUStudia on {day.day} {day:%b %Y}",
                 blocks=[D.Markdown(r["markdown"], top=1)], lang="tr" if D.turkish(r["markdown"]) else "en")
     pdf = md_path.with_suffix(".pdf")

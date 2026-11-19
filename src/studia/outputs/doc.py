@@ -117,7 +117,9 @@ Block = Union[Heading, Para, Items, Table, Figure, Rule, Box, Math, Code, Markdo
 @dc.dataclass
 class Doc:
     title: str
-    kicker: str = ""                  # above the title: "EEE 215 · Transcript"
+    kicker: str = ""                  # above the title, after the course: "Transcript" (English)
+    course: str = ""                  # the kicker's course: "EEE 215" (a course without a code: its name)
+    course_lang: str = ""             # the course's language when not the document's (a transcript's: what was said)
     subtitle: str = ""                # under it
     meta: list[list[Run]] = dc.field(default_factory=list)    # lines about it ("Course: …")
     blocks: list[Any] = dc.field(default_factory=list)
@@ -942,7 +944,7 @@ def to_markdown(doc: Doc) -> str:
 
 def _to_markdown(doc: Doc) -> str:
     lines = [f"# {md_escape(doc.title)}", ""]
-    under = " · ".join(x for x in (doc.kicker, doc.subtitle) if x)
+    under = " · ".join(x for x in (doc.course, doc.kicker, doc.subtitle) if x)
     if under:
         lines += [f"*{md_escape(under)}*", ""]
     if doc.meta:
@@ -1016,7 +1018,7 @@ def to_text(doc: Doc) -> str:
 
 def _to_text(doc: Doc) -> str:
     lines = [doc.title, "=" * min(72, len(doc.title))]
-    under = " · ".join(x for x in (doc.kicker, doc.subtitle) if x)
+    under = " · ".join(x for x in (doc.course, doc.kicker, doc.subtitle) if x)
     if under:
         lines.append(under)
     lines += [_runs_text(m) for m in doc.meta] + [""]
@@ -1163,7 +1165,10 @@ def _to_html(doc: Doc) -> str:
 
     css = CSS_FILE.read_text(encoding="utf-8") + EXTRA_CSS
     meta = "".join(f'<div class="xp-meta">{_runs_html(m)}</div>' for m in doc.meta)
-    kicker = f'<div class="sp-kicker" lang="en">{_esc(doc.kicker)}</div>' if doc.kicker else ""
+    # in capitals: the course by its own language's rules ("BİLGİSAYAR"), the English words by English ones ("WITH")
+    course = f'<span lang="{_esc(doc.course_lang or doc.lang)}">{_esc(doc.course)}</span>' if doc.course else ""
+    words = " · ".join(x for x in (course, _esc(doc.kicker)) if x)
+    kicker = f'<div class="sp-kicker" lang="en">{words}</div>' if words else ""
     sub = f'<div class="sp-sub">{_esc(doc.subtitle)}</div>' if doc.subtitle else ""
     cover = f'<header class="sp-cover">{kicker}<h1>{_esc(doc.title)}</h1>{sub}{meta}</header>'
     return (f'<!doctype html><html lang="{_esc(doc.lang)}"><head><meta charset="utf-8"><title>{_esc(doc.title)}'
