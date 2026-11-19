@@ -469,6 +469,8 @@
     const quiz = r.quiz, all = ((quiz.result || {}).questions) || [], off = new Set((quiz.result || {}).removed || []);
     const qs = all.filter((q) => !off.has(q.n));                 // (not the ones removed: mistakes.js)
     if (!qs.length) { toast(t("This quiz has no questions."), "error"); return; }
+    // (missed ones all removed since: nothing to ask, and no empty "0 of 0" try saved)
+    if (only && only.length && !qs.some((q) => only.includes(q.n))) { toast(t("These questions were removed from the quiz."), "info"); return; }
     const kept = runOf(id), resume = kept && !kept.saved && !only;
     if (P.run && P.run.id !== id && inProgress(P.run)) P.runs[P.run.id] = P.run;     // the one left: kept for its Continue
     delete P.runs[id];
@@ -942,7 +944,8 @@
     },
     "menu-qz": (el) => {
       const p = P.course[el.dataset.cid] || {}, q = (p.quizzes || []).find((x) => x.id === el.dataset.id) || {};
-      const last = q.last && (q.last.answers || []).filter((a) => (a.got || 0) < 1).map((a) => a.n);
+      const off = new Set(q.removed || []);                // (the ones removed since aren't asked again)
+      const last = q.last && (q.last.answers || []).filter((a) => (a.got || 0) < 1 && !off.has(a.n)).map((a) => a.n);
       St.menu(el, [
         ...(last && last.length ? [{ id: "missed", icon: "retry", label: t.n(last.length, "Try {n} missed question", "Try {n} missed questions"), run: () => playQuiz(q.id, last) }] : []),
         { id: "pdf", icon: "file-text", label: t("Open as PDF"), desc: t("To solve on paper: the questions first, the answer key on its own pages at the end"), run: () => pdf(q.id, "open") },

@@ -25,7 +25,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .i18n import t
 
@@ -129,9 +129,10 @@ def attempts(lib: Any, plan_id: Optional[str] = None, course_id: Optional[str] =
     return out
 
 
-def quiz_brief(plan: dict[str, Any], tries: list[dict[str, Any]], kept: Optional[int] = None) -> dict[str, Any]:
+def quiz_brief(plan: dict[str, Any], tries: list[dict[str, Any]], kept: Optional[int] = None,
+               removed: Iterable[int] = ()) -> dict[str, Any]:
     """A quiz for the lists: its state, title, size (``kept``: the questions a finished quiz kept; else as many as
-    were asked), when it was made, and its last and best whole tries."""
+    were asked), when it was made, its last and best whole tries, and the questions the student removed."""
     whole = [a for a in tries if not a["only"]]
     best = max(whole, key=lambda a: a["score"] / max(1, a["total"]), default=None)
     sc = plan.get("scope") or {}
@@ -140,13 +141,13 @@ def quiz_brief(plan: dict[str, Any], tries: list[dict[str, Any]], kept: Optional
             "error": plan.get("error", ""), "created_at": plan.get("created_at", ""), "weeks": sc.get("weeks") or [],
             "days": sc.get("days") or [], "focus": sc.get("focus") or "", "source": sc.get("source") or "",
             "questions": kept if kept is not None else sc.get("questions") or 0,
-            "tries": len(tries), "last": tries[0] if tries else None, "best": best}
+            "tries": len(tries), "last": tries[0] if tries else None, "best": best, "removed": sorted(removed)}
 
 
-def kept_questions(lib: Any, plan_ids: list[str]) -> dict[str, int]:
+def kept_questions(lib: Any, plan_ids: list[str], removed: Optional[dict[str, list[int]]] = None) -> dict[str, int]:
     """How many questions each of these finished quizzes kept: the checks drop unusable or repeated ones, so it can
     be fewer than were asked (the list said "10 questions" of a quiz of 8); the ones the student removed don't
-    count."""
+    count (``removed``, when given, gets their numbers by quiz)."""
     if not plan_ids:
         return {}
     with lib._lock:
@@ -160,7 +161,10 @@ def kept_questions(lib: Any, plan_ids: list[str]) -> dict[str, int]:
         except (ValueError, AttributeError):
             continue
         if isinstance(qs, list):
-            out[pid] = len(qs) - len(set(res.get("removed") or []) & {q.get("n") for q in qs if isinstance(q, dict)})
+            off = set(res.get("removed") or []) & {q.get("n") for q in qs if isinstance(q, dict)}
+            out[pid] = len(qs) - len(off)
+            if removed is not None:
+                removed[pid] = sorted(off)
     return out
 
 
@@ -579,8 +583,10 @@ class PracticeApi:
         plans = lib.plans(course_id)
         tries = attempts(lib, course_id=course_id)
         mine = [p for p in plans if (p.get("scope") or {}).get("kind") == "quiz"]
-        kept = kept_questions(lib, [p["id"] for p in mine if p["status"] == "done"])
-        quizzes = [quiz_brief(p, [a for a in tries if a["plan_id"] == p["id"]], kept.get(p["id"])) for p in mine]
+        off: dict[str, list[int]] = {}
+        kept = kept_questions(lib, [p["id"] for p in mine if p["status"] == "done"], off)
+        quizzes = [quiz_brief(p, [a for a in tries if a["plan_id"] == p["id"]], kept.get(p["id"]), off.get(p["id"], ()))
+                   for p in mine]
         sets = [{"id": p["id"], "title": p.get("title") or "", "status": p["status"], "message": p.get("message", ""),
                  "progress": p.get("progress", 0), "error": p.get("error", ""), "created_at": p.get("created_at", "")}
                 for p in plans if (p.get("scope") or {}).get("kind") == "cards"]

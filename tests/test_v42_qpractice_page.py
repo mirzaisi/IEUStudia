@@ -236,6 +236,49 @@ def test_deleting_a_quiz_loads_its_course_again(tmp_path):
 
 
 @node
+def test_try_the_missed_questions_leaves_out_the_removed_ones_and_saves_no_empty_try(tmp_path):
+    """The quiz row's menu said "Try 1 missed question" for one removed since, and pressing it saved a "0 of 0" try."""
+    out = _page(tmp_path, """
+  const qs = [1, 2, 3, 4].map((n) => ({ n, type: "mc", q: "Q" + n, options: ["a", "b", "c", "d"], answer: 0, source: null }));
+  let removed = [3];
+  ANSWERS.quiz_get = () => ({ ok: true, quiz: { id: "p", course_id: "c1", title: "Bayes", result: { questions: qs, removed } }, attempts: [] });
+  const last = { score: 2, total: 4, only: [], answers: [{ n: 1, got: 1 }, { n: 2, got: 0, chose: 1 }, { n: 3, got: 0, chose: 2 }, { n: 4, got: 1 }] };
+  const quiz = { id: "p", course_id: "c1", title: "Bayes", status: "done", weeks: [4], days: [], questions: 3, tries: 1, last, removed };
+  P().course.c1 = { deck: {}, card_sets: [], quizzes: [quiz], stressed: { total: 0, weeks: [], not_needed: [] }, mistakes: [] };
+  A["menu-qz"]({ dataset: { id: "p", cid: "c1" } });
+  out.label = menus.slice(-1)[0][0].label;
+  quiz.removed = removed = [2, 3]; quiz.questions = 2;
+  A["menu-qz"]({ dataset: { id: "p", cid: "c1" } });
+  out.offered = menus.slice(-1)[0].map((x) => x.id);
+  shown.html = "";
+  const before = toasts.length;
+  quiz.removed = [];                                     // (a row drawn before the removal: the quiz says it)
+  A["menu-qz"]({ dataset: { id: "p", cid: "c1" } }); await menus.slice(-1)[0][0].run(); await tick();
+  out.toast = toasts.slice(before).map((x) => x[0]); out.saved = calls.filter((c) => c[0] === "quiz_attempt").length;
+  out.shown = shown.html;
+""")
+    assert out["label"] == "Try 1 missed question"                     # Q2 only: Q3 was removed
+    assert "missed" not in out["offered"]
+    assert out["toast"] == ["These questions were removed from the quiz."] and out["saved"] == 0 and out["shown"] == ""
+
+
+def test_a_quizs_brief_names_the_questions_removed():
+    import threading
+    import types
+
+    from studia import practice
+
+    rows = [("p", json.dumps({"questions": [{"n": 1}, {"n": 2}, {"n": 3}], "removed": [3, 9]}))]
+    lib = types.SimpleNamespace(_lock=threading.Lock(), db=types.SimpleNamespace(
+        execute=lambda sql, ids: types.SimpleNamespace(fetchall=lambda: rows)))
+    off = {}
+    assert practice.kept_questions(lib, ["p"], off) == {"p": 2} and off == {"p": [3]}
+    plan = {"id": "p", "course_id": "c", "status": "done", "scope": {}}
+    assert practice.quiz_brief(plan, [], 2, off["p"])["removed"] == [3]
+    assert practice.quiz_brief(plan, [])["removed"] == []
+
+
+@node
 def test_quiz_this_lo_picks_the_weeks_of_the_assessment_that_names_it(tmp_path):
     out = _page(tmp_path, """
   const wk = (no, current) => ({ no, current, past: !current, topic: "T" + no, files: [{ id: "f" + no, name: "W" + no + ".pdf", pages: 3, ready: true, downloaded: true }], days: [] });
