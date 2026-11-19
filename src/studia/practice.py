@@ -364,7 +364,9 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
             r["qs"].add((pid, q.get("n")))
             if not card:
                 r["plans"].add(pid)
-            r["last"][(pid, q.get("n"))] = (at, got)
+            last = r["last"].get((pid, q.get("n")))
+            if last is None or at >= last[0]:              # (the latest answer: a try or a card review)
+                r["last"][(pid, q.get("n"))] = (at, got)
             if k[0] == "topic":
                 r["names"][q["topic"]] = r["names"].get(q["topic"], 0) + 1
 
@@ -378,7 +380,7 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
             if focus and not (sc.get("focus") == focus or want & set(q.get("los") or [])):
                 continue
             asked[(pid, q.get("n"))] = q
-    for a in tries:
+    for a in reversed(tries):                               # oldest first: the newest answer is the last one
         for ans in a["answers"]:
             q = asked.get((a["plan_id"], ans.get("n"))) if isinstance(ans, dict) else None
             if q:
@@ -387,7 +389,8 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
     if by_card:
         with lib._lock:
             reviews = lib.db.execute(f"SELECT card_id, at, grade FROM card_reviews WHERE course_id=? AND card_id IN "
-                                     f"({','.join('?' * len(by_card))})", [course_id, *by_card]).fetchall()
+                                     f"({','.join('?' * len(by_card))}) ORDER BY at, rowid",
+                                     [course_id, *by_card]).fetchall()
         for cid, at, grade in reviews:
             pid, q = by_card[cid]
             count(q, pid, 0.0 if grade == "again" else 1.0, MARKS["app" if q.get("type") == "mc" else "self"], at,

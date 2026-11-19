@@ -278,6 +278,30 @@ def test_mastery_counts_per_learning_outcome_and_topic(api):
     assert [r["no"] for r in only["los"]] == [1] and only["focus"] == "Quiz 1"
 
 
+def test_mastery_misses_are_the_latest_answers_not_the_oldest(api):
+    """attempts() gives the newest try first, and each answer overwrote the last one kept: the oldest won, so a
+    question just missed was left out of the weak spots and one fixed since stayed in them."""
+    lib = api._s.lib
+    make_quiz(lib, "q1", api.day)
+    old = api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 0, "chose": 2}, {"n": 2, "got": 1, "chose": 1}],
+                                  "only": [1, 2]})["attempt"]
+    hour_ago = (dt.datetime.now() - dt.timedelta(hours=1)).isoformat(timespec="seconds")
+    with lib._lock:
+        lib.db.execute("UPDATE quiz_attempts SET finished_at=? WHERE id=?", (hour_ago, old["id"]))
+        lib.db.commit()
+    api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 1, "chose": 0}, {"n": 2, "got": 0, "chose": 0}],
+                            "only": [1, 2]})
+    missed = {r["no"]: [(x["plan_id"], x["n"]) for x in r["missed"]] for r in practice.mastery(lib, "c")["los"]}
+    assert missed[1] == [] and missed[2] == [("q1", 2)]
+    w = practice.weak_spots(lib, "c", "Quiz 1", los=[1, 2])
+    assert [(x["plan_id"], x["n"]) for x in w["missed"]] == [("q1", 2)]
+    # a card review after the try: the review is the latest answer
+    cards.grade(lib, "c", cards.quiz_card_id("q1", questions(api.day)[1]["q"]), "good",
+                dt.datetime.now() + dt.timedelta(minutes=5))
+    missed = {r["no"]: r["missed"] for r in practice.mastery(lib, "c", now=dt.datetime.now() + dt.timedelta(hours=1))["los"]}
+    assert missed[2] == []
+
+
 # ------------------------------------------------------------------ a quiz on the weak spots
 def test_a_weak_spot_quiz_reads_only_where_the_missed_questions_come_from(api):
     lib = api._s.lib
