@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import math
+import os
 import re
 import threading
 from pathlib import Path
@@ -274,6 +275,11 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, Any
                            for ref, it in by_ref.items()},
                  stressed_only=bool(only and by_ref),
                  one_lecture=bool(scope.days) and len(scope.days) == 1 and not scope.files)
+    if facts["one_lecture"] and facts["stressed_only"]:
+        # moments the student picked in one lecture: the slides on screen around them go with the quiz, not 40 spread
+        # over the whole lecture (a 6-part lecture's 40 were about 32k tokens, most of a quiz on 2 moments)
+        facts["near"] = [[it["part"], it["t"]] for it in by_ref.values()]
+        facts["near_slides"] = len(moment_slides(lib, course_id, scope.days[0], facts["near"]))
     if getattr(scope, "weak", False):
         _weak(lib, course_id, scope, facts)
     return facts
@@ -409,9 +415,11 @@ def write_prompt(scope: Any, facts: dict[str, Any], n: int, kinds: dict[str, int
     prio.append(f"{len(prio) + 1}. Otherwise spread the questions over all the topics of the material, one per topic "
                 "before a second on any topic.")
     extra = f"\nThe student also asked: {scope.topics.strip()}" if (scope.topics or "").strip() else ""
-    slides = ("\nThe slides captured from the lecture video are attached as pictures, each labelled [Part n, slide m]; "
-              "the transcript's (slide m) marks show when each was on screen. Use them (formulas, figures, worked "
-              "examples), and cite the lecture moment where the slide was shown.") if facts.get("one_lecture") else ""
+    near = facts.get("near") is not None          # (a quiz on moments of one lecture: the slides around them)
+    slides = (f"\nThe slides {'on screen around the S moments' if near else 'captured from the lecture video'} are "
+              "attached as pictures, each labelled [Part n, slide m]; the transcript's (slide m) marks show when each "
+              "was on screen. Use them (formulas, figures, worked examples), and cite the lecture moment where the "
+              "slide was shown.") if facts.get("one_lecture") and (not near or facts.get("near_slides")) else ""
     lectures = " (cite the [mm:ss] time written before the passage)" if facts["lectures"] else ""
     check = "\n" + CHECK_RULE if kinds["short"] or kinds["problem"] else ""
     return f"""TASK: Write a practice quiz of exactly {n} exam-style questions: {want}. {quiz_languages(facts['language'], facts.get('taught_in', ''))}{extra}
@@ -1270,7 +1278,7 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
         stage("write", 0.1, tn(n, "Writing {n} question ({model})…", "Writing {n} questions ({model})…", model=shown))
         content: list[dict[str, Any]] = [{"type": "text", "text": write_prompt(scope, facts, n, kinds)}]
         if facts.get("one_lecture") and hasattr(s, "ai_inputs"):
-            content += _slide_blocks(s, scope.days[0])
+            content += _slide_blocks(s, scope.days[0], plan["course_id"], facts.get("near"))
         ask = runner._ask_text or one_shot
         res = ask(SYSTEM, content, model, level, cancel, None)
         _usage_add(usage, "write", res)
@@ -1325,13 +1333,38 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
                       progress=1.0, message=tn(len(quiz["questions"]), "{n} question", "{n} questions"))
 
 
-def _slide_blocks(s: Any, day_key: str) -> list[dict[str, Any]]:
+def moment_slides(lib: Any, course_id: str, day_key: str, near: Any) -> list[tuple[str, str]]:
+    """The captured slides of a lecture that were on screen within NEAR_S of these moments ([part, t]: a quiz on
+    moments the student picked), labelled as the transcript marks them ("[Part 2, slide 5]"), at most LECTURE_SLIDES."""
+    from .outputs.markdown import part_views
+    from .studypack import _lecture
+
+    try:
+        _, recs, trans, slides = _lecture(lib, course_id, day_key)
+    except Exception:  # noqa: BLE001 - a quiz without the pictures is still a quiz
+        log.debug("no slides for the moments", exc_info=True)
+        return []
+    at = [(int(p), float(x)) for p, x in near or []]
+    out: list[tuple[str, str]] = []
+    for p in part_views(recs, trans, slides):
+        seen: set[int] = set()
+        for sl in p.slides if p.transcript else []:
+            if sl.index in seen or not sl.path or not os.path.isfile(sl.path):
+                continue
+            if any(part == p.index and sl.t - NEAR_S <= x <= max(sl.end, sl.t) + NEAR_S for part, x in at):
+                seen.add(sl.index)
+                out.append((f"[Part {p.index}, slide {sl.index}]", sl.path))
+    return out[:LECTURE_SLIDES]
+
+
+def _slide_blocks(s: Any, day_key: str, course_id: str = "", near: Any = None) -> list[dict[str, Any]]:
     """A one-lecture quiz: the slides captured from its video, labelled as the transcript marks them, at most
-    LECTURE_SLIDES spread over the lecture."""
+    LECTURE_SLIDES spread over the lecture; a quiz on moments the student picked there (``near``: [part, t] of each):
+    those on screen around them (moment_slides)."""
     from .ai import image_block
 
     try:
-        _, images, _, _ = s.ai_inputs(day_key, True)
+        images = moment_slides(s.lib, course_id, day_key, near) if near is not None else s.ai_inputs(day_key, True)[1]
     except Exception:  # noqa: BLE001 - a quiz without the pictures is still a quiz
         log.debug("no slides for the quiz", exc_info=True)
         return []
@@ -1358,8 +1391,9 @@ def estimate(lib: Any, settings: Any, course_id: str, scope: Any) -> dict[str, A
     n = scope.questions if scope.questions in COUNTS else DEFAULT_COUNT
     per = chars_per_token()
     slides = 0
-    if facts.get("one_lecture"):
-        slides = min(LECTURE_SLIDES, sum(p["slides"] for x in facts["lectures"] for p in x["parts"]))
+    if facts.get("one_lecture"):                 # (what the run sends: _slide_blocks)
+        slides = int(facts.get("near_slides") or 0) if facts.get("near") is not None else \
+            min(LECTURE_SLIDES, sum(p["slides"] for x in facts["lectures"] for p in x["parts"]))
     tokens_in = facts["chars"] / per + PROMPT_OVERHEAD + 2_500 + slides * 800
     tokens_out = 600 + n * 420
     a = 1 + round(n / 6)
