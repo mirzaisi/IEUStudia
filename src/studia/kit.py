@@ -119,36 +119,37 @@ def assessment(d: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
     return next((e for e in of(d) if e.get("key") == key), None) if key else None
 
 
+def _own_day(e: dict[str, Any]) -> str:
+    """The exact day the student set for it in the Exam room (examroom.when, as quizzes.assessments gives it), "" for
+    none."""
+    on = e.get("on") or {}
+    return on.get("date") or "" if on.get("from") == "yours" else ""
+
+
 def choices(d: dict[str, Any]) -> list[dict[str, Any]]:
     """What the export dialog's "For" offers: the assessments still ahead (syllabus finals too), each with the weeks
-    it covers, where they come from and its day (the announced one, else its week's first)."""
+    it covers, where they come from and its day (the announced one, else the one the student set, else its week's
+    first)."""
     from .quizzes import of
 
     weeks = {w["no"]: w for w in d.get("weeks") or []}
     return [{"key": e["key"], "name": e["name"], "kind": e["kind"], "week": e["week"], "weeks": list(e.get("weeks") or []),
-             "weeks_from": e.get("weeks_from") or "", "date": e.get("date") or (weeks.get(e["week"]) or {}).get("start") or ""}
+             "weeks_from": e.get("weeks_from") or "",
+             "date": e.get("date") or _own_day(e) or (weeks.get(e["week"]) or {}).get("start") or ""}
             for e in of(d) if e.get("ahead")]
-
-
-_GRADE = {"quiz": r"quiz|k[ıi]sa\s*s[ıi]nav", "midterm": r"midterm|ara\s*s[ıi]nav|vize", "final": r"final"}
 
 
 def _weight(d: dict[str, Any], e: dict[str, Any]) -> str:
     """What the assessment weighs, from the syllabus' grading ("Quizzes count 20% of the grade in all (4 of them,
-    about 5% each)"); "" when the syllabus doesn't say. A final project is not the final."""
-    rx = _GRADE.get(e.get("kind") or "")
-    for g in d.get("grading") or [] if rx else []:
-        name = str(g.get("activity") or "").strip()
-        if not re.search(rx, name, re.I) or re.search(r"proje|project", name, re.I):
-            continue
-        try:
-            w = float(g.get("weight") or 0)
-            n = max(1, int(g.get("number") or 1))
-        except (TypeError, ValueError):
-            continue
-        if w > 0:
-            return f"{name}: {w:g}% of the grade" + (f" in all ({n} of them, about {w / n:.3g}% each)" if n > 1 else "")
-    return ""
+    about 5% each)"); "" when the syllabus doesn't say. The Exam room's matching (examroom.grade_share): a final
+    project or jury is not the final."""
+    from .examroom import grade_share
+
+    g = grade_share(d.get("grading") or [], e)
+    if not g:
+        return ""
+    name, w, n = g["activity"].strip(), g["weight"], g["number"]
+    return f"{name}: {w:g}% of the grade" + (f" in all ({n} of them, about {w / n:.3g}% each)" if n > 1 else "")
 
 
 def _said(d: dict[str, Any], e: dict[str, Any], lrefs: dict[str, str]) -> list[str]:
@@ -222,7 +223,11 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
              "lecturer said about it and stressed in those weeks, and the references (F1…, L1…) of the course files "
              "and lectures in this zip.", "", f"## {name}", ""]
     day = _date(e.get("date") or "")
-    if day:
+    mine = None if day else _date(_own_day(e))
+    if mine:                                        # (the exact day set in the Exam room)
+        day = mine
+        when = _en_day(day) + (f" (week {e['week']}, the day I set)" if e.get("week") else " (the day I set)")
+    elif day:
         when = _en_day(day) + (f", {e['time']}" if e.get("time") else "") + (f" (week {e['week']})" if e.get("week") else "")
     else:
         span = _en_range(w.get("start") or "", w.get("end") or "")
