@@ -1158,9 +1158,14 @@ def _fmt(v: Any) -> str:
     return f"{v:.4g}" if isinstance(v, float) else str(v)
 
 
-def repair_prompt(bad: list[dict[str, Any]]) -> str:
+def repair_prompt(bad: list[dict[str, Any]], language: str = "", taught_in: str = "") -> str:
     """One request for every problem whose key disagrees with its own calculation: each with what it states and
-    what the app computed, to be solved again (no course material: a problem's statement has what it needs)."""
+    what the app computed, to be solved again (no course material: a problem's statement has what it needs). With the
+    quiz's ``language`` (and the course's, ``taught_in``), its language rules as the quiz was written with them: the
+    working in "steps" in the document's language, not the problem's."""
+    langs = (f"{quiz_languages(language, taught_in)} Keep each problem's notation (maths in LaTeX)." if language else
+             "Keep each problem's language and notation (maths in LaTeX).")
+    again = quiz_languages_again(language, taught_in) if language else ""
     rows = []
     for q in bad:
         ck = q.get("check") or {}
@@ -1175,13 +1180,13 @@ def repair_prompt(bad: list[dict[str, Any]]) -> str:
             f"Check given: expr = {ck.get('expr', '')}; value = {ck.get('value', '')}; unit = {ck.get('unit', '')}",
             f"The app computes that expression to {got}: not the answer given.") if x))
     return f"""TASK: The app computed the answer key of these practice problems again, and each disagrees with itself: the answer it states is not what its own "check" calculation gives. Solve each problem again from its statement, carefully, step by step, and give the corrected steps, the final answer and its check.
-Keep each problem's language and notation (maths in LaTeX).
+{langs}
 {CHECK_RULE}
-Answer with one JSON object:
+Answer with one JSON object ("answer": a worked problem's final result, with units; a short answer's whole model answer again, its 1-3 sentences with the corrected result):
 {{"questions": [{{"n": 2, "steps": ["each step with its working", "…"], "answer": "the final result, with units", "check": {{"expr": "…", "value": 0, "unit": "…"}}}}]}}
 
 === PROBLEMS ===
-{chr(10).join(rows)}"""
+{chr(10).join(rows)}{again}"""
 
 
 def apply_repair(questions: list[dict[str, Any]], text: str) -> int:
@@ -1278,7 +1283,9 @@ def run(runner: Any, plan: dict[str, Any], scope: Any, data: dict[str, Any], usa
                                 model=shown))
         ask = runner._ask_text or one_shot
         try:
-            res = ask(REPAIR_SYSTEM, [{"type": "text", "text": repair_prompt(bad)}], model, level, cancel, None)
+            res = ask(REPAIR_SYSTEM, [{"type": "text", "text": repair_prompt(bad, facts.get("language") or "",
+                                                                             facts.get("taught_in") or "")}],
+                      model, level, cancel, None)
             _usage_add(usage, "repair", res)
             data["repair"] = res.get("text") or ""
         except Cancelled:

@@ -77,6 +77,19 @@ def test_a_repaired_key_replaces_the_old_one_only_when_the_app_confirms_it():
     assert quizzes.apply_repair(qs, "no JSON at all") == 0
 
 
+def test_the_repair_request_keeps_the_quizs_languages():
+    """An English-taught course with Turkish documents: the repair request said only "keep each problem's language",
+    so the repaired steps came back in English over the Turkish ones; a short answer's model shrank to its result."""
+    qs = quizzes.clean_quiz({"questions": [BAD]}, {"files": [], "lectures": []})["questions"]
+    p = quizzes.repair_prompt(qs, "Turkish", "English")
+    assert "Write each question, its options and its answer (the model answer or the final result) in English" in p
+    assert 'Write what explains them in Turkish: "explanation", "wrong", "points", the working in "steps"' in p
+    assert p.rstrip().endswith('"steps", "title" and "topics" in Turkish.')                  # said again, last
+    assert "Keep each problem's language" not in p and "Keep each problem's notation (maths in LaTeX)." in p
+    assert "a short answer's whole model answer again, its 1-3 sentences with the corrected result" in p
+    assert "Keep each problem's language and notation" in quizzes.repair_prompt(qs)          # (none given: as before)
+
+
 # ------------------------------------------------------------------ the whole run: one repair request at most
 @pytest.fixture
 def env(tmp_path):
@@ -123,6 +136,7 @@ def test_flagged_keys_are_solved_again_in_one_request_once(env):
     assert len(asked) == 2 and asked[1][0] == quizzes.REPAIR_SYSTEM
     assert "[2] A 10 mA current" in asked[1][1] and "[1] A 12 V" not in asked[1][1]    # only the flagged one
     assert "COURSE MATERIAL" not in asked[1][1]                                      # (no material: small)
+    assert "explanation in English (the language this course is taught in)" in asked[1][1]   # the quiz's language
     full = env.lib.plan(pid)
     g, b, f = full["result"]["questions"]
     assert g["verified"] and b["verified"] and b["repaired"] and b["model"] == "$P = 0.47$ W"
