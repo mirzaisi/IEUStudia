@@ -72,6 +72,8 @@ def kept_answer(a: dict[str, Any]) -> dict[str, Any]:
     out["chose"] = a.get("chose") if isinstance(a.get("chose"), int) and not isinstance(a.get("chose"), bool) else None
     out["skipped"] = bool(a.get("skipped"))
     out["text"] = str(a.get("text") or "")[:4000]
+    if "final" in out:                     # (a worked problem's result, typed in its box: checks.py)
+        out["final"] = str(out["final"] or "")[:300]
     if out.get("mark") not in MARKS:
         out["mark"] = "app" if out["chose"] is not None else "self"
     return out
@@ -256,7 +258,8 @@ def mistakes(lib: Any, course_id: str, plan_id: Optional[str] = None) -> list[di
         if n in set(res.get("not_here") or []):
             q = {**q, "source": None, "not_here": True}
         out.append({"plan_id": pid, "n": n, "title": found[pid]["brief"].get("title") or res.get("title") or "",
-                    "at": a["finished_at"], "misses": misses.get((pid, n), 0), "q": q, "answer": ans,
+                    "at": a["finished_at"], "misses": misses.get((pid, n), 0), "q": q,
+                    "answer": {**ans, "attempt": a["id"]},           # (its try: a mark changed there, checks.py)
                     "card_id": cid, "due": (s or {}).get("due") or ""})
     out.sort(key=lambda x: (x["at"], -x["n"]), reverse=True)
     return out
@@ -447,7 +450,8 @@ def weak_spots(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[
                 item["why_wrong"] = (q.get("wrong") or [""] * len(opts))[ch] if ch < len(q.get("wrong") or []) else ""
         else:
             item["right"] = q.get("model") or ""
-            item["typed"] = a.get("text") or ""
+            item["typed"] = " · ".join(x for x in (a.get("text") or "", f"result {a['final']}" if a.get("final") else "")
+                                       if x)
         item["skipped"] = bool(a.get("skipped"))
         missed.append(item)
     found = quiz_results(lib, course_id)

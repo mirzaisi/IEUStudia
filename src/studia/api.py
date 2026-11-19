@@ -22,6 +22,7 @@ from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .practice import PRACTICE_KINDS, PracticeApi      # 4.0 Practice: quizzes, flashcards, what was stressed
 from .examroom import ExamRoomApi                       # 4.2 the Exam room, and the class days read
+from .checks import ChecksApi                            # 4.2: results the app checks, written answers the AI marks
 from .services import NOTE_KINDS, Services
 from .osutil import (TaskbarProgress, flash_taskbar, idle_seconds, is_foreground, normal_priority, open_in_browser,
                      open_path, reveal, set_clipboard)
@@ -127,7 +128,7 @@ def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-class Api(PracticeApi, ExamRoomApi):
+class Api(PracticeApi, ExamRoomApi, ChecksApi):
     def __init__(self, services: Optional[Services] = None) -> None:
         self._services: Optional[Services] = None
         self._ready = threading.Event()

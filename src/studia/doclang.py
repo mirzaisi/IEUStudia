@@ -128,6 +128,8 @@ WORDS_TR = {
     "Answer key": "Cevap anahtarı",
     "Answers explained": "Cevapların açıklamaları",
     "see below": "aşağıda",
+    "The app could not confirm this answer: check it against its source.":     # (numcheck.py: a key it computed)
+        "Uygulama bu cevabı doğrulayamadı: kaynağıyla karşılaştırarak kontrol et.",
 }
 _MONTHS = {"en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
            "tr": ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")}

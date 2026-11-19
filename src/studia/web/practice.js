@@ -536,11 +536,12 @@
       acts = R.checked ? `<button class="btn primary" data-act="qz-next" autofocus>${R.pos + 1 >= total ? t("See my score") : t("Next question")}</button>`
         : `<button class="btn ghost" data-act="qz-skip">${t("Skip")}</button><button class="btn primary" data-act="qz-check" ${R.picked == null ? "disabled" : ""}>${t("Check my answer")}</button>`;
     } else {
-      body = R.checked ? `${R.text ? `<div class="qz-your"><div class="dim sm">${t("Your answer")}</div><div class="qz-your-t">${esc(R.text)}</div></div>` : ""}${modelHTML(q)}`
-        : `<textarea class="input qz-input" id="qz-text" rows="${q.type === "problem" ? 5 : 3}" placeholder="${esc(q.type === "problem" ? t("Work it out on paper or here, then look at the solution.") : t("Write your answer (or think it through), then check."))}">${esc(R.text)}</textarea>`;
-      acts = !R.checked ? `<button class="btn ghost" data-act="qz-skip">${t("Skip")}</button><button class="btn primary" data-act="qz-check">${q.type === "problem" ? t("Show the solution") : t("Check my answer")}</button>`
+      const ck = St.checks ? St.checks.parts(R, q) : null;        // (checks.js: the "Final answer" box the app checks)
+      body = R.checked ? `${R.text ? `<div class="qz-your"><div class="dim sm">${t("Your answer")}</div><div class="qz-your-t">${esc(R.text)}</div></div>` : ""}${ck ? ck.verdict : ""}${modelHTML(q)}`
+        : `<textarea class="input qz-input" id="qz-text" rows="${q.type === "problem" ? 5 : 3}" placeholder="${esc(q.type === "problem" ? t("Work it out on paper or here, then look at the solution.") : t("Write your answer (or think it through), then check."))}">${esc(R.text)}</textarea>${ck ? ck.box : ""}`;
+      acts = !R.checked ? `<button class="btn ghost" data-act="qz-skip">${t("Skip")}</button><button class="btn primary" data-act="qz-check">${(ck && ck.label) || (q.type === "problem" ? t("Show the solution") : t("Check my answer"))}</button>`
         : done ? `<button class="btn primary" data-act="qz-next" autofocus>${R.pos + 1 >= total ? t("See my score") : t("Next question")}</button>`
-          : `<span class="dim sm qz-self-q">${t("How did you do?")}</span><button class="btn" data-act="qz-self" data-got="0">${t("I didn't know it")}</button><button class="btn" data-act="qz-self" data-got="0.5">${t("Partly")}</button><button class="btn primary" data-act="qz-self" data-got="1" autofocus>${t("I got it")}</button>`;
+          : (ck && ck.acts) || `<span class="dim sm qz-self-q">${t("How did you do?")}</span><button class="btn" data-act="qz-self" data-got="0">${t("I didn't know it")}</button><button class="btn" data-act="qz-self" data-got="0.5">${t("Partly")}</button><button class="btn primary" data-act="qz-self" data-got="1" autofocus>${t("I got it")}</button>`;
     }
     const level = { easy: t("easy"), medium: t("medium"), hard: t("hard") }[q.level] || "";
     return `<div class="qz">${head}<div class="qz-kind">${esc(KINDS()[q.type] || "")}${level ? ` · ${esc(level)}` : ""}</div>
@@ -562,7 +563,7 @@
     }).join("");
     return `<div class="qz qz-end"><h2>${I("check-circle")} ${esc(t("You got {score} of {total}", { score: score(got), total: ids.length }))} <span class="dim">${t.pct(share)}</span></h2>
       <p class="lead">${esc(say)}</p>${St.mistakes ? `<p class="dim sm">${esc(t("Open a question to see your answer beside the right one, and where it was taught."))}</p>` : ""}<ol class="qz-results">${rows}</ol>
-      ${R.saved ? "" : `<p class="dim sm">${SPIN()} ${t("Saving…")}</p>`}
+      ${R.saved ? "" : `<p class="dim sm">${SPIN()} ${t("Saving…")}</p>`}${St.checks ? St.checks.endBar(R) : ""}
       <div class="actions"><button class="btn" data-act="modal-close">${t("Close")}</button>
         ${missed.length ? `<button class="btn primary" data-act="qz-retry" data-id="${esc(R.id)}" data-only="${missed.join(",")}" autofocus>${I("retry", "sm")} ${esc(t.n(missed.length, "Try {n} missed question", "Try {n} missed questions"))}</button>` : ""}</div></div>`;
   }
@@ -893,7 +894,7 @@
     }),
     "qz-self": (el) => step((R) => {
       const q = R.quiz.result.questions[R.order[R.pos]];
-      R.answers[q.n] = { got: +el.dataset.got, text: R.text };
+      R.answers[q.n] = { ...R.answers[q.n], got: +el.dataset.got, text: R.text };     // (with a checked result's own)
       R.pos++; R.picked = null; R.checked = false; R.text = "";
     }),
     "qz-next": () => step((R) => { R.pos++; R.picked = null; R.checked = false; R.text = ""; }),
