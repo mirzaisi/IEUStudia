@@ -145,8 +145,10 @@ def assessments(d: dict[str, Any], lib: Any = None) -> list[dict[str, Any]]:
                     "covers_from": e.get("covers_from") or "", "files": [], "ahead": e["week"] not in past})
         prev = e["week"]
     tied = tied_files(d, out)
+    from .examroom import when                  # the day it is on (announced, the student's own, its week's): "on"
     for e in out:
         e["files"] = [rid for rid, keys in tied.items() if e["key"] in keys]
+        e["on"] = when(d, e, lib)
     return out
 
 

@@ -429,9 +429,9 @@ def summary(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
     fresh = sum(1 for c in cards if c["id"] not in st)
     started_today = sum(1 for k, s in st.items() if k in ids and start <= (s.get("first") or "") < end)
     new_today = min(fresh, max(0, (NEW_PER_DAY if new_per_day is None else new_per_day) - started_today))
-    with lib._lock:
-        reviewed = lib.db.execute("SELECT COUNT(*) FROM card_reviews WHERE course_id=? AND at>=? AND at<?",
-                                  (course_id, start, end)).fetchone()[0]
+    with lib._lock:          # (a cram session's reviews leave the schedule alone: not counted here)
+        reviewed = lib.db.execute("SELECT COUNT(*) FROM card_reviews WHERE course_id=? AND at>=? AND at<? AND "
+                                  "NOT cram", (course_id, start, end)).fetchone()[0]
     return {"total": len(cards), "due": due, "new": new_today, "new_total": fresh, "today": due + new_today,
             "learnt": sum(1 for c in cards if c["id"] in st and int(st[c["id"]]["step"]) < 0),
             "reviewed_today": int(reviewed), "lecture": sum(1 for c in cards if c["origin"] == "lecture"),
@@ -489,15 +489,18 @@ def week_counts(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Opti
 
 def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
             weeks: Optional[set[int]] = None, new_per_day: Optional[int] = None,
-            days: Optional[set[str]] = None) -> list[dict[str, Any]]:
+            days: Optional[set[str]] = None, cram: bool = False) -> list[dict[str, Any]]:
     """The cards to study now, in order: the ones in learning that are due, the reviews due today (the most overdue
     first), then today's new cards; each with its state and what each answer would do. ``weeks``, ``days``: only the
     cards of those weeks, or of those lectures (their own flashcards). Not the ones set aside; a missed
-    multiple-choice question with its options reordered."""
+    multiple-choice question with its options reordered. ``cram`` (the Exam room's "Cram these weeks"): every card
+    of them, due or not, in the deck's order; their answers leave the schedule alone (grade)."""
     now = now or dt.datetime.now()
     st = states(lib, course_id)
     end = study_day(now)[1].isoformat(timespec="seconds")
     pick = picked(cards, weeks, days)
+    if cram:
+        return [{**_asked_again(c, st.get(c["id"])), "state": st.get(c["id"]), "next": {}, "cram": True} for c in pick]
     due = sorted((c for c in pick if c["id"] in st and (st[c["id"]]["due"] or "") < end),
                  key=lambda c: (int(st[c["id"]]["step"]) < 0, st[c["id"]]["due"]))
     left = summary(lib, cards, course_id, now, new_per_day)["new"]
@@ -506,14 +509,27 @@ def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
             for c in due + fresh]
 
 
-def grade(lib: Any, course_id: str, card_id: str, how: str, now: Optional[dt.datetime] = None) -> dict[str, Any]:
-    """Keep a review: the card's new state (in this profile's library) and the review in its log."""
+def grade(lib: Any, course_id: str, card_id: str, how: str, now: Optional[dt.datetime] = None,
+          cram: bool = False) -> dict[str, Any]:
+    """Keep a review: the card's new state (in this profile's library) and the review in its log. ``cram``: only the
+    review, marked so (card_state stays as it was); "again" brings the card back in a minute, in the same sitting."""
     now = now or dt.datetime.now()
     with lib._lock:
         row = lib.db.execute("SELECT * FROM card_state WHERE card_id=?", (card_id,)).fetchone()
     old = None if row is None else {"due": row["due"], "interval": row["interval"], "ease": row["ease"],
                                     "reps": row["reps"], "lapses": row["lapses"], "step": row["step"],
                                     "relearn": bool(row["relearn"]), "first": row["first"], "last": row["last"]}
+    if cram:
+        if how not in GRADES:
+            raise ValueError(how)
+        with lib._lock:
+            lib.db.execute("INSERT INTO card_reviews(card_id, course_id, at, grade, interval, cram) VALUES(?,?,?,?,?,1)",
+                           (card_id, course_id, now.isoformat(timespec="seconds"), how,
+                            float((old or {}).get("interval") or 0)))
+            lib.db.commit()
+        again = how == "again"
+        return {"due": (now + dt.timedelta(minutes=1) if again else study_day(now)[1]).isoformat(timespec="seconds"),
+                "step": 0 if again else -1, "cram": True, "next": {}}
     s = schedule(old, how, now)
     with lib._lock:
         lib.db.execute("INSERT INTO card_state(card_id, course_id, due, interval, ease, reps, lapses, step, relearn, "

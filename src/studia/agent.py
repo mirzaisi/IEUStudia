@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .i18n import date_short, t, tn
 
@@ -312,13 +312,16 @@ def _line(r: dict[str, Any], today: dt.date) -> str:
 
 
 def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, list[str]],
-              prefs: Optional[dict[str, int]] = None) -> Optional[tuple[str, str, str]]:
+              prefs: Optional[dict[str, int]] = None,
+              about: Optional[Callable[[dict[str, Any]], str]] = None) -> Optional[tuple[str, str, str]]:
     """What to remind you of now, each once (``seen["rem"]``), as the Calendar page set it (``prefs``:
     agenda.reminder_prefs; its defaults without): a quiz or an exam ``exams`` days before (from 17:00; a quiz
     announced for a week: before the first of its week's class days still to come, until that class is over; a
     midterm or final announced for a week: before its week, since the exam schedule gives its day), an assignment
     and your own entry ``due_days`` days and ``due_hours`` hours before. One notification (title, text, what
-    clicking it opens) or None. ``events``: calendar_export.all_events (or only its assessment_events)."""
+    clicking it opens: a quiz or an exam opens its Exam room) or None. ``events``: calendar_export.all_events (or
+    only its assessment_events). ``about``: a quiz's or an exam's line on what it covers and what is still missing
+    (examroom.reminder_note)."""
     from .agenda import REMIND_DEFAULTS
 
     prefs = {**REMIND_DEFAULTS, **(prefs or {})}
@@ -335,7 +338,7 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     if not due:
         return None
     seen.setdefault("rem", []).extend(key for r in due for key in r["keys"])
-    lines = [_line(r, today) for r in due]
+    lines = [_line(r, today) + _about(about, r["e"]) for r in due]
     first, e = due[0]["first"], due[0]["e"]
     kinds = {r["e"].get("kind") for r in due}
     title = t("IEUStudia: coming up")
@@ -349,10 +352,21 @@ def reminders(events: list[dict[str, Any]], now: dt.datetime, seen: dict[str, li
     payload = "home"
     if kinds & {"assignment", "own"}:                     # the Calendar page has it (and how sure it is)
         payload = f"calendar:{e['uid']}" if len(due) == 1 else "calendar"
-    elif len(due) == 1 and e.get("course_id"):           # Get ready knows what was announced; a syllabus week: the week
-        payload = (f"week:{e['course_id']}:{e['week']}" if "-syllabus-week" in e["uid"]
-                   else f"ready:{e['course_id']}:{e['name']}")
+    elif len(due) == 1 and e.get("course_id"):           # its Exam room (a syllabus's exam week has one too)
+        payload = f"ready:{e['course_id']}:{e['name']}"
     return title, "\n".join(lines[:4]) + ("\n" + t("+{n} more", n=len(lines) - 4) if len(lines) > 4 else ""), payload
+
+
+def _about(about: Optional[Callable[[dict[str, Any]], str]], e: dict[str, Any]) -> str:
+    """A quiz's or an exam's line on what it covers and what is missing (never a reason for no reminder)."""
+    if about is None or e.get("kind") in ("assignment", "own"):
+        return ""
+    try:
+        note = about(e)
+    except Exception:  # noqa: BLE001
+        log.debug("Reminder: what it covers couldn't be worked out", exc_info=True)
+        return ""
+    return " " + note if note else ""
 
 
 def changed_note() -> Optional[tuple[str, str, str]]:
@@ -580,10 +594,12 @@ class Helper:
             if note is None and self.cfg.notify_reminders and not self.paused:     # one notification at a time
                 from .agenda import reminder_prefs
                 from .calendar_export import all_events, istanbul_now
+                from .examroom import reminder_note
 
                 told = _load_seen().get("rem", [])      # the app may have reminded meanwhile (the check takes a while)
                 seen["rem"] = list(dict.fromkeys(told + seen.get("rem", [])))
-                note = reminders(all_events(lib, settings), istanbul_now(), seen, reminder_prefs(lib))
+                note = reminders(all_events(lib, settings), istanbul_now(), seen, reminder_prefs(lib),
+                                 about=lambda e: reminder_note(lib, settings, e))
             if note is None and not self.paused:     # a service that changed on its side: said once, while the window
                 note = changed_note()                # is closed (notifications may not come until an update)
             if any(set(v) - known.get(k, set()) for k, v in seen.items()):     # (nothing new: nothing to write)
