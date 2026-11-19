@@ -287,6 +287,29 @@ def test_the_practice_tab_without_ai_points_to_the_way_that_works_without_it(tmp
 
 
 @node
+def test_get_everything_asks_first_when_it_would_transcribe_many_lectures(tmp_path):
+    """A syllabus-only final's Get everything queued 20 lectures (hours on a laptop) in one click, unasked."""
+    out = room_run(tmp_path, """
+  const asked = []; let answer = false;
+  St.ask = (o) => { asked.push(o.title); return Promise.resolve(answer); };
+  const many = { ...room(FINAL).material, todo: Array.from({ length: 20 }, (_, i) => "c|d" + i + "|lecture") };
+  St.mocks.exam_room = () => ({ ok: true, room: room(FINAL, { material: many }) });
+  St.openReady("c", FINAL.key); await tick();
+  await A["er-get"]({ disabled: false }); await tick();
+  out.no = [asked.slice(), called("exam_get_everything").length];
+  answer = true;
+  await A["er-get"]({ disabled: false }); await tick();
+  out.yes = called("exam_get_everything").length;
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3) });                // one lecture: as before, unasked
+  St.openReady("c", "quiz:3"); await tick();
+  await A["er-get"]({ disabled: false }); await tick();
+  out.few = [asked.length, called("exam_get_everything").length];
+""")
+    assert out["no"] == [["Transcribe 20 class days of MATH 240 on this PC?"], 0]
+    assert out["yes"] == 1 and out["few"] == [2, 2]
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

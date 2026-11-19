@@ -171,6 +171,7 @@
     return `<div class="card er-card"><div class="er-h">${I("megaphone", "sm")}<b>${t("What the lecturer said about it")}</b></div>${r.said.map(row).join("")}</div>`;
   }
   const STRESSED_SHOWN = 4;          // the ones that stand out most; the rest one click away (the page stays short)
+  const GET_ASK = 6;                 // Get everything asks first above this many lectures (a quiz's two weeks: fewer)
   function stressedHTML(r) {
     if (!r.stressed.length) return "";
     const more = ER.allStressed ? 0 : Math.max(0, r.stressed.length - STRESSED_SHOWN);
@@ -334,6 +335,10 @@
     "er-print": () => window.print(),
     "er-more": () => { ER.allStressed = true; renderView(); },
     "er-get": async (el) => {
+      // many lectures at once (a final's whole term): hours of transcribing, so asked first
+      const todo = ER.room ? ER.room.material.todo.length : 0;
+      if (todo > GET_ASK && !(await St.ask({ title: t.n(todo, "Transcribe {n} class day of {course} on this PC?", "Transcribe {n} class days of {course} on this PC?", { course: (St.findCourse(ER.cid) || {}).code || "" }),
+        text: t("They are transcribed one after another on this PC, which can take hours. The queue at the bottom shows how long, and you can keep using the app."), ok: t("Get everything") }))) return;
       el.disabled = true;
       const r = await call("exam_get_everything", ER.cid, ER.key);
       if (!r.ok) { el.disabled = false; toast(r.error, "error"); return; }
