@@ -7,7 +7,8 @@ The levels are each AI's own, by their real names (shown as "Low", "Medium", "Hi
   model list (low, medium, high, xhigh and max on the GPT-6 and GPT-5.6 models), sent as ``reasoning.effort`` and as
   Codex's ``model_reasoning_effort``. "ultra" is left out: it lets the model hand work to helpers, which a single
   answer here never does, and it is the heaviest;
-- Claude (Claude Code): ``--effort`` low, medium, high, xhigh or max (all three of Haiku, Sonnet and Opus);
+- Claude (Claude Code): ``--effort`` low, medium, high, xhigh or max (all three of Haiku, Sonnet and Opus; Haiku
+  doesn't take it, so at low it gets a thinking budget instead: ai.HAIKU_LOW_THINKING);
 - the offline model (Qwen3): thinking off (it answers at once, as it always did) or on (it first thinks, within a
   budget of tokens, then answers).
 

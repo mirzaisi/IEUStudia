@@ -730,6 +730,41 @@ def test_one_off_claude_requests_write_no_prompt_cache_and_a_chat_keeps_it(monke
     assert "DISABLE_PROMPT_CACHING" not in envs[0]
 
 
+def test_haiku_at_low_thinks_within_a_budget_and_the_rest_as_before(monkeypatch):
+    """Haiku takes no --effort, so Claude Code let it think for up to 31,999 tokens at Low: a 5-question chat quiz
+    wrote 15.2k tokens in 121 s (4.2.0's real calls; with the budget 4.4k in 38 s). Haiku at Low gets a thinking
+    budget (MAX_THINKING_TOKENS), in a one-off request and in a chat's process; other levels and models don't."""
+    import os
+    import sys
+
+    probe = ("import json, os, sys; sys.stdin.read(); print(json.dumps({'type': 'result', 'subtype': 'success', "
+             "'usage': {}, 'result': os.environ.get('MAX_THINKING_TOKENS', '')}))")
+    monkeypatch.delenv("MAX_THINKING_TOKENS", raising=False)
+    monkeypatch.setattr(ai, "_require_claude", lambda: sys.executable)
+    monkeypatch.setattr(ai, "_claude_env", lambda: {"PATH": os.environ.get("PATH", ""),
+                                                    "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")})
+    monkeypatch.setattr(ai, "_command", lambda model, effort, sp, partial=False: [sys.executable, "-c", probe])
+    budget = lambda model, effort="", **kw: ai._claude_one_shot("S", [{"type": "text", "text": "x"}], model, effort,  # noqa: E731
+                                                                  **kw)["text"]
+    assert budget("haiku") == budget("haiku", "low") == str(ai.HAIKU_LOW_THINKING) == "4000"
+    assert budget("claude-haiku-4-5", "low") == "4000"
+    assert budget("haiku", "medium") == budget("haiku", "high") == budget("sonnet", "low") == budget("opus") == ""
+    assert budget("haiku", "low", think=False) == ""                 # (no thinking at all there)
+    envs = []
+
+    def popen(cmd, **kw):                      # a chat's process: started with its level, kept for its questions
+        envs.append(kw["env"])
+        raise OSError("not started in this test")
+
+    monkeypatch.setattr(ai.subprocess, "Popen", popen)
+    for model, level in (("haiku", "low"), ("haiku", "high"), ("sonnet", "low")):
+        with pytest.raises(RuntimeError):
+            ai.ClaudeSession("S", model, level)
+    assert [e.get("MAX_THINKING_TOKENS") for e in envs] == ["4000", None, None]
+    monkeypatch.setenv("MAX_THINKING_TOKENS", "9000")               # set on this PC: left to it
+    assert ai._thinking_env("haiku", "low") == {}
+
+
 def test_study_notes_send_the_lecture_first_and_the_task_last(monkeypatch):
     sent = []
     monkeypatch.setattr(ai, "one_shot", lambda system, content, *a, **k: sent.append(content) or {"text": ""})
