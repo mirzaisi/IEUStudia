@@ -3,8 +3,9 @@ question whose options differ only in case (f(2) and F(2)) is kept, and an answe
 option; a final's Exam room doesn't list, under "Stressed in class", a remark about an earlier quiz or exam."""
 
 import datetime as dt
+import json
 
-from studia import examroom, quizzes, stressed
+from studia import examroom, kit, quizzes, stressed
 from studia.coursesite import Announcement
 from test_kit import env, export, read  # noqa: F401 - env: the exam kit's course (a fixture)
 from test_quizzes import FACTS
@@ -75,6 +76,29 @@ def test_a_final_s_room_leaves_out_remarks_stressed_about_an_earlier_quiz_or_exa
     quiz3 = {**every["quiz:3"], "weeks": [12, 13]}
     got = [m["id"] for m in examroom.stressed_moments(None, "c", d, quiz3, examroom.said(d, quiz3))]
     assert got == ["fin", "fin2"]                 # about the final, still to come: kept
+
+
+# ------------------------------------------------------------------ a quiz pasted with no zip made before
+def test_a_quiz_pasted_without_a_zip_opens_the_file_it_names_and_covers_the_weeks_it_comes_from(env):
+    """No export had numbered the course's files, so a question citing 'Week08_Notes.pdf p.1' (on this PC) got no
+    source; the quiz covered every week so far (an Exam room of week 8 said it had no quiz) and listed the files and
+    lectures not on this PC as what it left out."""
+    assert kit.numbers(env.lib, "c") == {}                                           # (no zip made yet)
+    q = {"type": "mc", "options": ["P(A|B)P(B)", "P(A)+P(B)", "P(A)/P(B)", "P(B|A)"], "answer": "A"}
+    text = json.dumps({"questions": [
+        {**q, "question": "By the multiplication rule, what is P(A and B)?", "source": "Conditional.pdf p.1"},
+        {**q, "question": "Which product gives the chance of both A and B?", "source": "L1 (Part 1, 00:40)"},
+        {**q, "question": "Using conditional probability, P(A and B) equals which product?"}]})
+    r = kit.pasted(env.api, "c", text)
+    assert r["ok"] and r["kit"] == "" and r["named"] == 1
+    p = env.lib.plan(r["id"])
+    first = p["result"]["questions"][0]["source"]
+    assert (first["kind"], first["id"], first["page"], first.get("found")) == ("file", "r2", 1, None)
+    assert kit.numbers(env.lib, "c") == {"r2": "F1"}          # (its number is kept: a later zip says F1 for it too)
+    weeks = sorted({x["source"]["week"] for x in p["result"]["questions"] if x.get("source")})
+    assert p["scope"]["weeks"] == weeks and 2 in weeks and len(weeks) < 3     # (its questions' weeks, not 1-3)
+    cov = p["result"]["coverage"]
+    assert [w["no"] for w in cov["weeks"]] == weeks and not cov["materials_missing"] and not cov["days_missing"]
 
 
 # ------------------------------------------------------------------ a quiz's zip with no lecture in it

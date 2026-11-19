@@ -234,8 +234,8 @@ def test_a_quiz_or_cards_pasted_on_the_practice_tab(tmp_path):
     done = out["quizDone"]
     assert "Added to Practice" in done and "<b>Bayes</b>" in done and "9 questions are ready to play." in done
     assert "7 open the page or lecture moment they came from." in done
-    assert "1 named no source the app could open, so it was found by its words." in done
-    assert "1 has no source." in done and "1 more couldn't be used (no clear right answer, or asked twice)." in done
+    assert "1 was found in your material by its words." in done          # (it may have named no source at all)
+    assert "1 has no source the app could find." in done and "1 more couldn't be used (no clear right answer, or asked twice)." in done
     assert 'data-act="kit-play"' in done and 'data-act="kit-undo"' in done and out["played"] == 1
     assert 'id="kit-text"' in out["reopened"] and "Added" not in out["reopened"]
     cards = out["cardsDone"]

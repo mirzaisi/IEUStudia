@@ -33,8 +33,9 @@
     const r = K.done, quiz = r.kind !== "cards";
     const lines = [
       r.named ? t.n(r.named, "{n} opens the page or lecture moment it came from.", "{n} open the page or lecture moment they came from.") : "",
-      r.found ? t.n(r.found, "{n} named no source the app could open, so it was found by its words.", "{n} named no source the app could open, so they were found by their words.") : "",
-      r.no_source ? t.n(r.no_source, "{n} has no source.", "{n} have no source.") : "",
+      // (one found by its words may have named no source at all, and one that named one may have none: say only what is so)
+      r.found ? t.n(r.found, "{n} was found in your material by its words.", "{n} were found in your material by their words.") : "",
+      r.no_source ? t.n(r.no_source, "{n} has no source the app could find.", "{n} have no source the app could find.") : "",
       quiz && r.unused ? t.n(r.unused, "{n} more couldn't be used (no clear right answer, or asked twice).", "{n} more couldn't be used (no clear right answer, or asked twice).") : "",
       !quiz && r.dupes ? t.n(r.dupes, "{n} was in your deck already, or pasted twice.", "{n} were in your deck already, or pasted twice.") : "",
       // the chat stopped in the middle (its answer was too long): only what was whole before that came in

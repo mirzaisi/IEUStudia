@@ -793,6 +793,46 @@ def _facts(lib: Any, settings: Any, course_id: str, kit: Optional[dict[str, Any]
     return facts
 
 
+def _file_names(facts: dict[str, Any]) -> list[tuple[str, str]]:
+    """The files a paste is checked against, by their names, with the references facts gives them."""
+    out = []
+    for f in facts.get("files") or []:
+        name = str(f.get("name") or "").casefold().strip()
+        stem = name.rsplit(".", 1)[0]
+        out += [(n, f["ref"]) for n, most in ((name, 5 if stem != name else 10), (stem, 10)) if len(n) >= most]
+    return sorted(dict.fromkeys(out), key=lambda x: -len(x[0]))
+
+
+def _by_name(lib: Any, course_id: str, facts: dict[str, Any], items: list[dict[str, Any]], keys: Iterable[str]) -> None:
+    """Sources that name a file of the material without its reference ("Week08_Notes.pdf p.1": no zip numbered the
+    course's files yet, so _names knew none) made readable, in place: such a file gets its number now (kept, as an
+    export would give it; the one facts gave it no chat can cite)."""
+    names = _file_names(facts)
+    said = json.dumps([q.get(k) for q in items for k in keys if k in q], ensure_ascii=False).casefold()
+    fresh = [f["id"] for f in facts.get("files") or [] if not _REF.fullmatch(str(f.get("ref") or ""))
+             and any(r == f["ref"] and n in said for n, r in names)]
+    if fresh:
+        ref_of = numbers(lib, course_id, files=fresh)
+        for f in facts["files"]:
+            f["ref"] = ref_of.get(f["id"]) or f["ref"]
+        names = _file_names(facts)
+    _sourced(items, keys, names)
+
+
+def _where_from(facts: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
+    """A paste with no zip behind it: its weeks are those its questions come from (not every week so far: a quiz on
+    week 8 is no quiz on weeks 1-10, in an Exam room or for its missed questions' cards), and what the app has or
+    lacks on this PC is no part of what it covers (the chat that wrote it had its own material)."""
+    from .plans import _week_span
+
+    nos = sorted({(x.get("source") or {}).get("week") for x in items} - {None})
+    out = {**facts, "materials_missing": [], "materials_students": [], "days_missing": []}
+    if nos:
+        out.update(weeks=[w for w in facts.get("weeks") or [] if w.get("no") in nos] or [{"no": n} for n in nos],
+                   span=_week_span(nos))
+    return out
+
+
 def _found(src: Optional[dict[str, Any]], found: bool) -> Optional[dict[str, Any]]:
     """A source found by its words, marked so where the page shows it ("found by its words")."""
     return {**src, "found": True} if src and found else src
@@ -826,6 +866,7 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
     kit, cited = _kit_of(lib, course_id, kit_id or raw["kit"], [q for q in raw["questions"] if isinstance(q, dict)],
                          _SOURCE_KEYS)
     facts = _facts(lib, settings, course_id, kit, cited, "quiz")
+    _by_name(lib, course_id, facts, [q for q in raw["questions"] if isinstance(q, dict)], _SOURCE_KEYS)
     pid = uuid.uuid4().hex[:12]
     quiz = quizzes.clean_quiz(raw, facts, quizzes.source_units(lib, course_id, facts), seed=pid)
     if not quiz["questions"]:
@@ -834,6 +875,8 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
     for q in quiz["questions"]:
         q["source"] = _found(q.get("source"), q.get("found"))
     _not_twice(lib, course_id, quiz["questions"])
+    if kit is None:
+        facts = _where_from(facts, quiz["questions"])
     title = quiz["title"] or span_title(facts)
     cov = quizzes.coverage(quiz, facts)
     focus = (kit or {}).get("focus") or ""
@@ -867,6 +910,7 @@ def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str
                        "paste it again."))
     kit, cited = _kit_of(lib, course_id, kit_id or said_kit, rows, ("source",))
     facts = _facts(lib, settings, course_id, kit, cited, "cards")
+    _by_name(lib, course_id, facts, rows, ("source",))
     pid = uuid.uuid4().hex[:12]
     seen = {cards.norm(q) for q in have}
     made = cards.clean_cards(rows, facts, pid, seen, quizzes.source_units(lib, course_id, facts))[:CARDS_MOST]
