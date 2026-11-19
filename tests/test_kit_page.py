@@ -64,6 +64,9 @@ require(%(page)s);
   await A["cx-open"]({ dataset: { id: "c", key: "quiz:2" } }); await tick();       // the Exam room's button
   out.preset = shown.html;
   St.closeModal();
+  await A["cx-open"]({ dataset: { id: "c", key: "quiz:1", weeks: "2" } }); await tick();   // the room of one gone by
+  out.presetPast = shown.html;
+  St.closeModal();
   await St.cexp.open("c", { key: "quiz:2" }); await tick();
   out.presetApi = shown.html;
   A["cx-go"](); await tick();
@@ -136,6 +139,8 @@ def test_the_export_dialog_aims_at_a_coming_quiz_and_ends_with_the_prompts(tmp_p
     assert 'data-no="1" checked' in out["forGuess"]               # (no week of it has anything yet: up to now again)
     assert "00 Start here.md" not in out["forNone"] and 'data-no="3" checked' in out["forNone"]
     assert '<option value="quiz:2" selected>' in out["preset"] and '<option value="quiz:2" selected>' in out["presetApi"]
+    past = out["presetPast"]                     # (not in "For" any more: the Exam room's weeks are ticked instead)
+    assert '<option value="" selected>' in past and 'data-no="2" checked' in past and 'data-no="1" checked' not in past
     done = out["done"]
     assert "I'm preparing for Quiz 2: read 00 Start here.md first." in done and "Then practise with it" in done
     for k in ("quiz", "cards", "sheet"):

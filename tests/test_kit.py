@@ -253,6 +253,21 @@ def test_a_final_known_only_from_the_syllabus_gets_a_brief(env):
     assert "S1 (tied to an exam)" in start and "## Not needed" in start            # (what was stressed still is)
 
 
+def test_the_brief_and_the_dialog_say_what_the_exam_room_says(env):
+    """The day set in the Exam room ("Set the exact day") is the dialog's and the brief's; the weight is the room's
+    grade share (examroom.grade_share): a final jury is not the final, a Turkish "Yarıyıl Sonu Sınavı" is."""
+    from studia import examroom
+
+    examroom.set_day(env.lib, "c", "quiz:2", "2026-10-14")
+    o = ce.options(env.lib, env.settings, env.out, "c", today=TODAY)
+    assert next(a for a in o["assessments"] if a["key"] == "quiz:2")["date"] == "2026-10-14"
+    start = read(export(env, weeks=[2, 3], focus="quiz:2"), "00 Start here.md")
+    assert "- When: Wed 14 Oct 2026 (week 4, the day I set), in 6 days." in start
+    grading = {"grading": [{"activity": "Final Jury", "number": 1, "weight": 30.0},
+                           {"activity": "Yarıyıl Sonu Sınavı", "number": 1, "weight": 40.0}]}
+    assert kit._weight(grading, {"kind": "final"}) == "Yarıyıl Sonu Sınavı: 40% of the grade"
+
+
 # ------------------------------------------------------------------ what comes back: a quiz
 CHATGPT = """Here's your practice quiz! Paste it into IEUStudia.
 
