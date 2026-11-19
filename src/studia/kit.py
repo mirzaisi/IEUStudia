@@ -381,7 +381,14 @@ def make(lib: Any, settings: Any, plan: Any, choice: Any, today: dt.date, refs: 
     weeks = sorted({w.no for w in plan.weeks})
     lrefs = {x["day_key"]: r for r, x in refs.items() if x.get("kind") == "lecture"}
     lines, by_ref, not_needed = _stressed(lib, plan.course.id, d, weeks, lrefs)
-    lang = document_language(d, settings)
+    facts = None
+    if not str(((d.get("syllabus") or {}).get("language")) or "").strip():
+        from . import studypack             # no language in the syllabus: the one its material is in, as the app's
+        try:                                # own quizzes read it (quizzes.gather)
+            facts = studypack.gather(lib, settings, plan.course.id, Scope(kind="quiz", weeks=weeks))
+        except Exception:  # noqa: BLE001 - the syllabus's way then (English)
+            log.warning("Exam kit: the language of %s's material could not be read", plan.course.id, exc_info=True)
+    lang = document_language(d, settings, facts)
     f = {"span": _week_span(weeks), "language": lang["language"], "taught_in": lang["taught_in"],
          "quant": quizzes.quantitative(d), "lectures": [r for r, x in refs.items() if x.get("kind") == "lecture"],
          "focus": quizzes._focus(d, Scope(kind="quiz", focus=e["name"])) if e else None, "stressed_lines": lines,

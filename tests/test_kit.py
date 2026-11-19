@@ -241,6 +241,25 @@ def test_the_prompts_follow_the_language_rules(tmp_path, monkeypatch):
     assert "Write in Turkish, headings included. Keep technical terms in English" in sheet
 
 
+def test_a_course_whose_syllabus_names_no_language_gets_its_lectures_language(tmp_path, monkeypatch):
+    """No language in the syllabus: the kit's language was worked out without any material, so a Turkish-taught
+    course's prompts said "in English", while the app's own quizzes read the lectures' language."""
+    at_today(monkeypatch)
+    env = make_env(tmp_path)
+    env.lib.set_course_info("c", syllabus={**env.lib.course_info("c")["syllabus"], "language": ""})
+    said = ["Bugün koşullu olasılığı ve çarpma kuralını işliyoruz.", "Bu konu sınavda çıkacak, çarpma kuralını öğrenin.",
+            "İki zar örneği: ikinci atış birinciye bağlı."]
+    for rec in env.lib.recordings("c"):
+        tr = Transcript(delivery_id=rec.delivery_id, segments=[Segment(i * 150.0, i * 150.0 + 25, x, "tr", 0.9)
+                                                               for i, x in enumerate(said)],
+                        duration_s=rec.duration_s, speech_s=60, language_seconds={"tr": 60}, model="m", device="cpu",
+                        engine_version="t", created_at="2026-10-01T12:00:00")
+        env.lib.save_transcript(tr, store.save_transcript(tr))
+    out = export(env, weeks=[2, 3], focus="quiz:2")
+    assert "in Turkish (the language this course is taught in)" in read(out, "Prompts/Practice quiz.md")
+    assert "Write in Turkish" in read(out, "Prompts/Cheatsheet.md")
+
+
 def test_a_final_known_only_from_the_syllabus_gets_a_brief(env):
     key = next(a["key"] for a in kit.choices(ce.plan_course(env.lib, env.settings, "c", ce.Choice(), TODAY).detail)
                if a["kind"] == "final")
