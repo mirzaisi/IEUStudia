@@ -274,8 +274,8 @@ def test_a_quiz_known_only_by_its_day_opens_the_tools_on_its_own_weeks(tmp_path)
     assert 'class="pd-pick on" data-act="pd-assess" data-i="-1"' in plan                  # not "Midterm"
     assert 'data-no="9" checked' in plan and 'data-no="10" checked' in plan and 'data-no="6" checked' not in plan
     assert re.findall(r'class="cp-mode on" data-act="qz-mode" data-val="(\w+)"', out["dialog"]) == ["weeks"]
-    assert "Weeks 2 picked" in out["dialogText"] and "Week 9 T9" in out["dialogText"] and "Week 10 T10" in out["dialogText"]
-    assert "Week 6 T6" not in out["dialogText"]
+    shown = out["dialogText"]
+    assert "Weeks 2 picked" in shown and "Week 9 T9" in shown and "Week 10 T10" in shown and "Week 6 T6" not in shown
     assert out["planned"] == {"id": "c", "kind": "prep", "focus": "Quiz 4", "key": "quiz:4", "weeks": "9,10"}
 
 

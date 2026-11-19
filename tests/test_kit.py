@@ -534,7 +534,8 @@ def test_study_now_after_a_paste_goes_through_the_pasted_cards_past_the_days_new
     assert a.cards_session("c")["cards"] == []                          # (the day's new cards: all taken)
     s = a.cards_session("c", [], [], False, second["id"])
     assert [c["q"] for c in s["cards"]] == [f"Card {i}" for i in range(4)] and s["total"] == 4
-    assert [c["q"] for c in a.cards_session("c", [], [], False, first["id"])["cards"]] == [f"Front {i}" for i in range(3)]
+    again = a.cards_session("c", [], [], False, first["id"])["cards"]          # (studied already: all of them still)
+    assert [c["q"] for c in again] == [f"Front {i}" for i in range(3)]
 
 
 def test_the_api_methods(env, monkeypatch):
