@@ -282,6 +282,8 @@ def start_md(d: dict[str, Any], course: Any, e: dict[str, Any], kit: dict[str, A
 # ------------------------------------------------------------------ the prompts (English, with the language rules)
 _HEAD = ("(From IEUStudia, the study app I made this zip with. I will paste your answer back into it: it plays the {what} "
          "and opens the page or lecture moment each {one} comes from.)")
+PROMPT_START = "(From IEUStudia, the study app I made this zip with"       # (every prompt's first words)
+PROMPT_END = "Only the JSON object, in one ```json code block. Nothing before or after it."
 
 
 def _aim(f: dict[str, Any]) -> str:
@@ -315,8 +317,7 @@ def quiz_prompt(kid: str, f: dict[str, Any], n: int = QUIZ_ASKED) -> str:
     refs = _refs_block(f, '"source"')
     again = quiz_languages_again(f.get("language") or "", f.get("taught_in") or "")
     return (f"{_HEAD.format(what='quiz with scores', one='question')}{start}\n\n{body}\n\n{refs}{again}\n\n"
-            "=== HOW TO ANSWER ===\n"
-            "Only the JSON object, in one ```json code block. Nothing before or after it.")
+            f"=== HOW TO ANSWER ===\n{PROMPT_END}")
 
 
 def cards_prompt(kid: str, f: dict[str, Any], n: int = CARDS_ASKED) -> str:
@@ -343,7 +344,7 @@ Rules:
 {_refs_block(f, '"source"')}{cards_languages_again(lang, taught)}
 
 === HOW TO ANSWER ===
-Only the JSON object, in one ```json code block. Nothing before or after it."""
+{PROMPT_END}"""
 
 
 def sheet_prompt(f: dict[str, Any]) -> str:
@@ -891,6 +892,17 @@ def import_cards(lib: Any, settings: Any, course_id: str, text: str, kit_id: str
             "no_source": none, "kit": kid, "cut": was_cut(text)}
 
 
+def without_prompt(text: str) -> str:
+    """What was pasted without the kit's own prompts in it (each from its first words to its last line; one that
+    doesn't end so, the cheatsheet's, to the end)."""
+    while True:
+        i = text.find(PROMPT_START)
+        if i < 0:
+            return text
+        j = text.find(PROMPT_END, i)
+        text = text[:i] + (text[j + len(PROMPT_END):] if j >= 0 else "")
+
+
 def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str = "") -> dict[str, Any]:
     """The Practice tab's paste (practice.PracticeApi.quiz_import, cards_import): a quiz or flashcards (``want``:
     only cards), read, checked and saved; {"ok", "kind", what was read} or why nothing was."""
@@ -902,6 +914,12 @@ def pasted(api: Any, course_id: str, text: str, export_id: str = "", want: str =
     text = str(text or "")
     if not text.strip():
         return {"ok": False, "error": t("Paste the answer first.")}
+    # the prompt itself (copied with the end dialog's Copy, then Ctrl+V here): its JSON example would become a
+    # question "…" or a card "a short question or cue"; copied with the chat's answer, only the answer is read
+    text = without_prompt(text)
+    if not text.strip():
+        return {"ok": False, "error": t("This is the prompt for ChatGPT or Claude, not its answer. Send it in the chat "
+                                        "with the zip, then copy the chat's answer and paste that here.")}
     if len(text) > PASTE_MOST:
         return {"ok": False, "error": t("This is too long to be one quiz. Paste one answer at a time.")}
     # made from another course's zip (pasted on the wrong course's tab): its F and L numbers are that course's, so

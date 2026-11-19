@@ -176,6 +176,20 @@ def test_a_pasted_answer_that_stops_part_way_keeps_its_title_and_says_so(env):
     assert not kit.was_cut("| Front | Back |\n|---|---|\n| a card | its back |")
 
 
+def test_the_prompt_pasted_back_by_mistake_adds_nothing(env):
+    """The end dialog's Copy put the quiz prompt on the clipboard and said "press Ctrl+V on this course's Practice
+    tab": pasted there, its JSON example became a quiz of one question "…", and the cards prompt a card "a short
+    question or cue" in the deck."""
+    k = export(env, weeks=[2, 3], focus="quiz:2")["kit"]
+    for p in k["prompts"]:
+        r = kit.pasted(env.api, "c", p["text"])
+        assert not r["ok"] and r["error"].startswith("This is the prompt for ChatGPT or Claude, not its answer."), p["key"]
+    assert not [p for p in env.lib.plans("c") if (p.get("scope") or {}).get("source") == "import"]
+    quiz = next(p["text"] for p in k["prompts"] if p["key"] == "quiz")
+    r = kit.pasted(env.api, "c", f"{quiz}\n\nChatGPT said:\n{CHATGPT % {'kit': k['id']}}")     # the whole chat copied
+    assert r["ok"] and r["questions"] == 4 and r["kit"] == k["id"]
+
+
 def test_a_quiz_from_another_courses_zip_says_where_it_goes(env):
     """A quiz from the EEE 215 zip's chat, pasted on MATH 240's Practice tab, was saved under MATH 240 with its
     "F3 p.8" opening MATH 240's F3: the wrong file's page, shown as the question's source."""
