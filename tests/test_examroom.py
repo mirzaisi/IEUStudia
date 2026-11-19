@@ -176,6 +176,60 @@ def test_a_syllabus_exam_week_opens_the_exam_it_is_part_of():
     assert examroom.event_key({"kind": "quiz", "name": "Quiz 3", "week": 12}) == "Quiz 3"
 
 
+class _Meta:
+    def __init__(self):
+        self.meta = {}
+
+    def get_meta(self, k):
+        return self.meta.get(k)
+
+    def set_meta(self, k, v):
+        self.meta[k] = v
+
+
+def test_the_weeks_and_day_set_for_a_syllabus_exam_stay_once_an_announcement_names_it():
+    """They were kept under the syllabus exam's key ("syllabus:Midterm Exam:10"); once an announcement named the exam
+    its key became "midterm:0" (and "Midterm" folded into "Midterm 1" became "midterm:1"), and the Exam room, the
+    course page's chip, the Calendar and every dialog went back to the guessed weeks and the week's first day."""
+    from studia import calendar_export
+
+    lib = _Meta()
+    old = "syllabus:Midterm Exam:10"
+    assert [e["key"] for e in quizzes.assessments(_course({10: "Midterm Exam", 16: "Final Exam"}), lib)][0] == old
+    quizzes.set_weeks(lib, "c", old, [6, 7, 8, 9])
+    examroom.set_day(lib, "c", old, "2026-11-19")
+    for no, name in ((0, "Midterm"), (1, "Midterm 1")):
+        d = _course({10: "Midterm Exam", 16: "Final Exam"}, [("midterm", no, name, 10, "")])
+        e = next(x for x in quizzes.assessments(d, lib) if x["kind"] == "midterm")
+        assert (e["key"], e["weeks"], e["weeks_from"]) == (f"midterm:{no}", [6, 7, 8, 9], "yours")
+        assert (e["on"]["date"], e["on"]["from"]) == ("2026-11-19", "yours")
+        assert next(x for x in calendar_export.listed(lib, "c", d) if x["kind"] == "midterm")["yours"] == "2026-11-19"
+        assert next(x for x in quizzes.assessments(d, lib) if x["kind"] == "final")["weeks_from"] == "guessed"
+    # set under "Midterm", then "Midterm 1" is announced: the same exam
+    lib = _Meta()
+    quizzes.set_weeks(lib, "c", "midterm:0", [5, 6])
+    d = _course({}, [("midterm", 1, "Midterm 1", 10, ""), ("midterm", 2, "Midterm 2", 14, "")])
+    assert [(x["key"], x["weeks_from"]) for x in quizzes.assessments(d, lib)] == \
+        [("midterm:1", "yours"), ("midterm:2", "guessed")]
+    # the syllabus exam still there keeps its own; one a long way off is another exam
+    d = _course({10: "Midterm Exam"}, [("midterm", 0, "Midterm", 14, "")])
+    assert quizzes.former_keys(d, next(x for x in quizzes.assessments(d) if x["key"] == "midterm:0")) == []
+
+
+def test_set_before_it_was_announced_its_room_shows_them_and_clearing_them_there_clears_them(api):
+    api.exam_set_weeks("c", "syllabus:Midterm:8", [5, 6, 7])
+    api.exam_set_day("c", "syllabus:Midterm:8", "2026-11-05")
+    api._s.lib.merge_announcements("c", [Announcement("a4", "Midterm", "Dr X", dt.datetime(2026, 10, 20, 9),
+                                                      "The midterm exam will be held in week 8.")], first_sync=False)
+    r = _room(api, "midterm:0")
+    assert (r["assessment"]["weeks"], r["assessment"]["weeks_from"]) == ([5, 6, 7], "yours")
+    assert (r["when"]["date"], r["when"]["from"]) == ("2026-11-05", "yours")
+    assert api.exam_set_weeks("c", "midterm:0", [])["room"]["assessment"]["weeks_from"] == "guessed"
+    assert api.exam_set_day("c", "midterm:0", "")["room"]["when"]["from"] == "week"
+    assert not quizzes.own_weeks(api._s.lib, "c", "syllabus:Midterm:8")
+    assert not examroom.own_day(api._s.lib, "c", "syllabus:Midterm:8")
+
+
 def test_a_quiz_announced_only_by_its_day_still_has_a_room():
     """Week 1's date unknown: no week, so not among the assessments; its pill and Calendar row opened "no longer in
     the course's plan"."""

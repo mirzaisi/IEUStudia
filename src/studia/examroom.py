@@ -66,6 +66,17 @@ def own_day(lib: Any, course_id: str, key: str) -> str:
     return v
 
 
+def own_day_of(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, Any]) -> str:
+    """The day the student set for this assessment: under its key, else under a key it had before it was announced
+    (quizzes.former_keys: a syllabus exam week, "Midterm" for Midterm 1)."""
+    from .quizzes import former_keys
+
+    mine = own_day(lib, course_id, e.get("key") or "")
+    for k in former_keys(d, e) if lib is not None and course_id and not mine else []:
+        mine = mine or own_day(lib, course_id, k)
+    return mine
+
+
 def set_day(lib: Any, course_id: str, key: str, day: Any) -> str:
     """Keep the exact day the student says an assessment is on ("" clears it). ValueError for one that is no date."""
     v = str(day or "").strip()[:10]
@@ -83,7 +94,7 @@ def when(d: dict[str, Any], e: dict[str, Any], lib: Any = None, today: Optional[
     day = (today or dt.date.today()).isoformat()
     if e.get("date"):
         return {"date": e["date"], "time": e.get("time") or "", "from": "announced", "others": []}
-    mine = own_day(lib, d.get("id") or "", e.get("key") or "")
+    mine = own_day_of(lib, d.get("id") or "", d, e) if e.get("key") else ""
     if mine:
         return {"date": mine, "time": "", "from": "yours", "others": []}
     weeks = {x.get("no"): x for x in d.get("weeks") or []}
@@ -484,6 +495,16 @@ class ExamRoomApi:
             return {"ok": False, "gone": True, "error": t("This assessment is no longer in the course's plan.")}
         return {"ok": True, "room": r}
 
+    def _former(self, course_id: str, key: str) -> list[str]:
+        """The keys it had before it was announced (quizzes.former_keys): once the student sets or clears its weeks
+        or day under its own key, what was kept there no longer shows through."""
+        from . import quizzes
+        from .views import course_detail
+
+        d = course_detail(self._s.lib, self._s.settings, course_id)
+        e = find(d, key) if d else None
+        return quizzes.former_keys(d, e) if d and e else []
+
     @_safe
     def exam_room(self, course_id: str, key: str) -> dict[str, Any]:
         """Everything the Exam room shows for one quiz or exam (``key``: its key, or its name)."""
@@ -494,6 +515,8 @@ class ExamRoomApi:
         """The weeks the student says it covers ([]: back to the announced or guessed ones); the room again."""
         from . import quizzes
 
+        for k in self._former(str(course_id), str(key)):
+            quizzes.set_weeks(self._s.lib, str(course_id), k, [])
         quizzes.set_weeks(self._s.lib, str(course_id), str(key), weeks or [])
         return self._room_of(course_id, key)
 
@@ -504,6 +527,8 @@ class ExamRoomApi:
             set_day(self._s.lib, str(course_id), str(key), day)
         except ValueError:
             return {"ok": False, "error": t("That is not a date.")}
+        for k in self._former(str(course_id), str(key)):
+            set_day(self._s.lib, str(course_id), k, "")
         return self._room_of(course_id, key)
 
     @_safe

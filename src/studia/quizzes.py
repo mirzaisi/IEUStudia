@@ -104,6 +104,21 @@ def assessment_key(e: dict[str, Any]) -> str:
     return f"syllabus:{e['name']}:{e['week']}" if e.get("syllabus") else f"{e['kind']}:{e['no']}"
 
 
+def former_keys(d: dict[str, Any], e: dict[str, Any]) -> list[str]:
+    """The keys an announced exam had before it was announced, gone now: the syllabus exam week it took the place of
+    (one of its kind a week away: _syllabus_exams) and, for Midterm 1, "midterm:0" (a "Midterm" that
+    alerts.assessment_plan folded into it). The weeks and day the student set there are still its own."""
+    if e.get("syllabus") or e.get("kind") == "quiz" or not e.get("week"):
+        return []
+    plan = list((d.get("alerts") or {}).get("plan") or [])
+    now = {assessment_key(x) for x in plan + _syllabus_exams(d, [x for x in plan if x.get("week")])}
+    out = [assessment_key(s) for s in _syllabus_exams(d, []) if s["kind"] == e["kind"]
+           and s["first_week"] - 1 <= e["week"] <= s["week"] + 1]
+    if e["kind"] == "midterm" and e.get("no") == 1:
+        out.append("midterm:0")
+    return [k for k in out if k not in now]
+
+
 def _weeks_meta(course_id: str, key: str) -> str:
     return f"exam-weeks:{course_id}:{key}"
 
@@ -154,6 +169,8 @@ def assessments(d: dict[str, Any], lib: Any = None) -> list[dict[str, Any]]:
         covers = sorted({int(n) for n in e.get("covers") or [] if 1 <= int(n) <= 30})
         key = assessment_key(e)
         mine = own_weeks(lib, d.get("id") or "", key)
+        for k in former_keys(d, e) if lib is not None and not mine else []:     # (set before it was announced)
+            mine = mine or own_weeks(lib, d.get("id") or "", k)
         weeks, origin = (mine, "yours") if mine else (covers, "announced") if covers else (guess, "guessed")
         out.append({**e, "key": key, "weeks": weeks, "weeks_from": origin, "guessed": guess, "covers": covers,
                     "covers_from": e.get("covers_from") or "", "files": [], "ahead": e["week"] not in past})

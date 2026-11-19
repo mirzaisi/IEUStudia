@@ -83,14 +83,14 @@ def listed(lib: Any, course_id: str, d: dict[str, Any]) -> list[dict[str, Any]]:
     exam weeks no announcement covers, a two-week exam period as one ("first_week" its first; one a week away from
     an announced exam of its kind is that exam: quizzes._syllabus_exams). Each with its "key" (quizzes.assessment_key)
     and "yours": the day the student set in its Exam room ("" when not, or when an announcement gave the day)."""
-    from .examroom import own_day
+    from .examroom import own_day_of
     from .quizzes import _syllabus_exams, assessment_key
 
     plan = list((d.get("alerts") or {}).get("plan") or [])
     out = []
     for e in plan + _syllabus_exams(d, [e for e in plan if e.get("week")]):
-        key = assessment_key(e)
-        out.append({**e, "key": key, "yours": "" if e.get("date") else own_day(lib, course_id, key)})
+        e = {**e, "key": assessment_key(e)}
+        out.append({**e, "yours": "" if e.get("date") else own_day_of(lib, course_id, d, e)})
     return out
 
 
