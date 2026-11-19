@@ -582,6 +582,11 @@ def _same(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
 
 
+def _exact(s: str) -> str:
+    """The key of "the same option or question": spaces only, since case is meaning in maths (f(2) is not F(2))."""
+    return re.sub(r"\s+", " ", str(s or "").strip())
+
+
 def _answer_index(v: Any, texts: list[str], zero: Optional[bool]) -> Optional[int]:
     """The right option from what the AI wrote: a letter ("B", "(b)", "Option B", "B) …"), the option's text, or a
     number (``zero``: the quiz counts from 0)."""
@@ -598,9 +603,11 @@ def _answer_index(v: Any, texts: list[str], zero: Optional[bool]) -> Optional[in
     s = str(v).strip()
     norm = _norm(s)
     if not re.fullmatch(r"\(?[A-Fa-f]\)?[.):]?", s):     # the option's own text ("a constant" is no letter A)
-        for i, x in enumerate(texts):
-            if norm and (_same(x) == _same(s) or _norm(x) == norm):
-                return i
+        for key in (_exact, _same, _norm):              # as written first: "F(2)" is not the option "f(2)"
+            k = key(s)
+            hits = [i for i, x in enumerate(texts) if norm and k and key(x) == k]
+            if len(hits) == 1 or (hits and key is _exact):
+                return hits[0]
     m = re.match(r"^\s*(?:(?:option|choice|answer|seçenek|şık|cevap)\s*[:\-]?\s*)?\(?([A-Fa-f])\)?(?=$|[\s.):,])", s, re.I)
     if m:
         k = _LETTERS.index(m.group(1).lower())
@@ -1061,7 +1068,7 @@ def clean_question(q: dict[str, Any], zero: Optional[bool]) -> Optional[dict[str
             keep.sort()
             right = keep.index(right)
             texts, wrong = [texts[i] for i in keep], [wrong[i] for i in keep]
-        if len({_same(x) for x in texts}) < 4:
+        if len({_exact(x) for x in texts}) < 4:
             return None
         out.update(options=[_clean_tex(x) for x in texts], answer=right, wrong=[_clean_tex(x) for x in wrong])
         return out
@@ -1095,15 +1102,15 @@ def clean_quiz(raw: dict[str, Any], facts: dict[str, Any], units: Optional[list]
     zero = True if 0 in ints else False if ints and max(ints) >= 4 else None
     known_los = set(range(1, len(facts.get("outcomes") or []) + 1)) or None
     stressed = facts.get("stressed") or {}
-    avoid = {_same(a) for a in facts.get("avoid") or [] if _same(a)}      # (a weak-spot quiz: asked before)
+    avoid = {_exact(a) for a in facts.get("avoid") or [] if _exact(a)}    # (a weak-spot quiz: asked before)
     out, seen = [], set()
     for q in qs:
         if not isinstance(q, dict):
             continue
         c = clean_question(q, zero)
-        if c is None or _same(c["q"]) in seen or _same(c["q"]) in avoid:
+        if c is None or _exact(c["q"]) in seen or _exact(c["q"]) in avoid:
             continue
-        seen.add(_same(c["q"]))
+        seen.add(_exact(c["q"]))
         src = check_source(parse_source(c.pop("raw_source")), facts)
         c["found"] = False
         if src is None and units:
