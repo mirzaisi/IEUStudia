@@ -237,7 +237,7 @@ class PracticeApi:
         lines, by_ref = stressed.prompt_lines(top, {k: f"{k.split('|')[1]} (week {day_week.get(k.split('|')[1], '?')})"
                                                     for k in {it["day_key"] for it in top}}, 60,
                                               [it for it in items if it["kind"] == "not_needed"])
-        nxt = next((e for e in quizzes.assessments(d) if e["ahead"]), None)
+        nxt = next((e for e in quizzes.of(d) if e["ahead"]), None)
         outcomes = d.get("outcomes_en") or d.get("outcomes_tr") or []
         focus = ""
         if nxt:
@@ -290,7 +290,7 @@ class PracticeApi:
         if d is None:
             return {"ok": False, "error": t("This course is no longer in your list.")}
         opts = studypack.options(self._s.lib, self._s.settings, course_id)
-        return {"ok": True, **opts, "assessments": quizzes.assessments(d), "quant": quizzes.quantitative(d),
+        return {"ok": True, **opts, "assessments": quizzes.of(d), "quant": quizzes.quantitative(d),
                 **document_language(d, self._s.settings), "ai": claude_info(),
                 "model": self._s.settings.plan_model or self._s.settings.ai_model}
 

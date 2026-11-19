@@ -377,7 +377,7 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
 
     asgs = [assignment_view(a, week_of(dt.date.fromisoformat(a["due"][:10]), first) if a["due"] and first else None)
             for a in lib.assignments(course_id)]
-    return {
+    out = {
         **{k: cv[k] for k in ("id", "code", "name", "display_name", "instructor", "term", "section", "has_panopto",
                               "counts", "my_section", "cover", "lms_progress")},
         "description": syl.get("description") or ov.get("description", ""),
@@ -395,6 +395,9 @@ def course_detail(lib: Any, settings: Settings, course_id: str, jobs: Iterable[d
         "alerts": alerts,
         "assignments": asgs,                     # IEULearn's assignments: when each is due, and whether it was sent
     }
+    from .quizzes import assessments            # each quiz and exam with the weeks it covers: the one place for it
+    out["assessments"] = assessments(out, lib)
+    return out
 
 
 def assignment_view(a: dict[str, Any], week: Optional[int] = None) -> dict[str, Any]:

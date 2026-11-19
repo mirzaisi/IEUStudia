@@ -184,7 +184,8 @@ def test_get_ready_leaves_a_lecture_without_speech_out_of_what_is_left(tmp_path)
     weeks: [{ no: 1, start: "2026-09-21", end: "2026-09-27", past: true, current: false, units: [], classes: [],
       days: [day("e|1", "2026-09-23", { no_sound: true, ready: false }), day("e|2", "2026-09-24", { transcribed: true, any_done: true, no_sound: true, ready: false })] },
       { no: 2, start: "2026-09-28", end: "2026-10-04", past: true, current: false, units: [], classes: [], days: [day("e|3", "2026-09-30")] }],
-    alerts: { items: [], plan: [{ name: "Quiz 1", kind: "quiz", no: 1, week: 2, los: [], sources: [{ id: "a1", title: "Quiz 1" }] }], counts: {} } } };
+    alerts: { items: [], plan: [{ name: "Quiz 1", kind: "quiz", no: 1, week: 2, los: [], sources: [{ id: "a1", title: "Quiz 1" }] }], counts: {} },
+    assessments: [{ name: "Quiz 1", kind: "quiz", no: 1, week: 2, key: "quiz:1", weeks: [1, 2], weeks_from: "guessed", ahead: false, los: [], sources: [{ id: "a1", title: "Quiz 1" }] }] } };
   await St.openReady("e", "Quiz 1"); await tick();
   out.ready = plain(els[".modal.rd"].innerHTML).replace(/<[^>]*>/g, " ").replace(/\\s+/g, " ");
   out.button = (plain(els[".modal.rd"].innerHTML).match(/<button class="btn sm" data-act="rd-transcribe" title="([^"]*)"/) || [])[1];

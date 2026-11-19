@@ -2325,7 +2325,7 @@ class Api(PracticeApi):
     @safe
     def plan_options(self, course_id: str) -> dict[str, Any]:
         """What the new-plan dialog offers: the weeks (with what is downloaded and transcribed) and the assessments
-        the lecturer announced, each with the weeks it most likely covers."""
+        with the weeks each covers (d["assessments"], as the quiz dialog and Get ready show them)."""
         from .ai import claude_info
 
         d = views.course_detail(self._s.lib, self._s.settings, course_id)
@@ -2343,17 +2343,8 @@ class Api(PracticeApi):
                           "missing": [m["id"] for m in mats if not m["downloaded"]],
                           "lectures": len(own), "lectures_done": sum(1 for x in own if x["any_done"]),
                           "todo_days": [x["day_key"] for x in own if not x["transcribed"]]})
-        assess, prev, midterm = [], 0, 0
-        for e in sorted((e for e in (d.get("alerts") or {}).get("plan") or [] if e.get("week")), key=lambda e: e["week"]):
-            if e["kind"] == "midterm":                  # Midterm 2: since Midterm 1
-                start = midterm + 1 if e["no"] >= 2 else 1
-                midterm = e["week"]
-            else:                                       # a quiz: since the last assessment
-                start = 1 if e["kind"] == "final" else prev + 1
-            assess.append({**e, "weeks": list(range(min(start, e["week"]), e["week"] + 1))})
-            prev = e["week"]
         return {"ok": True, "course": {"id": d["id"], "code": d["code"], "name": d["display_name"]}, "weeks": weeks,
-                "assessments": assess, "ai": claude_info(),
+                "assessments": d["assessments"], "ai": claude_info(),
                 "model": self._s.settings.plan_model or self._s.settings.ai_model}
 
     @safe

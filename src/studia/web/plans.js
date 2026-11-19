@@ -362,7 +362,9 @@
     if (!r.ok) { closeModal(); toast(r.error, "error"); return; }
     D.opts = r;
     const cur = r.weeks.find((w) => w.current);
-    const next = (focus && r.assessments.find((a) => a.name === focus)) || r.assessments.find((a) => !r.weeks.find((w) => w.no === a.week && w.past));
+    // as the quiz dialog's "For …": the first one still ahead (d.assessments, with the weeks it covers)
+    const next = (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
+      || r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past));
     const base = parent ? { ...parent.scope } : null;
     D.scope = base || (next ? { weeks: next.weeks, focus: next.name, los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week) }
       : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", los: [], minutes: 180, deadline: "" });

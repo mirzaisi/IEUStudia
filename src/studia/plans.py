@@ -311,8 +311,8 @@ def gather(lib: Any, settings: Any, course_id: str, scope: Scope) -> dict[str, A
         out += [f"  LO{i}: {lo}" for i, lo in enumerate(d["outcomes_tr"], 1)]
     if plan:
         out.append("ASSESSMENTS ANNOUNCED BY THE LECTURER:")
-        out += [f"  {e['name']}: week {e['week'] or '?'}" + (f", covers LO{', LO'.join(map(str, e['los']))}" if e["los"] else "")
-                for e in plan]
+        out += [f"  {e['name']}: week {e['week'] or '?'}" + (f", covers {_week_span(e['covers'])}" if e.get("covers") else "")
+                + (f", covers LO{', LO'.join(map(str, e['los']))}" if e["los"] else "") for e in plan]
     out.append("WEEKS IN SCOPE:")
     for w in weeks:
         topic = " / ".join(x for x in (w["topic_en"], w["topic_tr"]) if x) or ", ".join(u["title"] for u in w["units"])

@@ -664,15 +664,11 @@
   }
   St.after.day = (v) => { if (S.day && v.dayKey && !readDays.has(v.dayKey)) setRead(v.dayKey, true); };   // opened = read
 
-  function coveredWeeks(d, e) {     // as the study-plan dialog: a quiz covers the weeks since the previous assessment
-    const plan = ((d.alerts || {}).plan || []).filter((x) => x.week).sort((a, b) => a.week - b.week);
-    const i = plan.findIndex((x) => x.name === e.name);
-    const midBefore = plan.slice(0, Math.max(0, i)).filter((x) => x.kind === "midterm").pop();   // Midterm 2: since Midterm 1
-    const start = e.kind === "final" ? 1 : e.kind === "midterm" ? (e.no >= 2 && midBefore ? midBefore.week + 1 : 1)
-      : (i > 0 ? plan[i - 1].week : 0) + 1;
-    const out = [];
-    for (let n = Math.min(start, e.week); n <= e.week; n++) out.push(n);
-    return out;
+  // the weeks an assessment covers: the course's own list (views.course_detail: d.assessments), as the quiz and plan
+  // dialogs show them; the one still ahead when two have its name
+  function coveredWeeks(d, e) {
+    const named = (d.assessments || []).filter((x) => x.name === e.name);
+    return ((named.find((x) => x.ahead) || named[0]) || { weeks: [] }).weeks;
   }
   function readiness(c, d, e) {
     const nos = new Set(e.week ? coveredWeeks(d, e) : []);

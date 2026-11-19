@@ -709,6 +709,56 @@ def test_the_day_of_a_date_is_no_midterm_or_quiz_number():
     assert plan(table, dash) == [("Quiz 1", 4), ("Quiz 2", 7), ("Quiz 3", 10), ("Quiz 4", 13)]
 
 
+def test_what_an_assessment_covers_is_kept_in_english_and_turkish():
+    """"Quiz 3 will cover weeks 8 and 9" was thrown away (it isn't the week Quiz 3 is held in): now it is what Quiz 3
+    covers, so every quiz, card set, pack and plan for it reads weeks 8 and 9."""
+    table = _ann("t", "Quizzes", "Quiz 1\nWeek 4\nQuiz 2\nWeek 7\nQuiz 3\nWeek 10\nAra Sınav\n8. hafta")
+
+    def covers(body, title="Quiz"):
+        return {e["name"]: e["covers"] for e in assessment_plan([table, _ann("c", title, body, "2026-10-20T09:00")])
+                if e["covers"]}
+    assert covers("Quiz 3 will cover weeks 8 and 9.") == {"Quiz 3": [8, 9]}
+    assert covers("3. quiz 8. ve 9. haftaları kapsar.") == {"Quiz 3": [8, 9]}
+    assert covers("Merhaba, 3. quizimiz 8. ve 9. haftaların konularını kapsayacaktır.") == {"Quiz 3": [8, 9]}
+    assert covers("Quiz 2 covers the topics of weeks 4-6.") == {"Quiz 2": [4, 5, 6]}
+    assert covers("It covers weeks 8 to 9.", "About Quiz 3") == {"Quiz 3": [8, 9]}        # the title names it
+    assert covers("Ara sınavın kapsamı: 1-7. haftalar.") == {"Midterm": list(range(1, 8))}
+    assert covers("Midterm is in week 8. Quiz 3 will cover weeks 8 and 9.") == {"Quiz 3": [8, 9]}   # not "quiz 8"
+    assert covers("Quizzes 1 to 3 will cover the topics of weeks 2, 5 and 8 respectively.") == \
+        {"Quiz 1": [2], "Quiz 2": [5], "Quiz 3": [8]}
+    assert covers("Quiz 1-3 sırasıyla 2., 5. ve 8. haftaların konularını kapsayacaktır.") == \
+        {"Quiz 1": [2], "Quiz 2": [5], "Quiz 3": [8]}
+    assert covers("Quizzes 2 and 3 will cover weeks 5 and 6.") == {}          # which one covers which: not said
+    assert covers("Quiz 2 - 13:30, Room D-201, in weeks 5 and 6") == {}       # not what it covers
+    plan = {e["name"]: e for e in assessment_plan([table, _ann("c", "About Quiz 3", "Quiz 3 will cover weeks 8 and 9.",
+                                                               "2026-10-20T09:00")])}
+    q3 = plan["Quiz 3"]
+    assert q3["week"] == 10 and q3["covers_from"] == "c" and [s["id"] for s in q3["sources"]] == ["c", "t"]
+    assert plan["Quiz 2"]["covers"] == [] and plan["Quiz 2"]["covers_from"] == ""
+    newer = _ann("n", "Quiz 3", "Quiz 3 will cover weeks 7, 8 and 9.", "2026-10-27T09:00")     # a newer one wins
+    assert {e["name"]: e["covers"] for e in assessment_plan([table, newer, _ann("c", "Quiz 3", "Quiz 3 will cover "
+                                                            "weeks 8 and 9.", "2026-10-20T09:00")])}["Quiz 3"] == [7, 8, 9]
+    # what it covers alone makes no assessment (it has no week), and a range is no week it is held in
+    assert assessment_plan([_ann("c", "About Quiz 3", "Quiz 3 will cover weeks 8 and 9.")]) == []
+    assert [(e["name"], e["week"]) for e in assessment_plan([_ann("m", "Ara sınav", "Ara Sınav\n1-7. haftalar")])] == []
+
+
+def test_a_quiz_announced_only_by_its_day_gets_its_week_when_week_1_is_known():
+    from studia.quizzes import assessments
+    from studia.views import dated_plan
+
+    plan = assessment_plan([_ann("d", "Quiz 2", "Our 2nd quiz will be held on Friday, October 23.", "2026-10-12T09:00")])
+    assert [(e["name"], e["week"], e["date"]) for e in plan] == [("Quiz 2", None, "2026-10-23")]
+    weeks = [{"no": n, "past": n < 4} for n in range(1, 15)]
+    known = dated_plan(plan, dt.date(2026, 9, 14))                  # week 1 starts on 14 September: week 6
+    assert [e["week"] for e in known] == [6]
+    assert [(e["name"], e["weeks"]) for e in assessments({"weeks": weeks, "alerts": {"plan": known}})] == \
+        [("Quiz 2", [1, 2, 3, 4, 5, 6])]
+    unknown = dated_plan(plan, None)                                  # no week 1: no week, so not one to prepare for
+    assert [e["week"] for e in unknown] == [None]
+    assert assessments({"weeks": weeks, "alerts": {"plan": unknown}}) == []
+
+
 def test_turkish_and_longer_midterm_names():
     plan = lambda *anns: [(e["name"], e["week"]) for e in assessment_plan(list(anns))]   # noqa: E731
     assert plan(_ann("a", "Ara Sınavı", "Ara Sınavı: 8. hafta")) == [("Midterm", 8)]     # the ı is no Roman I
