@@ -141,6 +141,17 @@ def test_course_wide_and_announcement_files_reach_every_tool_when_picked(course)
     assert "Syllabus.pdf" not in plans.gather(lib, s, "c", Scope(kind="prep", weeks=[7]))["pack"]
 
 
+def test_the_terms_quiz_schedule_is_tied_to_no_one_quiz():
+    """MATH 250's "Quiz_Duyurusu_TR_EN.docx" came with the announcement that set every quiz's week: it is no quiz's
+    posted solution, so "For Quiz 3" doesn't tick it (a file attached to one quiz's announcement is tied to it)."""
+    d = {"id": "c", "announcements": [{"id": "s", "title": "Quiz Duyurusu", "body": f"Schedule ({ANN_URL})"}],
+         "general": [{"id": "announcements", "materials": [{"id": ANN_FILE, "title": "Quiz_Duyurusu_TR_EN",
+                                                            "file_name": "Quiz_Duyurusu_TR_EN.docx"}]}]}
+    plan = [{"key": f"quiz:{n}", "kind": "quiz", "no": n, "sources": [{"id": "s"}]} for n in (1, 2, 3)]
+    assert quizzes.tied_files(d, plan) == {}
+    assert quizzes.tied_files(d, plan[2:]) == {ANN_FILE: ["quiz:3"]}
+
+
 def test_a_class_list_is_kept_away_from_every_ai_tool(course, tmp_path):
     """EEE 215's "Lab Grades" (classmates' student numbers and marks) is left out of quizzes, cards, packs, review
     sheets, a chat's course files and uploads and the matching passages, unless the student says to include it."""

@@ -12,7 +12,10 @@
   // a file that can be ticked: on this PC with its text read, and not a class list
   const usable = (f) => !!f.ready && !f.students;
   // the files tied to an assessment (its key: d.assessments): "For Quiz 3" ticks Quiz 3's posted solutions
-  const tied = (opts, key) => (key ? ((opts && opts.general) || []).filter((f) => usable(f) && (f.for || []).includes(key)).map((f) => f.id) : []);
+  const tiedTo = (opts, key) => (key ? ((opts && opts.general) || []).filter((f) => !f.students && (f.for || []).includes(key)) : []);
+  const tied = (opts, key) => tiedTo(opts, key).filter(usable).map((f) => f.id);
+  // ...and those not on this PC yet: they join the dialog's Download (ticked once they are in)
+  const tiedMissing = (opts, key) => tiedTo(opts, key).filter((f) => !f.downloaded).map((f) => f.id);
   // what a file's line says on its right: a class list's mark with Include anyway, else ``other``
   function fileSub(f, other) {
     if (!f.students) return other;
@@ -30,7 +33,7 @@
       return `<label class="pk-item ${ok ? "" : "off"}"><input type="checkbox" class="check" data-act="${act}" data-kind="file" data-id="${esc(f.id)}" ${on.has(f.id) ? "checked" : ""} ${ok ? "" : "disabled"}>
         ${I(f.group === "announcement" ? "megaphone" : "file-text", "sm")}<span class="grow">${esc(f.name)} <span class="dim sm">· ${esc(fromWhere(f))}</span></span><span class="dim sm">${fileSub(f, esc(sub))}</span></label>`;
     };
-    return `<div class="pk-week pk-gen"><div class="pk-week-h">${t("Course-wide and announcement files")} <span class="dim">${t("Tick the ones you want.")}</span></div>${files.map(line).join("")}</div>`;
+    return `<div class="pk-week pk-gen"><div class="pk-week-h">${t("Course-wide and announcement files")} <span class="dim">· ${t("Tick the ones you want.")}</span></div>${files.map(line).join("")}</div>`;
   }
   // the files of the picked weeks (and the course-wide ones ticked) not on this PC, and your class days not
   // transcribed (studypack.options: "missing", "todo_days"), as the plan dialog's rows
@@ -78,22 +81,24 @@
   St.onEvents.material = (e) => {
     if (onMaterial) onMaterial(e);
     const o = live, D = o && o.state();
-    if (!o || !o.refetch || !D || !D.opts || !o.open() || !D.opts.weeks.some((w) => w.files.some((f) => f.id === e.id))) return;
+    const known = (x) => x.opts.weeks.some((w) => w.files.some((f) => f.id === e.id)) || (x.opts.general || []).some((f) => f.id === e.id);
+    if (!o || !o.refetch || !D || !D.opts || !o.open() || !known(D)) return;
     if (e.state === "error") { if (D.fetching && D.fetching.delete(e.id)) o.redraw(); return; }      // its Download is back
     if (e.state !== "done") return;
     clearTimeout(timer);
     timer = setTimeout(async () => {             // (a batch of downloads: one refresh)
       const r = await o.refetch();
       if (o.state() !== D || !r || !r.ok || !o.open()) return;
-      const was = new Set(D.opts.weeks.flatMap((w) => w.files.filter(usable).map((f) => f.id)));
+      const was = new Set([...D.opts.weeks.flatMap((w) => w.files), ...(D.opts.general || [])].filter(usable).map((f) => f.id));
       D.opts = { ...D.opts, weeks: r.weeks, general: r.general || D.opts.general };
-      r.weeks.forEach((w) => w.files.forEach((f) => { if (f.downloaded && D.fetching) D.fetching.delete(f.id); }));
+      [...r.weeks.flatMap((w) => w.files), ...(r.general || [])].forEach((f) => { if (f.downloaded && D.fetching) D.fetching.delete(f.id); });
       r.weeks.filter((w) => D.weeks.has(w.no)).forEach((w) => w.files.forEach((f) => { if (usable(f) && !was.has(f.id)) D.files.add(f.id); }));
+      tied(D.opts, o.tie ? o.tie() : "").forEach((id) => { if (!was.has(id)) D.files.add(id); });     // its solutions, in
       o.redraw();
     }, 300);
   };
 
-  St.picks = { usable, tied, fileSub, groupHTML, gapsHTML, allow, transcribe, download, live: setLive, onAllow: null };
+  St.picks = { usable, tied, tiedMissing, fileSub, groupHTML, gapsHTML, allow, transcribe, download, live: setLive, onAllow: null };
   Object.assign(A, {
     // a class list let in, after a warning: the open dialog marks it (St.picks.onAllow) and ticks it again
     "students-ok": async (el) => {

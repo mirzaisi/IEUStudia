@@ -321,7 +321,7 @@
     Q.opts = r; Q.model = r.model || "sonnet";
     setMode(nextExam(r) ? "next" : "weeks");
     // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked
-    if (St.picks) St.picks.live({ state: () => Q, open: () => !!$("#overlay #qz-cost"), refetch: () => call("quiz_options", Q.cid), redraw: () => { readQuiz(); drawQuiz(); estimateQuiz(); } });
+    if (St.picks) St.picks.live({ state: () => Q, open: () => !!$("#overlay #qz-cost"), refetch: () => call("quiz_options", Q.cid), tie: qTie, redraw: () => { readQuiz(); drawQuiz(); estimateQuiz(); } });
     drawQuiz(); estimateQuiz();
   }
   function quizCost() {
@@ -355,8 +355,7 @@
         ${!w.files.length && !w.days.length ? `<div class="dim sm pk-none">${t("Nothing for this week yet.")}</div>` : ""}</div>`).join("")
       + (pk ? pk.groupHTML(r, Q.files, "qz-item", Q.fetching) : "");         // course-wide and announcement files
     // what the picked weeks still miss, with Download and Transcribe (as the plan dialog)
-    const missing = [...new Set(picked.flatMap((w) => (w.missing || []).filter((id) => !Q.fetching.has(id))))];
-    const gaps = pk && Q.mode !== "lecture" ? pk.gapsHTML(missing, [...new Set(picked.flatMap((w) => w.todo_days || []))], { download: "qz-download", transcribe: "qz-transcribe" }) : "";
+    const gaps = pk && Q.mode !== "lecture" ? pk.gapsHTML(qMissing(), [...new Set(picked.flatMap((w) => w.todo_days || []))], { download: "qz-download", transcribe: "qz-transcribe" }) : "";
     const where = Q.mode === "lecture"
       ? `<div class="field"><label>${t("Which lecture?")}</label><select class="input" data-act="qz-day">${lectures().map((d) => `<option value="${esc(d.day_key)}" ${d.day_key === Q.day ? "selected" : ""}>${esc(t("Week {n}", { n: d.week }))} · ${esc(d.label)} · ${esc(d.kind)}</option>`).join("")}</select></div>`
       : `<div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: Q.weeks.size })}</span></label>
@@ -385,6 +384,10 @@
     const nb = $(".modal .cp-scroll"); if (nb) nb.scrollTop = keep;
   }
   function readQuiz() { document.querySelectorAll(".modal [data-qz]").forEach((el) => { Q[el.dataset.qz] = el.value; }); }
+  // the files not on this PC: the picked weeks', and (For Quiz 3) the course-wide ones tied to it, as its solutions
+  const qTie = () => (Q.mode === "next" ? (nextExam(Q.opts) || {}).key || "" : "");
+  const qMissing = () => [...new Set([...Q.opts.weeks.filter((w) => Q.weeks.has(w.no)).flatMap((w) => w.missing || []),
+    ...(St.picks ? St.picks.tiedMissing(Q.opts, qTie()) : [])])].filter((id) => !Q.fetching.has(id));
   let estTimer = null;
   function estimateQuiz() {
     clearTimeout(estTimer);
@@ -779,7 +782,7 @@
     "qz-day": (el) => { readQuiz(); Q.day = el.value; drawQuiz(); estimateQuiz(); },
     "qz-download": async () => {                 // the picked weeks' files not on this PC: ticked once they are in
       readQuiz();
-      const asked = Q, ids = [...new Set(Q.opts.weeks.filter((w) => Q.weeks.has(w.no)).flatMap((w) => (w.missing || []).filter((id) => !Q.fetching.has(id))))];
+      const asked = Q, ids = qMissing();
       if (!(await St.picks.download(ids)) || asked !== Q) return;
       ids.forEach((id) => Q.fetching.add(id));
       if ($("#overlay #qz-cost")) { readQuiz(); drawQuiz(); }

@@ -160,8 +160,9 @@ _ANN_FILE_LINK = re.compile(r"https?://[^\s<>\"]+")
 
 def tied_files(d: dict[str, Any], plan: list[dict[str, Any]]) -> dict[str, list[str]]:
     """The course-wide and announcement files (d["general"]) tied to an assessment: {resource id: [its keys]}. A
-    file is tied when its name names it ("Quiz1 - Solutions.pdf"), or it is attached to an announcement that is one of
-    the assessment's sources or names it in its title ("Quiz 3 solutions")."""
+    file is tied when its name names it ("Quiz1 - Solutions.pdf"), or it is attached to an announcement that names it
+    in its title ("Quiz 3 solutions") or is a source of that assessment alone (not the term's schedule: MATH 250's
+    "Quiz_Duyurusu" is a source of every quiz)."""
     from .alerts import named_assessments
     from .library import ANN_UNIT
 
@@ -187,7 +188,8 @@ def tied_files(d: dict[str, Any], plan: list[dict[str, Any]]) -> dict[str, list[
                 keys += matches(kind, no)
             a = by_rid.get(m["id"]) if u.get("id") == ANN_UNIT else None
             if a is not None:
-                keys += [e["key"] for e in plan if any(s.get("id") == a["id"] for s in e.get("sources") or [])]
+                of_it = [e["key"] for e in plan if any(s.get("id") == a["id"] for s in e.get("sources") or [])]
+                keys += of_it if len(of_it) == 1 else []
                 for kind, no in named_assessments(a.get("title") or ""):
                     keys += matches(kind, no)
             if keys:

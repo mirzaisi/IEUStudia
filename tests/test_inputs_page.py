@@ -64,6 +64,8 @@ const weeks = [8, 9, 10].map((no) => ({ no, start: start(no), current: no === 10
   missing: no === 9 ? ["w9b"] : [], todo_days: no === 10 ? [DAY] : [] }));
 const general = [{ id: "ann1", title: "Quiz3 - Solutions", name: "Quiz3 - Solutions.pdf", pages: 2, ext: "pdf", ready: true, downloaded: true,
   group: "announcement", unit: "From announcements", week: 9, for: ["quiz:3"], students: false },
+  { id: "ann2", title: "Quiz3 - Practice", name: "Quiz3 - Practice.pdf", pages: 0, ext: "pdf", ready: false, downloaded: false,
+  group: "announcement", unit: "From announcements", week: 9, for: ["quiz:3"], students: false },
   { id: "syl", title: "Syllabus", name: "Syllabus.pdf", pages: 3, ext: "pdf", ready: true, downloaded: true, group: "course",
   unit: "Course Documents", week: null, for: [], students: false }];
 St.mocks.quiz_options = () => ({ ok: true, model: "sonnet", ai: { available: true }, quant: false, language: "English", weeks, general,
@@ -113,9 +115,9 @@ def test_the_quiz_dialog_offers_the_course_wide_files_leaves_a_class_list_out_an
     assert "Course-wide and announcement files" in n["text"] and "Quiz3 - Solutions.pdf · From an announcement, week 9" in n["text"]
     assert "Syllabus.pdf · Course Documents" in n["text"]
     assert "Left out: it lists students Include anyway" in n["text"]
-    assert "Download 1" in n["text"] and "Transcribe 1" in n["text"]   # as the plan dialog
-    assert "downloading…" in out["during"] and "Download 1" not in out["during"]
-    assert out["after"]["calls"] == [["download", ["w9b"]], ["transcribe", ["c|2026-11-18|lecture"]],
+    assert "Download 2" in n["text"] and "Transcribe 1" in n["text"]   # as the plan dialog; with Quiz 3's practice file
+    assert "downloading…" in out["during"] and "Download" not in out["during"]
+    assert out["after"]["calls"] == [["download", ["w9b", "ann2"]], ["transcribe", ["c|2026-11-18|lecture"]],
                                      ["ask", "Include this file?"], ["include", "grades"]]
     assert "checked" in out["after"]["grades"] and "disabled" not in out["after"]["grades"]   # let in: ticked
     assert "checked" not in out["weeks"]                                 # weeks you pick: none of them ticked
@@ -148,7 +150,7 @@ def test_the_quiz_dialog_the_plan_dialog_and_get_ready_show_the_same_weeks(tmp_p
       files_ready: 1, missing: [], students: no === 9 ? [{ id: "grades", name: "Lab Grades.pdf" }] : [], lectures: 0, lectures_done: 0, todo_days: [] })) });
   await A["plan-new"]({ dataset: { id: "c" } }); await tick();
   out.plan = [...html().matchAll(/<input[^>]*data-act="pd-week" data-no="(\\d+)" checked/g)].map((m) => +m[1]);
-  out.planGen = { ann: box("ann1", "pd-gen"), syl: box("syl", "pd-gen"), text: text(html()) };
+  out.planGen = { ann: box("ann1", "pd-gen"), ann2: box("ann2", "pd-gen"), syl: box("syl", "pd-gen"), text: text(html()) };
   A["pd-assess"]({ dataset: { i: "-1" } });
   out.planNone = box("ann1", "pd-gen");
   els[".modal.rd"] = el();
@@ -162,5 +164,6 @@ def test_the_quiz_dialog_the_plan_dialog_and_get_ready_show_the_same_weeks(tmp_p
     assert out["plan"] == [9, 10]
     assert "covers weeks 9–10" in out["ready"]
     assert "checked" in out["planGen"]["ann"] and "checked" not in out["planGen"]["syl"]   # For Quiz 3: its solutions
+    assert "checked" in out["planGen"]["ann2"] and "Download 1" in out["planGen"]["text"]  # (read once it is in)
     assert "Lab Grades.pdf: Left out: it lists students Include anyway" in out["planGen"]["text"]
     assert "checked" not in out["planNone"]                             # just these weeks: none

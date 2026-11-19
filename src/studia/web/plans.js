@@ -351,6 +351,13 @@
     const covered = weeks.filter((w) => w.no < cur.no && w.no > (prev ? prev.no : 0) && !w.exam && (w.start || w.topic)).map((w) => w.no);
     return covered.length ? covered : [cur.no];
   }
+  // the course-wide and announcement files tied to the assessment the plan is for (its posted solutions): in the
+  // plan, also one not on this PC yet (its Download fetches it, and the plan reads it once it is in)
+  const planTied = (r, a) => (St.picks && a ? [...St.picks.tied(r, a.key), ...St.picks.tiedMissing(r, a.key)] : []);
+  const focusKey = () => ((D.opts.assessments || []).find((a) => a.name === D.scope.focus && a.ahead !== false)
+    || (D.opts.assessments || []).find((a) => a.name === D.scope.focus) || {}).key || "";
+  const planMissing = (weeks) => [...new Set([...D.opts.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.missing),
+    ...(St.picks ? St.picks.tiedMissing(D.opts, focusKey()) : [])])];
   async function newPlanDialog(courseId, parent, kind, focus, weeks) {
     const courses = S.courses.filter((c) => c.code);
     D.courseId = courseId || (S.view.name === "course" ? S.view.courseId : null) || (courses[0] || {}).id;
@@ -366,7 +373,7 @@
     const next = (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
       || r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past));
     const base = parent ? { ...parent.scope } : null;
-    const tied = (a) => (St.picks && a ? St.picks.tied(r, a.key) : []);     // its posted solutions (picks.js)
+    const tied = (a) => planTied(r, a);                                       // its posted solutions (picks.js)
     D.scope = base || (next ? { weeks: next.weeks, focus: next.name, los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week), files: tied(next) }
       : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", los: [], minutes: 180, deadline: "", files: [] });
     D.scope = { kind: kind || "videos", topics: "", difficulties: "", allow_tr: false, extras: false, model: r.model || "sonnet", ...D.scope };
@@ -397,7 +404,7 @@
     const sel = new Set(sc.weeks);
     const weeks = r.weeks.filter((w) => w.start || w.topic);
     const picked = weeks.filter((w) => sel.has(w.no));
-    const missing = [...new Set(picked.flatMap((w) => w.missing))];      // (a file of a unit for two weeks once)
+    const missing = planMissing(sel);                                     // (a file of a unit for two weeks once)
     const todo = picked.flatMap((w) => w.todo_days || []);
     // the course-wide and announcement files (ticked: the plan reads them too), and the picked weeks' class lists
     const gen = St.picks ? St.picks.groupHTML(r, new Set(sc.files || []), "pd-gen") : "";
@@ -551,7 +558,7 @@
     "pd-assess": (el) => {
       readInputs();
       const a = D.opts.assessments[+el.dataset.i];
-      const files = a && St.picks ? St.picks.tied(D.opts, a.key) : [];           // its posted solutions: ticked
+      const files = planTied(D.opts, a);                                          // its posted solutions: ticked
       if (a) Object.assign(D.scope, { weeks: a.weeks, focus: a.name, los: a.los, deadline: weekEnd(D.opts.weeks, a.week) || D.scope.deadline, files });
       else Object.assign(D.scope, { focus: "", los: [], files: [] });
       drawDialog(); estimate();
@@ -588,8 +595,7 @@
     },
     "pd-download": async () => {
       readInputs();
-      const sel = new Set(D.scope.weeks);
-      const ids = [...new Set(D.opts.weeks.filter((w) => sel.has(w.no)).flatMap((w) => w.missing))];
+      const ids = planMissing(new Set(D.scope.weeks));
       const r = await call("materials_download", ids);
       if (r.ok) toast(t.n(ids.length, "Downloading {n} file: the plan will read them once they are in", "Downloading {n} files: the plan will read them once they are in"), "success");
       else toast(r.error || t("Download failed"), "error");
