@@ -1125,8 +1125,9 @@ QUIZ_CSS = """
 .qz-paper { display: flex; gap: 32px; margin-top: .9em; font-size: .92em; }
 .qz-paper i { display: inline-block; width: 150px; border-bottom: 1px solid #94a3b8; height: 1em; vertical-align: baseline; }
 .qz-paper i.short { width: 56px; }
-.qz-key { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px 10px; margin: 0 0 1.4em; }
-.qz-k { border: 1px solid #e2e2e2; border-radius: 6px; padding: 4px 9px; break-inside: avoid; }
+.qz-key { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 1.4em; }
+.qz-k { min-width: 84px; border: 1px solid #e2e2e2; border-radius: 6px; padding: 4px 9px; break-inside: avoid;
+  white-space: nowrap; }
 .qz-k b { color: #1d4ed8; margin-right: 6px; font-variant-numeric: tabular-nums; }
 .qz-more { color: #5c5c5c; font-size: .9em; }
 .qz-answers h3 { margin-top: .4em; }
