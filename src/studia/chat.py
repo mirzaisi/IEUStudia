@@ -1403,8 +1403,13 @@ class ChatService:
         ids = [str(x["id"]) for x in files]
         made_from = chatquiz.facts(self.lib, self._s.settings, chat["course_id"], days, ids)
         said = any(m.get("role") == "assistant" and (m.get("text") or "").strip() for m in history)
+        # the quizzes the conversation had already, and whether the answer just before was one ("/quiz" twice: a new
+        # quiz on the chat's material, not one on the quiz before)
+        asks = [m for m in history if m.get("role") == "user" and _quiz_command(m.get("text") or "")]
+        again = len(history) >= 2 and history[-1].get("role") == "assistant" and history[-2] in asks
         asked = chatquiz.prompt(made_from, quiz["n"], quiz["topics"], said, days,
-                                {str(x["id"]): x.get("label") or x.get("title") or "" for x in files})
+                                {str(x["id"]): x.get("label") or x.get("title") or "" for x in files},
+                                again=again, quizzed=bool(asks))
         return asked, {**made_from, "chat_files": ids}
 
     def _quiz_saved(self, chat: dict[str, Any], quiz: dict[str, Any], made_from: dict[str, Any],

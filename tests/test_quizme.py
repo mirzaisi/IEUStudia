@@ -94,6 +94,7 @@ def ask(env, chat_id, text, answer):
     seq = env.svc.send(chat_id, text)["seq"]
     done = lambda: [e for e in env.events if e.get("type") == "chat" and e["seq"] == seq and e["state"] != "streaming"]  # noqa: E731
     assert wait_for(lambda: done()), "no answer"
+    assert wait_for(lambda: chat_id not in env.svc._running)      # (its turn ends just after the answer is told)
     return done()[-1], fake
 
 
@@ -134,13 +135,26 @@ def test_quiz_in_a_chat_is_saved_scored_and_its_sources_found(env):
     assert json.loads(json.dumps(env.lib.chat_messages(chat["id"])[1]["usage"]))["quiz"]["id"] == made["id"]
     ev = [x for x in env.events if x.get("type") == "plan"]
     assert ev and ev[-1]["id"] == made["id"] and ev[-1]["source"] == "chat" and ev[-1]["kind"] == "quiz"
-    # a follow-up "/quiz" is on the conversation (most of all the last answer)
+    # "/quiz" right after a quiz: a new quiz on the chat's material (it was told to quiz on its last answer: the quiz)
     e2, fake2 = ask(env, chat["id"], "/quiz", "No quiz this time, sorry.")
-    assert "what this conversation covered" in fake2.got[0][-1]["text"] and "exactly 5" in fake2.got[0][-1]["text"]
+    again = fake2.got[0][-1]["text"]
+    assert "Quiz the student again on the lectures and files of this chat, with new questions." in again
+    assert "most of all your last answer" not in again and "exactly 5" in again
+    assert "No question may ask what a quiz earlier in this conversation asked." in again
     assert e2["usage"]["quiz_error"].startswith("The quiz in this answer could not be read")
     assert e2["text"] == "No quiz this time, sorry." and "quiz" not in e2["usage"]
     assert len([p for p in env.lib.plans("c") if p["scope"].get("source") == "chat"]) == 1
     assert env.lib.get_chat(chat["id"])["title"] == "Conditional probability"
+    # a question, then "Quiz me on this": on the conversation, most of all that answer, and no earlier quiz again
+    ask(env, chat["id"], "What does the multiplication rule say?", "P(A and B) = P(A|B) P(B).")
+    _, fake3 = ask(env, chat["id"], "/quiz", "Not now.")
+    on_it = fake3.got[0][-1]["text"]
+    assert "what this conversation covered, most of all your last answer" in on_it and "again on the" not in on_it
+    assert "No question may ask what a quiz earlier in this conversation asked." in on_it
+    fresh = env.svc.create("c", [DAY])
+    _, fake4 = ask(env, fresh["id"], "What is Bayes?", "It reverses a conditional.")
+    _, fake4 = ask(env, fresh["id"], "/quiz", "Not now.")
+    assert "No question may ask" not in fake4.got[0][-1]["text"]                  # no quiz before: nothing to avoid
 
 
 def test_a_broken_block_leaves_the_answer_and_saves_nothing(env):
