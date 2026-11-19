@@ -822,6 +822,7 @@
   St.onGo.course = (v) => { if (goCourse) goCourse(v); if (v.tab === "practice") loadCourse(v.courseId); };
   // opened from another page to show one thing (v.show: a quiz just started, by its id, or "mistakes" from an Exam
   // room's Go over them): scrolled to once the tab is drawn with the course's details (its heads-up box moves it)
+  St.after = St.after || {};
   const afterCourse = St.after.course;
   St.after.course = (v) => {
     if (afterCourse) afterCourse(v);
