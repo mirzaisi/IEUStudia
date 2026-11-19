@@ -934,8 +934,11 @@
       if (!r.ok) { toast(r.error, "error"); return; }
       if (P.run && P.run.id === el.dataset.id) P.run = null;
       delete P.runs[el.dataset.id];
+      // (its missed questions, "Where you lose points" and its mistake cards went with it: its course again)
+      const cids = Object.keys(P.course).filter((cid) => (P.course[cid].quizzes || []).some((x) => x.id === el.dataset.id));
       Object.values(P.course).forEach((p) => { p.quizzes = (p.quizzes || []).filter((x) => x.id !== el.dataset.id); });
-      renderView(); loadSummary(S.view.name === "practice");
+      renderView();
+      if (cids.length) cids.forEach(refresh); else loadSummary(S.view.name === "practice");
     },
     "menu-qz": (el) => {
       const p = P.course[el.dataset.cid] || {}, q = (p.quizzes || []).find((x) => x.id === el.dataset.id) || {};

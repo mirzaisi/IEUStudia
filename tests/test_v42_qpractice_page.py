@@ -218,6 +218,24 @@ def test_a_quiz_stopped_before_says_so_in_the_language_of_now(tmp_path):
 
 
 @node
+def test_deleting_a_quiz_loads_its_course_again(tmp_path):
+    """Its missed questions, "Where you lose points" and its mistake cards stayed on the tab after it was deleted."""
+    out = _page(tmp_path, """
+  const quiz = { id: "p", course_id: "c1", title: "Bayes", status: "done", weeks: [4], days: [], questions: 5, tries: 1 };
+  P().course.c1 = { deck: { total: 4, today: 4, quiz: 4, lecture_days: 0, files: 0, weeks: [4] }, card_sets: [], quizzes: [quiz],
+    stressed: { total: 0, weeks: [], not_needed: [] }, mistakes: [{ plan_id: "p", n: 2 }], weak: [{ lo: 1, missed: 2 }] };
+  S.view = { name: "course", courseId: "c1", tab: "practice" };
+  const practised = []; St.onPracticed = (cid) => practised.push(cid);
+  const before = calls.filter((c) => c[0] === "practice_course").length;
+  await A["qz-delete"]({ dataset: { id: "p" } }); await tick();
+  out.loads = calls.filter((c) => c[0] === "practice_course").slice(before).map((c) => c[1]);
+  out.practised = practised; out.mistakes = P().course.c1.mistakes; out.quizzes = P().course.c1.quizzes;
+""")
+    assert out["loads"] == ["c1"] and out["practised"] == ["c1"]
+    assert out["mistakes"] == [] and out["quizzes"] == []
+
+
+@node
 def test_quiz_this_lo_picks_the_weeks_of_the_assessment_that_names_it(tmp_path):
     out = _page(tmp_path, """
   const wk = (no, current) => ({ no, current, past: !current, topic: "T" + no, files: [{ id: "f" + no, name: "W" + no + ".pdf", pages: 3, ready: true, downloaded: true }], days: [] });
