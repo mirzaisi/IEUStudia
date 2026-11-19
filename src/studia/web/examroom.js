@@ -86,7 +86,7 @@
         <button class="btn ghost sm noprint" data-act="er-print" title="${esc(t("Print this page, or save it as a PDF"))}">${I("file", "sm")} ${t("Print")}</button></div>
       <div class="er-title"><h1>${esc(a.name)}</h1>${shareHTML(r.share)}</div>
       <div class="er-line">${I("calendar", "sm")}<b>${esc(w.day)}</b>${w.rel ? `<span class="er-rel">${esc(w.rel)}</span>` : ""}${from ? `<span class="dim">· ${esc(from)}</span>` : ""}
-        <button class="link noprint" data-act="er-day">${r.when.from === "yours" ? t("Change the day") : t("Set the exact day")}</button></div>
+        ${r.when.from === "announced" ? "" : `<button class="link noprint" data-act="er-day">${r.when.from === "yours" ? t("Change the day") : t("Set the exact day")}</button>`}</div>
       <div class="er-line">${I("layers", "sm")}<b>${esc(t("Covers {weeks}", { weeks: span(a.weeks) }))}</b><span class="dim">· ${originHTML(c, a)}</span>
         <button class="link noprint" data-act="er-weeks">${t("Change the weeks")}</button></div>
       ${los ? `<div class="er-los">${los}</div>` : ""}</div>`;

@@ -299,6 +299,21 @@ def test_an_exam_known_by_its_week_is_this_week_not_done_in_that_week(tmp_path):
     assert "Final Exam this week" in out["chip"] and out["over"] == ""
 
 
+@node
+def test_an_announced_day_offers_no_day_to_set(tmp_path):
+    """"Set the exact day" was offered for an announced day, and saving changed nothing."""
+    out = run(tmp_path, """
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { when: { date: inDays(3), time: "", from: "announced", others: [], days: 3 } }) });
+  A["ready-open"]({ dataset: { cid: "c", key: "quiz:3" } }); await tick();
+  out.html = view();
+""")
+    assert 'data-act="er-day"' not in out["html"] and "the day announced" in text_of(out["html"])
+
+
+def text_of(h):
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", h)).strip()
+
+
 def test_the_page_prints_and_loads_after_the_pages_it_hooks_into():
     css = (WEB / "examroom.css").read_text(encoding="utf-8")
     page = (WEB / "index.html").read_text(encoding="utf-8")
