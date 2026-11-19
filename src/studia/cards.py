@@ -255,14 +255,45 @@ def summary(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
             "lecture_days": len({c["source"].get("day_key") for c in cards if c["origin"] == "lecture"})}
 
 
-def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
-            weeks: Optional[set[int]] = None, new_per_day: Optional[int] = None) -> list[dict[str, Any]]:
-    """The cards to study now, in order: the ones in learning that are due, the reviews due today (the most overdue
-    first), then today's new cards; each with its state and what each answer would do."""
+def picked(cards: list[dict[str, Any]], weeks: Optional[set[int]] = None,
+           days: Optional[set[str]] = None) -> list[dict[str, Any]]:
+    """The cards of those weeks, and of those lectures (``days``: their day keys; a lecture's own flashcards)."""
+    return [c for c in cards if (not weeks or c.get("week") in weeks)
+            and (not days or (c.get("source") or {}).get("day_key") in days)]
+
+
+def week_counts(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
+                new_per_day: Optional[int] = None) -> dict[int, dict[str, int]]:
+    """Each week's cards: {week: {"total", "today"}} ("today": its cards due today and the new ones today's limit
+    still takes), for the Practice tab's "Study one week"."""
     now = now or dt.datetime.now()
     st = states(lib, course_id)
     end = study_day(now)[1].isoformat(timespec="seconds")
-    pick = [c for c in cards if not weeks or c.get("week") in weeks]
+    left = summary(lib, cards, course_id, now, new_per_day)["new"]
+    out: dict[int, dict[str, int]] = {}
+    for c in cards:
+        w = c.get("week")
+        if not w:
+            continue
+        row = out.setdefault(int(w), {"total": 0, "due": 0, "new": 0})
+        row["total"] += 1
+        if c["id"] not in st:
+            row["new"] += 1
+        elif (st[c["id"]]["due"] or "") < end:
+            row["due"] += 1
+    return {w: {"total": r["total"], "today": r["due"] + min(r["new"], left)} for w, r in sorted(out.items())}
+
+
+def session(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
+            weeks: Optional[set[int]] = None, new_per_day: Optional[int] = None,
+            days: Optional[set[str]] = None) -> list[dict[str, Any]]:
+    """The cards to study now, in order: the ones in learning that are due, the reviews due today (the most overdue
+    first), then today's new cards; each with its state and what each answer would do. ``weeks``, ``days``: only the
+    cards of those weeks, or of those lectures (their own flashcards)."""
+    now = now or dt.datetime.now()
+    st = states(lib, course_id)
+    end = study_day(now)[1].isoformat(timespec="seconds")
+    pick = picked(cards, weeks, days)
     due = sorted((c for c in pick if c["id"] in st and (st[c["id"]]["due"] or "") < end),
                  key=lambda c: (int(st[c["id"]]["step"]) < 0, st[c["id"]]["due"]))
     left = summary(lib, cards, course_id, now, new_per_day)["new"]

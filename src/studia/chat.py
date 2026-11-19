@@ -138,6 +138,13 @@ def replay_text(history: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _quiz_command(text: str) -> Optional[dict[str, Any]]:
+    """"/quiz [n] [topics]": the quiz a message asks for (chatquiz.py), else None."""
+    from .chatquiz import command
+
+    return command(text)
+
+
 PIECE_CHARS = 4000            # a lecture read in parts: its transcript in pieces of about this much (the notes of each:
                               # up to chatread.NOTE_CHARS, about a third of it)
 
@@ -1085,6 +1092,8 @@ class ChatService:
         text = (text or "").strip()
         if not text:
             raise ValueError(t("Type a question first."))
+        if ai.provider() == "local" and _quiz_command(text):          # "/quiz": a quiz needs ChatGPT or Claude
+            raise RuntimeError(t("Quizzes need ChatGPT or Claude (the offline model is too small for them)."))
         with self._lock:
             if chat_id in self._running:
                 raise RuntimeError(t("{ai} is still answering the previous question.", ai=ai.ai_name()))
@@ -1170,6 +1179,7 @@ class ChatService:
                 stop: threading.Event) -> None:
         cid = chat["id"]
         text = ""
+        quiz = _quiz_command(question)                 # "/quiz": the AI gets the quiz's instruction (chatquiz.py)
         last_emit, last_save = [0.0], [time.monotonic()]
         shown: list[dict[str, Any]] = []               # the student's notices with this answer (never the AI's input)
         made_by = ai.provider()                        # kept with them: they name this AI, not the one chosen later
@@ -1288,12 +1298,17 @@ class ChatService:
                 shown += notices.fresh([notices.notice("pages_not_read", n=len(read["unread"]),
                                                        labels=read["unread"][:12])], history)
             scope = chat.get("scope") or {}
+            found, sources = "", []
             try:                                            # course files and other lectures that match the question
-                found, sources = retrieve(self.lib, chat["course_id"], question,
-                                          skip_days=self._skip_days(chat, session))
+                if not quiz or quiz["topics"]:              # ("/quiz" alone matches nothing: the chat's material)
+                    found, sources = retrieve(self.lib, chat["course_id"], quiz["topics"] if quiz else question,
+                                              skip_days=self._skip_days(chat, session))
             except Exception:  # noqa: BLE001 - the answer works without it
                 log.debug("retrieval failed", exc_info=True)
                 found, sources = "", []
+            turn, made_from = question, None
+            if quiz:                                        # the quiz's instruction, and what its sources are found in
+                turn, made_from = self._quiz_turn(chat, quiz, history)
             # the offline model: the passages of the student's files that match the question (and the one before it),
             # first, so that its small window keeps them before the other passages
             asked = " ".join([question] + [m.get("text") or "" for m in history[-2:] if m.get("role") == "user"])
@@ -1302,7 +1317,7 @@ class ChatService:
                 content.append({"type": "text", "text": mine})
             if found:
                 content.append({"type": "text", "text": found})
-            content.append({"type": "text", "text": question})
+            content.append({"type": "text", "text": turn})
             if stop.is_set():
                 res = {"text": "", "usage": {}, "stopped": True}
                 if images is not None:      # it never got its first message: start afresh next time
@@ -1321,6 +1336,8 @@ class ChatService:
             usage = {**(res["usage"] or {}), "ai": made_by, **({"sources": sources} if sources else {}),
                      **({"read": read} if read else {}),
                      **({"notices": shown, "notices_ai": made_by} if shown else {})}
+            if made_from is not None and state == "done":  # the quiz in the answer: saved, a card under it
+                usage.update(self._quiz_saved(chat, quiz, made_from, text))
             self.lib.update_chat_message(cid, seq, text, state, usage)
             if not session.alive():
                 self._drop(cid)
@@ -1362,6 +1379,43 @@ class ChatService:
         if focus == "full":
             return self._scope_days(chat)
         return list(getattr(session, "full_days", None) or []) if focus == "course" else []
+
+    def _quiz_turn(self, chat: dict[str, Any], quiz: dict[str, Any],
+                   history: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+        """"/quiz": what the AI gets instead of the student's words, and what the quiz's sources are found in (the
+        chat's lectures and the course files it sees: chatquiz.py)."""
+        from . import chatquiz
+
+        scope = chat.get("scope") or {}
+        days = self._scope_days(chat)
+        ctx = self.context(chat["course_id"], days, scope.get("focus", "full"), bool(scope.get("slides")),
+                           scope.get("send"), chat["id"], chat.get("model") or "", scope.get("read_all"))
+        files = (ctx.get("files") or {}).get("files") or []
+        ids = [str(x["id"]) for x in files]
+        made_from = chatquiz.facts(self.lib, self._s.settings, chat["course_id"], days, ids)
+        said = any(m.get("role") == "assistant" and (m.get("text") or "").strip() for m in history)
+        asked = chatquiz.prompt(made_from, quiz["n"], quiz["topics"], said, days,
+                                {str(x["id"]): x.get("label") or x.get("title") or "" for x in files})
+        return asked, {**made_from, "chat_files": ids}
+
+    def _quiz_saved(self, chat: dict[str, Any], quiz: dict[str, Any], made_from: dict[str, Any],
+                    text: str) -> dict[str, Any]:
+        """The quiz in a "/quiz" answer, saved to the course's Practice tab: {"quiz": its id, title and size} for the
+        page's "Play quiz" card, else {"quiz_error"} (the answer stays as it was written)."""
+        from . import chatquiz
+
+        try:
+            made = chatquiz.save(self.lib, chat["course_id"], made_from, text, quiz["n"], chat["id"],
+                                 made_from.get("chat_files"))
+        except Exception:  # noqa: BLE001 - the answer is still there to read
+            log.warning("The chat's quiz could not be saved", exc_info=True)
+            made = None
+        if made is None:
+            return {"quiz_error": chatquiz.unread()}
+        self._s.emit({"type": "plan", "id": made["id"], "course_id": chat["course_id"], "status": "done",
+                      "stage": "done", "progress": 1.0, "message": "", "error": "", "title": made["title"],
+                      "kind": "quiz", "source": "chat"})
+        return {"quiz": made}
 
     @staticmethod
     def _text_only(session: Any, dropped: list[Any]) -> bool:
