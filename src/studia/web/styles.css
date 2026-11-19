@@ -1415,6 +1415,8 @@ button.link:hover { text-decoration-color: currentColor; }
   background: var(--surface); color: var(--text); cursor: pointer; transition: border-color .12s, background .12s; }
 .cp-mode:hover { border-color: var(--border-strong); }
 .cp-mode.on { border-color: var(--blue); background: var(--accent-soft); }
+.cp-mode:disabled { opacity: .5; cursor: default; }          /* (it looked like the others: a tap did nothing) */
+.cp-mode:disabled:hover { border-color: var(--border); }
 .cp-mode-t { font-weight: 600; font-size: 13.5px; display: flex; gap: 6px; align-items: center; }
 .cp-mode.on .cp-mode-t { color: var(--accent-text); }
 .cp-mode-d { font-size: 12px; color: var(--text-2); line-height: 1.4; }

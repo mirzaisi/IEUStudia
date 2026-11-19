@@ -179,6 +179,23 @@ def test_the_chat_s_exam_room_chip_is_named_as_the_page_and_left_out_without_exa
 
 
 @node
+def test_a_quiz_mode_that_can_t_be_used_looks_so_and_says_why(tmp_path):
+    """'The next exam' and 'One lecture' were disabled but looked like the others (a tap did nothing)."""
+    out = qp._page(tmp_path, """
+  ANSWERS.quiz_options = () => ({ ok: true, model: "sonnet", ai: { available: true }, quant: false, weak: { missed: 0, attempts: 0 },
+    weeks: [{ no: 1, current: true, past: false, topic: "T1", files: [{ id: "f1", name: "W1.pdf", pages: 3, ready: true, downloaded: true }], days: [] }], assessments: [] });
+  ANSWERS.quiz_estimate = () => ({ ok: true, estimate: null });
+  await St.practice.quizDialog("c1"); await tick();
+  out.html = shown.html;
+""")
+    lecture = out["html"].split('data-val="lecture"')[1].split(">")[0]
+    assert "disabled" in lecture and 'title="No lecture of this course is transcribed yet."' in lecture
+    css = (qp.WEB / "styles.css").read_text(encoding="utf-8")
+    rule = css.split(".cp-mode:disabled {", 1)[1].split("}", 1)[0]
+    assert "opacity: .5" in rule and "cursor: default" in rule
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

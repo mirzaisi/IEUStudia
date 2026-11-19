@@ -394,12 +394,12 @@
   function drawQuiz() {
     const r = Q.opts, courses = S.courses.filter((c) => c.code), e = nextExam(r);
     const old = $(".modal .cp-scroll"), keep = old ? old.scrollTop : 0;
-    const mode = (k, title, desc, ok = true) => `<button type="button" class="cp-mode ${Q.mode === k ? "on" : ""}" data-act="qz-mode" data-val="${k}" ${ok ? "" : "disabled"}><span class="cp-mode-t">${title}</span><span class="cp-mode-d">${desc}</span></button>`;
+    const mode = (k, title, desc, ok = true, why = "") => `<button type="button" class="cp-mode ${Q.mode === k ? "on" : ""}" data-act="qz-mode" data-val="${k}" ${ok ? "" : `disabled${why ? ` title="${esc(why)}"` : ""}`}><span class="cp-mode-t">${title}</span><span class="cp-mode-d">${desc}</span></button>`;
     const los = e && e.los.length ? ` · LO${e.los.join(", LO")}` : "";
     const weakBtn = St.mistakes ? St.mistakes.weakModeBtn(Q, mode) : "";            // "My weak spots" (mistakes.js)
     const modes = `<div class="cp-modes ${weakBtn || Q.stressed ? "four" : ""}">${mode("next", esc(e ? t("For {name}", { name: e.name }) : t("The next exam")), esc(e ? t("The weeks it covers: {weeks}", { weeks: weekSpan(e.weeks) }) + los : t("No quiz or midterm announced yet")), !!e)}
       ${mode("weeks", esc(t("Weeks you pick")), esc(t("Their files and lectures")))}
-      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0)}${weakBtn}
+      ${mode("lecture", esc(t("One lecture")), esc(t("A transcribed lecture, with the slides from its video")), lectures().length > 0, t("No lecture of this course is transcribed yet."))}${weakBtn}
       ${Q.stressed ? mode("stressed", esc(Q.stressed.picked === false ? t("What the lecturer stressed") : t("The moments you picked")), esc(t.n(Q.stressed.ids.length, "{n} moment the lecturer stressed", "{n} moments the lecturer stressed"))) : ""}</div>`;
     const item = (kind, id, on, ready, label, sub) => `<label class="pk-item ${ready ? "" : "off"}">
         <input type="checkbox" class="check" data-act="qz-item" data-kind="${kind}" data-id="${esc(id)}" ${on ? "checked" : ""} ${ready ? "" : "disabled"}>
