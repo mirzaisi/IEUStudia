@@ -383,6 +383,27 @@
     for (const w of d.weeks) h += weekCard(c, d, w);
     return h;
   }
+  // a week card's menu: a quiz on the week, its flashcards (practice.js: only when it has some, or before the deck is
+  // read), a chat about its lectures, and getting what it still misses (its files, its lectures transcribed)
+  function weekItems(c, w) {
+    const ai = S.system.ai || {}, P = St.practice, no = w.no;
+    const done = w.days.filter((x) => x.any_done && (x.mine !== false || !mineOnly(c))).map((x) => x.day_key);
+    const todo = w.days.filter((x) => x.mine !== false && x.parts && !x.transcribed && !x.no_sound && !x.live).length;
+    const all = w.units.flatMap((u) => u.materials);
+    const mats = all.filter((m) => !m.downloaded && !m.gone && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
+    const readable = done.length || all.some((m) => m.downloaded && m.text === "done");     // (something to quiz on)
+    const cards = P && P.weekCards ? P.weekCards(c.id, no) : null;                          // (null: not known yet)
+    return [
+      ...(P && ai.available && ai.can_plans !== false && readable ? [{ id: "quiz", icon: "list-checks", label: t("Quiz me on this week"), desc: t("Practice questions from its files and lectures"),
+        run: () => P.quizDialog(c.id, { mode: "weeks", weeks: [no] }) }] : []),
+      ...(P && cards !== 0 ? [{ id: "cards", icon: "layers", label: t("Study this week's cards"), run: () => P.study(c.id, { weeks: [no] }) }] : []),
+      ...(ai.available && done.length ? [{ id: "ask", icon: "chat", label: t("Ask about this week"), desc: t.n(done.length, "{n} transcribed lecture", "{n} transcribed lectures"),
+        run: () => St.chatPicker(c.id, { days: done, focus: "full", slides: false, model: (S.settings || {}).ai_model || "sonnet" }) }] : []),
+      ...(mats.length || todo ? ["-"] : []),
+      ...(mats.length ? [{ id: "dl", icon: "download", label: t.n(mats.length, "Download {n} file", "Download {n} files"), run: () => download(mats.map((m) => m.id), false) }] : []),
+      ...(todo ? [{ id: "tx", icon: "wave", label: t.n(todo, "Transcribe {n} lecture", "Transcribe {n} lectures"), run: () => St.runAction({ action: "transcribe", weeks: [no] }, c.id) }] : []),
+    ].filter((x, i, a) => x !== "-" || (i > 0 && i < a.length - 1));
+  }
   function weekCard(c, d, w) {
     const mats = w.units.flatMap((u) => u.materials);
     w = { ...w, days: mineOnly(c) ? w.days.filter((x) => x.mine !== false) : w.days };
@@ -405,7 +426,7 @@
         <div class="week-no">${t.html("<b>{n}</b><span>week</span>", { n: w.no })}</div>
         <div class="week-title"><div class="t">${esc(title)} ${w.current ? `<span class="pill now">${I("sparkle")}${t("This week")}</span>` : ""} ${duePills || (w.exam ? `<button class="pill processing pill-btn" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(examKey(w))}" data-name="${esc(w.exam_label || t("Exam"))}" title="${esc(t("Open its Exam room: what it covers, what is still missing and how to practise"))}">${I("cap")}${t("Exam")}</button>` : "")}${asgPills}</div>
           <div class="s">${esc(sub)}${shut && summary ? ` · <span class="week-sum">${esc(summary)}</span>` : ""}</div></div>
-        ${quiet ? "" : `<button class="btn ghost icon sm week-menu" data-act="menu-week" data-cid="${esc(c.id)}" data-no="${w.no}" aria-haspopup="menu" title="${esc(t("Quiz me, cards and more for this week"))}" aria-label="${esc(t("Quiz me, cards and more for this week"))}">${I("more", "sm")}</button>`}
+        ${quiet || !weekItems(c, w).length ? "" : `<button class="btn ghost icon sm week-menu" data-act="menu-week" data-cid="${esc(c.id)}" data-no="${w.no}" aria-haspopup="menu" title="${esc(t("Quiz me, cards and more for this week"))}" aria-label="${esc(t("Quiz me, cards and more for this week"))}">${I("more", "sm")}</button>`}
         ${foldable ? `<span class="week-fold">${I(shut ? "chevron-down" : "chevron-up", "sm")}</span>` : ""}
       </div>
       ${w.readings && !quiet && !shut ? `<div class="week-read">${I("book", "sm")}<span>${esc(w.readings)}</span></div>` : ""}
@@ -825,22 +846,7 @@
       const c = St.findCourse(el.dataset.cid), d = S.cd[el.dataset.cid], no = +el.dataset.no;
       const w = d && d.weeks.find((x) => x.no === no);
       if (!c || !w) return;
-      const ai = S.system.ai || {}, P = St.practice;
-      const done = w.days.filter((x) => x.any_done && (x.mine !== false || !mineOnly(c))).map((x) => x.day_key);
-      const todo = w.days.filter((x) => x.mine !== false && x.parts && !x.transcribed && !x.no_sound && !x.live).length;
-      const all = w.units.flatMap((u) => u.materials);
-      const mats = all.filter((m) => !m.downloaded && !m.gone && !(S.mat[m.id] && ["queued", "downloading"].includes(S.mat[m.id].state)));
-      const readable = done.length || all.some((m) => m.downloaded && m.text === "done");     // (something to quiz on)
-      St.menu(el, [
-        ...(P && ai.available && ai.can_plans !== false && readable ? [{ id: "quiz", icon: "list-checks", label: t("Quiz me on this week"), desc: t("Practice questions from its files and lectures"),
-          run: () => P.quizDialog(c.id, { mode: "weeks", weeks: [no] }) }] : []),
-        ...(P ? [{ id: "cards", icon: "layers", label: t("Study this week's cards"), run: () => P.study(c.id, { weeks: [no] }) }] : []),
-        ...(ai.available && done.length ? [{ id: "ask", icon: "chat", label: t("Ask about this week"), desc: t.n(done.length, "{n} transcribed lecture", "{n} transcribed lectures"),
-          run: () => St.chatPicker(c.id, { days: done, focus: "full", slides: false, model: (S.settings || {}).ai_model || "sonnet" }) }] : []),
-        ...(mats.length || todo ? ["-"] : []),
-        ...(mats.length ? [{ id: "dl", icon: "download", label: t.n(mats.length, "Download {n} file", "Download {n} files"), run: () => download(mats.map((m) => m.id), false) }] : []),
-        ...(todo ? [{ id: "tx", icon: "wave", label: t.n(todo, "Transcribe {n} lecture", "Transcribe {n} lectures"), run: () => St.runAction({ action: "transcribe", weeks: [no] }, c.id) }] : []),
-      ]);
+      St.menu(el, weekItems(c, w));
     },
     "lo-lang": (el) => { S.loLang = el.dataset.val; renderView(); },
     "mat-get": (el) => download([el.dataset.id], false),

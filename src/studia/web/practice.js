@@ -119,6 +119,12 @@
     return `<div class="pr-tab">${quizzesHTML(c, p)}${St.mistakes ? St.mistakes.tabHTML(c, p) : ""}${cardsHTML(c, p)}${stressedHTML(c, p)}</div>`;   // (mistakes.js)
   }
   const tabCount = (cid) => (((P.course[cid] || {}).deck || {}).today) || ((((P.summary || {}).courses || []).find((r) => r.id === cid) || {}).deck || {}).today || 0;
+  // a week's flashcards (a week card's menu: course.js), or null while the deck isn't read yet
+  const weekCards = (cid, no) => {
+    const d = (P.course[cid] || {}).deck, row = ((P.summary || {}).courses || []).find((r) => r.id === cid);
+    if (d) return ((d.week_counts || {})[String(no)] || {}).total || 0;
+    return row && row.deck && row.deck.total === 0 ? 0 : null;           // (no card in the whole course)
+  };
 
   function quizScope(q) {
     const bits = [q.days && q.days.length === 1 && !(q.weeks || []).length ? t("one lecture") : weekSpan(q.weeks)];
@@ -811,7 +817,7 @@
   // ------------------------------------------------------------------ wiring
   // (quizDialog(cid, preset) and study(cid, {weeks, days}): a lecture's page and a week card open them; refresh,
   // gradeCard, drawStudy and showRun: mistakes.js)
-  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, study, gradeCard, drawStudy, doneCards,
+  St.practice = { tab, homeNote, tabCount, weekCards, load: loadCourse, refresh, quizDialog, study, gradeCard, drawStudy, doneCards,
     showRun: (R) => { P.run = R; drawRun(); St.onModalClose = () => { if (onTab(R.cid)) renderView(); }; } };
   St.views.practice = practiceView;
   St.crumbs.practice = () => `${I("target")} ${t("Practice")}`;

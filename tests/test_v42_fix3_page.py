@@ -196,6 +196,33 @@ def test_a_quiz_mode_that_can_t_be_used_looks_so_and_says_why(tmp_path):
 
 
 @node
+def test_a_week_s_menu_offers_its_cards_only_when_it_has_some(tmp_path):
+    """Week 11 (lectures not yet held, no files) had a '...' whose only item, 'Study this week's cards', toasted 'No
+    flashcards from week 11 yet.' in a course with no flashcards at all."""
+    out = room_run(tmp_path, """
+  const later = (n) => ({ day_key: "c|d" + n + "|lecture", date: inDays(n), mine: true, parts: 0, transcribed: false, any_done: false, live: false });
+  const week = (no, extra) => ({ no, start: inDays(no), end: inDays(no + 6), current: false, past: false, exam: false, topic_en: "Topic " + no, topic_tr: "",
+    units: [], days: [later(no)], classes: [], ...extra });
+  S.cd = { c: { id: "c", code: "MATH 240", general: [], outcomes_en: [], outcomes_tr: [], grading: [], syllabus: {}, materials: { total: 0, downloaded: 0, new: 0 },
+    announcements: [], counts: {}, weeks: [week(11), week(12)], alerts: { items: [], counts: {}, plan: [] }, assessments: [] } };
+  const items = [];
+  St.menu = (el, xs) => items.push(xs.map((x) => (x === "-" ? "-" : x.id)));
+  S.view = { name: "course", courseId: "c", tab: "weeks" };
+  const menus = () => (St.views.course(S.view).match(/data-act="menu-week"/g) || []).length;
+  out.unknown = [menus()];                                   // the deck not read yet: as before
+  A["menu-week"]({ dataset: { cid: "c", no: "11" } }); out.unknown.push(items.pop());
+  S.practice.summary = { courses: [{ id: "c", deck: { total: 0, today: 0 } }] };   // no card in the course
+  out.none = [menus()];
+  S.practice.course.c = { deck: { total: 2, today: 2, week_counts: { "12": { total: 2, today: 2 } } } };
+  out.some = [menus()];
+  A["menu-week"]({ dataset: { cid: "c", no: "12" } }); out.some.push(items.pop());
+""")
+    assert out["unknown"] == [2, ["cards"]]
+    assert out["none"] == [0]                                  # (nothing else to do there either: no '...')
+    assert out["some"] == [1, ["cards"]]                       # (week 12's cards; week 11 has none)
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();
