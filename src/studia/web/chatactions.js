@@ -22,7 +22,7 @@
     return ({
       video_plan: [t("Video study plan"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
       prep_pack: [t("Exam review sheet"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
-      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open checklist")],
+      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open the exam room")],
       transcribe: [t("Transcribe lectures"), `${code} · ${a.date || w || t("missing lectures")}`, t("Transcribe…")],
       download_files: [t("Download files"), `${code} · ${w || t("all weeks")}`, t("Download…")],
       study_notes: [t("Study notes"), `${code} · ${a.date || ""}`, t("Open")],
@@ -101,11 +101,11 @@
     switch (a.action) {
       case "video_plan": case "prep_pack":
         return A["plan-new"]({ dataset: { id: cid, kind: a.action === "prep_pack" ? "prep" : "videos", focus: assess ? assess.name : "", weeks: (a.weeks || []).join(",") } });
-      case "get_ready": {
-        const plan = ((d || {}).alerts || {}).plan || [];
-        const e = assess || plan.find((x) => x.week && !(d.weeks.find((w) => w.no === x.week) || {}).past) || plan[0];
+      case "get_ready": {            // its Exam room (examroom.js): the syllabus's exams have one too
+        const all = (d || {}).assessments || [], named = a.focus ? all.filter((x) => x.name.toLowerCase() === String(a.focus).toLowerCase()) : [];
+        const e = named.find((x) => x.ahead) || named[0] || all.find((x) => x.ahead) || all[all.length - 1];
         if (!e) { toast(t("No quiz or exam has been announced for this course yet."), "info"); return; }
-        return A["ready-open"]({ dataset: { cid, name: e.name } });
+        return A["ready-open"]({ dataset: { cid, key: e.key, name: e.name } });
       }
       case "transcribe": {
         const weeks = new Set(a.weeks || []);
@@ -157,7 +157,7 @@
     ["quiz", "quiz", t("A practice quiz on this chat, scored and saved to Practice (add how many questions)")],
     ["plan", "video_plan", t("Video study plan for this course (add a quiz name or weeks)")],
     ["prep", "prep_pack", t("Exam review sheet (add a quiz or exam name)")],
-    ["ready", "get_ready", t("Get-ready checklist for the next quiz or exam")],
+    ["ready", "get_ready", t("The exam room of the next quiz or exam")],
     ["notes", "study_notes", t("Study notes for this lecture")],
     ["transcribe", "transcribe", t("Transcribe lectures (add week numbers)")],
     ["files", "download_files", t("Download the files (add week numbers)")],

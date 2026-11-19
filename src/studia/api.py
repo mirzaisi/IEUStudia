@@ -21,6 +21,7 @@ from .i18n import t, tn
 from .ieulearn import AuthError, NeedLogin
 from .net import NetworkError
 from .practice import PRACTICE_KINDS, PracticeApi      # 4.0 Practice: quizzes, flashcards, what was stressed
+from .examroom import ExamRoomApi                       # 4.2 the Exam room, and the class days read
 from .services import NOTE_KINDS, Services
 from .osutil import (TaskbarProgress, flash_taskbar, idle_seconds, is_foreground, normal_priority, open_in_browser,
                      open_path, reveal, set_clipboard)
@@ -126,7 +127,7 @@ def safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-class Api(PracticeApi):
+class Api(PracticeApi, ExamRoomApi):
     def __init__(self, services: Optional[Services] = None) -> None:
         self._services: Optional[Services] = None
         self._ready = threading.Event()
@@ -350,6 +351,7 @@ class Api(PracticeApi):
         from .agenda import reminder_prefs
         from .agent import _load_seen, _save_seen, reminders
         from .calendar_export import all_events, istanbul_now
+        from .examroom import reminder_note
 
         if not appconfig.load().notify_reminders:
             return
@@ -359,7 +361,7 @@ class Api(PracticeApi):
         with self._remind_lock:                           # two syncs ending together remind once
             seen = _load_seen()
             note = reminders(all_events(self._s.lib, self._s.settings), istanbul_now(), seen,
-                             reminder_prefs(self._s.lib))
+                             reminder_prefs(self._s.lib), about=lambda e: reminder_note(self._s.lib, self._s.settings, e))
             if note is None:
                 return
             _save_seen(seen)

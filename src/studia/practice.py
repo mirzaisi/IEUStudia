@@ -318,7 +318,8 @@ def _stems(text: str) -> frozenset[str]:
 
 
 def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int]] = None,
-            outcomes: Optional[list[str]] = None, now: Optional[dt.datetime] = None) -> dict[str, Any]:
+            outcomes: Optional[list[str]] = None, now: Optional[dt.datetime] = None,
+            plans: Optional[set[str]] = None) -> dict[str, Any]:
     """How the course's practice went, per learning outcome, then per topic (topics grouped by their words' stems):
     counts, never one percentage. Every answer of every try counts, and every review of a missed question's card
     (Again a miss, anything else right); recent ones more (half as much after HALF_LIFE_DAYS), the student's own
@@ -327,11 +328,13 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
     tell) | "shaky" (under SHAKY, with 2 questions or more) | "solid" (SOLID or more with 3 or more) | "some" (in
     between), "missed": the questions last missed [{"plan_id", "n"}]}. ``focus`` (an assessment's name) with ``los`` (its learning outcomes): only those outcomes' rows, and the
     questions that test them or come from a quiz for it. ``outcomes``: the course's, for their text and the
-    untested ones."""
+    untested ones. ``plans``: only these quizzes (the Exam room's: made for an assessment or on its weeks)."""
     from .cards import quiz_card_id
 
     now = now or dt.datetime.now()
     found = quiz_results(lib, course_id)
+    if plans is not None:
+        found = {pid: x for pid, x in found.items() if pid in plans}
     tries = [a for a in attempts(lib, course_id=course_id) if a["plan_id"] in found]
     want = set(los or [])
     rows: dict[Any, dict[str, Any]] = {}
@@ -816,25 +819,26 @@ class PracticeApi:
     # ---- flashcards
     @_safe
     def cards_session(self, course_id: str, weeks: Optional[list[int]] = None,
-                      day_keys: Optional[list[str]] = None) -> dict[str, Any]:
+                      day_keys: Optional[list[str]] = None, cram: bool = False) -> dict[str, Any]:
         """The cards to study now (``weeks``: only those weeks'; ``day_keys``: only those lectures' own flashcards),
-        and how many such cards there are in all (``total``: a lecture's cards that are all learnt is said so)."""
+        and how many such cards there are in all (``total``: a lecture's cards that are all learnt is said so).
+        ``cram`` (the Exam room): every card of those weeks, the schedule left alone."""
         from .cards import picked, session
 
         deck = self._deck(course_id)
         weeks_ = {int(w) for w in weeks or [] if str(w).isdigit()} or None
         days = {str(k) for k in day_keys or [] if k} or None
         cards = session(self._s.lib, deck, course_id, weeks=weeks_, new_per_day=self._s.settings.cards_per_day,
-                        days=days)
+                        days=days, cram=bool(cram))
         return {"ok": True, "cards": cards, "total": len(picked(deck, weeks_, days))}
 
     @_safe
-    def cards_grade(self, course_id: str, card_id: str, grade: str) -> dict[str, Any]:
+    def cards_grade(self, course_id: str, card_id: str, grade: str, cram: bool = False) -> dict[str, Any]:
         from .cards import GRADES, grade as keep
 
         if grade not in GRADES:
             return {"ok": False, "error": "grade"}
-        return {"ok": True, "state": keep(self._s.lib, course_id, str(card_id), grade)}
+        return {"ok": True, "state": keep(self._s.lib, course_id, str(card_id), grade, cram=bool(cram))}
 
     @_safe
     def cards_edit(self, course_id: str, card_id: str, changes: dict[str, Any]) -> dict[str, Any]:

@@ -93,8 +93,8 @@
     const meta = [sureLabel(it), it.date ? "" : it.kind === "quiz" && it.days && it.days.length ? t("in class on {days}", { days: weekWhen(it) }) : "",
       it.kind === "class" ? blocksText(it) : "", it.makeup ? t("make-up class") : "", it.los && it.los.length ? `LO${it.los.join(", LO")}` : "",
       it.kind === "own" && it.note ? it.note : "", ["makeup", "cancelled"].includes(it.kind) && it.note ? `“${it.note}”` : ""].filter(Boolean);
-    const plan = ["quiz", "midterm", "final"].includes(it.kind) && it.sure !== "syllabus" && !past;
-    const acts = [plan ? `<button class="btn sm" data-act="ready-open" data-cid="${esc(it.course_id)}" data-name="${esc(it.title)}">${I("list-checks", "sm")} ${t("Get ready")}</button>` : "",
+    const plan = ["quiz", "midterm", "final", "exam"].includes(it.kind) && !!it.course_id && !past;     // ("exam": a syllabus's week)
+    const acts = [plan ? `<button class="btn sm" data-act="ready-open" data-cid="${esc(it.course_id)}" data-name="${esc(it.title)}">${I("cap", "sm")} ${t("Exam room")}</button>` : "",
       it.kind === "own" ? `<button class="btn ghost icon sm" data-act="cal-del" data-id="${esc(it.entry_id)}" title="${t("Delete this entry")}">${I("x", "sm")}</button>` : "",
       srcIcon(it) ? `<button class="btn ghost icon sm" data-act="cal-open" data-id="${esc(it.id)}" title="${esc(srcTip(it))}">${I(srcIcon(it), "sm")}</button>` : ""].join("");
     return `<div class="cal-item k-${esc(it.kind)} s-${esc(it.sure)} ${past ? "past" : ""} ${it.done ? "done" : ""} ${it.date === today ? "today" : ""} ${it.course_id ? "" : "nocourse"}" data-item="${esc(it.id)}"${hueAttr(it)}>
