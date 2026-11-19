@@ -175,7 +175,7 @@
       ${rows ? `<p class="dim sm er-sub">${esc(t("From your answers in its quizzes: counts, with recent ones counting more."))}</p><div class="mq-skills">${rows}</div>`
         : `<p class="dim sm er-sub">${esc(p.quizzes.length ? t("Take one of its quizzes: then this shows, per learning outcome, where you lose points.") : t("No quiz on these weeks yet. Take one and this shows, per learning outcome, where you lose points."))}</p>`}
       ${untested.length ? `<div class="mq-sub">${t("Not tested yet")}</div><div class="mq-skills">${untested.map((x) => `<div class="mq-skill"><div class="mq-skill-h"><span class="lo-no">LO${x.no}</span><span class="grow">${esc(x.text || "")}</span>
-          <button class="btn ghost sm noprint" data-act="mq-quiz-lo" data-cid="${esc(c.id)}" data-no="${x.no}" data-text="${esc(x.text || "")}" ${St.aiBtn(canAI(), true)}>${t("Quiz this LO")}</button></div></div>`).join("")}</div>` : ""}
+          <button class="btn ghost sm noprint" data-act="mq-quiz-lo" data-cid="${esc(c.id)}" data-key="${esc(r.assessment.key)}" data-no="${x.no}" data-text="${esc(x.text || "")}" ${St.aiBtn(canAI(), true)}>${t("Quiz this LO")}</button></div></div>`).join("")}</div>` : ""}
       ${p.missed ? `<div class="er-note">${I("retry", "sm")}<span>${esc(t.n(p.missed, "{n} question you missed is still open.", "{n} questions you missed are still open."))}</span> <button class="link noprint" data-act="er-practice" data-cid="${esc(c.id)}">${t("Go over them")}</button></div>` : ""}
       ${p.quizzes.length ? `<div class="mq-sub">${t("Its quizzes")}</div>${p.quizzes.slice(0, 5).map(quiz).join("")}` : ""}
       <div class="er-note">${I("layers", "sm")}<span>${esc(cardLine)}</span></div></div>`;

@@ -256,6 +256,38 @@ def test_the_mistake_loop_on_the_page(tmp_path):
         assert bit in tr, bit
 
 
+LO_PAGE = PAGE.split("(async () => {")[0] + r"""
+(async () => {
+  OPTIONS = { ...OPTIONS, weak: { missed: 0, attempts: 0, quizzes: 0, los: [], topics: [] },
+    assessments: [{ key: "quiz:4", kind: "quiz", no: 4, name: "Quiz 4", week: 6, weeks: [5], los: [3], ahead: true, files: [] },
+                  { key: "final:0", kind: "final", no: 0, name: "Final", week: 14, weeks: [5], los: [3, 4], ahead: true, files: [] }] };
+  // on the Practice tab: the weeks (not "For Quiz 4", the next one), the outcome sent
+  await A["mq-quiz-lo"]({ dataset: { cid: "c1", no: "5", text: "use random variables" } }); await tick();
+  out.tab = shown.html;
+  await A["qz-go"]({ dataset: {}, innerHTML: "" }); await tick();
+  out.tabCreated = calls.filter((c) => c[0] === "quiz_create").pop();
+  // in the Final's Exam room: for the Final, the outcome sent
+  await A["mq-quiz-lo"]({ dataset: { cid: "c1", no: "5", text: "use random variables", key: "final:0" } }); await tick();
+  out.room = shown.html;
+  await A["qz-go"]({ dataset: {}, innerHTML: "" }); await tick();
+  out.roomCreated = calls.filter((c) => c[0] === "quiz_create").pop();
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));
+})();
+"""
+
+
+@node
+def test_quiz_this_lo_quizzes_that_outcome_not_the_next_assessments(tmp_path):
+    """"Quiz this LO" opened the dialog set to the next assessment with its outcomes: LO5 was left as free text."""
+    out = run(tmp_path, LO_PAGE, practice="practice.js", mistakes="mistakes.js")
+    assert 'class="cp-mode on" data-act="qz-mode" data-val="weeks"' in out["tab"]
+    sc = out["tabCreated"][2]
+    assert (sc["focus"], sc["los"], sc["weeks"]) == ("", [5], [5]) and sc["topics"] == "LO5: use random variables"
+    assert 'class="cp-mode on" data-act="qz-mode" data-val="next"' in out["room"] and "For Final" in out["room"]
+    sc = out["roomCreated"][2]
+    assert (sc["focus"], sc["los"]) == ("Final", [5])
+
+
 PLAYER = r"""
 globalThis.window = globalThis;
 const store = {};

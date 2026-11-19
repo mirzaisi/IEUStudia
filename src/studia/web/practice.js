@@ -333,7 +333,7 @@
     }
     const weak = Q.mode === "weak";             // (the files and lectures of the missed questions: practice.weak_scope)
     return { kind: "quiz", weeks: day ? [day.week] : weak ? [] : [...Q.weeks].sort((a, b) => a - b), files: day || weak ? [] : [...Q.files],
-      days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", los: e ? e.los : Q.los || [], questions: Q.count,
+      days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", los: (Q.los || []).length ? Q.los : e ? e.los : [], questions: Q.count,
       qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "", ...(weak ? { weak: true } : {}) };
   }
   // the new-quiz dialog; preset: where it was opened from, as St.practice.quizDialog is called: {mode: "lecture", day}
@@ -358,6 +358,7 @@
     if (Q.stressed) setMode("stressed");
     else if (pre.mode === "lecture" && lectures().some((d) => d.day_key === pre.day)) setMode("lecture");
     else if (pre.mode === "weeks") setMode("weeks", pre.weeks);
+    else if (pre.los) setMode(pre.key && (nextExam(r) || {}).key === pre.key ? "next" : "weeks");   // "Quiz this LO": the Exam room's own one, else weeks
     else setMode(weak ? "weak" : nextExam(r) ? "next" : "weeks");
     if (pre.los) { Q.los = pre.los; Q.topics = pre.topics || ""; }
     // picks.js: a file downloaded from here is ticked once it is in; a class list let in is ticked

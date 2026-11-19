@@ -323,6 +323,19 @@ def test_a_heads_up_from_another_sections_lecture_says_so(tmp_path):
     assert "Heard in another section&#39;s lecture" in out["html"] or "Heard in another section's lecture" in out["html"]
 
 
+@node
+def test_quiz_this_lo_in_the_room_is_for_its_assessment(tmp_path):
+    out = run(tmp_path, """
+  const base = room(QUIZ3);
+  const mastery = { ...base.practice.mastery, los: [...base.practice.mastery.los, { no: 5, text: "use random variables", tried: 0, right: 0, questions: 0,
+    quizzes: 0, share: 0, status: "untested", missed: [] }] };
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { practice: { ...base.practice, mastery } }) });
+  A["ready-open"]({ dataset: { cid: "c", key: "quiz:3" } }); await tick();
+  out.html = view();
+""")
+    assert 'data-act="mq-quiz-lo" data-cid="c" data-key="quiz:3" data-no="5"' in out["html"]
+
+
 def text_of(h):
     return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", h)).strip()
 

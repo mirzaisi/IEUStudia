@@ -273,7 +273,8 @@
       St.practice.refresh(el.dataset.cid);
     },
     "mq-weak": (el) => St.practice.quizDialog(el.dataset.cid, { mode: "weak" }),
-    "mq-quiz-lo": (el) => St.practice.quizDialog(el.dataset.cid, { los: [+el.dataset.no], topics: `LO${el.dataset.no}${el.dataset.text ? `: ${el.dataset.text}` : ""}` }),
+    "mq-quiz-lo": (el) => St.practice.quizDialog(el.dataset.cid, { los: [+el.dataset.no], topics: `LO${el.dataset.no}${el.dataset.text ? `: ${el.dataset.text}` : ""}`,
+      ...(el.dataset.key ? { key: el.dataset.key } : {}) }),          // (the Exam room's: for its own assessment)
     "fc-pick": (el) => { const X = PR().study; if (!X || X.picked != null) return; X.picked = +el.dataset.i; St.practice.drawStudy(); },
     "fc-mc-next": mcNext,
     "fc-card-menu": (el) => {
