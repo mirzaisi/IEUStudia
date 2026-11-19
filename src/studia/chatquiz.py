@@ -74,7 +74,8 @@ def references(f: dict[str, Any], chat_days: list[str], labels: Optional[dict[st
     for x in f.get("lectures") or []:
         k = chat_days.index(x["day_key"]) + 1 if x["day_key"] in chat_days else 0
         also = f" (L{k} in this chat)" if len(chat_days) > 1 and k and f"L{k}" != x["ref"] else ""
-        lines.append(f"{x['ref']} = the lecture of {date_text(x['date'])} (week {x['week']}){also}")
+        week = f" (week {x['week']})" if x.get("week") else ""
+        lines.append(f"{x['ref']} = the lecture of {date_text(x['date'])}{week}{also}")
     for x in f.get("files") or []:
         name = (labels or {}).get(x["id"]) or x["name"]
         lines.append(f"{x['ref']} = the file {name} ({x['pages']} pages, cite its pages as \"{x['ref']} p.3\")")
