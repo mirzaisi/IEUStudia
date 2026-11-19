@@ -276,9 +276,11 @@
         <button class="btn primary" data-act="pr-page-back" autofocus>${back ? t("Back") : t("Close")}</button></div></div>`);
     $(".modal").classList.add("pr-src-modal");
   }
-  function sourceHTML(src, cid) {
+  // (``q``: its question, whose "found" says the source was found by its words: the app's and a chat's quizzes keep it
+  // there, a pasted quiz on its source)
+  function sourceHTML(src, cid, q) {
     if (!src) return "";
-    const found = src.found ? ` <span class="dim">${esc(t("(found by its words)"))}</span>` : "";
+    const found = src.found || (q && q.found) ? ` <span class="dim">${esc(t("(found by its words)"))}</span>` : "";
     if (src.kind === "file") {
       return `<button class="qz-src" data-act="pr-page" data-cid="${esc(cid)}" data-id="${esc(src.id)}" data-page="${src.page}">${I("file-text", "xs")}<span>${esc(t("From {file}, page {page}", { file: src.name, page: src.page }))}${found}</span>${I("chevron-right", "xs")}</button>`;
     }
@@ -547,7 +549,7 @@
     }
     const level = { easy: t("easy"), medium: t("medium"), hard: t("hard") }[q.level] || "";
     return `<div class="qz">${head}<div class="qz-kind">${esc(KINDS()[q.type] || "")}${level ? ` · ${esc(level)}` : ""}</div>
-      <div class="qz-text md">${md(q.q)}</div>${body}${R.checked ? sourceHTML(q.source, R.cid) : ""}
+      <div class="qz-text md">${md(q.q)}</div>${body}${R.checked ? sourceHTML(q.source, R.cid, q) : ""}
       <div class="actions">${acts}</div></div>`;
   }
   function endHTML(R) {

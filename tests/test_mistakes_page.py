@@ -288,6 +288,26 @@ def test_quiz_this_lo_quizzes_that_outcome_not_the_next_assessments(tmp_path):
     assert (sc["focus"], sc["los"]) == ("Final", [5])
 
 
+FOUND_PAGE = PAGE.split("(async () => {")[0] + r"""
+(async () => {
+  A["qz-play"]({ dataset: { id: "q1" } }); await tick();
+  A["qz-start"]();
+  A["qz-pick"]({ dataset: { i: "0" } }); A["qz-check"](); out.first = shown.html; A["qz-next"]();
+  P().run.text = "the denominator"; A["qz-check"](); out.second = shown.html;
+  process.stdout.write(JSON.stringify(out), () => process.exit(0));
+})();
+"""
+
+
+@node
+def test_the_player_says_a_source_was_found_by_its_words(tmp_path):
+    """The app's and a chat's quizzes keep "found" on the question, not its source: the player showed such a source
+    as if the AI had cited it (a pasted quiz and the Mistakes list said "found by its words")."""
+    out = run(tmp_path, FOUND_PAGE, practice="practice.js", mistakes="mistakes.js")
+    assert "From Week05.pdf, page 12" in out["first"] and "(found by its words)" not in out["first"]
+    assert "From the lecture of" in out["second"] and "(found by its words)" in out["second"]
+
+
 PLAYER = r"""
 globalThis.window = globalThis;
 const store = {};
