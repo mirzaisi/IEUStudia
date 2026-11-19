@@ -32,9 +32,12 @@ __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "mo
 ENGINE_VERSION = "2.1"              # 2.1: numbers read out are kept whole (2.0's cleanup cut "0, 0, 0" to "0")
 UNCLEAR = "[unclear]"
 MIN_CONF = 0.38                     # below this in both languages a passage makes no sense: it becomes [unclear]
-# Silero VAD's speech threshold: a window is speech above it. A lecture where it found none (the microphone far from
-# the lecturer, a quiet room recording) can be listened to again more closely (find_speech's ``sensitive``), with a
-# lower one; what comes out of that must still be real speech (quality.heard_speech).
+# Silero VAD's speech threshold: a window is speech above it. A recording where it finds under 8 s of speech is "no
+# speech"; Try again, more sensitive listens again with a lower one (find_speech's ``sensitive``), and what comes out
+# must still be real speech (quality.heard_speech). Measured (Nov 2026): a real lecture made as quiet as the owner's
+# 12 "no speech" recordings (speech at -64 dBFS over their own hiss), or buried in loud noise, is still found at 0.5
+# wherever the speech model can make out words; under 0.2 near-silent audio gives "speech" that is only hiss (0.15:
+# 5 minutes of it in a 42-minute recording), which the model turns into "Thank you." in every window.
 VAD_THRESHOLD = 0.5
 SENSITIVE_VAD = 0.2
 Progress = Callable[[str, float, str], None]
