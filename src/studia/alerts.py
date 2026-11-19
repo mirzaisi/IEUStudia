@@ -325,22 +325,49 @@ _NOT_ON = re.compile(r"make-?up|telafi|mazeret|b[uü]t[uü]nleme|results?|grades
 # the weeks an assessment covers, as an announcement says it: "Quiz 3 will cover weeks 8 and 9", "Quiz 2 covers the
 # topics of weeks 1-4", "3. quiz 8. ve 9. haftaları kapsar", "Quiz 1-4 sırasıyla 2., 4., 6. ve 8. haftaların konularını
 # kapsayacaktır", "Ara sınavın kapsamı: 1-7. haftalar" (folded text)
-_EN_LIST = r"(\d{1,2}(?:\s*(?:,|and|&|-|–|to|through)\s*\d{1,2}\b(?![./:]\d))*)"
+_EN_LIST = r"(\d{1,2}(?:\s*(?:,\s*and|,|and|&|-|–|to|through)\s*\d{1,2}\b(?![./:]\d))*)"     # ("3, 5, and 7" too)
 _TR_LIST = r"(\d{1,2}(?:\s*\.?\s*(?:,|ve|-|–|ile)\s*\d{1,2})*)"
 _COVER_WEEKS = re.compile(r"\b(?:cover\w*|includ\w*)\s+(?:(?!(?:held|given|take|taken|place|scheduled|be|on|during)\b)"
                           r"\w+\s+){0,6}?weeks?\s+" + _EN_LIST + r"\b"
                           r"|(?<![\d.])" + _TR_LIST + r"\s*\.\s*hafta\w*\s+(?:\w+\s+){0,2}?(?:konu|kapsa|i[sş]len)"
                           r"|\bkapsam\w*\s*:?\s*(?:\w+\s+){0,2}?" + _TR_LIST + r"\s*\.\s*hafta")
-_COVER_CUT = re.compile(r"\n|[;!?](?=\s|$)|(?<!\d)\.(?=\s|$)")    # where the sentence naming it starts ("8. ve" goes on)
+# where the sentence naming it starts: also after a number ("… held in week 4. Quiz 2 will cover …"), but not in a
+# Turkish ordinal that goes on ("8. ve 9. haftalar", "8. haftada", "1. ara sınav")
+_COVER_CUT = re.compile(r"\n|[;!?](?=\s|$)|(?<!\d)\.(?=\s|$)|(?<=\d)\.(?=\s|$)(?!\s*(?:hafta|ve\b|ile\b|veya\b|ya\s+da\b|"
+                        r"ara\s+sinav|vize|konu|[uü]nite|b[oö]l[uü]m|d[oö]nem|s[iı]nav|[sş]ube|[-–,]|\d))")
+# what it doesn't cover ("all topics except week 7", "Quiz 5 will not cover week 11", "7. hafta hariç", "11. haftanın
+# konularını kapsamayacak"): an exclusion or a "not" between the cover word and its weeks, or just before the cover
+# word, makes them no weeks it covers; "weeks 1-7 except week 5" and "5. hafta hariç 1-7. haftalar" leave week 5 out
+_NOT_BEFORE = re.compile(r"(?:\bnot|n[’']t|\bnever|\bno\s+longer)(?:\s+(?!(?:and|but|or|so|it)\b)\w+){0,2}\s*$")
+_EXCLUDING = (r"except(?:\s+for)?|excluding|exclude[sd]?|other\s+than|apart\s+from|aside\s+from|besides|but\s+not|"
+              r"without|minus|outside(?:\s+of)?")
+_NOT_BETWEEN = re.compile(r"\b(?:" + _EXCLUDING + r"|but|not|never)\b|n[’']t\b")
+_EN_EXCEPT = re.compile(r"\b(?:" + _EXCLUDING + r"|not)\s+(?:(?:the\s+)?(?:topics?|material|content|chapters?|lectures?|"
+                        r"subjects?)\s+(?:of|from|in)\s+)?(?:the\s+)?weeks?\s*" + _EN_LIST)
+_TR_EXCEPT = re.compile(r"(?<![\d.])" + _TR_LIST + r"\s*\.\s*hafta\w*\s+(?:\w+\s+)?(?:hari[cç]|d[iı][sş][iı]nda|"
+                        r"haricinde)")
+# a sentence about the assessment the one before named ("Quiz 3 is in week 10. It covers …", "… Sınav 7. haftaya kadar …")
+_IT = re.compile(r"\b(?:it|(?:this|that|the(?:\s+next)?|next)\s+(?:quiz|exam|test|midterm|one)|bu(?:\s+(?:s[iı]nav|quiz))?|"
+                 r"s[iı]nav|quiz)\b")
+_TR_NOT = re.compile(r"kapsam(?:a[yzmd]|[iı]yor)|kapsam\s+d[iı][sş]|de[gğ]il|sorulma|[cç][iı]kma[yz]|"
+                     r"dahil\s+(?:edilme|olma)|girme[yz]")
 # a range with "week" twice or with one end ("week 1" understood), written the way _COVER_WEEKS reads it: "from week 1
 # to week 7" → "weeks 1 to 7", "week 3 and week 5" → "weeks 3 and 5", "(all topics) up to week 7", "until week 7",
-# "through week 7" → "weeks 1 to 7"; "1. haftadan 7. haftaya" → "1-7. haftaya", "7. haftaya kadar" → "1-7. haftaya kadar"
+# "through week 7" → "weeks 1 to 7", "before week 8" → "weeks 1 to 7"; "1. haftadan 7. haftaya" → "1-7. haftaya",
+# "7. haftaya kadar" → "1-7. haftaya kadar", "8. haftadan önceki" → "1-7. hafta"
 _TWO_WEEKS = re.compile(r"(?:\b(from|between)\s+(?:the\s+)?)?\bweeks?\s*(\d{1,2})\s*(,|and|&|-|–|to|through|until|till|"
                         r"up\s+to)\s*(?:the\s+)?weeks?\s*(\d{1,2})\b")
+# a list going on with "week" again ("weeks 3 and 5 and week 7", "weeks 1 to 3 and week 5"), ending with "and"
+_ITEM = r"(?:(?:the\s+)?weeks?\s*)?\d{1,2}\b(?![./:]\d)"
+_WEEK_CHAIN = re.compile(r"\bweeks?\s*\d{1,2}\b(?![./:]\d)(?:\s*(?:,\s*and|,|and|&|-|–|to|through)\s*" + _ITEM + r")*"
+                         r"\s*,?\s*(?:and|&)\s*" + _ITEM)
 _UP_TO = re.compile(r"\b(?:up\s+(?:to|until)(?:\s+and\s+including)?|until|till|through|thru|to\s+the\s+end\s+of)\s+"
                     r"(?:the\s+(?:end\s+of\s+)?)?week\s*(\d{1,2})\b")
+_BEFORE = re.compile(r"\b(?:before|prior\s+to|up\s+to\s+(?:but\s+)?(?:not\s+including|excluding))\s+(?:the\s+)?"
+                     r"(?:start\s+of\s+)?week\s*(\d{1,2})\b")
 _TR_TWO = re.compile(r"(\d{1,2})\s*\.\s*hafta(?:dan|lardan)\s+(?:itibaren\s+)?(\d{1,2})\s*\.\s*hafta")
 _TR_UP_TO = re.compile(r"(?<![\d.])(\d{1,2})(?=\s*\.\s*hafta(?:ya|nin sonuna)\s+kadar\b)")
+_TR_BEFORE = re.compile(r"(?<![\d.-])(\d{1,2})\s*\.\s*hafta(?:(?:dan|lardan)\s+[oö]nce\w*|\s+[oö]ncesi\w*)")
 # one end of a range only ("from week 3 onwards", "3. haftadan sonraki konular"): not a week it covers
 _FROM_ONLY = re.compile(r"\b(?:from|after|since|beyond|starting(?:\s+(?:with|from|at))?)\s+(?:the\s+)?weeks?\s*$")
 _ON_ONLY = re.compile(r"\s*(?:onwards?|and\s+(?:after|later|beyond|onwards?)|or\s+later)\b")
@@ -497,16 +524,52 @@ def _ranges(text: str) -> str:
 
     def up_to(m: re.Match) -> str:                     # (not the end of a range already: "1-7. haftaya kadar")
         return m.group(0) if re.search(r"\d\s*\.?\s*[-–]\s*$", text[:m.start()]) else f"1-{m.group(1)}"
-    text = _UP_TO.sub(lambda m: f"weeks 1 to {m.group(1)}", _TWO_WEEKS.sub(two, text))
+
+    def chain(m: re.Match) -> str:                     # "weeks 3 and 5 and week 7" → "weeks 3 and 5 and 7"
+        head = re.match(r"weeks?\s*\d{1,2}", m.group(0)).group(0)
+        return "weeks" + head[4:].lstrip("s") + re.sub(r"(?:the\s+)?weeks?\s*(?=\d)", "", m.group(0)[len(head):])
+
+    def before(m: re.Match, form: str) -> str:         # "before week 8" → weeks 1 to 7 (not "before week 1")
+        n = int(m.group(1))
+        return form.format(n - 1) if n >= 2 else "the start"
+    text = _WEEK_CHAIN.sub(chain, _TWO_WEEKS.sub(two, text))
+    text = _BEFORE.sub(lambda m: before(m, "weeks 1 to {}"), text)
+    text = _UP_TO.sub(lambda m: f"weeks 1 to {m.group(1)}", text)
+    text = _TR_BEFORE.sub(lambda m: before(m, "1-{}. hafta"), text)
     text = _TR_TWO.sub(r"\1-\2. hafta", text)
     return _TR_UP_TO.sub(up_to, text)
+
+
+def _left_out(body: str, m: re.Match, g: int, start: int, end: int) -> Optional[set[int]]:
+    """The weeks the sentence body[start:end] says the cover match ``m`` (its list in group ``g``) leaves out: None
+    when its own weeks are what is left out or not covered ("all topics except week 7", "Quiz 5 will not cover week
+    11", "7. hafta hariç", "11. haftanın konularını kapsamayacak"), else the weeks excepted elsewhere in the sentence
+    ("weeks 1-7, except week 5": {5}), maybe none."""
+    if g == 1:                                         # English: "… cover … weeks 8 and 9"
+        if _NOT_BEFORE.search(body, start, m.start()) or _NOT_BETWEEN.search(body, m.start(), m.start(g)):
+            return None
+        out: set[int] = set()
+        for x in _EN_EXCEPT.finditer(body, start, end):
+            if x.start(1) == m.start(g):
+                return None
+            out.update(_week_list(x.group(1)))
+        return out
+    after = " ".join(body[m.end():end].split(",")[0].split(" ")[:5])     # Turkish: the verb follows ("… kapsamayacak")
+    if _TR_NOT.search(body[m.start(g):m.end()] + after) or (g == 3 and _TR_NOT.search(body, m.start(), m.start(g))):
+        return None
+    out = set()
+    for x in _TR_EXCEPT.finditer(body, start, end):
+        if x.start(1) == m.start(g):
+            return None
+        out.update(_week_list(x.group(1)))
+    return out
 
 
 def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], list[int]]]:
     """What the assessments ``body`` names cover: [((kind, no), weeks)], from "Quiz 3 will cover weeks 8 and 9" and the
     Turkish "3. quiz 8. ve 9. haftaları kapsar" (body folded, Turkish ordinals read: "quiz 3"). Several quizzes get a
     week each only when it says "respectively" ("sırasıyla"); one the sentence doesn't name is the title's. One end
-    of a range alone ("from week 3 onwards") is no week it covers."""
+    of a range alone ("from week 3 onwards") is no week it covers, nor is a week it leaves out (_left_out)."""
     out: list[tuple[tuple[str, int], list[int]]] = []
     body = _ranges(body)
     for m in _COVER_WEEKS.finditer(body):
@@ -520,8 +583,16 @@ def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], lis
                                        or _ON_ONLY.match(body, m.end(g))):
             continue
         cut = [c.end() for c in _COVER_CUT.finditer(body, 0, m.start())]
-        clause = body[cut[-1] if cut else 0:m.start()]
-        said = _quiz_numbers(clause)
+        start = cut[-1] if cut else 0
+        stop = next((c.start() for c in _COVER_CUT.finditer(body, m.end())), len(body))
+        left_out = _left_out(body, m, g, start, stop)
+        if left_out is None:
+            continue
+        weeks = [w for w in weeks if w not in left_out]
+        if not weeks:
+            continue
+        clause = body[start:m.start()]
+        said = list(dict.fromkeys(_quiz_numbers(clause)))      # (one quiz named twice is one quiz)
         names = list(_A_ANY.finditer(clause))
         if len(said) > 1:                              # "Quiz 1-4 sırasıyla 2., 4., 6. ve 8. haftaların…"
             items = [int(x) for x in re.findall(r"\d{1,2}", text)]
@@ -533,6 +604,11 @@ def _covers(body: str, named: list[re.Match]) -> list[tuple[tuple[str, int], lis
             out.append((("quiz", said[0]), weeks))
         elif len(named) == 1:                          # "About Quiz 3": "It covers weeks 8 and 9."
             out.append((_assessment(named[0]), weeks))
+        elif start and (not clause.strip() or _IT.search(clause)):    # "Quiz 3 is in week 10. It covers weeks 8-9."
+            back = [c.end() for c in _COVER_CUT.finditer(body, 0, start - 1)]
+            one = {_assessment(x) for x in _A_ANY.finditer(body, back[-1] if back else 0, start)}
+            if len(one) == 1:
+                out.append((one.pop(), weeks))
     return out
 
 
