@@ -18,7 +18,8 @@
 .ck-key.warn > .i { color: var(--amber); }
 .qz-fb + .ck-key { margin-top: 10px; }
 
-/* ---- the end screen */
+/* ---- the end screen (with the bar, an opened list gives it room: Close and Try stay in view at 1024×700) */
+.qz-end:has(.ck-mark, .ck-done) .qz-results:has(.mq.open) { max-height: min(46vh, 520px); }
 .ck-mark { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 0 0; padding: 10px 12px;
   border-radius: var(--radius); background: var(--surface-2); }
 .ck-mark > .dim { flex: 1 1 260px; }
