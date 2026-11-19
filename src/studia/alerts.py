@@ -287,7 +287,10 @@ _NTH = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
 _DOT_QUIZ = re.compile(r"(?m)^(\d{1,2})\s*\.\s*(quiz)\b")
 # "week 5" (not "weeks 1-4": that is what it covers, not when it is held)
 _WEEK = re.compile(r"\b(\d{1,2})\s*\.\s*hafta|\bweek\s*(\d{1,2})\b|\bhafta\s*(\d{1,2})\b")
-_IN_LIST = re.compile(r"\d{1,2}\s*\.?\s*(?:,|ve|and|&|-|–)\s*$")   # "3., 5., 10. ve 12. hafta", "1-7. haftalar": weeks
+_IN_LIST = re.compile(r"\d{1,2}\s*\.?\s*(?:,|ve|and|&)\s*$")      # "3., 5., 10. ve 12. hafta": a list of weeks
+# "1-7. haftalar": the weeks it covers (three weeks or more; "8-9. haftalarda" is a two-week exam period, held in its
+# last week; not a time or a date before a dash: "14:00 - 10. hafta", "12.11.2025 - 8. hafta")
+_RANGE_TO = re.compile(r"(?<![\d.:/])(\d{1,2})\s*\.?\s*[-–]\s*$")
 _TR_COVERS = re.compile(r"[\w'’]*\s+(?:\w+\s+){0,2}?(?:konu|kapsa)")   # "5. haftanın konularını kapsar": what it covers
 _LO_RANGE = re.compile(r"\blo\s*(\d{1,2})\s*[–—-]\s*(?:lo\s*)?(\d{1,2})\b")
 _LO_ONE = re.compile(r"\b(?:los?|learning outcomes?|öğrenme çiktisi)\s*(\d{1,2})\b")
@@ -423,7 +426,9 @@ def _week(text: str) -> Optional[int]:
     "5. haftanın konularını kapsar") or a week of a list ("3., 5., 10. ve 12. haftalarda": read as a list below)."""
     for m in _WEEK.finditer(text):
         if m.group(1):                                       # "5. hafta"
-            if _IN_LIST.search(text, 0, m.start()) or _TR_COVERS.match(text, m.end()):
+            r = _RANGE_TO.search(text, 0, m.start())
+            if _IN_LIST.search(text, 0, m.start()) or _TR_COVERS.match(text, m.end()) or \
+                    r and int(m.group(1)) - int(r.group(1)) >= 2:
                 continue
         elif _COVERS.search(text, 0, m.start(m.lastindex or 0)):     # "… covers (the topics of) week 5"
             continue

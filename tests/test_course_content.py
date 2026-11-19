@@ -762,6 +762,18 @@ def test_this_weeks_quiz_in_turkish_keeps_its_quiz_and_day():
         [("Quiz 3", None, "2026-11-13", "")]                                       # (the guard's own case)
 
 
+def test_a_dash_before_a_week_is_a_range_only_between_two_weeks_three_or_more_apart():
+    """A dash before "N. hafta" was taken for a range of covered weeks: a two-week exam period ("8-9. haftalarda"),
+    a time ("14:00 - 10. hafta") and a date ("12.11.2025 - 8. hafta") lost their week."""
+    plan = _plan_of
+    assert plan("Ara sınav", "Ara sınav 8-9. haftalarda yapılacaktır.") == [("Midterm", 9, "", "")]
+    assert plan("Vize", "Vize: 8-9. haftalar") == [("Midterm", 9, "", "")]
+    assert plan("Quiz", "Quiz 3: 14:00 - 10. hafta") == [("Quiz 3", 10, "", "")]
+    assert plan("Quiz", "Quiz 2: 12.11.2025 - 8. hafta") == [("Quiz 2", 8, "", "")]
+    assert plan("Quiz", "Quiz 1: 3. hafta, Quiz 2: 6-7. hafta") == [("Quiz 1", 3, "", ""), ("Quiz 2", 7, "", "")]
+    assert plan("Ara sınav", "Ara Sınav\n1-7. haftalar") == []                       # what it covers, not its week
+
+
 def test_a_quiz_announced_only_by_its_day_gets_its_week_when_week_1_is_known():
     from studia.quizzes import assessments
     from studia.views import dated_plan
