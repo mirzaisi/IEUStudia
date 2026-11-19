@@ -113,21 +113,22 @@
     const m = r.material, files = m.missing.filter((id) => !busyFile(id)), fetching = m.missing.length - files.length;
     const busy = [m.busy ? `<div class="dim sm">${SPIN()} ${esc(t.n(m.busy, "{n} lecture is being transcribed now: the queue at the bottom shows how long it takes.", "{n} lectures are being transcribed now: the queue at the bottom shows how long it takes."))}</div>` : "",
       fetching ? `<div class="dim sm">${SPIN()} ${esc(t.n(fetching, "Downloading {n} file…", "Downloading {n} files…"))}</div>` : ""].join("");
-    if (m.todo.length || files.length) {
-      const what = [m.todo.length ? t.n(m.todo.length, "{n} lecture to transcribe", "{n} lectures to transcribe") : "",
-        files.length ? t.n(files.length, "{n} file to download", "{n} files to download") : ""].filter(Boolean).join(" · ");
-      return `<div class="card er-missing"><span class="er-ico warn">${I("download")}</span><div class="grow"><b>${esc(t("Still missing: {what}", { what }))}</b>
-          <div class="dim sm">${esc(m.todo.length ? t("Lectures are transcribed on this PC, before anything from a full sync; files come from IEULearn.") : t("They come from IEULearn."))}</div>${busy}</div>
-        <button class="btn primary noprint" data-act="er-get">${I("download", "sm")} ${t("Get everything")}</button></div>`;
-    }
-    if (busy) return `<div class="card er-missing"><span class="er-ico">${I("wave")}</span><div class="grow">${busy}</div></div>`;
-    if (!m.lectures && !m.files.length) return `<div class="card er-missing"><span class="er-ico">${I("info")}</span><div class="grow dim">${esc(t("No lectures or files are listed for these weeks yet."))}</div></div>`;
     // weeks already taught with no lecture here, after the course's last one (a class held since the last sync): no
     // "everything is here" (a week without lectures before a recorded one had no class: a holiday)
     const d = (S.cd || {})[r.course.id], nos = new Set(r.assessment.weeks);
     const last = Math.max(0, ...((d && d.weeks) || []).filter((w) => (w.days || []).length).map((w) => w.no));   // (0: not on Panopto)
     const unseen = last ? r.weeks.filter((w) => nos.has(w.no) && w.no > last && (w.past || w.current) && !w.exam
       && !m.days.some((x) => x.week === w.no)).map((w) => w.no) : [];
+    if (m.todo.length || files.length) {
+      const what = [m.todo.length ? t.n(m.todo.length, "{n} lecture to transcribe", "{n} lectures to transcribe") : "",
+        files.length ? t.n(files.length, "{n} file to download", "{n} files to download") : ""].filter(Boolean).join(" · ");
+      const notHere = unseen.length ? `<div class="dim sm">${esc(t("No lecture of {weeks} is in IEUStudia yet.", { weeks: span(unseen) }))} ${esc(t("A class held since the last sync comes with the next one."))}</div>` : "";
+      return `<div class="card er-missing"><span class="er-ico warn">${I("download")}</span><div class="grow"><b>${esc(t("Still missing: {what}", { what }))}</b>
+          <div class="dim sm">${esc(m.todo.length ? t("Lectures are transcribed on this PC, before anything from a full sync; files come from IEULearn.") : t("They come from IEULearn."))}</div>${notHere}${busy}</div>
+        <button class="btn primary noprint" data-act="er-get">${I("download", "sm")} ${t("Get everything")}</button></div>`;
+    }
+    if (busy) return `<div class="card er-missing"><span class="er-ico">${I("wave")}</span><div class="grow">${busy}</div></div>`;
+    if (!m.lectures && !m.files.length) return `<div class="card er-missing"><span class="er-ico">${I("info")}</span><div class="grow dim">${esc(t("No lectures or files are listed for these weeks yet."))}</div></div>`;
     if (unseen.length) {
       return `<div class="card er-missing"><span class="er-ico">${I("info")}</span><div class="grow"><b>${esc(t("No lecture of {weeks} is in IEUStudia yet.", { weeks: span(unseen) }))}</b>
         <div class="dim sm">${esc(t("A class held since the last sync comes with the next one."))}</div></div>

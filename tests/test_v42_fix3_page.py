@@ -142,6 +142,10 @@ def test_the_room_says_when_a_week_already_taught_has_no_lecture_here_and_leaves
   St.mocks.exam_room = () => ({ ok: true, room: room({ ...QUIZ3, weeks: [10] }, { material: mat }) });
   St.openReady("c", "quiz:3"); await tick();
   out.all = text(view());
+  // a file still to download too: the "Still missing" card says it as well
+  St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { material: { ...mat, missing: ["w10"], files: [...mat.files, { id: "w10", title: "Week10", name: "Week10.pdf", ext: "pdf", downloaded: false, week: 10, tied: false }] } }) });
+  St.openReady("c", "quiz:3"); await tick();
+  out.withFiles = text(view());
   // week 9 without a lecture, but the course has one in week 11: no class that week (a holiday), nothing to sync
   S.cd.c.weeks.push({ no: 11, days: [{ day_key: "y" }] });
   St.mocks.exam_room = () => ({ ok: true, room: room(QUIZ3, { material: mat }) });
@@ -160,6 +164,7 @@ def test_the_room_says_when_a_week_already_taught_has_no_lecture_here_and_leaves
     assert "No lecture of week 9 is in IEUStudia yet." in out["unseen"] and "Everything of these weeks" not in out["unseen"]
     assert 'data-act="sync"' in out["unseenHtml"]
     assert "Everything of these weeks is on this PC." in out["all"]
+    assert "Still missing: 1 file to download" in out["withFiles"] and "No lecture of week 9 is in IEUStudia yet." in out["withFiles"]
     assert "Everything of these weeks is on this PC." in out["holiday"] and "No lecture of" not in out["holiday"]
     assert "16" not in out["final"] and "Nothing yet for" in out["final"]
     assert "0 transcribed" not in out["ask"] and 'title="Transcribe a lecture of these weeks first' in out["ask"]
