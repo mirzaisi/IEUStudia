@@ -145,6 +145,13 @@ def _quiz_command(text: str) -> Optional[dict[str, Any]]:
     return command(text)
 
 
+def _quiz_readable(text: str, usage: Any) -> str:
+    """An answer as an exported chat shows it: a saved quiz's sentence and name, not its JSON (chatquiz.py)."""
+    from .chatquiz import readable
+
+    return readable(text, usage)
+
+
 PIECE_CHARS = 4000            # a lecture read in parts: its transcript in pieces of about this much (the notes of each:
                               # up to chatread.NOTE_CHARS, about a third of it)
 
@@ -1299,9 +1306,11 @@ class ChatService:
                                                        labels=read["unread"][:12])], history)
             scope = chat.get("scope") or {}
             found, sources = "", []
-            try:                                            # course files and other lectures that match the question
-                if not quiz or quiz["topics"]:              # ("/quiz" alone matches nothing: the chat's material)
-                    found, sources = retrieve(self.lib, chat["course_id"], quiz["topics"] if quiz else question,
+            # course files and other lectures that match the question; none for "/quiz" ("/quiz 5 Bayes" too): a quiz
+            # is on the chat's own material, and its sources must be ones the app can open (chatquiz.facts)
+            try:
+                if not quiz:
+                    found, sources = retrieve(self.lib, chat["course_id"], question,
                                               skip_days=self._skip_days(chat, session))
             except Exception:  # noqa: BLE001 - the answer works without it
                 log.debug("retrieval failed", exc_info=True)
@@ -1312,7 +1321,7 @@ class ChatService:
             # the offline model: the passages of the student's files that match the question (and the one before it),
             # first, so that its small window keeps them before the other passages
             asked = " ".join([question] + [m.get("text") or "" for m in history[-2:] if m.get("role") == "user"])
-            mine = chatfiles.local_pick(getattr(session, "upload_passages", None) or [], asked)
+            mine = "" if quiz else chatfiles.local_pick(getattr(session, "upload_passages", None) or [], asked)
             if mine:
                 content.append({"type": "text", "text": mine})
             if found:
@@ -1394,8 +1403,13 @@ class ChatService:
         ids = [str(x["id"]) for x in files]
         made_from = chatquiz.facts(self.lib, self._s.settings, chat["course_id"], days, ids)
         said = any(m.get("role") == "assistant" and (m.get("text") or "").strip() for m in history)
+        # the quizzes the conversation had already, and whether the answer just before was one ("/quiz" twice: a new
+        # quiz on the chat's material, not one on the quiz before)
+        asks = [m for m in history if m.get("role") == "user" and _quiz_command(m.get("text") or "")]
+        again = len(history) >= 2 and history[-1].get("role") == "assistant" and history[-2] in asks
         asked = chatquiz.prompt(made_from, quiz["n"], quiz["topics"], said, days,
-                                {str(x["id"]): x.get("label") or x.get("title") or "" for x in files})
+                                {str(x["id"]): x.get("label") or x.get("title") or "" for x in files},
+                                again=again, quizzed=bool(asks))
         return asked, {**made_from, "chat_files": ids}
 
     def _quiz_saved(self, chat: dict[str, Any], quiz: dict[str, Any], made_from: dict[str, Any],
@@ -1632,8 +1646,9 @@ class ChatService:
                 if not m["text"].strip() and not notes:
                     continue
                 lines += [f"**{who}:**", ""] + [x for n in notes for x in (n, "")]
-                if m["text"].strip():
-                    lines += [m["text"].strip() + (" *(stopped)*" if m["status"] == "stopped" else ""), ""]
+                if m["text"].strip():           # (a "/quiz" answer: its sentence and the quiz's name, not its JSON)
+                    lines += [_quiz_readable(m["text"], m["usage"]).strip() +
+                              (" *(stopped)*" if m["status"] == "stopped" else ""), ""]
                 lines += ["---", ""]
         stamp = ((self.lib.get_chat(chat_id) or {}).get("created_at") or "")[:10]
         name = safe_name(f"{stamp} - {title}" if stamp else title, limit=110) + f" [{chat_id[:6]}]"

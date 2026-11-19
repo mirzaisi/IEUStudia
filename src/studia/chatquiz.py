@@ -84,9 +84,11 @@ def references(f: dict[str, Any], chat_days: list[str], labels: Optional[dict[st
 
 
 def prompt(f: dict[str, Any], n: int, topics: str = "", follow_up: bool = False, chat_days: Optional[list[str]] = None,
-           labels: Optional[dict[str, str]] = None) -> str:
+           labels: Optional[dict[str, str]] = None, *, again: bool = False, quizzed: bool = False) -> str:
     """What the AI gets for "/quiz": a practice quiz as quizzes.write_prompt asks for one (its shape, rules, languages,
-    learning outcomes and stressed moments), on the chat's material, answered in one ```ieustudia-quiz block."""
+    learning outcomes and stressed moments), on the chat's material, answered in one ```ieustudia-quiz block.
+    ``again``: the answer before was a quiz (another "/quiz" right after one: new questions, not a quiz on that
+    quiz); ``quizzed``: the conversation had a quiz already (none of its questions asked again)."""
     from . import quizzes
     from .outputs.prompts import quiz_languages_again
     from .plans import Scope
@@ -95,9 +97,12 @@ def prompt(f: dict[str, Any], n: int, topics: str = "", follow_up: bool = False,
     body = quizzes.write_prompt(Scope(kind="quiz", topics=topics), {**f, "pack": "", "one_lecture": False}, n, kinds)
     body = body.split("\n\n=== COURSE MATERIAL ===")[0]          # the material is the chat's own, sent already
     body = body.replace("1. The material below", "1. The lectures and files of this chat", 1)
-    what = ("Quiz the student on what this conversation covered, most of all your last answer; take the details, "
+    what = ("Quiz the student again on the lectures and files of this chat, with new questions." if again else
+            "Quiz the student on what this conversation covered, most of all your last answer; take the details, "
             "the examples and the sources from the lectures and files of this chat." if follow_up else
             "Quiz the student on the lectures and files of this chat.")
+    if quizzed or again:
+        what += " No question may ask what a quiz earlier in this conversation asked."
     again = quiz_languages_again(f.get("language") or "", f.get("taught_in") or "")
     return (f"(From the IEUStudia app, not typed by the student: they asked for a practice quiz they can take and "
             f"score in the app.) {what}\n\n{body}\n\n=== REFERENCES (for \"source\") ===\n"
@@ -162,3 +167,19 @@ def save(lib: Any, course_id: str, f: dict[str, Any], text: str, n: int, chat_id
 def unread() -> str:
     """What the chat says under an answer whose quiz could not be read."""
     return t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again.")
+
+
+def readable(text: str, usage: Optional[dict[str, Any]]) -> str:
+    """An answer as an exported chat (and its Copy) shows it: one whose quiz was saved is its sentence and a line
+    naming the quiz, as the page shows it (its JSON is for the app, never pages of it in a PDF); any other answer as
+    it was written. Exports stay English."""
+    made = (usage or {}).get("quiz") if isinstance(usage, dict) else None
+    if not isinstance(made, dict) or not text:
+        return text
+    cut = text.find("```")
+    intro = (text[:cut] if cut >= 0 else re.sub(r"[{\[][\s\S]*$", "", text)).strip()
+    intro = re.split(r"\n\s*\n", intro)[0].strip() if intro else ""
+    n = int(made.get("questions") or 0)
+    title = " ".join(str(made.get("title") or "Practice quiz").split())
+    line = f'*Practice quiz "{title}" ({n} question{"" if n == 1 else "s"}), saved to Practice in IEUStudia.*'
+    return f"{intro}\n\n{line}" if intro else line

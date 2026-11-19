@@ -269,3 +269,78 @@ def test_a_quiz_in_a_chat_shows_as_a_card_only_when_it_is_done(tmp_path):
     assert out["failed"] == [True, True]
     assert out["chip"] == [True, False] and out["chipOld"] is False and out["sent"] == "/quiz"
     assert out["slash"] == [False, True] and out["offline"] is True and "Quizzes need ChatGPT or Claude" in out["toast"]
+
+
+@node
+def test_a_new_chat_s_practice_questions_are_a_quiz_and_a_failed_one_is_tried_again(tmp_path):
+    """A new chat's suggestion 'Give me 5 practice questions with answers' wrote a wall of text next to the playable
+    quiz: it is now a /quiz (not with the offline model). A quiz stopped or unread has Try again (the same /quiz) under
+    the last answer, and a saved quiz's answer has no Copy (its text is the quiz's JSON)."""
+    out = _page(tmp_path, """
+  els["#chat-head"] = {}; els["#chat-msgs-inner"] = {};
+  S.chat.draft = { course_id: "c1", days: [DAY], labels: [{ key: DAY, n: 1, label: "13 Oct", kind: "Lecture" }], model: "sonnet", tokens: 0, slidesTotal: 0 };
+  S.chat.id = null; S.chat.data = null; S.view = { name: "chat" };
+  const view = () => { St.renderView(); return els["#view"].innerHTML; };
+  const sugg = (html) => [...html.matchAll(/data-act="chat-suggest" data-text="([^"]*)">([^<]*)</g)].map((m) => [m[1], m[2]]);
+  out.one = sugg(view());
+  S.chat.draft.labels.push({ key: DAY2, n: 2, label: "20 Oct", kind: "Lecture" });
+  out.many = sugg(view());
+  S.system.ai = { available: true, provider: "local", can_plans: false };
+  out.offline = sugg(view());
+  S.system.ai = { available: true, provider: "claude", can_plans: true };
+  // a stopped quiz and an unread one under the last answer: Try again sends the same /quiz
+  const msgs = [{ seq: 1, role: "user", text: "/quiz 3 capacitor energy", status: "done", usage: {} },
+    { seq: 2, role: "assistant", text: "Here is your quiz.", status: "stopped", usage: {} }];
+  S.chat.draft = null; S.chat.data = { id: "ch", course_id: "c1", title: "t", messages: msgs, days: [], model: "sonnet" };
+  out.stopped = St.actionCards(msgs[1].text, 2, false, msgs[1]).html;
+  msgs[1] = { ...msgs[1], status: "done", text: "Sure!\\n```ieustudia-quiz\\n{", usage: { quiz_error: "x" } };
+  out.unread = St.actionCards(msgs[1].text, 2, false, msgs[1]).html;
+  msgs.push({ seq: 3, role: "user", text: "thanks", status: "done", usage: {} }, { seq: 4, role: "assistant", text: "You're welcome.", status: "done", usage: {} });
+  out.older = St.actionCards(msgs[1].text, 2, false, msgs[1]).html;
+  // a saved quiz: its card, no Copy; any other answer keeps its Copy
+  msgs.splice(2, 2);
+  msgs[1] = { ...msgs[1], text: "Here.\\n```ieustudia-quiz\\n{}\\n```", usage: { quiz: { id: "pq", title: "Capacitors", questions: 3 } } };
+  msgs.push({ seq: 3, role: "user", text: "And now?", status: "done", usage: {} }, { seq: 4, role: "assistant", text: "Plain.", status: "done", usage: {} });
+  S.chat.id = "ch"; S.view = { name: "chat", chatId: "ch" };
+  const html = view();
+  out.saved = html.slice(html.indexOf('data-seq="2"'), html.indexOf('data-seq="3"'));
+  out.plain = html.slice(html.indexOf('data-seq="4"'));
+  const two = (m) => { msgs[1] = { ...msgs[1], ...m }; const h = view(); return h.slice(h.indexOf('data-seq="2"'), h.indexOf('data-seq="3"')); };
+  out.stoppedCopy = two({ status: "stopped", text: "Here.\\n```ieustudia-quiz\\n{\\"questions\\": [", usage: {} }).includes("chat-copy");
+  out.unreadCopy = two({ status: "done", text: "Here is a quiz in Markdown.", usage: { quiz_error: "x" } }).includes("chat-copy");
+""")
+    assert out["one"][-1] == ["/quiz 5", "Quiz me on this lecture: 5 scored questions."] and len(out["one"]) == 6
+    assert out["many"][-1] == ["/quiz 8", "Quiz me on these lectures: 8 scored questions."]
+    assert out["offline"][-1][0].startswith("Give me 8 practice questions") and out["offline"][-1][0] == out["offline"][-1][1]
+    for html, said in ((out["stopped"], "Stopped before the quiz was finished."),
+                       (out["unread"], "The quiz in this answer could not be read, so it wasn&#39;t saved.")):
+        assert said in html.replace("'", "&#39;") and 'data-act="chat-suggest" data-text="/quiz 3 capacitor energy"' in html
+        assert "Type /quiz" not in html and "Try again" in html
+    assert "Type /quiz to try again" in out["older"] and "chat-suggest" not in out["older"]          # not the last one
+    assert 'data-act="qz-play" data-id="pq"' in out["saved"] and "chat-copy" not in out["saved"]
+    assert "chat-copy" in out["plain"] and out["stoppedCopy"] is False and out["unreadCopy"] is True
+
+
+@node
+def test_a_chat_begun_with_quiz_takes_its_quiz_s_name_in_the_header(tmp_path):
+    """The header kept "/quiz 5" until the chat was opened again: the chat was renamed after its quiz on the app's
+    side, and only the chat list was told."""
+    out = _page(tmp_path, """
+  els["#chat-head"] = {}; els["#chat-items"] = {};
+  const msgs = [{ seq: 1, role: "user", text: "/quiz 5", status: "done", usage: {} },
+    { seq: 2, role: "assistant", text: "", status: "streaming", usage: {} }];
+  S.chat.data = { id: "ch", course_id: "c1", title: "/quiz 5", messages: msgs, days: [], model: "sonnet", running: true };
+  S.chat.id = "ch"; S.chat.draft = null; S.view = { name: "chat", chatId: "ch" };
+  const row = { id: "ch", course_id: "c1", course_code: "MATH 240", title: "/quiz 5", scope_label: "13 Oct · Lecture", model: "sonnet", updated_at: "2026-11-19T10:00:00" };
+  St.Mock.chat_list = () => ({ ok: true, chats: [{ ...row }] });
+  St.renderChatHead(); await tick();
+  out.before = els["#chat-head"].innerHTML.includes("<h2 title=\\"/quiz 5\\">");
+  row.title = "Bayes and conditional probability";          // the quiz is written and saved: the chat is named after it
+  window.__lsEvent({ type: "chat", chat_id: "ch", seq: 2, state: "done", text: "Here it is.", usage: { quiz: { id: "pq", title: row.title, questions: 5 } } });
+  await tick(60);
+  out.after = els["#chat-head"].innerHTML;
+  out.list = els["#chat-items"].innerHTML.includes("Bayes and conditional probability");
+""")
+    assert out["before"]
+    assert '<h2 title="Bayes and conditional probability">' in out["after"] and "/quiz 5" not in out["after"]
+    assert out["list"]

@@ -1459,14 +1459,16 @@
 
   // ---- chat with Claude
   // functions, not arrays: the text is in the language of the moment. A suggestion becomes the student's own question
-  // when clicked (the AI answers in the language it is asked in).
+  // when clicked (the AI answers in the language it is asked in). [label, sent]: the practice questions are a "/quiz",
+  // a quiz to play, score and keep (chatactions.js), when the AI can write one (not the offline model)
+  const quizzable = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
   const SUGGEST_ONE = () => [
     t("What will most likely be on the quiz or exam from this lecture?"),
     t("What did the lecturer emphasise the most?"),
     t("Summarise this lecture in 10 bullet points."),
     t("Were any homework, deadlines or announcements mentioned?"),
     t("Explain the hardest part of this lecture step by step."),
-    t("Give me 5 practice questions with answers."),
+    quizzable() ? [t("Quiz me on this lecture: 5 scored questions."), "/quiz 5"] : t("Give me 5 practice questions with answers."),
   ];
   const SUGGEST_MANY = () => [
     t("What are the likely quiz topics, based on these lectures?"),
@@ -1474,7 +1476,7 @@
     t("Which topics did the lecturer stress the most?"),
     t("Make a one-page revision sheet of these lectures."),
     t("In which order should I study these topics, and why?"),
-    t("Give me 8 practice questions in the lecturer's style."),
+    quizzable() ? [t("Quiz me on these lectures: 8 scored questions."), "/quiz 8"] : t("Give me 8 practice questions in the lecturer's style."),
   ];
   const MODELS = () => [["haiku", "Haiku", t("lightest")], ["sonnet", "Sonnet", t("recommended")], ["opus", "Opus", t("best, uses the most")]];
   const aiName = () => ((S.system.ai || {}).label || t("AI"));          // ChatGPT, Claude or Offline model
@@ -1628,7 +1630,7 @@
       return `<div class="chat-empty"><div class="art">${I("chat")}</div><h3>${multi ? t("Ask anything about these lectures") : t("Ask anything about this lecture")}</h3>
         <div class="sub">${multi ? t.html("{ai} reads the transcripts with your first question; follow-up questions build on them and cost much less.", { ai: aiName() })
           : t.html("{ai} reads the transcript with your first question; follow-up questions build on it and cost much less.", { ai: aiName() })}</div>
-        <div class="suggest">${(multi ? SUGGEST_MANY() : SUGGEST_ONE()).map((s) => `<button data-act="chat-suggest" data-text="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
+        <div class="suggest">${(multi ? SUGGEST_MANY() : SUGGEST_ONE()).map((s) => { const [label, sent] = Array.isArray(s) ? s : [s, s]; return `<button data-act="chat-suggest" data-text="${esc(sent)}">${esc(label)}</button>`; }).join("")}</div></div>`;
     }
     return msgs.map((m) => chatMsgHTML(m)).join("");
   }
@@ -1644,7 +1646,7 @@
     const notes = Studia.chatNotices ? Studia.chatNotices(m, isLast) : {};    // the app's notices with this answer (notices.js)
     const line = streaming && m.text && m.wait && Studia.waitLine ? Studia.waitLine(m.wait) : "";
     const foot = streaming ? (waiting ? "" : line ? `<span class="dim">${SPIN()} ${line}</span>` : `<span class="dim">${SPIN()} ${(u.reading || {}).total && !m.text ? t.html("{ai} is reading your slides and files…", { ai: aiName() }) : t.html("{ai} is answering…", { ai: aiName() })}</span>`)
-      : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${reading.foot}${m.text ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
+      : `${m.status === "stopped" ? `<span class="pill">${t("Stopped")}</span>` : ""}${tok ? `<span class="tok" title="${esc(t("How much text this answer read and wrote, in tokens (a word or part of a word each). Text it already read recently in this chat counts much less."))}">${tok}</span>` : ""}${reading.foot}${m.text && !acts.noCopy ? `<button class="btn ghost sm" data-act="chat-copy" data-seq="${m.seq}">${I("copy", "sm")} ${t("Copy")}</button>` : ""}`;
     const retry = isLast ? `<div style="margin-top:8px"><button class="btn sm" data-act="chat-retry" data-seq="${m.seq}">${I("retry", "sm")} ${t("Try again")}</button></div>` : "";
     const err = m.status === "error" ? notes.error || `<div class="callout error">${I("alert-circle")}<div>${esc(u.error || t("{ai} could not answer.", { ai: aiName() }))}${retry}</div></div>` : "";
     return `<div class="msg ai" data-seq="${m.seq}"><div class="ai-av">${I("ai")}</div><div class="ai-body">${notes.before || ""}${body ? `<div class="md">${body}</div>` : ""}${err}<div class="msg-foot">${foot}</div></div></div>`;
@@ -1687,6 +1689,12 @@
     if (!r.ok) return;
     S.chat.list = r.chats || [];
     if (r.limits && Object.keys(r.limits).length) S.limits = r.limits;
+    // the open chat's name as saved: a chat begun with "/quiz 5" is named after its quiz once it is written
+    const c = S.chat.data, row = c && S.chat.list.find((x) => x.id === c.id);
+    if (row && row.title && row.title !== c.title) {
+      c.title = row.title;
+      if (S.view.name === "chat" && S.chat.id === c.id && !S.chat.draft) renderChatHead();
+    }
     const el = $("#chat-items"); if (el) el.innerHTML = chatItemsHTML();
     const slot = $("#chat-filter-slot"); if (slot && !slot.querySelector("input")) slot.innerHTML = chatFilterHTML();   // (many chats now)
   }

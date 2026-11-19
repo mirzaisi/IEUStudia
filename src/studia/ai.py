@@ -245,6 +245,20 @@ def _command(model: str, effort: str, system_prompt_file: Path, partial: bool = 
     return cmd
 
 
+# Haiku takes no --effort (Claude Code gives it a fixed thinking budget, 31,999 tokens and more), so at Low it thought
+# for pages: a 5-question chat quiz wrote 15.2k tokens in 121 s. With this budget the same quiz wrote 4.4k in 38 s,
+# every key right (4.2.0's real calls). Higher levels, and Sonnet and Opus (they take --effort), are left as they were.
+HAIKU_LOW_THINKING = 4000
+
+
+def _thinking_env(model: str, effort: str) -> dict[str, str]:
+    """The thinking budget Claude Code is started with: Haiku at Low gets HAIKU_LOW_THINKING (MAX_THINKING_TOKENS, which
+    Claude Code honours for a model without --effort); any other model or level, or a budget set on this PC, nothing."""
+    if "haiku" in (model or "").lower() and (effort or "low") == "low" and not os.environ.get("MAX_THINKING_TOKENS"):
+        return {"MAX_THINKING_TOKENS": str(HAIKU_LOW_THINKING)}
+    return {}
+
+
 def _thinking_flag_refused(message: str) -> bool:
     """Claude Code turned down --thinking-display (a version without it): never passed again while the app runs."""
     low = (message or "").lower()
@@ -800,6 +814,8 @@ def _claude_once(system_prompt: str, content: list[dict[str, Any]], model: str, 
     env = {**_claude_env(), "DISABLE_PROMPT_CACHING": "1"}
     if not think:
         env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
+    else:
+        env.update(_thinking_env(model, effort))
     message = {"type": "user", "message": {"role": "user", "content": turn_blocks(content)}}
     line = (json.dumps(message) + "\n").encode("utf-8")
     with tempfile.TemporaryDirectory(prefix="studia-claude-") as work:
@@ -906,7 +922,7 @@ class ClaudeSession:
         try:
             self._proc = subprocess.Popen(_command(model, effort, sp, partial=True), cwd=self._work,
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                          creationflags=_NO_WINDOW, env=_claude_env())
+                                          creationflags=_NO_WINDOW, env={**_claude_env(), **_thinking_env(model, effort)})
         except OSError as exc:
             shutil.rmtree(self._work, ignore_errors=True)
             log.warning("Claude Code did not start: %r", exc)

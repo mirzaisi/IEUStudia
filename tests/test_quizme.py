@@ -94,6 +94,7 @@ def ask(env, chat_id, text, answer):
     seq = env.svc.send(chat_id, text)["seq"]
     done = lambda: [e for e in env.events if e.get("type") == "chat" and e["seq"] == seq and e["state"] != "streaming"]  # noqa: E731
     assert wait_for(lambda: done()), "no answer"
+    assert wait_for(lambda: chat_id not in env.svc._running)      # (its turn ends just after the answer is told)
     return done()[-1], fake
 
 
@@ -134,13 +135,26 @@ def test_quiz_in_a_chat_is_saved_scored_and_its_sources_found(env):
     assert json.loads(json.dumps(env.lib.chat_messages(chat["id"])[1]["usage"]))["quiz"]["id"] == made["id"]
     ev = [x for x in env.events if x.get("type") == "plan"]
     assert ev and ev[-1]["id"] == made["id"] and ev[-1]["source"] == "chat" and ev[-1]["kind"] == "quiz"
-    # a follow-up "/quiz" is on the conversation (most of all the last answer)
+    # "/quiz" right after a quiz: a new quiz on the chat's material (it was told to quiz on its last answer: the quiz)
     e2, fake2 = ask(env, chat["id"], "/quiz", "No quiz this time, sorry.")
-    assert "what this conversation covered" in fake2.got[0][-1]["text"] and "exactly 5" in fake2.got[0][-1]["text"]
+    again = fake2.got[0][-1]["text"]
+    assert "Quiz the student again on the lectures and files of this chat, with new questions." in again
+    assert "most of all your last answer" not in again and "exactly 5" in again
+    assert "No question may ask what a quiz earlier in this conversation asked." in again
     assert e2["usage"]["quiz_error"].startswith("The quiz in this answer could not be read")
     assert e2["text"] == "No quiz this time, sorry." and "quiz" not in e2["usage"]
     assert len([p for p in env.lib.plans("c") if p["scope"].get("source") == "chat"]) == 1
     assert env.lib.get_chat(chat["id"])["title"] == "Conditional probability"
+    # a question, then "Quiz me on this": on the conversation, most of all that answer, and no earlier quiz again
+    ask(env, chat["id"], "What does the multiplication rule say?", "P(A and B) = P(A|B) P(B).")
+    _, fake3 = ask(env, chat["id"], "/quiz", "Not now.")
+    on_it = fake3.got[0][-1]["text"]
+    assert "what this conversation covered, most of all your last answer" in on_it and "again on the" not in on_it
+    assert "No question may ask what a quiz earlier in this conversation asked." in on_it
+    fresh = env.svc.create("c", [DAY])
+    _, fake4 = ask(env, fresh["id"], "What is Bayes?", "It reverses a conditional.")
+    _, fake4 = ask(env, fresh["id"], "/quiz", "Not now.")
+    assert "No question may ask" not in fake4.got[0][-1]["text"]                  # no quiz before: nothing to avoid
 
 
 def test_a_broken_block_leaves_the_answer_and_saves_nothing(env):
@@ -199,6 +213,45 @@ def test_a_question_with_code_in_it_keeps_the_chat_quiz_whole():
         assert len(quizzes.read_answer(chatquiz.block(answer))["questions"]) == 2
     glued = f"Here is your quiz.\n\n```ieustudia-quiz\n{json.dumps(CODE_QUIZ)}```"     # (its fence right after it)
     assert json.loads(chatquiz.block(glued)) == CODE_QUIZ
+
+
+def test_a_quiz_with_topics_gets_no_passages_from_outside_the_chat(env):
+    """"/quiz 3 Bayes" in a one-lecture chat added up to 7,000 characters of other lectures and course files found by
+    the topics' words: the quiz instruction forbids using them, and their questions could not be given a source."""
+    _lecture(env.lib, "r2", dt.datetime(2026, 9, 30, 9, 0), [
+        (0, "Bayes theorem reverses a conditional probability: posterior from prior and likelihood, Bayes again.")])
+    chat = env.svc.create("c", [DAY])
+    e, fake = ask(env, chat["id"], "What does Bayes theorem say?", "It reverses a conditional probability.")
+    assert any("Passages from the course files" in b.get("text", "") for b in fake.got[0])   # a question: found
+    assert e["usage"].get("sources")
+    answer = "Here is your quiz.\n```ieustudia-quiz\n" + json.dumps(QUIZ) + "\n```"
+    e, fake = ask(env, chat["id"], "/quiz 3 Bayes", answer)
+    sent = [b.get("text", "") for b in fake.got[0]]
+    assert len(sent) == 1 and sent[0].startswith("(From the IEUStudia app")          # the quiz's instruction only
+    assert "The student also asked: Bayes" in sent[0] and "Passages from" not in sent[0]
+    assert "sources" not in e["usage"] and e["usage"]["quiz"]["questions"] == 3
+
+
+def test_an_exported_chat_names_its_quiz_instead_of_its_json(env):
+    """An exported chat (Markdown, and the PDF or Word document) had the quiz's whole JSON block as the answer: pages
+    of braces for the student. It is the answer's sentence and a line naming the quiz, as the chat shows it."""
+    from studia import exports
+    from studia.outputs import doc as D
+
+    chat = env.svc.create("c", [DAY])
+    answer = "Here is your quiz.\n\nGood luck!\n```ieustudia-quiz\n" + json.dumps(QUIZ) + "\n```"
+    ask(env, chat["id"], "/quiz 3", answer)
+    ask(env, chat["id"], "/quiz 2", 'Sure!\n```ieustudia-quiz\n{"questions": [{"type": "mc"')      # unread: as written
+    line = 'Here is your quiz.\n\n*Practice quiz "Conditional probability" (3 questions), saved to Practice in IEUStudia.*'
+    md = env.svc.export(chat["id"]).read_text(encoding="utf-8")
+    assert line in md and '"questions": [{"type": "mc", "question": "What does' not in md and "Good luck" not in md
+    assert '{"questions": [{"type": "mc"' in md                                    # the quiz that wasn't saved
+    s = types.SimpleNamespace(lib=env.lib, day=env.ns.day, chat=env.svc)
+    blocks = [b.md for b in exports.chat_doc(s, chat["id"]).blocks if isinstance(b, D.Markdown)]
+    assert line in blocks and not any("What does conditioning" in b for b in blocks)
+    one = chatquiz.readable("```ieustudia-quiz\n{}\n```", {"quiz": {"title": "Ohm", "questions": 1}})
+    assert one == '*Practice quiz "Ohm" (1 question), saved to Practice in IEUStudia.*'
+    assert chatquiz.readable("Plain answer.", {}) == "Plain answer."
 
 
 # ------------------------------------------------------------------ a quiz on the moments the student picked
