@@ -123,6 +123,7 @@ def test_a_try_keeps_its_answers_and_the_missed_questions_join_the_cards(api):
     assert mine[1]["a"] == "**P(A and B)/P(B)**\n\nIt is the definition." and mine[1]["week"] == 1
     assert mine[2]["a"] == "It gives the denominator.\n\n- the denominator P(A)" and mine[0]["stressed"]
     assert cards.summary(lib, deck, "c")["due"] == 0 and cards.summary(lib, deck, "c")["quiz"] == 3
+    assert cards.summary(lib, deck, "c")["learnt"] == 0           # not "3 cards learnt." before one has come back
     later = cards.session(lib, deck, "c", now=tomorrow())
     mc = next(c for c in later if c["quiz"]["n"] == 2)
     assert sorted(mc["quiz"]["options"]) == sorted(questions(api.day)[1]["options"])
@@ -130,6 +131,7 @@ def test_a_try_keeps_its_answers_and_the_missed_questions_join_the_cards(api):
     assert mc["quiz"]["wrong"][mc["quiz"]["options"].index("When disjoint")] == "Disjoint events are dependent."
     # another review, another order (seeded by the reviews so far), always the right one marked right
     cards.grade(lib, "c", mc["id"], "good", tomorrow())
+    assert cards.summary(lib, deck, "c", now=tomorrow())["learnt"] == 1
     again = cards._asked_again(mc, {"reps": 7})
     assert again["quiz"]["options"][again["quiz"]["answer"]] == "When P(AB)=P(A)P(B)"
     # an old try (before 4.2: no text, no mark) still reads

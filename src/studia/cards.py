@@ -414,6 +414,12 @@ def states(lib: Any, course_id: str) -> dict[str, dict[str, Any]]:
                            "last": r["last"]} for r in rows}
 
 
+def learnt(s: Optional[dict[str, Any]]) -> bool:
+    """A card past its learning steps and studied at least once: a missed quiz question joins the deck as if learnt
+    (add_missed), but it isn't "learnt" before it has come back."""
+    return bool(s) and int(s["step"]) < 0 and int(s.get("reps") or 0) > 0
+
+
 def summary(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional[dt.datetime] = None,
             new_per_day: Optional[int] = None) -> dict[str, Any]:
     """How the course's deck stands today (the study day: from 04:00): cards due now and later today, new ones to
@@ -433,7 +439,7 @@ def summary(lib: Any, cards: list[dict[str, Any]], course_id: str, now: Optional
         reviewed = lib.db.execute("SELECT COUNT(*) FROM card_reviews WHERE course_id=? AND at>=? AND at<? AND "
                                   "NOT cram", (course_id, start, end)).fetchone()[0]
     return {"total": len(cards), "due": due, "new": new_today, "new_total": fresh, "today": due + new_today,
-            "learnt": sum(1 for c in cards if c["id"] in st and int(st[c["id"]]["step"]) < 0),
+            "learnt": sum(1 for c in cards if learnt(st.get(c["id"]))),
             "reviewed_today": int(reviewed), "lecture": sum(1 for c in cards if c["origin"] == "lecture"),
             "files": sum(1 for c in cards if c["origin"] == "files"),
             "quiz": sum(1 for c in cards if c["origin"] == "quiz"), "aside": aside,

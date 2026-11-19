@@ -367,7 +367,7 @@ def practice_part(svc: Any, course_id: str, d: dict[str, Any], e: dict[str, Any]
         end = cards_mod.study_day(now)[1].isoformat(timespec="seconds")
         deck.update(total=len(cards), due=sum(1 for c in cards if c["id"] in st and (st[c["id"]]["due"] or "") < end),
                     new=sum(1 for c in cards if c["id"] not in st),
-                    learnt=sum(1 for c in cards if c["id"] in st and int(st[c["id"]]["step"]) < 0))
+                    learnt=sum(1 for c in cards if cards_mod.learnt(st.get(c["id"]))))
         if cards:
             with lib._lock:
                 deck["reviews"] = int(lib.db.execute(
