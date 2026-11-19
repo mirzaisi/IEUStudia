@@ -159,10 +159,12 @@ def test_checked_answers_on_the_page(tmp_path):
     assert 'The app checks this result: <span class="md">the current in $R_2$</span>. Leave it empty' in out["q2"]
     right = out["right"]
     assert "Right! The app checked your result." in right and "Your result: 4 V" in right
-    assert "The app checked the numbers of this answer." in right and 'data-act="qz-next"' in right
+    assert "The app checked the numbers of this solution." in right and 'data-act="qz-next"' in right
     assert "I got it" not in right and "How did you do?" not in right
     wrong = out["wrong"]
-    assert "Not the same as the answer below." in wrong and "Your result: 6 mA" in wrong and "Solution" in wrong
+    # (it names the result its box checks: a problem asks for several, and the answer below has them all)
+    assert 'Not the same as the result this box checks:</b> <span class="md">the current in $R_2$</span>' in wrong
+    assert "Your result: 6 mA" in wrong and "Solution" in wrong
     assert "Partly (method right)" in wrong and "I didn't know it" in wrong and "I got it" not in wrong
     assert 'id="qz-final"' not in out["q3"] and "Check my answer" in out["q3"]           # a short answer: no box
     assert "I got it" in out["self3"] and "The app checked" not in out["self3"]

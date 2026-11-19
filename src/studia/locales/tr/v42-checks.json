@@ -1,7 +1,7 @@
 {
   "_unit": "4.2.0: checked answers (checks.js, checks.py, numcheck.py, quizzes.py): the Final answer box the app checks, keys it could not confirm, Mark my written answers, who marked an answer and changing the mark",
   "The app could not confirm this answer. Check it against its source.": "Uygulama bu cevabı doğrulayamadı. Kaynağıyla karşılaştırarak kontrol et.",
-  "The app checked the numbers of this answer.": "Uygulama bu cevabın hesabını kontrol etti.",
+  "The app checked the numbers of this solution.": "Uygulama bu çözümün hesabını kontrol etti.",
   "Final answer": "Sonuç",
   "Your result, like 3.3 kΩ or 0.25": "Sonucun, örneğin 3,3 kΩ ya da 0,25",
   "The app checks it for you. Leave it empty to mark it yourself.": "Uygulama senin için kontrol eder. Kendin değerlendirmek istersen boş bırak.",

@@ -23,7 +23,8 @@
   // ------------------------------------------------------------------ a question: the "Final answer" box
   function keyLine(q) {
     if (q.unverified) return `<div class="ck-key warn">${I("alert", "xs")}<span>${esc(t("The app could not confirm this answer. Check it against its source."))}</span></div>`;
-    if (q.verified) return `<div class="ck-key ok">${I("check", "xs")}<span>${esc(t("The app checked the numbers of this answer."))}</span></div>`;
+    // (the solution's, not the student's: under "couldn't read your result" it read as if theirs had been checked)
+    if (q.verified) return `<div class="ck-key ok">${I("check", "xs")}<span>${esc(t("The app checked the numbers of this solution."))}</span></div>`;
     return "";
   }
   // practice.js's question screen asks for these (a short answer or a worked problem): the box (before the check),
@@ -40,7 +41,8 @@
     if (R.checked && ck && ck.final) {
       const mine = `<div class="ck-mine">${esc(t("Your result: {result}", { result: ck.final }))}</div>`;
       verdict = ck.verdict === "right" ? `<div class="qz-fb ok ck-verdict"><div class="qz-fb-h">${I("check-circle", "sm")}<b>${esc(t("Right! The app checked your result."))}</b></div>${mine}</div>`
-        : ck.verdict === "wrong" ? `<div class="qz-fb no ck-verdict"><div class="qz-fb-h">${I("x-circle", "sm")}<b>${esc(ck.unit ? t("Not the same as the answer: check the unit.") : t("Not the same as the answer below."))}</b></div>${mine}</div>`
+        // (a problem asking for several results: which one the box checks, so E[X] typed for Var(X) is understood)
+        : ck.verdict === "wrong" ? `<div class="qz-fb no ck-verdict"><div class="qz-fb-h">${I("x-circle", "sm")}<b>${esc(ck.unit ? t("Not the same as the answer: check the unit.") : of ? t("Not the same as the result this box checks:") : t("Not the same as the answer below."))}</b>${!ck.unit && of ? ` <span class="md">${mdLine(of)}</span>` : ""}</div>${mine}</div>`
           : `<div class="ck-unknown">${I("info", "xs")}<div>${esc(t("The app couldn't read your result as one number, so mark it yourself."))}${mine}</div></div>`;
     }
     if (R.checked) verdict += keyLine(q);

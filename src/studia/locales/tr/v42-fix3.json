@@ -8,5 +8,6 @@
   "Go over it": "Üzerinden geç",
   "No lecture of {weeks} is in IEUStudia yet.": "{weeks} için IEUStudia'da henüz ders kaydı yok.",
   "A class held since the last sync comes with the next one.": "Son eşitlemeden sonra yapılan bir ders, bir sonraki eşitlemeyle gelir.",
-  "{n} question you missed in this course, asked in new ways": "Bu derste kaçırdığın {n} soru, yeni biçimlerde"
+  "{n} question you missed in this course, asked in new ways": "Bu derste kaçırdığın {n} soru, yeni biçimlerde",
+  "Not the same as the result this box checks:": "Bu kutunun kontrol ettiği sonuçla aynı değil:"
 }
