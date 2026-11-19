@@ -212,7 +212,7 @@
   function editCard(X, c) {
     modal(`<h2>${I("pencil")} ${t("Edit this card")}</h2>
       <div class="field"><label for="fc-ed-q">${t("Front")}</label><textarea class="input mq-ed" id="fc-ed-q" rows="3">${esc(c.q)}</textarea></div>
-      <div class="field"><label for="fc-ed-a">${t("Back")}</label><textarea class="input mq-ed" id="fc-ed-a" rows="5">${esc(c.a)}</textarea></div>
+      <div class="field"><label for="fc-ed-a">${t.c("card", "Back")}</label><textarea class="input mq-ed" id="fc-ed-a" rows="5">${esc(c.a)}</textarea></div>
       <p class="dim sm">${esc(t("What you learnt of it stays. Maths in LaTeX between $ signs, as on the card."))}</p>
       <div class="actions"><button class="btn" data-act="fc-edit-cancel">${t("Cancel")}</button><button class="btn primary" data-act="fc-edit-save">${t("Save")}</button></div>`);
   }

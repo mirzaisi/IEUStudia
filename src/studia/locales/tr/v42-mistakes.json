@@ -32,6 +32,7 @@
   "Key: Enter goes on": "Tuş: Enter ile devam",
   "Keys: 1 to 4 pick an answer": "Tuşlar: 1-4 bir cevap seçer",
   "Front": "Ön yüz",
+  "card|Back": "Arka yüz",
   "What you learnt of it stays. Maths in LaTeX between $ signs, as on the card.": "Bu karttan öğrendiklerin kalır. Matematik, karttaki gibi $ işaretleri arasında LaTeX ile yazılır.",
   "Delete this card?": "Bu kart silinsin mi?",
   "It leaves your deck for good, with what you learnt of it.": "Ondan öğrendiklerinle birlikte destenden tamamen çıkar.",
