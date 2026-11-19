@@ -57,12 +57,13 @@
     if (streaming) {
       return { text: intro, html: `<div class="act-cards"><div class="act-card qz-chat">${St.SPIN ? St.SPIN() : ""}<div class="grow"><b>${esc(t("Writing your quiz…"))}</b><div class="d">${esc(t("You can play it here when it's done. It's saved to Practice too."))}</div></div></div></div>` };
     }
+    // (noCopy: its text is the quiz's JSON, whole or cut, nothing to copy; an unread one keeps its Copy)
     if (made) {
-      return { text: intro, html: `<div class="act-cards"><div class="act-card qz-chat"><span class="act-ico">${I("list-checks", "sm")}</span><div class="grow"><b>${esc(made.title || t("Practice quiz"))}</b>
+      return { noCopy: true, text: intro, html: `<div class="act-cards"><div class="act-card qz-chat"><span class="act-ico">${I("list-checks", "sm")}</span><div class="grow"><b>${esc(made.title || t("Practice quiz"))}</b>
         <div class="d">${esc(t.n(made.questions, "{n} question", "{n} questions"))} · ${esc(t("saved to Practice"))}</div></div>
         <button class="btn primary sm" data-act="qz-play" data-id="${esc(made.id)}">${I("play", "sm")} ${t("Play quiz")}</button></div></div>` };
     }
-    if (m && m.status === "stopped") return { text: intro, html: quizAgain(asked, m, t("Stopped before the quiz was finished."), t("Stopped before the quiz was finished. Type /quiz to try again.")) };
+    if (m && m.status === "stopped") return { noCopy: true, text: intro, html: quizAgain(asked, m, t("Stopped before the quiz was finished."), t("Stopped before the quiz was finished. Type /quiz to try again.")) };
     return { text, html: u.quiz_error ? quizAgain(asked, m, t("The quiz in this answer could not be read, so it wasn't saved."), t("The quiz in this answer could not be read, so it wasn't saved. Type /quiz to try again.")) : "" };
   }
   // "Quiz me on this" under the last answer: a quiz on what the chat just covered (a "/quiz" sent as a question)

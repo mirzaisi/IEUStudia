@@ -305,6 +305,9 @@ def test_a_new_chat_s_practice_questions_are_a_quiz_and_a_failed_one_is_tried_ag
   const html = view();
   out.saved = html.slice(html.indexOf('data-seq="2"'), html.indexOf('data-seq="3"'));
   out.plain = html.slice(html.indexOf('data-seq="4"'));
+  const two = (m) => { msgs[1] = { ...msgs[1], ...m }; const h = view(); return h.slice(h.indexOf('data-seq="2"'), h.indexOf('data-seq="3"')); };
+  out.stoppedCopy = two({ status: "stopped", text: "Here.\\n```ieustudia-quiz\\n{\\"questions\\": [", usage: {} }).includes("chat-copy");
+  out.unreadCopy = two({ status: "done", text: "Here is a quiz in Markdown.", usage: { quiz_error: "x" } }).includes("chat-copy");
 """)
     assert out["one"][-1] == ["/quiz 5", "Quiz me on this lecture: 5 scored questions."] and len(out["one"]) == 6
     assert out["many"][-1] == ["/quiz 8", "Quiz me on these lectures: 8 scored questions."]
@@ -315,7 +318,7 @@ def test_a_new_chat_s_practice_questions_are_a_quiz_and_a_failed_one_is_tried_ag
         assert "Type /quiz" not in html and "Try again" in html
     assert "Type /quiz to try again" in out["older"] and "chat-suggest" not in out["older"]          # not the last one
     assert 'data-act="qz-play" data-id="pq"' in out["saved"] and "chat-copy" not in out["saved"]
-    assert "chat-copy" in out["plain"]
+    assert "chat-copy" in out["plain"] and out["stoppedCopy"] is False and out["unreadCopy"] is True
 
 
 @node
