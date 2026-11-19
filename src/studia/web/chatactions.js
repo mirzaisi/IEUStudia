@@ -22,7 +22,7 @@
     return ({
       video_plan: [t("Video study plan"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
       prep_pack: [t("Exam review sheet"), [code, w, focus].filter(Boolean).join(" · "), t("Set it up…")],
-      get_ready: [t("Get ready"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open the Exam room")],
+      get_ready: [t("Exam room"), `${code} · ${a.focus || t("the next quiz or exam")}`, t("Open the Exam room")],
       transcribe: [t("Transcribe lectures"), `${code} · ${a.date || w || t("missing lectures")}`, t("Transcribe…")],
       download_files: [t("Download files"), `${code} · ${w || t("all weeks")}`, t("Download…")],
       study_notes: [t("Study notes"), `${code} · ${a.date || ""}`, t("Open")],
@@ -210,8 +210,9 @@
     const cid = chatCourse(); if (!cid) return "";
     const ai = S.system.ai || {};
     const btn = (cmd, ic, label, title) => `<button type="button" class="btn ghost sm" data-act="chat-cmd" data-cmd="${cmd}" title="${esc(title)}">${I(ic, "sm")} ${label}</button>`;
+    const d = S.cd[cid], exams = !d || (d.assessments || []).length > 0;      // (a course with no quiz or exam: no room)
     return `<div class="chat-tools">${St.slidePickHTML ? St.slidePickHTML() : ""}${ai.can_plans !== false ? btn("plan", "youtube", t("Video plan"), t("Find videos that teach these weeks, checked through their transcripts")) + btn("prep", "cap", t("Review sheet"), t("A written exam review sheet: key ideas, formulas and practice")) : ""}
-      ${btn("ready", "list-checks", t("Get ready"), t("What to do before the next quiz or exam"))}${btn("sync", "zap", t("Sync course"), t("Transcribe and download what is missing"))}
+      ${exams ? btn("ready", "cap", t("Exam room"), t("The Exam room of the next quiz or exam")) : ""}${btn("sync", "zap", t("Sync course"), t("Transcribe and download what is missing"))}
       <span class="dim sm" style="align-self:center">${t("or type / for more")}</span></div>`;
   };
 
