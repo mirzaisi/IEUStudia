@@ -259,6 +259,11 @@ def test_a_quiz_announced_only_by_its_day_still_has_a_room():
     assert (e["key"], e["weeks"], e["ahead"]) == ("quiz:2", [], True)
     assert examroom.find(d, "quiz:2")["name"] == "Quiz 2"
     assert examroom.when(d, e, None)["from"] == "announced"
+    # the weeks the student set in its room are its weeks ("Change the weeks" saved them, and the room said none)
+    lib = _Meta()
+    quizzes.set_weeks(lib, "c", "quiz:2", [9, 10])
+    e = examroom.find(d, "quiz:2", lib)
+    assert (e["weeks"], e["weeks_from"]) == ([9, 10], "yours") and examroom.find(d, "quiz:2")["weeks"] == []
 
 
 # ------------------------------------------------------------------ material, read ticks and Get everything

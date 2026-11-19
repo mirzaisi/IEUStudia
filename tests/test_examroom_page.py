@@ -248,6 +248,38 @@ def test_its_buttons_open_the_tools_set_to_its_weeks(tmp_path):
 
 
 @node
+def test_a_quiz_known_only_by_its_day_opens_the_tools_on_its_own_weeks(tmp_path):
+    """Not among the dialogs' assessments (no week): "Practice quiz for it" and "Review sheet" opened the next one."""
+    out = run(tmp_path, """
+  const Q4 = { ...QUIZ3, key: "quiz:4", no: 4, name: "Quiz 4", week: null, weeks: [9, 10], weeks_from: "yours", covers: [], files: [], listed: false };
+  spy("exam_room", () => ({ ok: true, room: room(Q4) }));
+  A["ready-open"]({ dataset: { cid: "c", key: "quiz:4" } }); await tick();
+  const MID = { ...QUIZ3, key: "midterm:0", kind: "midterm", no: 0, name: "Midterm", week: 8, weeks: [1, 2, 3, 4, 5, 6, 7, 8], files: [] };
+  spy("quiz_options", { ok: true, model: "sonnet", ai: { available: true }, quant: false, language: "English", general: [], assessments: [MID],
+    weeks: [6, 7, 9, 10].map((no) => ({ no, topic: "T" + no, files: [], days: [], missing: [], todo_days: [] })) });
+  spy("quiz_estimate", { ok: true, estimate: null });
+  A["er-quiz"](); await tick();
+  out.dialog = overlay(); out.dialogText = text(overlay());
+  const realPlan = A["plan-new"];
+  let planned = null; A["plan-new"] = (el) => { planned = { ...el.dataset }; };
+  A["er-prep"](); out.planned = planned;
+  // the review sheet's dialog itself: not the Midterm (the next one), its weeks
+  spy("plan_options", { ok: true, model: "sonnet", ai: { available: true }, assessments: [MID], general: [],
+    weeks: [6, 7, 9, 10].map((no) => ({ no, topic: "T" + no, current: no === 10, past: no < 10, missing: [], files: [], days: [] })) });
+  spy("plan_estimate", { ok: true, estimate: null });
+  await realPlan({ dataset: planned }); await tick();
+  out.plan = overlay();
+""")
+    plan = out["plan"]
+    assert 'class="pd-pick on" data-act="pd-assess" data-i="-1"' in plan                  # not "Midterm"
+    assert 'data-no="9" checked' in plan and 'data-no="10" checked' in plan and 'data-no="6" checked' not in plan
+    assert re.findall(r'class="cp-mode on" data-act="qz-mode" data-val="(\w+)"', out["dialog"]) == ["weeks"]
+    assert "Weeks 2 picked" in out["dialogText"] and "Week 9 T9" in out["dialogText"] and "Week 10 T10" in out["dialogText"]
+    assert "Week 6 T6" not in out["dialogText"]
+    assert out["planned"] == {"id": "c", "kind": "prep", "focus": "Quiz 4", "key": "quiz:4", "weeks": "9,10"}
+
+
+@node
 def test_the_weeks_and_the_day_can_be_changed(tmp_path):
     out = run(tmp_path, """
   A["ready-open"]({ dataset: { cid: "c", key: "quiz:3" } }); await tick();

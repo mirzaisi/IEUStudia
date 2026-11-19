@@ -327,10 +327,13 @@
       (ER.room ? ER.room.material.missing : []).forEach((id) => { S.mat[id] = { ...(S.mat[id] || {}), state: "queued" }; });
       load(ER.cid, ER.key, true);
     },
-    "er-quiz": () => St.practice && St.practice.quizDialog(ER.cid, { mode: "next", key: ER.key }),
+    // (a quiz known only by its day isn't among the dialogs' assessments: they open on its weeks, not the next one's)
+    "er-quiz": () => St.practice && St.practice.quizDialog(ER.cid, ER.room && ER.room.assessment.listed === false
+      ? { mode: "weeks", weeks: ER.room.assessment.weeks } : { mode: "next", key: ER.key }),
     "er-cram": () => St.practice && ER.room && St.practice.study(ER.cid, { weeks: ER.room.assessment.weeks, cram: true }),
     "er-sheet": () => ER.room && A["pack-new"]({ dataset: { id: ER.cid, kind: "sheet", weeks: ER.room.assessment.weeks.join(",") } }),
-    "er-prep": () => ER.room && A["plan-new"]({ dataset: { id: ER.cid, kind: "prep", focus: ER.room.assessment.name, key: ER.room.assessment.key } }),
+    "er-prep": () => ER.room && A["plan-new"]({ dataset: { id: ER.cid, kind: "prep", focus: ER.room.assessment.name, key: ER.room.assessment.key,
+      ...(ER.room.assessment.listed === false ? { weeks: ER.room.assessment.weeks.join(",") } : {}) } }),
     "er-ask": () => {
       const r = ER.room; if (!r) return;
       const days = r.material.days.filter((x) => x.any_done).map((x) => x.day_key);

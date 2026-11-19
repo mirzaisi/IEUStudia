@@ -143,12 +143,13 @@ def grade_share(grading: Iterable[dict[str, Any]], e: dict[str, Any]) -> Optiona
 _SYLLABUS_KEY = re.compile(r"syllabus:(.*):(\d{1,2})")
 
 
-def find(d: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
+def find(d: dict[str, Any], key: str, lib: Any = None) -> Optional[dict[str, Any]]:
     """The course's assessment with this key (quizzes.assessment_key), or this name (the one still ahead when two
     have it: "ready:<course>:<name>" from a notification, Get ready's old way in). A syllabus exam week's key
     ("syllabus:<its label>:<its week>", as the week cards and the Calendar give it) is the assessment it is part of:
     a two-week exam period, or the announced exam of its kind a week away it was folded into. A quiz announced only
-    by its day (week 1's date unknown: no week, so not among quizzes.assessments) gets a room without weeks."""
+    by its day (week 1's date unknown: no week, so not among quizzes.assessments) gets a room with the weeks it was
+    announced to cover, or the student set (with ``lib``), else none."""
     from . import quizzes
 
     every = quizzes.of(d)
@@ -171,8 +172,10 @@ def find(d: dict[str, Any], key: str) -> Optional[dict[str, Any]]:
     for e in (d.get("alerts") or {}).get("plan") or []:
         if not e.get("week") and key.casefold() in (e["name"].casefold(), quizzes.assessment_key(e)):
             covers = sorted({int(n) for n in e.get("covers") or [] if 1 <= int(n) <= 30})
-            return {**e, "key": quizzes.assessment_key(e), "weeks": covers, "weeks_from": "announced" if covers else
-                    "guessed", "guessed": [], "covers": covers, "covers_from": e.get("covers_from") or "", "files": [],
+            mine = quizzes.own_weeks(lib, d.get("id") or "", quizzes.assessment_key(e))
+            weeks, origin = (mine, "yours") if mine else (covers, "announced" if covers else "guessed")
+            return {**e, "key": quizzes.assessment_key(e), "weeks": weeks, "weeks_from": origin, "guessed": [],
+                    "covers": covers, "covers_from": e.get("covers_from") or "", "files": [],
                     "ahead": (e.get("date") or "9999") >= dt.date.today().isoformat()}
     return None
 
@@ -424,7 +427,7 @@ def room(svc: Any, course_id: str, key: str, jobs: Iterable[dict[str, Any]] = ()
     d = course_detail(lib, svc.settings, course_id, jobs, now)
     if d is None:
         return None
-    e = find(d, key)
+    e = find(d, key, lib)
     if e is None:
         return None
     running = {j.get("id") for j in jobs}
@@ -443,7 +446,9 @@ def room(svc: Any, course_id: str, key: str, jobs: Iterable[dict[str, Any]] = ()
                                              "covers", "covers_from", "ahead", "files", "sources", "syllabus")}
         | {"los": [{"no": n, "en": outcomes_en[n - 1] if 0 < n <= len(outcomes_en) else "",
                     "tr": outcomes_tr[n - 1] if 0 < n <= len(outcomes_tr) else ""} for n in e.get("los") or []],
-           "origin": _origin(every, e)},
+           "origin": _origin(every, e),
+           # (one known only by its day isn't among the dialogs' "For …": they open on its weeks instead)
+           "listed": any(x["key"] == e["key"] for x in every)},
         "when": {**on, "days": days_left(on, now.date())},
         "share": grade_share(d.get("grading") or [], e),
         "weeks": [{"no": w["no"], "start": w.get("start") or "", "end": w.get("end") or "", "topic": _topic(w),
@@ -483,7 +488,7 @@ def reminder_note(lib: Any, settings: Any, event: dict[str, Any]) -> str:
     if event.get("kind") in ("assignment", "own") or not event.get("course_id"):
         return ""
     d = course_detail(lib, settings, event["course_id"])
-    e = find(d, event_key(event)) if d else None
+    e = find(d, event_key(event), lib) if d else None
     if e is None or not e.get("weeks"):
         return ""
     m = material(d, e)

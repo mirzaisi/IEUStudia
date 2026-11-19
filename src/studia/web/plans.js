@@ -371,10 +371,11 @@
     D.opts = r;
     const cur = r.weeks.find((w) => w.current);
     // as the quiz dialog's "For …": the first one still ahead (d.assessments, with the weeks it covers)
-    // (by its key first: two of one name, "Midterm Exam" in week 8 and in week 13, are two)
+    // (by its key first: two of one name, "Midterm Exam" in week 8 and in week 13, are two; one asked for that isn't
+    // among them, a quiz known only by its day, is not the next one: its weeks, when given, come below)
     const next = (key && r.assessments.find((a) => a.key === key))
       || (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
-      || r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past));
+      || (!key && !focus ? r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past)) : null);
     const base = parent ? { ...parent.scope } : null;
     const tied = (a) => planTied(r, a);                                       // its posted solutions (picks.js)
     D.scope = base || (next ? { weeks: next.weeks, focus: next.name, focus_key: next.key || "", los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week), files: tied(next) }
