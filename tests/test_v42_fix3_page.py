@@ -310,6 +310,31 @@ def test_get_everything_asks_first_when_it_would_transcribe_many_lectures(tmp_pa
 
 
 @node
+def test_the_quiz_dialog_says_what_to_do_when_there_is_nothing_to_pick(tmp_path):
+    """A course with no weeks showed 'Weeks 0 picked' over nothing; one with nothing on this PC said 'Pick at least
+    one file or lecture.' while every box was disabled and Download/Transcribe sat under a 16-week list."""
+    out = qp._page(tmp_path, """
+  globalThis.document.querySelector = (sel) => (sel === "#overlay #qz-cost" || sel === ".modal" ? { innerHTML: "", classList: { add() {} } } : null);
+  ANSWERS.quiz_estimate = () => ({ ok: true, estimate: null });
+  ANSWERS.quiz_options = () => ({ ok: true, model: "sonnet", ai: { available: true }, quant: false, weak: { missed: 0, attempts: 0 }, weeks: [], assessments: [] });
+  await St.practice.quizDialog("c1", { mode: "weeks" }); await tick();
+  out.empty = shown.html;
+  const wk = (no) => ({ no, current: no === 2, past: no < 2, topic: "T" + no, files: [{ id: "f" + no, name: "W" + no + ".pdf", pages: 3, ready: false, downloaded: false }],
+    days: [{ day_key: "c1|d" + no + "|lecture", label: "Mon", kind: "Lecture", mine: true, ready: false }], missing: ["f" + no], todo_days: ["c1|d" + no + "|lecture"] });
+  ANSWERS.quiz_options = () => ({ ok: true, model: "sonnet", ai: { available: true }, quant: false, weak: { missed: 0, attempts: 0 }, weeks: [wk(1), wk(2)], assessments: [] });
+  St.picks = { gapsHTML: () => '<div class="pd-gaps">GAPS</div>', groupHTML: () => "", fileSub: (f, s) => s, live() {}, tiedMissing: () => [] };
+  St.closeModal();
+  await St.practice.quizDialog("c1", { mode: "weeks", weeks: [1, 2] }); await tick();
+  out.bare = shown.html;
+""")
+    assert "picked" not in out["empty"] and "No weekly plan yet: sync first." in out["empty"]
+    bare = out["bare"]
+    assert "Nothing of these weeks is on this PC yet: download their files or transcribe their lectures first." in bare
+    assert "Pick at least one file or lecture." not in bare
+    assert bare.index("GAPS") < bare.index('class="pk-material"')              # (Download and Transcribe first)
+
+
+@node
 def test_the_exam_room_s_go_over_them_asks_for_the_mistakes_card(tmp_path):
     out = room_run(tmp_path, """
   St.openReady("c", "quiz:3"); await tick();

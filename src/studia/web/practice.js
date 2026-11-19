@@ -391,7 +391,12 @@
     const e = Q.est, ai = Q.opts.ai || {};
     if (!(ai.available && ai.can_plans !== false)) return `<span class="err-txt">${I("alert-circle", "sm")} ${(S.system.ai || {}).provider === "local" ? t("Quizzes need ChatGPT or Claude (the offline model is too small for them).") : t("Set up ChatGPT or Claude in Settings → AI first.")}</span>`;
     const sc = qScope();
-    if (!sc.files.length && !sc.days.length && !sc.weak) return `<span class="dim">${t("Pick at least one file or lecture.")}</span>`;
+    if (!sc.files.length && !sc.days.length && !sc.weak) {
+      // (nothing to pick: say what to do instead, the course's weeks still to sync or its material still to get)
+      const picked = (Q.opts.weeks || []).filter((w) => Q.weeks.has(w.no)), of = (w) => [...(w.files || []), ...(w.days || [])];
+      const none = picked.some((w) => of(w).length) && !picked.some((w) => of(w).some((x) => x.ready));
+      return `<span class="dim">${!(Q.opts.weeks || []).length ? t("No weekly plan yet: sync first.") : none ? t("Nothing of these weeks is on this PC yet: download their files or transcribe their lectures first.") : t("Pick at least one file or lecture.")}</span>`;
+    }
     if (!e) return `<span class="dim">${SPIN()} ${t("Estimating…")}</span>`;
     const more = St.effortCostNote ? St.effortCostNote(e, { kind: "quiz", effort: Q.effort }) : "";    // (a heavy level's note)
     const big = e.main_input + e.main_output >= 40000;        // (a midterm's eight weeks: about 70k)
@@ -427,9 +432,10 @@
           <ul class="qz-moments">${(Q.stressed.items || []).map((it) => `<li>“${esc(short(it.text || ""))}” <span class="dim sm">${esc(dmw(it.day))} · ${esc(it.ts || "")}</span></li>`).join("")}</ul></div>`
       : Q.mode === "lecture"
       ? `<div class="field"><label>${t("Which lecture?")}</label><select class="input" data-act="qz-day">${lectures().map((d) => `<option value="${esc(d.day_key)}" ${d.day_key === Q.day ? "selected" : ""}>${esc(t("Week {n}", { n: d.week }))} · ${esc(d.label)} · ${esc(d.kind)}</option>`).join("")}</select></div>`
+      : !r.weeks.length ? `<div class="field"><div class="dim sm">${t("No weekly plan yet: sync first.")}</div></div>`        // (no "Weeks 0 picked" over nothing)
       : `<div class="field"><label class="cp-label">${t("Weeks")} <span class="dim sm">${t("{n} picked", { n: Q.weeks.size })}</span></label>
           <div class="pk-weeks">${r.weeks.map((w) => `<button type="button" class="pk-wk ${Q.weeks.has(w.no) ? "on" : ""} ${w.current ? "now" : ""}" data-act="qz-week" data-no="${w.no}" title="${esc(w.topic || "")}"><b>${t("W{n}", { n: w.no })}</b><span>${esc(w.topic || "—")}</span></button>`).join("")}</div></div>
-        ${material ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(Q.files.size, "{n} file", "{n} files")} · ${t.n(Q.days.size, "{n} lecture", "{n} lectures")}</span></label><div class="pk-material">${material}</div></div>` : ""}${gaps}`;
+        ${gaps}${material ? `<div class="field"><label class="cp-label">${t("Material")} <span class="dim sm">${t.n(Q.files.size, "{n} file", "{n} files")} · ${t.n(Q.days.size, "{n} lecture", "{n} lectures")}</span></label><div class="pk-material">${material}</div></div>` : ""}`;
     const kinds = [["mixed", t("Mixed")], ["mc", t("Multiple choice")], ["short", t("Short answers")], ...(r.quant ? [["problems", t("Worked problems")]] : [])];
     const models = [["sonnet", t("Sonnet (recommended)")], ["haiku", t("Haiku (lightest)")], ["opus", t("Opus (best, heavy)")]];
     const sc = qScope(), ready = (sc.files.length || sc.days.length || sc.weak) && canAI() && !Q.starting;
