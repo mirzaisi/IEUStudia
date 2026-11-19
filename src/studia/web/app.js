@@ -185,7 +185,7 @@
           }
         }
         else if (e.stage === "failed" && e.status === "done") { r.status = "done"; toast(t("{title} could not be transcribed again: {error}. The earlier transcript is kept.", { title: e.title, error: (e.error || t("it failed")).replace(/[.\s]+$/, "") }), "warning"); }
-        else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; r.no_sound = !!e.no_sound; toast(`${e.title}: ${e.error || t("failed")}`, "error"); }
+        else if (e.stage === "failed") { r.status = "failed"; r.error = e.error; r.no_sound = !!e.no_sound; r.closer = e.closer || ""; closerAsked.delete(r.id); toast(`${e.title}: ${e.error || t("failed")}`, "error"); }
         else if (e.stage === "processing") { r.status = "processing"; r.error = e.error; toast(e.error || t("Not ready on Panopto yet"), "warning"); }
         if (S.view.name === "day" && S.day && S.view.dayKey === hit.d.day_key) openDay(S.view.dayKey, true);
         refreshNewDay(hit, false);
@@ -490,6 +490,7 @@
       case "transcribing": return `<span class="pill active">${I("wave")}${prog ? t("Transcribing {pct}", { pct: pctText(prog) }) : t("Transcribing")}</span>${bar(!prog)}<span class="detail">${esc(jobDetail(r))}</span>`;
       case "done": return `<span class="pill done">${I("check")}${t("Transcribed")}</span>`;
       case "failed":
+        if (r.closer === "tried") return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No speech found")}</span><span class="detail" title="${esc(r.error || "")}">${t("only noise, even listening closely: check it on Panopto")}</span>`;
         if (noiseOnly(r)) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No speech found")}</span><span class="detail" title="${esc(r.error || "")}">${t("only noise or music: check it on Panopto")}</span>`;
         if (r.no_sound || /no sound|no speech/i.test(r.error || "")) return `<span class="pill processing" title="${esc(r.error || "")}">${I("ban")}${t("No sound on Panopto")}</span><span class="detail" title="${esc(r.error || "")}">${t("microphone was off")}</span>`;
         return `<span class="pill failed" title="${esc(r.error || "")}">${I("alert")}${t("Failed")}</span><span class="detail" title="${esc(r.error || "")}">${esc(r.error || "")}</span>`;
@@ -503,6 +504,7 @@
   }
   // sound, but no speech in it (only noise or music): not "the microphone was off" (its error, in either language)
   function noiseOnly(r) {
+    if (r.closer) return true;                // (views.py: quality.closer_listen)
     const said = t("No speech was found in this recording (only noise or music). Check it on Panopto.");
     return [r.error, ...(r.warnings || []).map((w) => w.message)].some((m) => m && (m === said || /only noise or music/i.test(m)));
   }
@@ -519,7 +521,8 @@
     const busy = ["queued", "downloading", "transcribing"].includes(r.status);
     const acts = [
       busy ? `<button class="btn ghost icon sm" data-act="cancel" data-id="${r.id}" title="${t("Cancel")}">${I("x", "sm")}</button>` : "",
-      r.status === "failed" ? `<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="${t("Try again")}">${I("retry", "sm")}</button>` : "",
+      r.status === "failed" && r.closer === "can" ? `<button class="btn ghost icon sm" data-act="tx-closer" data-ids="${r.id}" title="${t("Try again, more sensitive")}">${I("retry", "sm")}</button>`
+        : r.status === "failed" ? `<button class="btn ghost icon sm" data-act="retry" data-id="${r.id}" title="${t("Try again")}">${I("retry", "sm")}</button>` : "",
       r.status === "done" ? `<button class="btn ghost icon sm" data-act="open-day" data-day="${esc(d.day_key)}" title="${t("Read the transcript")}">${I("file-text", "sm")}</button>` : "",
       `<button class="btn ghost icon sm" data-act="url" data-url="${esc(r.viewer_url)}" title="${t("Watch on Panopto")}">${I("external", "sm")}</button>`,
     ].join("");
@@ -551,6 +554,14 @@
   const silentTip = (n = 1) => t.n(n, "Panopto's recording of this lecture has no speech in it (the microphone was probably off), so there is nothing to transcribe.",
     "Panopto's recordings of these lectures have no speech in them (the microphone was probably off), so there is nothing to transcribe.");
   const silentPill = () => `<span class="pill processing" title="${esc(silentTip())}">${I("ban")}${t("No speech found")}</span>`;
+  // Try again, more sensitive: a class day's parts with sound but no speech found in them (views.py "closer"), not
+  // asked for again here meanwhile, nor in the queue or settled since (their rows know)
+  const closerAsked = new Set();
+  function closerBtn(d, cls = "btn sm") {
+    const row = (id) => (d.recordings || []).find((r) => r.id === id);
+    const ids = (d.closer || []).filter((id) => !closerAsked.has(id) && (!row(id) || (row(id).status === "failed" && row(id).closer === "can")));
+    return ids.length ? `<button class="${cls}" data-act="tx-closer" data-ids="${esc(ids.join(","))}" title="${esc(t("Listens again for quiet or far-away speech that the first try missed. It takes about as long as transcribing it."))}">${I("retry", "sm")} ${t("Try again, more sensitive")}</button>` : "";
+  }
   function dayCardHTML(d, c) {
     const dt = new Date(d.date + "T00:00:00");
     const selIds = d.recordings.filter(selectable).map((r) => r.id);
@@ -568,7 +579,7 @@
           <div class="s">${t.n(d.parts, "{n} part", "{n} parts")} · ${fmtDur(d.duration_s)}${d.mine === false ? ` · ${t("other section")}` : ""}</div></div>
         <div class="day-actions">
           ${d.any_done ? `<button class="btn sm" data-act="open-day" data-day="${esc(d.day_key)}">${I("file-text", "sm")} ${t("Open transcript")}</button>` : ""}
-          ${todo.length ? `<button class="btn sm ${d.any_done ? "" : "primary"}" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} ${d.any_done ? t("Transcribe rest") : t("Transcribe day")}</button>` : ""}
+          ${todo.length ? `<button class="btn sm ${d.any_done ? "" : "primary"}" data-act="tx-day" data-day="${esc(d.day_key)}">${I("wave", "sm")} ${d.any_done ? t("Transcribe rest") : t("Transcribe day")}</button>` : closerBtn(d)}
         </div>
       </div>
       ${d.recordings.filter((r) => !others.includes(r)).map((r) => recHTML(r, d)).join("")}
@@ -2567,6 +2578,14 @@
       if (!r.ok) toast(r.error, "error"); else toast(t.n(r.queued, "{n} recording added to the queue", "{n} recordings added to the queue"), "info");
     },
     retry: (el) => call("transcribe", [el.dataset.id]),
+    "tx-closer": async (el) => {      // Try again, more sensitive (closerBtn)
+      const ids = el.dataset.ids.split(",").filter(Boolean);
+      ids.forEach((id) => closerAsked.add(id));
+      el.disabled = true;
+      const r = await call("transcribe", ids, true);
+      if (!r.ok) { ids.forEach((id) => closerAsked.delete(id)); el.disabled = false; toast(r.error, "error"); return; }
+      toast(t("Listening again, more closely this time. It takes about as long as transcribing it; the queue shows how far it is."), "info");
+    },
     cancel: (el) => call("cancel", el.dataset.id),
     "cancel-all": async () => {
       const n = new Set((S.queue || []).map((j) => j.day || j.id)).size;          // lectures, not their parts
@@ -2830,7 +2849,7 @@
     renderView, renderSidebar, renderTop, openDay, jumpTo, emptyHTML, skeleton, mdToHtml, startDraft, chatPicker, dayCardHTML,
     newHTML, courseHTML, heroHTML, syncChecks, updateSelectionUI, A, shortDate, fmtK, limitsHTML, isReal: () => REAL,
     aiName, aiPlan, aiHint, isChatGPT, modelsFor, afterBoot, openTarget, runSearch, setCourses, findCourse, courseSub, copyAI,
-    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, applyTheme, aiBtn, whyOff });
+    otherSection, oddMark, renderChatHead, trapTab, inRequests, silentTip, silentPill, closerBtn, applyTheme, aiBtn, whyOff });
   async function saveSetting(patch) {
     const r = await call("update_settings", patch);
     if (!r.ok) { toast(r.error, "error"); return; }

@@ -124,13 +124,16 @@ def _quiz(language):
 def test_a_turkish_practice_quiz_has_its_cover_and_headings_in_turkish():
     body = quizzes.document_body(_quiz("Turkish"))
     assert "MATH 250 · Deneme sınavı" in body and "3. hafta konularından 2 soru" in body
-    assert "IEUStudia ile 5 Kas 2026 tarihinde hazırlandı" in body and "Cevaplar sonda." in body
+    assert "IEUStudia ile 5 Kas 2026 tarihinde hazırlandı" in body
+    assert "Kâğıt üzerinde çöz; cevap anahtarı son sayfalarda." in body and "Tarih:" in body and "Puan:" in body
     assert "Dışarıda kalanlar: yazıya dökülmemiş dersler: 2026-10-21" in body
     assert "Kaynak: 14 Eki dersi, 1. bölüm, 12:30" in body and "Kaynak: Hafta3.pdf, sayfa 4" in body
-    assert "<h2>Sorular</h2>" in body and "<h2>Cevaplar</h2>" in body and "<b>Cevap:</b>" in body
+    assert "<h2>Sorular</h2>" in body and "<h2>Cevap anahtarı</h2>" in body and "<b>Cevap:</b>" in body
+    assert "<h3>Cevapların açıklamaları</h3>" in body
     english = quizzes.document_body(_quiz("English"))
     assert "MATH 250 · Practice quiz" in english and "2 questions on week 3" in english
     assert "From Lecture 14 Oct, part 1, 12:30" in english and "<h2>Questions</h2>" in english
+    assert "<h2>Answer key</h2>" in english and "Solve it on paper; the answer key is on the last pages." in english
 
 
 def test_an_exported_turkish_note_has_its_boxes_labels_in_turkish():
