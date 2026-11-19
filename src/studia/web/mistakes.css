@@ -21,7 +21,7 @@
 .mq.off .mq-h { color: var(--text-3); text-decoration: line-through; }
 .mq-meta { flex: none; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mq-more { display: flex; flex-direction: column; gap: 8px; padding: 4px 4px 12px 28px; font-size: 13px; }
-.mq-cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mq-cmp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: start; }
 .mq-box { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); min-width: 0; }
 .mq-box.ok { background: var(--green-soft); box-shadow: inset 3px 0 0 var(--green); }
 .mq-box.no { background: var(--red-soft); box-shadow: inset 3px 0 0 var(--red); }
@@ -38,10 +38,13 @@
 /* ---- where it was taught */
 .modal.mq-mom-modal { width: min(780px, calc(100vw - 40px)); }
 .mq-slide { margin: 0 0 10px; }
-.mq-slide img { display: block; width: 100%; max-height: 44vh; object-fit: contain; border-radius: 8px; background: #fff;
+.mq-slide img { display: block; width: 100%; max-height: 38vh; object-fit: contain; border-radius: 8px; background: #fff;
   border: 1px solid var(--border); }
 .mq-slide figcaption { margin-top: 5px; }
-.mq-lines { max-height: 210px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+.mq-lines { max-height: min(210px, 26vh); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+/* (on a small screen the dialog scrolls; its buttons stay in view, as other dialogs' do) */
+.mq-mom > .actions { position: sticky; bottom: -22px; margin: 14px -24px -22px; padding: 12px 24px 18px; background: var(--surface);
+  border-radius: 0 0 14px 14px; flex-wrap: wrap; }
 .mq-line { display: flex; gap: 10px; padding: 4px 6px; border-radius: 6px; font-size: calc(13px * var(--read, 1)); line-height: 1.5; }
 .mq-line.at { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--blue); }
 .mq-ts { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
@@ -77,6 +80,8 @@ button.mq-skill-h:not(:disabled):hover { background: var(--surface-2); }
 .fc-top:has(.fc-more) > .dim { margin-left: auto; }
 .fc-top .fc-more { flex: none; margin: -4px -6px -4px 0; }
 .fc-mc .fc-q { margin-bottom: 10px; }
+.fc-mc > .actions { position: sticky; bottom: -22px; z-index: 1; margin: 14px -24px 0; padding: 12px 24px 14px; background: var(--surface);
+  align-items: center; }
 .mq-ed { width: 100%; resize: vertical; font: inherit; }
 
 /* ---- the quiz dialog's "My weak spots" */

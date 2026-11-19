@@ -67,7 +67,7 @@
   function row(ctx, q, a) {
     a = a || {};
     const k = `${ctx.plan}|${q.n}`, on = MQ.open.has(k), g = a.got || 0, off = !!(ctx.removed && ctx.removed.has(q.n));
-    return `<li class="mq ${off ? "off" : tone(g)} ${on ? "open" : ""}"><button type="button" class="mq-h" data-act="mq-row" data-key="${esc(k)}" aria-expanded="${on}">${I(off ? "minus" : g >= 1 ? "check" : g > 0 ? "minus" : "x", "sm")}<span class="qz-res-t md">${mdLine(firstLine(q.q))}</span>${ctx.meta ? `<span class="dim sm mq-meta">${esc(ctx.meta)}</span>` : ""}${I(on ? "chevron-up" : "chevron-down", "xs")}</button>
+    return `<li class="mq ${off ? "off" : tone(g)} ${on ? "open" : ""}"><button type="button" class="mq-h" data-act="mq-row" data-key="${esc(k)}" aria-expanded="${on}">${I(off ? "minus" : g >= 1 ? "check" : g > 0 ? "minus" : "x", "sm")}<span class="qz-res-t md">${mdLine(firstLine(q.q))}</span>${ctx.meta ? `<span class="dim sm mq-meta" ${ctx.metaTitle ? `title="${esc(ctx.metaTitle)}"` : ""}>${esc(ctx.meta)}</span>` : ""}${I(on ? "chevron-up" : "chevron-down", "xs")}</button>
       ${on ? `<div class="mq-more">${M.rowParts.map((f) => f(ctx, q, a)).join("")}</div>` : ""}</li>`;
   }
   function endRow(R, q) {
@@ -125,14 +125,15 @@
     const list = p.mistakes || [];
     if (!list.length) return "";
     const all = MQ.all.has(c.id), shown = all ? list : list.slice(0, 5);
-    const rows = shown.map((m) => row({ cid: c.id, plan: m.plan_id, meta: `${m.title ? `${m.title} · ` : ""}${dmw(m.at)}` }, m.q, m.answer)).join("");
+    const rows = shown.map((m) => row({ cid: c.id, plan: m.plan_id, meta: dmw(m.at), metaTitle: m.title }, m.q, m.answer)).join("");
     return `<div class="card pr-card mq-card"><div class="pr-h">${I("retry")}<b>${t("Mistakes to go over")}</b><span class="dim">${list.length}</span><span class="spacer"></span>
         <button class="btn sm" data-act="mq-weak" data-cid="${esc(c.id)}" ${St.aiBtn(canAI(), true)} title="${esc(canAI() ? t("A new quiz written around the questions you missed, asking them in new ways") : St.aiHint())}">${I("target", "sm")} ${t("Quiz my weak spots")}</button></div>
       <p class="pr-sub">${esc(t("Questions you missed. Open one to see your answer beside the right one, and where it was taught. It leaves this list when you get it right in a retry, or when its flashcard has come back a few times."))}</p>
       <ol class="mq-list">${rows}</ol>
       ${list.length > 5 ? `<button class="link sm" data-act="mq-all" data-cid="${esc(c.id)}">${all ? esc(t("Show fewer")) : esc(t("Show all {n}", { n: list.length }))}</button>` : ""}</div>`;
   }
-  const STATUS = () => ({ shaky: [t("Losing points"), "no"], some: [t("Getting there"), "half"], solid: [t("Solid"), "ok"], untested: [t("Not tested yet"), "none"] });
+  const STATUS = () => ({ shaky: [t("Losing points"), "no"], some: [t("Getting there"), "half"], few: [t("Too few to tell"), "none"],
+    solid: [t("Solid"), "ok"], untested: [t("Not tested yet"), "none"] });
   function skillRow(c, p, key, label, text, r) {
     const k = `${c.id}|${key}`, on = MQ.open.has(k), [say, cls] = STATUS()[r.status] || STATUS().some;
     const counts = t("{right} of {n} right", { right: score(r.right), n: r.tried }) + (r.quizzes ? ` · ${t.n(r.quizzes, "from {n} quiz", "from {n} quizzes")}` : "");
@@ -145,7 +146,7 @@
     const w = p.weak;
     if (!w || !w.attempts) return "";
     const tried = (w.los || []).filter((r) => r.status !== "untested"), untested = (w.los || []).filter((r) => r.status === "untested");
-    const topics = (w.topics || []).filter((r) => r.status === "shaky" || r.status === "some").slice(0, 6);
+    const topics = (w.topics || []).filter((r) => r.status !== "solid" && r.right < r.tried).slice(0, 6);   // (where points went)
     if (!tried.length && !topics.length) return "";
     const quiz = (r) => `<button class="btn ghost sm" data-act="mq-quiz-lo" data-cid="${esc(c.id)}" data-no="${r.no}" data-text="${esc(r.text || "")}" ${St.aiBtn(canAI(), true)}>${t("Quiz this LO")}</button>`;
     return `<div class="card pr-card mq-card"><div class="pr-h">${I("target")}<b>${t("Where you lose points")}</b></div>

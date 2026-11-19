@@ -221,7 +221,7 @@ def test_the_mistake_loop_on_the_page(tmp_path):
     # the course tab
     tab = out["tab"]
     assert "Mistakes to go over" in tab and tab.count('class="mq ') == 5 and "Show all 6" in tab and "Quiz my weak spots" in tab
-    assert "Bayes&#39; theorem · " in tab or "Bayes' theorem · " in tab
+    assert 'class="dim sm mq-meta" title="Bayes' in tab                      # the date beside it, the quiz on hover
     assert "Where you lose points" in tab and "1.5 of 3 right · from 1 quiz" in tab and "Losing points" in tab and "Getting there" in tab
     assert "By topic" in tab and "Not tested yet" in tab and "Quiz this LO" in tab and "LO5" in tab
     assert "2 cards are set aside." in tab and "Bring them back" in tab

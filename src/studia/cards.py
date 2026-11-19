@@ -146,13 +146,15 @@ def add_missed(lib: Any, course_id: str, plan_id: str, result: dict[str, Any], a
                now: Optional[dt.datetime] = None) -> list[str]:
     """A quiz try's missed questions join the deck: each new one is due the next study day, as if learnt (interval 1
     day), so it comes back tomorrow, then a few days later; one missed again comes back tomorrow at the latest. Not
-    one the student deleted. The cards' ids."""
+    one the student deleted. The ids of the cards new in the deck (for the page's Undo)."""
     now = now or dt.datetime.now()
     due = (study_day(now)[0] + dt.timedelta(days=1)).isoformat(timespec="seconds")
     gone = {k for k, v in edits(lib, course_id).items() if v.get("off") == "deleted"}
     ids = [quiz_card_id(plan_id, q["q"]) for q in missed_questions(result, answers)]
     ids = [i for i in ids if i not in gone]
     with lib._lock:
+        had = {r[0] for r in lib.db.execute(f"SELECT card_id FROM card_state WHERE card_id IN ({','.join('?' * len(ids))})",
+                                            ids)} if ids else set()
         for cid in ids:
             # a new one: "first" left empty, so it doesn't count among the new cards started today
             lib.db.execute("INSERT INTO card_state(card_id, course_id, due, interval, ease, reps, lapses, step, relearn, "
@@ -160,7 +162,7 @@ def add_missed(lib: Any, course_id: str, plan_id: str, result: dict[str, Any], a
                            "due=MIN(card_state.due, excluded.due), interval=MIN(card_state.interval, 1)",
                            (cid, course_id, due))
         lib.db.commit()
-    return ids
+    return [i for i in ids if i not in had]
 
 
 # ------------------------------------------------------------------ a card edited, set aside or deleted

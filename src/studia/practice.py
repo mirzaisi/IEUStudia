@@ -324,9 +324,9 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
     counts, never one percentage. Every answer of every try counts, and every review of a missed question's card
     (Again a miss, anything else right); recent ones more (half as much after HALF_LIFE_DAYS), the student's own
     marks half (MARKS). A row: {"tried" (answers), "right" (their marks added up), "questions", "quizzes", "share"
-    (the weighted share right, for the status only), "status": "untested" | "shaky" (under SHAKY with 2 questions
-    or more) | "solid" (SOLID or more with 3 or more) | "some", "missed": the questions last missed [{"plan_id",
-    "n"}]}. ``focus`` (an assessment's name) with ``los`` (its learning outcomes): only those outcomes' rows, and the
+    (the weighted share right, for the status only), "status": "untested" | "few" (one question only: too few to
+    tell) | "shaky" (under SHAKY, with 2 questions or more) | "solid" (SOLID or more with 3 or more) | "some" (in
+    between), "missed": the questions last missed [{"plan_id", "n"}]}. ``focus`` (an assessment's name) with ``los`` (its learning outcomes): only those outcomes' rows, and the
     questions that test them or come from a quiz for it. ``outcomes``: the course's, for their text and the
     untested ones."""
     from .cards import quiz_card_id
@@ -394,7 +394,7 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
     def done(r: dict[str, Any]) -> dict[str, Any]:
         share = r["wr"] / r["w"] if r["w"] else 0.0
         nq = len(r["qs"])
-        status = "untested" if not r["tried"] else "shaky" if share < SHAKY and nq >= 2 else \
+        status = "untested" if not r["tried"] else "few" if nq < 2 else "shaky" if share < SHAKY else \
             "solid" if share >= SOLID and nq >= 3 else "some"
         missed = sorted((k for k, (at, got) in r["last"].items() if got < 1), key=lambda k: r["last"][k][0], reverse=True)
         out = {"tried": r["tried"], "right": round(r["right"], 2), "questions": nq, "quizzes": len(r["plans"]),
@@ -404,7 +404,7 @@ def mastery(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[int
             return {"no": n, "text": texts[n - 1] if 0 < n <= len(texts) else "", **out}
         return {"name": max(r["names"], key=r["names"].get), **out}
 
-    order = {"shaky": 0, "some": 1, "untested": 2, "solid": 3}
+    order = {"shaky": 0, "some": 1, "few": 2, "untested": 3, "solid": 4}
     lo_rows = sorted((done(r) for r in rows.values() if r["key"][0] == "lo"), key=lambda x: (order[x["status"]], x["share"], x["no"]))
     topics = sorted((done(r) for r in rows.values() if r["key"][0] == "topic"),
                     key=lambda x: (order[x["status"]], x["share"], -x["tried"]))
@@ -461,8 +461,8 @@ def weak_spots(lib: Any, course_id: str, focus: str = "", *, los: Optional[list[
                     k = re.sub(r"\W+", " ", qt.casefold()).strip()
                     right[k] = right.get(k, 0) + 1
                     text[k] = qt
-    weak = [r for r in m["los"] if r["status"] in ("shaky", "some") and r["right"] < r["tried"]]
-    topics = [r for r in m["topics"] if r["status"] in ("shaky", "some") and r["right"] < r["tried"]]
+    weak = [r for r in m["los"] if r["status"] in ("shaky", "some", "few") and r["right"] < r["tried"]]
+    topics = [r for r in m["topics"] if r["status"] in ("shaky", "some", "few") and r["right"] < r["tried"]]
     return {"missed": missed, "open": len(open_), "los": weak, "topics": topics[:8],
             "avoid": [text[k] for k, n in right.items() if n >= 2][:40], "attempts": m["attempts"],
             "quizzes": m["quizzes"]}

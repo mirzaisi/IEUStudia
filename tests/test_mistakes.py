@@ -148,8 +148,9 @@ def test_the_mistakes_list_until_a_retry_gets_it_right_or_its_card_is_spaced_out
     lib = api._s.lib
     make_quiz(lib, "q1", api.day)
     api.quiz_attempt("q1", {"answers": FIRST})
-    api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 1, "chose": 0}, {"n": 2, "got": 0, "chose": 3},
-                                        {"n": 3, "got": 0, "skipped": True}], "only": [1, 2, 3]})
+    again = api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 1, "chose": 0}, {"n": 2, "got": 0, "chose": 3},
+                                                {"n": 3, "got": 0, "skipped": True}], "only": [1, 2, 3]})
+    assert again["carded"] == []                       # missed again: in the cards already (the page says nothing)
     open_ = api.practice_course("c")["mistakes"]
     assert [(m["n"], m["misses"]) for m in open_] == [(2, 2), (3, 2)]          # 1: right in the retry
     assert open_[0]["answer"]["chose"] == 3 and open_[0]["q"]["source"]["t"] == 600.0 and open_[0]["title"]
@@ -250,8 +251,8 @@ def test_mastery_counts_per_learning_outcome_and_topic(api):
     w = api.practice_weak("c")
     assert w["ok"] and w["attempts"] == 1 and w["answers"] == 4
     lo = {r["no"]: r for r in w["los"]}
-    # LO1: 0 of 1, one question only: not yet "shaky" (2 at least); LO2: 1.5 of 3, the self-marked half counts half
-    assert (lo[1]["tried"], lo[1]["right"], lo[1]["questions"], lo[1]["status"]) == (1, 0, 1, "some")
+    # LO1: 0 of 1, one question only: too few to tell (2 at least); LO2: 1.5 of 3, the self-marked half counts half
+    assert (lo[1]["tried"], lo[1]["right"], lo[1]["questions"], lo[1]["status"]) == (1, 0, 1, "few")
     assert (lo[2]["tried"], lo[2]["right"], lo[2]["questions"], lo[2]["quizzes"]) == (3, 1.5, 3, 1)
     assert lo[2]["share"] == round((0.5 * 0.5 + 1) / (1 + 0.5 + 1), 2) and lo[2]["status"] == "shaky"
     assert lo[3]["status"] == "untested" and lo[3]["text"] == "use random variables"
@@ -267,7 +268,7 @@ def test_mastery_counts_per_learning_outcome_and_topic(api):
     # right three times after: still one question, so never "solid" (3 questions at least); three right ones: solid
     for _ in range(3):
         api.quiz_attempt("q1", {"answers": [{"n": 1, "got": 1, "chose": 0, "mark": "app"}], "only": [1]})
-    assert {r["no"]: r["status"] for r in practice.mastery(lib, "c")["los"]}[1] == "some"
+    assert {r["no"]: r["status"] for r in practice.mastery(lib, "c")["los"]}[1] == "few"
     qs = [dict(questions(api.day)[0], n=i, q=f"Conditional question {i}?") for i in (1, 2, 3)]
     make_quiz(lib, "q2", api.day, qs)
     api.quiz_attempt("q2", {"answers": [{"n": i, "got": 1, "chose": 0} for i in (1, 2, 3)]})
