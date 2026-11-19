@@ -1,0 +1,9 @@
+{
+  "_unit": "4.2.0 last fixes: the Practice page's empty deck names missed questions, the cram button's tip, the screens' size in Export for AI chat, an AI program that closed before it read the request",
+  "They come from a lecture's flashcards, from files and from the questions you miss in quizzes": "Derslerin bilgi kartlarından, dosyalardan ve deneme sınavlarında kaçırdığın sorulardan gelirler",
+  "Go through all these weeks' flashcards, due or not. Their schedule doesn't change.": "Bu haftaların bütün bilgi kartlarını, zamanı gelmiş olsun olmasın, çalış. Ne zaman tekrar gelecekleri değişmez.",
+  "The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. They add about {size}.": "Derste gösterilen slaytlar ve tahta, zip'te resim olarak, her biri ekrandayken söylenenlerle. Zip'e yaklaşık {size} ekler.",
+  "Claude Code closed before it could read the request. Try again. If it keeps happening, restart the PC, or install Claude Code again under Settings → AI.": "Claude Code isteği okuyamadan kapandı. Tekrar dene. Böyle olmaya devam ederse bilgisayarı yeniden başlat ya da Ayarlar → Yapay zeka bölümünden Claude Code'u yeniden kur.",
+  "The Codex CLI closed before it could read the request. Try again. If it keeps happening, restart the PC, or use plain ChatGPT (Continue with ChatGPT) in Settings → AI.": "Codex CLI isteği okuyamadan kapandı. Tekrar dene. Böyle olmaya devam ederse bilgisayarı yeniden başlat ya da Ayarlar → Yapay zeka'da düz ChatGPT'yi (ChatGPT ile devam et) kullan.",
+  "Something on this PC stopped the request to {ai}. Try again. If it keeps happening, restart the PC.": "Bu bilgisayardaki bir sorun yüzünden {ai} isteği yarıda kaldı. Tekrar dene. Böyle olmaya devam ederse bilgisayarı yeniden başlat."
+}

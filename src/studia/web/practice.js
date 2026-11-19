@@ -63,7 +63,7 @@
     const d = r.deck || {}, last = r.last_try;
     const cards = d.total ? (d.today ? t.n(d.today, "{n} card to study today", "{n} cards to study today") : t("All cards done for today"))
       : t("No flashcards yet");
-    const sub = d.total ? t.n(d.total, "{n} card in all", "{n} cards in all") : t("They come from a lecture's flashcards or from files");
+    const sub = d.total ? t.n(d.total, "{n} card in all", "{n} cards in all") : t("They come from a lecture's flashcards, from files and from the questions you miss in quizzes");
     const quiz = last ? `${t("Last quiz: {score} of {total}", { score: score(last.score), total: last.total })} · ${t.ago(last.finished_at)}`
       : r.quizzes ? t.n(r.quizzes, "{n} quiz", "{n} quizzes") : t("No quiz yet");
     // (those that stand out: the course tab counts every moment, those said in passing too)
@@ -630,7 +630,7 @@
           : t("Nothing to study in this course today."), "info", cram);
       return;
     }
-    P.study = { cid, queue: r.cards.slice(), pos: 0, shown: false, done: 0, again: 0, cram: !!o.cram || !!r.cram, days: o.days || null };
+    P.study = { cid, queue: r.cards.slice(), pos: 0, shown: false, done: 0, seen: new Set(), again: 0, cram: !!o.cram || !!r.cram, days: o.days || null };
     if (o.days && r.cram && !o.cram) toast(t("None of this lecture's cards is due yet, so going through them now doesn't change when they come back."), "info");
     drawStudy();
   }
@@ -646,6 +646,12 @@
       if (S.view.name === "day" && St.renderNotes) St.renderNotes();
     });
   }
+  // the cards gone through in this sitting: each once, however often it was answered (one answered Again comes back a
+  // few cards later and isn't done before that); X.done counts the answers
+  const doneCards = (X) => {
+    const later = new Set(X.queue.slice(X.pos).map((c) => c.id));
+    return [...(X.seen || [])].filter((id) => !later.has(id)).length;
+  };
   function drawStudy() {
     const X = P.study; if (!X) return;
     // Escape or a click beside it ends the session as Stop does: the counts of what is left today come again
@@ -653,16 +659,16 @@
     const c = X.queue[X.pos], code = (St.findCourse(X.cid) || {}).code || "";
     if (!c) {
       modal(`<div class="fc fc-study"><h2>${I("check-circle")} ${X.cram ? (X.days ? t("Done with this lecture's cards") : t("Done with these weeks' cards")) : t("Done for today")}</h2>
-        <p class="lead">${esc(t.n(X.done, "You went through {n} card.", "You went through {n} cards."))} ${esc(X.cram ? t("Cramming doesn't change when your cards come back.") : t("Each card comes back just before you would forget it, so a few minutes a day keeps it all fresh."))}</p>
+        <p class="lead">${esc(t.n(doneCards(X), "You went through {n} card.", "You went through {n} cards."))} ${esc(X.cram ? t("Cramming doesn't change when your cards come back.") : t("Each card comes back just before you would forget it, so a few minutes a day keeps it all fresh."))}</p>
         <div class="actions"><button class="btn primary" data-act="fc-close" autofocus>${t("Close")}</button></div></div>`);
       return;
     }
     // a missed multiple-choice question: asked with its options, marked by the app (mistakes.js)
     if (St.mistakes && St.mistakes.isMC(c)) { modal(St.mistakes.studyHTML(X, c, code)); $(".modal").classList.add("fc-modal"); math(); return; }
     // (a lecture's card not due yet, after its due and new ones: its answer leaves its schedule alone, as a cram's)
-    const left = X.queue.length - X.pos, nx = c.next || {}, early = X.cram || !!c.cram;
+    const left = X.queue.length - X.pos, nx = c.next || {}, early = X.cram || !!c.cram, done = doneCards(X);
     const grade = (g, label, cls) => `<button class="btn fc-g ${cls}" data-act="fc-grade" data-g="${g}" ${g === "good" ? "autofocus" : ""}><b>${label}</b><span>${early ? "" : esc(ivl(nx[g] || 0))}</span></button>`;
-    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${X.cram ? t("cram") : t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${X.done ? ` · ${esc(t("{n} done", { n: X.done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
+    modal(`<div class="fc fc-study"><div class="fc-top"><b>${I("layers", "sm")} ${esc(code)} · ${X.cram ? t("cram") : t("flashcards")}</b><span class="dim sm">${esc(t("{n} left", { n: left }))}${done ? ` · ${esc(t("{n} done", { n: done }))}` : ""}</span>${St.mistakes ? St.mistakes.cardBtn(c) : ""}</div>
       <div class="fc-bar"><i style="width:${Math.round((100 * X.pos) / X.queue.length)}%"></i></div>
       ${c.origin === "quiz" ? `<div class="qz-kind">${esc(t("A question you missed"))}${(c.quiz || {}).title ? ` · ${esc(c.quiz.title)}` : ""}</div>` : ""}
       <div class="fc-q md">${md(c.q)}</div>
@@ -681,7 +687,7 @@
     const r = await call("cards_grade", X.cid, c.id, g, ...(X.cram || c.cram ? [true] : []));
     X.grading = false;
     if (!r.ok) { toast(r.error, "error"); return; }
-    X.done++;
+    X.done++; if (X.seen) X.seen.add(c.id);
     const back = (new Date(r.state.due).getTime() - Date.now()) / 1000;
     if (r.state.step !== -1 && back < 20 * 60) {   // again in this sitting: forgotten, a few cards later; a learning
       // step, at the end (a learnt card waits for its study day, even when that starts at 04:00 in a few minutes)
@@ -802,7 +808,7 @@
   // ------------------------------------------------------------------ wiring
   // (quizDialog(cid, preset) and study(cid, {weeks, days}): a lecture's page and a week card open them; refresh,
   // gradeCard, drawStudy and showRun: mistakes.js)
-  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, study, gradeCard, drawStudy,
+  St.practice = { tab, homeNote, tabCount, load: loadCourse, refresh, quizDialog, study, gradeCard, drawStudy, doneCards,
     showRun: (R) => { P.run = R; drawRun(); St.onModalClose = () => { if (onTab(R.cid)) renderView(); }; } };
   St.views.practice = practiceView;
   St.crumbs.practice = () => `${I("target")} ${t("Practice")}`;

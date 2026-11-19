@@ -61,16 +61,21 @@
 /* ---- the Practice tab: Mistakes, Where you lose points */
 .mq-card .pr-h .btn { margin-left: 0; }
 .mq-sub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); margin: 12px 2px 4px; }
-.mq-skills { display: flex; flex-direction: column; }
+.mq-skills { display: flex; flex-direction: column; container-type: inline-size; }
 .mq-skill { border-top: 1px solid var(--border); }
 .mq-skill:first-child { border-top: 0; }
-.mq-skill-h { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: none; padding: 7px 4px; text-align: left;
-  color: var(--text); font: inherit; font-size: 13px; border-radius: 6px; }
+.mq-skill-h { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; width: 100%; border: 0; background: none; padding: 7px 4px;
+  text-align: left; color: var(--text); font: inherit; font-size: 13px; border-radius: 6px; }
 button.mq-skill-h:not(:disabled) { cursor: pointer; }
 button.mq-skill-h:not(:disabled):hover { background: var(--surface-2); }
-.mq-skill-h .grow { flex: 1; min-width: 0; }
+/* the name keeps some room (it shrank to nothing and ran over the counts in the Exam room's column at 1024 px, in
+   Turkish); in a narrow column its counts go under it */
+.mq-skill-h .grow { flex: 1 1 0; min-width: 7em; overflow-wrap: anywhere; }
 .mq-skill-h .lo-no { flex: none; }
 .mq-count { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+@container (max-width: 560px) {
+  .mq-skill-h .mq-count { order: 9; flex-basis: 100%; white-space: normal; }
+}
 .pill.mq-st { flex: none; }
 .pill.mq-st.no { background: var(--red-soft); color: var(--red); }
 .pill.mq-st.half { background: var(--amber-soft); color: var(--amber); }

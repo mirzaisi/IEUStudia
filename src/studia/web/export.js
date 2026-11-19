@@ -40,12 +40,13 @@
   // ------------------------------------------------------------------ what it holds, how big, how long
   function est() {
     const o = X.opts, inc = X.inc;
-    let bytes = o.base + (inc.notices ? o.notices : 0), screens = 0, files = 0, lectures = 0, untranscribed = 0;
+    let bytes = o.base + (inc.notices ? o.notices : 0), screens = 0, files = 0, lectures = 0, untranscribed = 0, shots = 0;
     const down = new Set();                    // (a file of a unit for two weeks is downloaded once)
     const had = new Set();                     // (and goes in the zip once: course_export)
     for (const w of o.weeks) {
       if (!X.picked.has(w.no)) continue;
       if (inc.transcripts) bytes += w.bytes.text;
+      shots += w.bytes.screen_text + w.bytes.screens;          // (what the screens weigh, ticked or not: their row says)
       if (inc.screens) { bytes += w.bytes.screen_text + w.bytes.screens; screens += w.screens; }
       if (inc.files) {
         if (w.sizes) Object.entries(w.sizes).forEach(([id, n]) => { if (!had.has(id)) { had.add(id); bytes += n; files += 1; } });
@@ -56,21 +57,25 @@
     }
     if (inc.files && X.picked.size) { bytes += o.general.bytes; files += o.general.files; o.general.missing.forEach((id) => down.add(id)); }
     const dl = inc.files && X.download ? down.size : 0;
-    return { bytes, secs: 2 + bytes / (40 * MB) + screens * 0.002 + dl * 5, dl, missing: down.size, screens, files, lectures, untranscribed };
+    return { bytes, secs: 2 + bytes / (40 * MB) + screens * 0.002 + dl * 5, dl, missing: down.size, screens, files, lectures, untranscribed, shots };
   }
   const timeText = (secs) => (secs < 60 ? t("less than a minute") : t.n(Math.round(secs / 60), "about {n} minute", "about {n} minutes"));
   const choice = () => ({ weeks: isNow() ? null : [...X.picked].sort((a, b) => a - b), ...X.inc, download: X.download, ...(X.focus ? { focus: X.focus } : {}) });
 
   // ------------------------------------------------------------------ "For": a coming quiz or exam (kit.py)
   // one course's zip can be aimed at one: its weeks are picked (those begun or with something in them) and the zip
-  // gets its brief, 00 Start here.md
+  // gets its brief, 00 Start here.md. Its screens are left out unless ticked: they are most of a kit's size (a final's:
+  // 98 of 106 MB), too big for some chats, and an AI reading the zip with code seldom looks at the pictures. Without
+  // "For" they go in as before; a tick the student gave in this dialog stays either way.
   const forOf = () => ((X.opts || {}).assessments || []).find((e) => e.key === X.focus) || null;
+  const screensBy = () => (lastInc ? lastInc.screens !== false : true);
   const runs = (nos) => { const out = []; [...nos].sort((a, b) => a - b).forEach((n) => { const r = out[out.length - 1]; if (r && n === r[1] + 1) r[1] = n; else out.push([n, n]); }); return out.map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join(", "); };
   const weeksText = (nos) => (nos.length === 1 ? t("week {n}", { n: nos[0] }) : t("weeks {weeks}", { weeks: runs(nos) }));
   const forLabel = (e) => [e.name, e.week ? t("week {n}", { n: e.week }) : "", e.date ? dm(e.date) : ""].filter(Boolean).join(" · ");
   function pickFor(key) {
     X.focus = key || "";
     const e = forOf();
+    if (!X.screensSet) X.inc.screens = e ? false : screensBy();
     const has = (n) => { const w = X.opts.weeks.find((x) => x.no === n); return !!w && (w.now || w.lectures || w.files || w.missing.length); };
     const nos = e ? (e.weeks || []).filter(has) : [];
     X.picked = new Set(nos.length ? nos : nowWeeks());
@@ -124,7 +129,8 @@
         <div class="pd-weeks2 cx-weeks">${o.weeks.length ? o.weeks.map(weekRow).join("") : `<div class="dim sm cx-none">${t("No weekly plan yet: sync first.")}</div>`}</div></div>
       <div class="field"><label class="cp-label">${t("What goes in")}</label><div class="cx-incs">
         ${incRow("transcripts", "file-text", t("Lecture transcripts"), t("Everything the lecturer said, with times"))}
-        ${incRow("screens", "presentation", t("Screens with what was said"), t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. Makes the zip larger."))}
+        ${incRow("screens", "presentation", t("Screens with what was said"), n && e.shots ? esc(t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. They add about {size}.", { size: size(e.shots).replace(" ", "\u00a0") }))
+          : t("The slides and board shown in class, as pictures in the zip, each with what was said while it was on screen. Makes the zip larger."))}
         ${incRow("files", "layers", t("Course files"), t("The slides, PDFs and documents from IEULearn"))}
         ${incRow("notices", "megaphone", t("Announcements and deadlines"), t("The announcements and the quizzes, exams and homework IEUStudia knows about"))}</div></div>
       ${X.inc.files && e.missing ? `<div class="pd-gap cx-dl">${I("download")}<div class="grow"><div>${t.n(e.missing, "{n} course file of these weeks is not on this PC.", "{n} course files of these weeks are not on this PC.")}</div>
@@ -297,7 +303,13 @@
     "cx-now": () => { X.picked = new Set(nowWeeks()); draw(); },
     "cx-all": () => { X.picked = new Set(X.opts.weeks.map((w) => w.no)); draw(); },
     "cx-none": () => { X.picked = new Set(); draw(); },
-    "cx-inc": (el) => { X.inc[el.dataset.k] = !!el.checked; lastInc = { ...X.inc }; draw(); },
+    "cx-inc": (el) => {
+      const k = el.dataset.k;
+      X.inc[k] = !!el.checked;
+      if (k === "screens") X.screensSet = true;
+      lastInc = { ...X.inc, screens: X.screensSet ? X.inc.screens : screensBy() };     // (not For's own "off")
+      draw();
+    },
     "cx-dl": (el) => { X.download = el.value === "yes"; draw(); },
     "cx-go": async () => {
       // one click, one export: a double click, or a click repeated while the window is slow to answer, starts one
