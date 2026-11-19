@@ -13,6 +13,7 @@
   const { S, call, esc, I, SPIN, toast, A } = St;
   const $ = (s, el = document) => el.querySelector(s);
   const PR = () => S.practice || {};
+  const mdLine = (s) => St.mdToHtml(String(s || "")).replace(/^<p>([\s\S]*)<\/p>$/, "$1");
   const canAI = () => { const ai = S.system.ai || {}; return !!ai.available && ai.can_plans !== false; };
   const WRITTEN = ["short", "problem"];
   const marking = {};             // a try being marked: its attempt id → its run (the end screen follows the events)
@@ -29,10 +30,12 @@
   // the verdict and the key's line (after it), the buttons after a result that isn't the same, the check's label
   function parts(R, q) {
     if (!WRITTEN.includes(q.type)) return null;
-    const ck = ckOf(R, q);
+    const ck = ckOf(R, q), of = q.verified && (q.check || {}).of;     // (which result, when it asks for several)
+    const hint = of ? `${esc(t("The app checks this result:"))} <span class="md">${mdLine(of)}</span>. ${esc(t("Leave it empty to mark it yourself."))}`
+      : esc(t("The app checks it for you. Leave it empty to mark it yourself."));
     const box = q.numeric && !R.checked ? `<div class="ck-final"><label for="qz-final">${I("sigma", "sm")} ${esc(t("Final answer"))}</label>
         <input class="input" id="qz-final" autocomplete="off" spellcheck="false" placeholder="${esc(t("Your result, like 3.3 kΩ or 0.25"))}" value="${esc((ck && ck.final) || "")}">
-        <span class="dim sm">${esc(t("The app checks it for you. Leave it empty to mark it yourself."))}</span></div>` : "";
+        <span class="dim sm">${hint}</span></div>` : "";
     let verdict = "";
     if (R.checked && ck && ck.final) {
       const mine = `<div class="ck-mine">${esc(t("Your result: {result}", { result: ck.final }))}</div>`;

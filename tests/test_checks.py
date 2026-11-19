@@ -38,6 +38,7 @@ def test_the_prompt_asks_for_a_check_only_with_written_questions():
     assert '"check": {"expr": "12*4.7/(4.7+2.2)", "value": 8.17, "unit": "V"}' in p
     assert '"check" (every worked problem, and a short answer whose answer is one number)' in p
     assert "Leave \"check\" out when the answer is not one number" in p
+    assert '"of" names that result in a few words' in p and "when the problem asks for more than one" in p
     assert '"check" (every' not in quizzes.write_prompt(sc, facts, 5, {"mc": 5, "short": 0, "problem": 0})
 
 
@@ -254,6 +255,7 @@ def test_written_answers_are_marked_by_the_ai_in_one_request(api, monkeypatch):
     assert "[1]" not in text and "[3]" not in text and "[5]" not in text     # the app's checks, a choice, a skip
     assert "(The app could not confirm this result: check it yourself.)" in text and "in English" in text
     assert "A full answer must say: little current; doesn't change the circuit" in text
+    assert "Two points that say the same thing in different ways" in text          # (the real call: too strict)
     by_n = {a["n"]: a for a in done["answers"]}
     assert by_n[2]["got"] == 0.5 and by_n[2]["mark"] == "ai" and by_n[2]["ai_why"].startswith("You didn't say")
     assert by_n[4]["got"] == 1 and by_n[4]["mark"] == "ai" and by_n[4]["ai_why"] == ""

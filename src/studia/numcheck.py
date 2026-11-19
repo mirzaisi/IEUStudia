@@ -518,6 +518,9 @@ def clean_check(v: Any) -> Optional[dict[str, Any]]:
     elif isinstance(val, str) and val.strip():
         out["value"] = val.strip()[:60]
     out["unit"] = str(v.get("unit") or v.get("units") or "").strip()[:24]
+    of = " ".join(str(v.get("of") or v.get("label") or v.get("what") or "").split())[:100]
+    if of:                       # which result it is, when the problem asks for more than one ("the power in R2")
+        out["of"] = of
     return out
 
 

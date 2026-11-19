@@ -77,7 +77,7 @@ def mark_prompt(items: list[tuple[dict[str, Any], dict[str, Any]]], language: st
         rows.append("\n".join(lines))
     return f"""TASK: Mark a student's written answers to practice questions. Compare what the student wrote with the model answer (for a short answer, with the points a full answer must say; for a worked problem, with the solution).
 Marks: 1 = right (everything that matters is there; other words, another valid method or a result rounded differently are fine); 0.5 = partly (the main idea or the right method, with a gap or a slip); 0 = wrong, or the main idea is missing.
-Mark only what is written, not what the student may have meant.
+Mark only what is written, not what the student may have meant. Two points that say the same thing in different ways (one follows directly from the other) are covered by either.
 For each answer also write "missing": one short sentence to the student ("you") on what was missing or wrong, in {language or "English"}; "" when the mark is 1.
 Answer with one JSON object: {{"marks": [{{"n": 1, "mark": 0.5, "missing": "…"}}]}}
 

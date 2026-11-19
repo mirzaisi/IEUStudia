@@ -5,6 +5,8 @@
   "Final answer": "Sonuç",
   "Your result, like 3.3 kΩ or 0.25": "Sonucun, örneğin 3,3 kΩ ya da 0,25",
   "The app checks it for you. Leave it empty to mark it yourself.": "Uygulama senin için kontrol eder. Kendin işaretlemek istersen boş bırak.",
+  "The app checks this result:": "Uygulamanın kontrol ettiği sonuç:",
+  "Leave it empty to mark it yourself.": "Kendin işaretlemek istersen boş bırak.",
   "Your result: {result}": "Senin sonucun: {result}",
   "Right! The app checked your result.": "Doğru! Uygulama sonucunu kontrol etti.",
   "Not the same as the answer: check the unit.": "Cevapla aynı değil: birimi kontrol et.",

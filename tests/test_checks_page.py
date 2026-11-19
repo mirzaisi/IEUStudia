@@ -29,7 +29,8 @@ const QUIZ = { id: "q1", course_id: "c1", title: "Circuits", status: "done", res
   coverage: { span: "week 4", weeks: [{ no: 4, topic: "Dividers" }], kinds: { short: 1, problem: 4 }, files: [], lectures: [], los: [] },
   questions: [
     { n: 1, type: "problem", q: "Find $v_2$.", steps: ["Divide: $12 \\cdot 2/6$"], model: "$v_2 = 4$ V", verified: true, numeric: true, source: null },
-    { n: 2, type: "problem", q: "Find the current.", steps: ["$I = V/R$"], model: "$I = 2$ mA", verified: true, numeric: true, source: null },
+    { n: 2, type: "problem", q: "Find the current.", steps: ["$I = V/R$"], model: "$I = 2$ mA", verified: true, numeric: true, source: null,
+      check: { expr: "2", unit: "mA", of: "the current in $R_2$" } },
     { n: 3, type: "short", q: "Why is a voltmeter's resistance high?", model: "So it draws almost no current.", points: ["little current"], source: null },
     { n: 4, type: "problem", q: "Find the power.", steps: ["$P = I^2 R$"], model: "$P = 0.53$ W", unverified: true, source: null },
     { n: 5, type: "problem", q: "Find the time constant.", steps: ["$\\tau = RC$"], model: "$\\tau = 1$ ms", numeric: true, source: null }] } };
@@ -75,6 +76,7 @@ const out = {};
   out.right = shown.html;
   A["qz-next"]();
   // 2: "6 mA": not the same; the solution, "Partly (method right)" and "I didn't know it"
+  out.q2 = shown.html;
   fields["#qz-text"] = { value: "I = 12/2k" }; fields["#qz-final"] = { value: "6 mA" };
   await A["qz-check"](btn()); await tick();
   out.wrong = shown.html;
@@ -154,6 +156,7 @@ def test_checked_answers_on_the_page(tmp_path):
     assert "The app checks it for you. Leave it empty to mark it yourself." in q1
     assert 'data-act="qz-check">Check my answer<' in q1 and "Show the solution" not in q1
     assert "Checking…" in out["checking"]
+    assert 'The app checks this result: <span class="md">the current in $R_2$</span>. Leave it empty' in out["q2"]
     right = out["right"]
     assert "Right! The app checked your result." in right and "Your result: 4 V" in right
     assert "The app checked the numbers of this answer." in right and 'data-act="qz-next"' in right

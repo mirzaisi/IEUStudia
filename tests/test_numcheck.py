@@ -178,6 +178,8 @@ def test_the_check_is_cleaned():
     assert nc.clean_check({"value": 4}) is None and nc.clean_check(None) is None and nc.clean_check(["x"]) is None
     assert nc.clean_check({"expr": "1" * 400}) is None
     assert nc.clean_check({"expr": "1", "value": float("nan")}) == {"expr": "1", "unit": ""}
+    assert nc.clean_check({"expr": "4", "unit": "W", "of": "  the power\nin $R_2$ "}) == \
+        {"expr": "4", "unit": "W", "of": "the power in $R_2$"}                       # which result, of several
 
 
 @pytest.mark.parametrize("check, model, state", [
