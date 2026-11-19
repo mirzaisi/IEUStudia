@@ -33,9 +33,10 @@ CONDENSED_KINDS = ("sheet", "prep", "pack", "videos")
 _QUIZ = re.compile(r"quiz|k[ıi]sa\s*s[ıi]nav", re.I)
 _MIDTERM = re.compile(r"mid-?term|ara\s*s[ıi]nav|vize", re.I)
 _FINAL = re.compile(r"final|d[öo]nem\s*sonu|yar[ıi]y[ıi]l\s*sonu", re.I)
-# a grading part named like an exam that is no exam ("Final Project", "Final Jury", "Final Report")
+# a grading part named like an exam that is no exam ("Final Project", "Final Jury", "Final Report"; the syllabus's
+# "Quizzes / Studio Critiques" is the quizzes)
 _NOT_EXAM = re.compile(r"proje|project|portfol|jury|j[üu]ri|presentation|sunum|report|rapor|paper|essay|[öo]dev|"
-                       r"homework|assignment|studio|st[üu]dyo", re.I)
+                       r"homework|assignment", re.I)
 
 
 def _safe(fn: Callable[..., Any]) -> Callable[..., Any]:
