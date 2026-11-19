@@ -53,10 +53,12 @@
   }
 
   // ------------------------------------------------------------------ pieces
+  // known only by its week (the exam schedule has the day): still to come until that week (or exam period) is over
+  const thisWeek = (w) => !!(w && w.from === "week" && w.date && w.date < localToday() && w.end && localToday() <= w.end);
   function whenParts(w) {
     if (!w.date) return { day: t("Day not known yet"), rel: "" };
     const n = daysTo(w.date);
-    const rel = n < 0 ? t.c("assessment", "done") : n === 0 ? t("today") : n === 1 ? t("tomorrow") : t.n(n, "in {n} day", "in {n} days");
+    const rel = thisWeek(w) ? t("this week") : n < 0 ? t.c("assessment", "done") : n === 0 ? t("today") : n === 1 ? t("tomorrow") : t.n(n, "in {n} day", "in {n} days");
     const others = (w.others || []).length ? ` ${t("or {days}", { days: t.list(w.others.map(dmw), "disjunction") })}` : "";
     return { day: dmw(w.date) + (w.time ? `, ${w.time}` : "") + others, rel };
   }
@@ -209,7 +211,7 @@
   // the evening before, with the background checks off: offer them once (a reminder comes when the app is closed)
   function trayHTML(r) {
     const app = (S.boot || {}).app || {};
-    if (!app.onboarded || app.tray !== false || window.LS_LINUX || r.when.days == null || r.when.days < 0 || r.when.days > 1) return "";
+    if (!app.onboarded || app.tray !== false || window.LS_LINUX || r.when.days == null || (r.when.days < 0 && !thisWeek(r.when)) || r.when.days > 1) return "";
     try { if (localStorage.getItem("studia-room-tray") === "1") return ""; } catch (e) { /* private mode */ }
     return `<div class="callout info noprint er-tray">${I("info")}<div class="grow">${esc(t("Background checks are off, so no reminder comes while IEUStudia is closed. Turn them on to hear about new lectures, announcements and your next quiz."))}
       <div class="er-tray-acts"><button class="btn sm" data-act="er-tray-on">${t("Turn them on")}</button><button class="btn ghost sm" data-act="er-tray-no">${t("Not now")}</button></div></div></div>`;
@@ -234,12 +236,12 @@
   // the course page's top: the next quiz or exam, as a chip that opens its room ("Quiz 3 in 4 days")
   function chip(c, d) {
     const today = localToday();
-    const e = ((d && d.assessments) || []).filter((x) => x.ahead && x.on && x.on.date && x.on.date >= today)
+    const e = ((d && d.assessments) || []).filter((x) => x.ahead && x.on && x.on.date && (x.on.date >= today || thisWeek(x.on)))
       .sort((a, b) => a.on.date.localeCompare(b.on.date))[0];
     if (!e) return "";
     const n = daysTo(e.on.date);
     if (n > 28) return "";
-    const label = n === 0 ? t("{name} today", { name: e.name }) : n === 1 ? t("{name} tomorrow", { name: e.name }) : t.n(n, "{name} in {n} day", "{name} in {n} days", { name: e.name });
+    const label = n < 0 ? t("{name} this week", { name: e.name }) : n === 0 ? t("{name} today", { name: e.name }) : n === 1 ? t("{name} tomorrow", { name: e.name }) : t.n(n, "{name} in {n} day", "{name} in {n} days", { name: e.name });
     const tip = [t("Open its Exam room: what it covers, what is still missing and how to practise"), e.on.from === "week" ? t("The exam schedule on IEULearn has the day; this counts to its week's start.") : ""].filter(Boolean).join("\n");
     return `<button class="stat er-chip ${n <= 2 ? "soon" : ""}" data-act="ready-open" data-cid="${esc(c.id)}" data-key="${esc(e.key)}" data-name="${esc(e.name)}" title="${esc(tip)}">${I("cap", "xs")}<b>${esc(label)}</b></button>`;
   }

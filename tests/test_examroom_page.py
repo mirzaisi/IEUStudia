@@ -284,6 +284,21 @@ def test_the_evening_before_with_background_checks_off_it_offers_them_once(tmp_p
     assert out["on"] == 1 and "Background checks are off" not in out["after"]
 
 
+@node
+def test_an_exam_known_by_its_week_is_this_week_not_done_in_that_week(tmp_path):
+    """An exam known only by its week read "done" from the second day of that week, and its chip went."""
+    out = run(tmp_path, """
+  const inWeek = { date: inDays(-2), time: "", from: "week", others: [], end: inDays(4), days: -2 };
+  St.mocks.exam_room = () => ({ ok: true, room: room(FINAL, { when: inWeek }) });
+  A["ready-open"]({ dataset: { cid: "c", key: FINAL.key } }); await tick();
+  out.head = text(view());
+  out.chip = St.examroom.chip(S.courses[0], { assessments: [{ ...FINAL, on: inWeek }] });
+  out.over = St.examroom.chip(S.courses[0], { assessments: [{ ...FINAL, on: { ...inWeek, date: inDays(-9), end: inDays(-3) } }] });
+""")
+    assert "this week · its week starts then" in out["head"] and "done" not in out["head"].split("Covers")[0]
+    assert "Final Exam this week" in out["chip"] and out["over"] == ""
+
+
 def test_the_page_prints_and_loads_after_the_pages_it_hooks_into():
     css = (WEB / "examroom.css").read_text(encoding="utf-8")
     page = (WEB / "index.html").read_text(encoding="utf-8")

@@ -82,6 +82,7 @@
   "Worked out on this PC from your lectures, files, announcements and practice, without AI.": "Yapay zeka kullanmadan, bu bilgisayarda derslerinden, dosyalarından, duyurulardan ve çalışmalarından çıkarıldı.",
   "{name} today": "{name} bugün",
   "{name} tomorrow": "{name} yarın",
+  "{name} this week": "{name} bu hafta",
   "{name} in {n} day": "{name}: {n} gün sonra",
   "The exam schedule on IEULearn has the day; this counts to its week's start.": "Günü IEULearn'deki sınav takviminde; bu sayı haftasının başına kadar.",
   "Which weeks does {name} cover?": "{name} hangi haftaları kapsıyor?",

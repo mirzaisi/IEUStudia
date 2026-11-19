@@ -78,21 +78,25 @@ def set_day(lib: Any, course_id: str, key: str, day: Any) -> str:
 def when(d: dict[str, Any], e: dict[str, Any], lib: Any = None, today: Optional[dt.date] = None) -> dict[str, Any]:
     """When an assessment is: {"date", "time", "from", "others"}. "from": "announced" (an announcement gave the
     day), "yours" (the student set it), "class" (a quiz announced for a week: the first of its week's class days
-    still ahead, "others" the rest), "week" (its week's first day: the exam schedule has the day), "" (unknown)."""
+    still ahead, "others" the rest), "week" (its week's first day, a two-week exam period's first week's: the exam
+    schedule has the day; "end" the last day it may be on), "" (unknown)."""
     day = (today or dt.date.today()).isoformat()
     if e.get("date"):
         return {"date": e["date"], "time": e.get("time") or "", "from": "announced", "others": []}
     mine = own_day(lib, d.get("id") or "", e.get("key") or "")
     if mine:
         return {"date": mine, "time": "", "from": "yours", "others": []}
-    w = next((x for x in d.get("weeks") or [] if x.get("no") == e.get("week")), None)
+    weeks = {x.get("no"): x for x in d.get("weeks") or []}
+    w = weeks.get(e.get("first_week") or e.get("week")) or weeks.get(e.get("week"))
     if not w or not w.get("start"):
         return {"date": "", "time": "", "from": "", "others": []}
     classes = [c["date"] for c in w.get("classes") or []] if e.get("kind") == "quiz" else []
     if classes:
         ahead = [c for c in classes if c >= day]
         return {"date": (ahead or classes[-1:])[0], "time": "", "from": "class", "others": ahead[1:]}
-    return {"date": w["start"], "time": "", "from": "week", "others": []}
+    last = weeks.get(e.get("week")) or w
+    return {"date": w["start"], "time": "", "from": "week", "others": [],
+            "end": last.get("end") or last.get("start") or w["start"]}
 
 
 def days_left(on: dict[str, Any], today: Optional[dt.date] = None) -> Optional[int]:

@@ -79,8 +79,8 @@ def quantitative(d: dict[str, Any], facts: Optional[dict[str, Any]] = None) -> b
 
 def _syllabus_exams(d: dict[str, Any], plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The syllabus' exam weeks no announcement covers, as Home, the course page and the Calendar show them: each as
-    an assessment ("Midterm", "Final Exam"; a two-week exam period is one, until its last week). One a week away from
-    an announced exam of its kind is that exam, moved."""
+    an assessment ("Midterm", "Final Exam"; a two-week exam period is one, until its last week: "first_week" its
+    first). One a week away from an announced exam of its kind is that exam, moved."""
     said = [(e["kind"], e["week"]) for e in plan if e["kind"] != "quiz"]
     out: list[dict[str, Any]] = []
     last: Optional[dict[str, Any]] = None
@@ -92,7 +92,8 @@ def _syllabus_exams(d: dict[str, Any], plan: list[dict[str, Any]]) -> list[dict[
         elif last is not None and last["week"] == w["no"] - 1 and last["name"].casefold() == name.casefold():
             last["week"] = w["no"]
         else:
-            last = {"kind": kind, "no": 0, "name": name, "week": w["no"], "los": [], "sources": [], "syllabus": True}
+            last = {"kind": kind, "no": 0, "name": name, "week": w["no"], "first_week": w["no"], "los": [], "sources": [],
+                    "syllabus": True}
             out.append(last)
     return out
 

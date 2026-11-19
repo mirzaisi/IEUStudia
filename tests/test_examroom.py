@@ -84,7 +84,8 @@ def test_every_coming_quiz_and_exam_has_a_room_also_a_final_known_only_from_the_
     a = final["assessment"]
     assert (a["name"], a["kind"], a["syllabus"], a["sources"]) == ("Final Exam", "final", True, [])
     assert a["weeks"] == list(range(1, 17)) and a["origin"]["from"] == "guessed"
-    assert final["when"] == {"date": "2026-12-28", "time": "", "from": "week", "others": [], "days": 31}
+    assert final["when"] == {"date": "2026-12-28", "time": "", "from": "week", "others": [], "end": "2027-01-03",
+                             "days": 31}
     assert final["share"] == {"activity": "Final Exam", "weight": 40.0, "number": 1, "each": 40.0}    # not the project
     assert final["said"] == [] and final["assessment"]["los"] == []
     assert _room(api, "Final Exam")["assessment"]["key"] == "syllabus:Final Exam:16"         # by its name too
@@ -134,7 +135,6 @@ def test_its_share_of_the_grade(grading, kind, want):
     assert (got["each"] if got else None) == want
 
 
-# ------------------------------------------------------------------ material, read ticks and Get everything
 def _course(labels, plan=(), n=16):
     """A course dict as views.course_detail gives it: 16 weeks from START, the syllabus's exam labels by week."""
     weeks = [{"no": no, "start": (START + dt.timedelta(weeks=no - 1)).isoformat(),
@@ -143,6 +143,16 @@ def _course(labels, plan=(), n=16):
     return {"id": "c", "weeks": weeks, "alerts": {"plan": [
         {"kind": k, "no": no, "name": name, "week": week, "los": [], "sources": [{"id": "a", "title": "A"}],
          "date": date, "time": "", "covers": [], "covers_from": ""} for k, no, name, week, date in plan]}}
+
+
+def test_a_two_week_exam_period_counts_to_its_first_week_and_is_ahead_until_its_end():
+    d = _course({15: "Final Exam", 16: "Final Exam"})
+    e = examroom.find(d, "syllabus:Final Exam:16")
+    assert e["week"] == 16 and e["first_week"] == 15
+    on = examroom.when(d, e, None, dt.date(2026, 12, 23))          # (Wednesday of week 15)
+    assert on == {"date": "2026-12-21", "time": "", "from": "week", "others": [], "end": "2027-01-03"}
+    one = examroom.find(_course({8: "Midterm"}), "Midterm")
+    assert examroom.when(_course({8: "Midterm"}), one, None)["end"] == "2026-11-08"   # its week's last day
 
 
 def test_a_syllabus_exam_week_opens_the_exam_it_is_part_of():
@@ -177,6 +187,7 @@ def test_a_quiz_announced_only_by_its_day_still_has_a_room():
     assert examroom.when(d, e, None)["from"] == "announced"
 
 
+# ------------------------------------------------------------------ material, read ticks and Get everything
 def test_the_material_of_its_weeks_as_counts(api):
     m = _room(api, "quiz:3")["material"]
     assert [x["day_key"] for x in m["days"]] == [_day(16), _day(18), _day(25)]       # 23 Nov has no speech: apart
