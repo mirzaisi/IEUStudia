@@ -101,6 +101,7 @@ class Scope:
     kind: str = "videos"         # "videos": a video study plan; "prep": an exam review sheet (no videos)
     weeks: list[int] = dc.field(default_factory=list)
     focus: str = ""              # an assessment from the course's plan, e.g. "Quiz 2"
+    focus_key: str = ""          # and its key (quizzes.assessment_key): two of one name ("Midterm Exam") stay apart
     los: list[int] = dc.field(default_factory=list)   # learning outcomes to focus on
     topics: str = ""             # extra topics to recap
     difficulties: str = ""       # what the student finds hard

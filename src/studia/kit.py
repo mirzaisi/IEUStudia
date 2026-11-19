@@ -834,7 +834,8 @@ def import_quiz(lib: Any, settings: Any, course_id: str, text: str, kit_id: str 
     n, read = len(quiz["questions"]), len(raw["questions"])
     scope = {**Scope(kind="quiz", weeks=[w["no"] for w in facts.get("weeks") or []],
                      days=[x["day_key"] for x in facts["lectures"]], files=[f["id"] for f in facts["files"]],
-                     picked=True, questions=n, focus=focus).to_json(), "source": "import", "kit": kid}
+                     picked=True, questions=n, focus=focus, focus_key=(kit or {}).get("key") or "").to_json(),
+             "source": "import", "kit": kid}
     result = {"kind": "quiz", "title": title, "made": dt.date.today().isoformat(), "language": facts.get("language") or "",
               "questions": quiz["questions"], "topics": quiz["topics"], "coverage": cov, "course": facts.get("course") or {},
               "asked": read, "source": "import", "kit": kid}

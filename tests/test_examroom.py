@@ -230,6 +230,26 @@ def test_set_before_it_was_announced_its_room_shows_them_and_clearing_them_there
     assert not examroom.own_day(api._s.lib, "c", "syllabus:Midterm:8")
 
 
+def test_two_assessments_of_one_name_each_have_their_own_quizzes_and_sheets():
+    """A quiz made for the first "Midterm Exam" (weeks 1-8) was counted in the second's room (weeks 9-13) too: only
+    the name was matched."""
+    every = quizzes.of(_course({8: "Midterm Exam", 13: "Midterm Exam"}))
+    one, two = every
+    assert one["name"] == two["name"] and (one["weeks"], two["weeks"]) == (list(range(1, 9)), list(range(9, 14)))
+    made = {"kind": "quiz", "weeks": one["weeks"], "focus": "Midterm Exam", "focus_key": one["key"]}
+    assert examroom._for_it(made, one, every) and not examroom._for_it(made, two, every)
+    sheet = {"kind": "prep", "weeks": [], "focus": "Midterm Exam", "focus_key": two["key"]}
+    assert examroom._for_it(sheet, two, every) and not examroom._for_it(sheet, one, every)
+    old = {"kind": "quiz", "weeks": list(range(1, 9)), "focus": "Midterm Exam"}      # (no key: by its weeks only)
+    assert examroom._for_it(old, one, every) and not examroom._for_it(old, two, every)
+    # a name one alone has is still its own, also under a key it had before it was announced
+    alone = quizzes.of(_course({16: "Final Exam"}, [("midterm", 0, "Midterm", 8, "")]))
+    final, mid = next(e for e in alone if e["kind"] == "final"), next(e for e in alone if e["kind"] == "midterm")
+    assert examroom._for_it({"weeks": [], "focus": "Final Exam"}, final, alone)
+    assert examroom._for_it({"weeks": [], "focus": "Midterm", "focus_key": "syllabus:Midterm:8"}, mid, alone)
+    assert not examroom._for_it({"weeks": [], "focus": "Midterm", "focus_key": "syllabus:Midterm:8"}, final, alone)
+
+
 def test_a_quiz_announced_only_by_its_day_still_has_a_room():
     """Week 1's date unknown: no week, so not among the assessments; its pill and Calendar row opened "no longer in
     the course's plan"."""

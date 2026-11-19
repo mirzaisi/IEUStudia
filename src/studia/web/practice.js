@@ -343,7 +343,7 @@
     }
     const weak = Q.mode === "weak";             // (the files and lectures of the missed questions: practice.weak_scope)
     return { kind: "quiz", weeks: day ? [day.week] : weak ? [] : [...Q.weeks].sort((a, b) => a - b), files: day || weak ? [] : [...Q.files],
-      days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", los: (Q.los || []).length ? Q.los : e ? e.los : [], questions: Q.count,
+      days: day ? [day.day_key] : weak ? [] : [...Q.days], picked: true, focus: e ? e.name : "", focus_key: e ? e.key || "" : "", los: (Q.los || []).length ? Q.los : e ? e.los : [], questions: Q.count,
       qtypes: Q.kinds, topics: Q.topics, model: Q.model, effort: Q.effort || "", ...(weak ? { weak: true } : {}) };
   }
   // the new-quiz dialog; preset: where it was opened from, as St.practice.quizDialog is called: {mode: "lecture", day}

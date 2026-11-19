@@ -327,21 +327,32 @@ def stressed_moments(lib: Any, course_id: str, d: dict[str, Any], e: dict[str, A
 
 
 # ------------------------------------------------------------------ practice and what was condensed
-def _for_it(scope: dict[str, Any], e: dict[str, Any]) -> bool:
-    """A quiz or a sheet is for this assessment: made for it, or on its weeks only."""
+def _for_it(scope: dict[str, Any], e: dict[str, Any], every: Iterable[dict[str, Any]] = ()) -> bool:
+    """A quiz or a sheet is for this assessment: made for it, or on its weeks only. Made for it: by its key (scope
+    "focus_key"); by its name when it was kept without a key still in the course's plan (``every``) and no other
+    assessment has that name ("Midterm Exam" in week 8 and in week 13: each one's own)."""
     weeks = {int(n) for n in scope.get("weeks") or [] if str(n).lstrip("-").isdigit()}
-    return bool(scope.get("focus")) and scope.get("focus") == e["name"] or bool(weeks) and weeks <= set(e["weeks"])
+    every = list(every)
+    key = scope.get("focus_key") or ""
+    if key and any(x.get("key") == key for x in every):
+        made = key == e.get("key")
+    else:
+        made = bool(scope.get("focus")) and scope.get("focus") == e["name"] and \
+            not any(x.get("name") == e["name"] and x.get("key") != e.get("key") for x in every)
+    return made or bool(weeks) and weeks <= set(e["weeks"])
 
 
 def practice_part(svc: Any, course_id: str, d: dict[str, Any], e: dict[str, Any],
                   now: Optional[dt.datetime] = None) -> dict[str, Any]:
     """Its quizzes with their last and best tries, the flashcards of its weeks (and how many were studied), how
     each learning outcome and topic went in those quizzes (counts) and their questions still missed."""
-    from . import cards as cards_mod, practice
+    from . import cards as cards_mod, practice, quizzes as quizzes_mod
 
     lib, now = svc.lib, now or dt.datetime.now()
     tries = practice.attempts(lib, course_id=course_id)
-    mine = [p for p in lib.plans(course_id) if (p.get("scope") or {}).get("kind") == "quiz" and _for_it(p["scope"], e)]
+    every = quizzes_mod.of(d)
+    mine = [p for p in lib.plans(course_id)
+            if (p.get("scope") or {}).get("kind") == "quiz" and _for_it(p["scope"], e, every)]
     kept = practice.kept_questions(lib, [p["id"] for p in mine if p["status"] == "done"])
     quizzes = [practice.quiz_brief(p, [a for a in tries if a["plan_id"] == p["id"]], kept.get(p["id"])) for p in mine]
     ids = {p["id"] for p in mine}
@@ -370,13 +381,15 @@ def practice_part(svc: Any, course_id: str, d: dict[str, Any], e: dict[str, Any]
             "mastery": m, "mistakes": missed[:40], "missed": len(missed)}
 
 
-def condensed(lib: Any, course_id: str, e: dict[str, Any]) -> list[dict[str, Any]]:
-    """The cheatsheets, review sheets, study packs and video plans made for it (or on its weeks only)."""
-    out = []
+def condensed(lib: Any, course_id: str, e: dict[str, Any],
+              every: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+    """The cheatsheets, review sheets, study packs and video plans made for it (or on its weeks only; ``every``: the
+    course's assessments, _for_it)."""
+    out, every = [], list(every)
     for p in lib.plans(course_id):
         sc = p.get("scope") or {}
         kind = sc.get("kind") or "videos"
-        if kind in CONDENSED_KINDS and _for_it(sc, e):
+        if kind in CONDENSED_KINDS and _for_it(sc, e, every):
             out.append({"id": p["id"], "kind": kind, "status": p.get("status") or "", "title": p.get("title") or "",
                         "weeks": sorted(sc.get("weeks") or []), "focus": sc.get("focus") or "",
                         "created_at": p.get("created_at") or ""})
@@ -421,8 +434,8 @@ def room(svc: Any, course_id: str, key: str, jobs: Iterable[dict[str, Any]] = ()
     on = e.get("on") or when(d, e, lib, now.date())
     outcomes_en, outcomes_tr = d.get("outcomes_en") or [], d.get("outcomes_tr") or []
     prac = practice_part(svc, course_id, d, e, now)
-    made = condensed(lib, course_id, e)
     every = quizzes.of(d)
+    made = condensed(lib, course_id, e, every)
     heard = said(d, e)
     return {
         "course": {"id": d["id"], "code": d.get("code") or "", "name": d.get("display_name") or d.get("name") or ""},

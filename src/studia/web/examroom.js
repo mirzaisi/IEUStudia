@@ -330,7 +330,7 @@
     "er-quiz": () => St.practice && St.practice.quizDialog(ER.cid, { mode: "next", key: ER.key }),
     "er-cram": () => St.practice && ER.room && St.practice.study(ER.cid, { weeks: ER.room.assessment.weeks, cram: true }),
     "er-sheet": () => ER.room && A["pack-new"]({ dataset: { id: ER.cid, kind: "sheet", weeks: ER.room.assessment.weeks.join(",") } }),
-    "er-prep": () => ER.room && A["plan-new"]({ dataset: { id: ER.cid, kind: "prep", focus: ER.room.assessment.name } }),
+    "er-prep": () => ER.room && A["plan-new"]({ dataset: { id: ER.cid, kind: "prep", focus: ER.room.assessment.name, key: ER.room.assessment.key } }),
     "er-ask": () => {
       const r = ER.room; if (!r) return;
       const days = r.material.days.filter((x) => x.any_done).map((x) => x.day_key);

@@ -151,7 +151,7 @@
       ${r.days_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${leftOut(r.days_left_out)}</span></div>` : ""}
       ${r.materials_left_out ? `<div class="note-sm">${I("info", "sm")}<span>${filesOut(r.materials_left_out)}</span></div>` : ""}
       <div class="note-sm">${I("youtube", "sm")}<span>${t("A review sheet is written only, with no videos. For YouTube videos of these weeks, make a video study plan.")}</span>
-        <button class="btn sm" data-act="plan-new" data-id="${esc(p.course_id)}" data-kind="videos" data-focus="${esc((p.scope || {}).focus || "")}" data-weeks="${esc(((p.scope || {}).weeks || []).join(","))}">${I("youtube", "sm")} ${t("Video plan")}</button></div>
+        <button class="btn sm" data-act="plan-new" data-id="${esc(p.course_id)}" data-kind="videos" data-focus="${esc((p.scope || {}).focus || "")}" data-key="${esc((p.scope || {}).focus_key || "")}" data-weeks="${esc(((p.scope || {}).weeks || []).join(","))}">${I("youtube", "sm")} ${t("Video plan")}</button></div>
       <div class="card pl-prep md">${St.mdToHtml(r.markdown || "")}</div>`;
   }
   function progressHTML(p) {
@@ -354,11 +354,12 @@
   // the course-wide and announcement files tied to the assessment the plan is for (its posted solutions): in the
   // plan, also one not on this PC yet (its Download fetches it, and the plan reads it once it is in)
   const planTied = (r, a) => (St.picks && a ? [...St.picks.tied(r, a.key), ...St.picks.tiedMissing(r, a.key)] : []);
-  const focusKey = () => ((D.opts.assessments || []).find((a) => a.name === D.scope.focus && a.ahead !== false)
+  const focusKey = () => ((D.opts.assessments || []).find((a) => D.scope.focus_key && a.key === D.scope.focus_key)
+    || (D.opts.assessments || []).find((a) => a.name === D.scope.focus && a.ahead !== false)
     || (D.opts.assessments || []).find((a) => a.name === D.scope.focus) || {}).key || "";
   const planMissing = (weeks) => [...new Set([...D.opts.weeks.filter((w) => weeks.has(w.no)).flatMap((w) => w.missing),
     ...(St.picks ? St.picks.tiedMissing(D.opts, focusKey()) : [])])];
-  async function newPlanDialog(courseId, parent, kind, focus, weeks) {
+  async function newPlanDialog(courseId, parent, kind, focus, weeks, key) {
     const courses = S.courses.filter((c) => c.code);
     D.courseId = courseId || (S.view.name === "course" ? S.view.courseId : null) || (courses[0] || {}).id;
     if (!D.courseId) { toast(t("Sync your courses first."), "error"); return; }       // (no course yet: as the study pack's)
@@ -370,12 +371,14 @@
     D.opts = r;
     const cur = r.weeks.find((w) => w.current);
     // as the quiz dialog's "For …": the first one still ahead (d.assessments, with the weeks it covers)
-    const next = (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
+    // (by its key first: two of one name, "Midterm Exam" in week 8 and in week 13, are two)
+    const next = (key && r.assessments.find((a) => a.key === key))
+      || (focus && (r.assessments.find((a) => a.name === focus && a.ahead !== false) || r.assessments.find((a) => a.name === focus)))
       || r.assessments.find((a) => a.ahead !== false && !r.weeks.find((w) => w.no === a.week && w.past));
     const base = parent ? { ...parent.scope } : null;
     const tied = (a) => planTied(r, a);                                       // its posted solutions (picks.js)
-    D.scope = base || (next ? { weeks: next.weeks, focus: next.name, los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week), files: tied(next) }
-      : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", los: [], minutes: 180, deadline: "", files: [] });
+    D.scope = base || (next ? { weeks: next.weeks, focus: next.name, focus_key: next.key || "", los: next.los, minutes: 180, deadline: weekEnd(r.weeks, next.week), files: tied(next) }
+      : { weeks: cur ? thisWeeks(r.weeks, cur) : [], focus: "", focus_key: "", los: [], minutes: 180, deadline: "", files: [] });
     D.scope = { kind: kind || "videos", topics: "", difficulties: "", allow_tr: false, extras: false, model: r.model || "sonnet", ...D.scope };
     // a ChatGPT plan from before reasoning levels: its Quick / Standard / Thorough, as plans.levels() reads it
     const legacy = { haiku: "low", sonnet: "medium", opus: "high" }[base && base.model];
@@ -531,7 +534,7 @@
 
   Object.assign(A, {
     "plan-new": (el) => newPlanDialog(el && el.dataset.id, null, el && el.dataset.kind, el && el.dataset.focus,
-      el && el.dataset.weeks ? el.dataset.weeks.split(",").map(Number).filter(Boolean) : null),
+      el && el.dataset.weeks ? el.dataset.weeks.split(",").map(Number).filter(Boolean) : null, el && el.dataset.key),
     "pd-kind": (el) => {
       if (["pack", "sheet"].includes(el.dataset.val)) { A["pack-new"]({ dataset: { id: D.courseId, kind: el.dataset.val } }); return; }    // studypack.js
       readInputs(); D.scope.kind = el.dataset.val; drawDialog(); estimate(); },
@@ -559,8 +562,8 @@
       readInputs();
       const a = D.opts.assessments[+el.dataset.i];
       const files = planTied(D.opts, a);                                          // its posted solutions: ticked
-      if (a) Object.assign(D.scope, { weeks: a.weeks, focus: a.name, los: a.los, deadline: weekEnd(D.opts.weeks, a.week) || D.scope.deadline, files });
-      else Object.assign(D.scope, { focus: "", los: [], files: [] });
+      if (a) Object.assign(D.scope, { weeks: a.weeks, focus: a.name, focus_key: a.key || "", los: a.los, deadline: weekEnd(D.opts.weeks, a.week) || D.scope.deadline, files });
+      else Object.assign(D.scope, { focus: "", focus_key: "", los: [], files: [] });
       drawDialog(); estimate();
     },
     "pd-gen": (el) => {                          // a course-wide or announcement file in, or out
