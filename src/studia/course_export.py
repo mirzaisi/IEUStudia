@@ -1333,13 +1333,11 @@ class _CourseWriter:
         label = (f"{ref} " if ref else "") + f"{d.date.isoformat()} {WEEKDAYS_SHORT[d.date.weekday()]} - " \
             f"{kind_label(d.kind)}" + (f" (sec {', '.join(d.other)})" if d.other else " (other sec)" if d.another else "")
         folder = z.folder(z.folder(week_folder, "Lectures", 20), label, DAY_MAX)
-        if ref:
-            self.cited.setdefault(ref, {"kind": "lecture", "day_key": d.key, "date": d.date.isoformat(),
-                                        "week": week_no or None, "path": folder})
         recs = sorted(d.recs, key=lambda r: r.start)
         trans = store.load_transcripts(d.done)
         shots = d.slides() if ch.screens else {}
         names: dict[str, str] = {}
+        wrote = False
         if ch.screens:
             for p in part_views(recs, trans, shots):
                 for s in shots.get(p.rec.delivery_id) or []:
@@ -1369,9 +1367,13 @@ class _CourseWriter:
                         if ref else "")
                 z.text(folder, "Transcript.md", text + "".join("\n\n" + n for n in notes) + "\n\n" + _legend(bool(names))
                        + cite, t("transcript: {kind}, {date}", kind=kind, date=when))
+                wrote = True
         if names:
             z.text(folder, "Transcript by screen.md", by_screen(self.course, d, trans, shots, names),
                    t("what was said on each screen: {kind}, {date}", kind=kind, date=when))
+        if ref and (wrote or names):                   # (a lecture whose transcript file is gone isn't cited)
+            self.cited.setdefault(ref, {"kind": "lecture", "day_key": d.key, "date": d.date.isoformat(),
+                                        "week": week_no or None, "path": folder})
         self.counts["lectures"] += 1
         self.counts["screens"] += len(names)
         rel = folder[len(week_folder) + 1:] if folder.startswith(week_folder + "/") else folder
