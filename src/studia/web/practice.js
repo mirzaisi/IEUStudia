@@ -815,7 +815,7 @@
       const last = q.last && (q.last.answers || []).filter((a) => (a.got || 0) < 1).map((a) => a.n);
       St.menu(el, [
         ...(last && last.length ? [{ id: "missed", icon: "retry", label: t.n(last.length, "Try {n} missed question", "Try {n} missed questions"), run: () => playQuiz(q.id, last) }] : []),
-        { id: "pdf", icon: "file-text", label: t("Open as PDF"), desc: t("To print it, or read it on paper"), run: () => pdf(q.id, "open") },
+        { id: "pdf", icon: "file-text", label: t("Open as PDF"), desc: t("To solve on paper: the questions first, the answer key on its own pages at the end"), run: () => pdf(q.id, "open") },
         { id: "save", icon: "download", label: t("Save the PDF…"), run: () => pdf(q.id, "save") },
         "-",
         { id: "del", icon: "x", label: t("Delete"), run: () => A["qz-delete"]({ dataset: { id: q.id } }) }]);

@@ -1,0 +1,11 @@
+{
+  "_unit": "v42-fixes (4.2.0): a practice quiz's PDF to solve on paper (practice.js; its document words are in doclang.py), and Try again, more sensitive on a lecture where no speech was found (app.js, course.js, jobs.py, engine/transcriber.py, quality.py)",
+  "To solve on paper: the questions first, the answer key on its own pages at the end": "Kâğıt üzerinde çözmek için: önce sorular, sonda ayrı sayfalarda cevap anahtarı",
+  "Try again, more sensitive": "Daha dikkatli dinleyerek yeniden dene",
+  "Listens again for quiet or far-away speech that the first try missed. It takes about as long as transcribing it.": "İlk denemenin kaçırdığı kısık ya da uzaktan gelen konuşmayı yeniden dinler. Yazıya dökmek kadar sürer.",
+  "Listening again, more closely this time. It takes about as long as transcribing it; the queue shows how far it is.": "Bu sefer daha dikkatli dinleyerek yeniden deniyor. Yazıya dökmek kadar sürer; ne kadarının bittiğini sıradan görebilirsin.",
+  "only noise, even listening closely: check it on Panopto": "dikkatli dinleyince de yalnızca gürültü var: Panopto'da kontrol et",
+  "Listening more closely for speech": "Konuşma için daha dikkatli dinleniyor",
+  "Still no speech found, even listening more closely (only noise or music). Check it on Panopto.": "Daha dikkatli dinleyince de konuşma bulunamadı (yalnızca gürültü ya da müzik var). Panopto'da kontrol et.",
+  "Transcribed listening more closely: the speech in this recording is very quiet or unclear, so some words may be wrong. Check them against the recording.": "Daha dikkatli dinlenerek yazıya döküldü: bu kayıttaki konuşma çok kısık ya da anlaşılmaz, bu yüzden bazı kelimeler yanlış olabilir. Kayda bakarak kontrol et."
+}

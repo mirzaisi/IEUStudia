@@ -638,7 +638,7 @@ def test_a_printed_practice_quiz_embeds_its_fonts_and_keeps_turkish_letters(tmp_
     page = studypack.document_html(quizzes.document_body(plan), plan["result"]["title"], None,
                                    "Turkish").replace("</style>", quizzes.QUIZ_CSS + "</style>", 1)
     text = _check_turkish_on_paper(_printed(tmp_path, page), "DENEME SINAVI", "KENDİNİ SINA")
-    assert "Hangisi bir işlemcinin saat hızını ölçer?" in text and "Cevaplar" in text
+    assert "Hangisi bir işlemcinin saat hızını ölçer?" in text and "Cevap anahtarı" in text
 
 
 def test_a_printed_export_cover_writes_the_course_by_its_own_language_and_the_words_by_english(tmp_path):

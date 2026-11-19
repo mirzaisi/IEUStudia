@@ -20,7 +20,7 @@ from ..cancel import Cancelled, check
 from ..domain import Segment, Transcript
 from ..i18n import num, t, tn
 from ..nativeload import LOAD_LOCK, import_onnxruntime
-from ..quality import NoSpeech, analyze_audio, analyze_transcript
+from ..quality import NoSpeech, analyze_audio, analyze_transcript, heard_speech, is_silent, still_no_speech
 from .core import (SR, DecodeOptions, Decoded, Unit, UnitDecoder, ai_writing, choose, clean_text,
                    hallucination_score, segment_language, sort_by_duration, speech_units, wait_for_ai)
 from .models import (MODEL_PRESETS, delete_model, detect_gpu, download_model, drop_damaged, local_model_path,
@@ -32,6 +32,11 @@ __all__ = ["Engine", "Cancelled", "NoSpeech", "MODEL_PRESETS", "detect_gpu", "mo
 ENGINE_VERSION = "2.1"              # 2.1: numbers read out are kept whole (2.0's cleanup cut "0, 0, 0" to "0")
 UNCLEAR = "[unclear]"
 MIN_CONF = 0.38                     # below this in both languages a passage makes no sense: it becomes [unclear]
+# Silero VAD's speech threshold: a window is speech above it. A lecture where it found none (the microphone far from
+# the lecturer, a quiet room recording) can be listened to again more closely (find_speech's ``sensitive``), with a
+# lower one; what comes out of that must still be real speech (quality.heard_speech).
+VAD_THRESHOLD = 0.5
+SENSITIVE_VAD = 0.2
 Progress = Callable[[str, float, str], None]
 
 
@@ -149,9 +154,11 @@ class Speech:
     stats: dict[str, Any]
     gain: float
     seconds: float                   # how long finding it took
+    sensitive: bool = False          # found listening more closely (see find_speech)
 
 
-def _units(audio: np.ndarray, cancel: Optional[threading.Event]) -> tuple[list[tuple[int, int]], list[Unit]]:
+def _units(audio: np.ndarray, cancel: Optional[threading.Event], threshold: float = VAD_THRESHOLD
+           ) -> tuple[list[tuple[int, int]], list[Unit]]:
     from faster_whisper.vad import VadOptions
 
     from .vad import get_speech_timestamps
@@ -159,24 +166,37 @@ def _units(audio: np.ndarray, cancel: Optional[threading.Event]) -> tuple[list[t
     if len(audio) < SR // 2:
         return [], []
     check(cancel)
-    opts = VadOptions(threshold=0.5, min_speech_duration_ms=200, min_silence_duration_ms=300,
+    opts = VadOptions(threshold=threshold, min_speech_duration_ms=200, min_silence_duration_ms=300,
                       speech_pad_ms=200, max_speech_duration_s=14.0)
     speech = get_speech_timestamps(audio, opts)
     check(cancel)
     return [(int(s["start"]), int(s["end"])) for s in speech], speech_units(speech)
 
 
-def find_speech(audio: np.ndarray, cancel: Optional[threading.Event] = None, expected_duration: float = 0.0) -> Speech:
+def find_speech(audio: np.ndarray, cancel: Optional[threading.Event] = None, expected_duration: float = 0.0,
+                sensitive: bool = False) -> Speech:
     """Find the speech (Silero VAD, on one processor thread) and check the audio. It needs no model: the download
-    threads run it while the lecture before is transcribed. Raises quality.NoSpeech for a recording without speech."""
+    threads run it while the lecture before is transcribed. Raises quality.NoSpeech for a recording without speech.
+    ``sensitive``: listen more closely (Try again, more sensitive, on a lecture where none was found): a lower
+    threshold (SENSITIVE_VAD). The audio checks stay as they are, and Engine.transcribe still says "no speech" when
+    no real words come out of it (quality.heard_speech)."""
     t0 = time.monotonic()
-    spans, units = _units(audio, cancel)
+    spans, units = _units(audio, cancel, SENSITIVE_VAD if sensitive else VAD_THRESHOLD)
     took = time.monotonic() - t0
-    log.info("%d speech units, %.0fs of speech in %.0fs of audio", len(units), sum(u.dur for u in units),
-             len(audio) / SR)
+    log.info("%d speech units, %.0fs of speech in %.0fs of audio%s", len(units), sum(u.dur for u in units),
+             len(audio) / SR, " (listening more closely)" if sensitive else "")
     # safeguards: raises quality.NoSpeech for silent recordings, boosts quiet ones
-    warnings, stats, gain = analyze_audio(audio, spans, expected_duration)
-    return Speech(spans, units, warnings, stats, gain, took)
+    try:
+        warnings, stats, gain = analyze_audio(audio, spans, expected_duration)
+    except NoSpeech:
+        if sensitive and not is_silent(audio):      # (silent: "no sound", as before)
+            raise still_no_speech() from None
+        raise
+    if sensitive:
+        warnings.append({"code": "closer", "level": "warning",
+                         "message": t("Transcribed listening more closely: the speech in this recording is very quiet "
+                                      "or unclear, so some words may be wrong. Check them against the recording.")})
+    return Speech(spans, units, warnings, stats, gain, took, sensitive)
 
 
 class Engine:
@@ -324,7 +344,8 @@ class Engine:
 
         if speech is None:
             progress("vad", 0.02, t("Finding speech"))
-            speech = find_speech(audio, cancel, float(meta.get("expected_duration") or 0.0))
+            speech = find_speech(audio, cancel, float(meta.get("expected_duration") or 0.0),
+                                 bool(meta.get("sensitive")))
         timings["vad"] = speech.seconds
         units, warnings, stats = speech.units, speech.warnings, speech.stats
         speech_s = sum(u.dur for u in units)
@@ -367,6 +388,10 @@ class Engine:
             segments.append(Segment(start=round(u.start / SR, 2), end=round(u.end / SR, 2), text=text,
                                     lang=lang, conf=round(d.conf, 3)))
             lang_secs[lang] += u.dur
+        if speech.sensitive and not heard_speech(segments, UNCLEAR):
+            # listened to more closely, but what came out is noise the model put words to: still "no speech"
+            self.log.info("Listening more closely found no real speech (%d passages kept)", len(segments))
+            raise still_no_speech()
         post_warnings, post_stats = analyze_transcript(segments, speech_s)
         meta["quality"] = {"warnings": warnings + post_warnings, "stats": {**stats, **post_stats}}
         timings["finalize"] = time.monotonic() - t0

@@ -1026,8 +1026,10 @@ def _line(md: str) -> str:
 
 
 def document_body(plan: dict[str, Any]) -> str:
-    """The quiz as a document: a cover with what it covers, the questions (room to answer), then the answers with
-    every explanation, on pages of their own. The words IEUStudia writes in it are in the quiz's language."""
+    """The quiz as a document to solve on paper: a cover with what it covers and a line for the date and the score,
+    the questions alone (room to answer, nothing that gives an answer away: their sources are in the key), then the
+    answer key on pages of its own - every answer at a glance for marking, then each one explained with where it
+    comes from. The words IEUStudia writes in it are in the quiz's language."""
     with writing_in((plan.get("result") or {}).get("language", "")):
         return _document_body(plan)
 
@@ -1052,26 +1054,31 @@ def _document_body(plan: dict[str, Any]) -> str:
     if cov.get("topics_missing"):
         left.append(esc(word("no question on: {list}", list=", ".join(cov["topics_missing"]))))
     quiz = word("Practice quiz")
+    qs = r.get("questions") or []
     out = [f'<header class="sp-cover"><div class="sp-kicker">{esc(course)} · {quiz}</div>'
            f'<h1>{esc(r.get("title") or plan.get("title") or quiz)}</h1>'
            f'<div class="sp-sub">{" ".join(covers)} · {esc(word("made with IEUStudia on {date}", date=made))}</div>'
            + (f'<div class="sp-sources">{word("Left out: {list}", list="; ".join(left))}</div>' if left else "")
            + '<div class="sp-sources">' + esc(word("Written by AI from your course material: check anything that "
                                                    "looks wrong against your slides and lectures.")) + " "
-           + esc(word("The answers are at the end.")) + "</div></header>"]
-    qs = r.get("questions") or []
+           + esc(word("Solve it on paper; the answer key is on the last pages.")) + "</div>"
+           + f'<div class="qz-paper"><span>{esc(word("Date"))}: <i></i></span>'
+           f'<span>{esc(word("Score"))}: <i class="short"></i> / {len(qs)}</span></div></header>']
     body = []
-    for q in qs:
+    for q in qs:                  # (no source under a question: it would say where the answer is)
         part = [f'<div class="qz-q"><div class="qz-n">{q["n"]}</div><div class="qz-body">{md_html(q["q"])}']
         if q["type"] == "mc":
             part.append('<ol class="qz-opts" type="A">' + "".join(f"<li>{_line(x)}</li>" for x in q["options"]) + "</ol>")
         else:
             part.append(f'<div class="qz-space {"big" if q["type"] == "problem" else ""}"></div>')
-        src = _src_text(q.get("source"))
-        if src:
-            part.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
         body.append("".join(part) + "</div></div>")
     out.append(f'<section class="sp-ch qz-part"><h2>{word("Questions")}</h2>{"".join(body)}</section>')
+    glance = []                   # every answer at a glance, for marking: a letter, a short result, else "see below"
+    for q in qs:
+        model = str(q.get("model") or "").strip()
+        got = (_LETTER[q["answer"]] if q["type"] == "mc" else _line(model) if model and len(model) <= 28
+               and "\n" not in model else f'<span class="qz-more">{esc(word("see below"))}</span>')
+        glance.append(f'<span class="qz-k"><b>{q["n"]}</b> {got}</span>')
     keys = []
     for q in qs:
         bits = [f'<div class="qz-q"><div class="qz-n">{q["n"]}</div><div class="qz-body">']
@@ -1093,8 +1100,12 @@ def _document_body(plan: dict[str, Any]) -> str:
                 bits.append('<ul class="qz-points">' + "".join(f"<li>{_line(x)}</li>" for x in q["points"]) + "</ul>")
             if q.get("why"):
                 bits.append(md_html(q["why"]))
+        src = _src_text(q.get("source"))
+        if src:
+            bits.append(f'<div class="sp-src">{esc(word("From {source}", source=src))}</div>')
         keys.append("".join(bits) + "</div></div>")
-    out.append(f'<section class="sp-ch qz-part"><h2>{word("Answers")}</h2>{"".join(keys)}</section>')
+    out.append(f'<section class="sp-ch qz-part qz-answers"><h2>{word("Answer key")}</h2>'
+               f'<div class="qz-key">{"".join(glance)}</div><h3>{word("Answers explained")}</h3>{"".join(keys)}</section>')
     return "".join(out)
 
 
@@ -1106,12 +1117,23 @@ QUIZ_CSS = """
 .qz-body > p:first-child { margin-top: 3px; }
 .qz-opts { margin: 6px 0 4px; padding-left: 24px; }
 .qz-opts li { margin: 3px 0; }
-.qz-space { height: 70px; border-bottom: 1px dashed #cbd5e1; margin: 6px 0; }
-.qz-space.big { height: 190px; }
+/* room to write: ruled lines for a short answer, a box for a worked problem */
+.qz-space { height: 116px; margin: 8px 0 2px;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 28px, #cbd5e1 28px, #cbd5e1 29px);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.qz-space.big { height: 300px; background: none; border: 1px solid #cbd5e1; border-radius: 6px; }
+.qz-paper { display: flex; gap: 32px; margin-top: .9em; font-size: .92em; }
+.qz-paper i { display: inline-block; width: 150px; border-bottom: 1px solid #94a3b8; height: 1em; vertical-align: baseline; }
+.qz-paper i.short { width: 56px; }
+.qz-key { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px 10px; margin: 0 0 1.4em; }
+.qz-k { border: 1px solid #e2e2e2; border-radius: 6px; padding: 4px 9px; break-inside: avoid; }
+.qz-k b { color: #1d4ed8; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.qz-more { color: #5c5c5c; font-size: .9em; }
+.qz-answers h3 { margin-top: .4em; }
 .qz-wrong, .qz-points, .qz-steps { margin: 6px 0; padding-left: 22px; }
 .qz-part + .qz-part { break-before: page; }
 .qz-opts p, .qz-wrong p, .qz-points p, .qz-steps p { margin: 0; }
-@media print {                     /* the questions right under the cover; the answers on pages of their own */
+@media print {                     /* the questions right under the cover; the answer key on pages of its own */
   .sp-cover { padding-top: 0; }
   .sp-cover + .qz-part { break-before: auto; margin-top: 1.2em; }
 }

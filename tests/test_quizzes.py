@@ -484,6 +484,40 @@ def test_a_quiz_is_written_checked_and_kept(env, monkeypatch):
     assert "qz-q" in html_file
 
 
+def test_the_printed_quiz_is_to_solve_on_paper_with_its_answer_key_on_pages_of_its_own():
+    """The questions alone (room to write; no source under a question, which would say where its answer is), a line
+    for the date and the score, then the answer key on a new page: every answer at a glance for marking (a letter, a
+    short result, else "see below"), then each one explained, with where it comes from."""
+    plan = {"title": "Q", "created_at": "2026-11-05T10:00:00", "result": {
+        "language": "English", "title": "Circuits", "made": "2026-11-05", "course": {"code": "EEE 215"},
+        "coverage": {"span": "week 4", "weeks": [{"no": 4}]},
+        "questions": [
+            {"n": 1, "type": "mc", "q": "Which law links $v$ and $i$?", "options": ["Ohm's", "Kirchhoff's", "Faraday's",
+                                                                               "Lenz's"],
+             "answer": 0, "why": "It is $v = iR$.", "wrong": ["", "That is about sums.", "", ""],
+             "source": {"kind": "file", "name": "Week04.pdf", "page": 3}},
+            {"n": 2, "type": "problem", "q": "Find $v_2$.", "steps": ["Divide: $12 \\cdot 2/(2+4)$"], "model": "$v_2 = 4$ V",
+             "source": {"kind": "lecture", "date": "2026-10-14", "part": 1, "ts": "12:30"}},
+            {"n": 3, "type": "short", "q": "Why is a voltmeter's resistance high?",
+             "model": "So that it draws almost no current and does not change the circuit it measures.",
+             "points": ["little current"]}]}}
+    body = quizzes.document_body(plan)
+    questions, key = body.split('<section class="sp-ch qz-part qz-answers">')
+    assert "<h2>Questions</h2>" in questions and "From " not in questions and "Week04.pdf" not in questions
+    assert 'type="A"' in questions and questions.count('class="qz-space') == 2 and 'qz-space big' in questions
+    assert "Solve it on paper; the answer key is on the last pages." in questions
+    assert "Date: <i></i>" in questions and 'Score: <i class="short"></i> / 3' in questions
+    assert key.startswith("<h2>Answer key</h2>") and "<h3>Answers explained</h3>" in key
+    glance = key.split('<div class="qz-key">')[1].split("</div>")[0]
+    assert '<span class="qz-k"><b>1</b> A</span>' in glance
+    assert "<b>2</b> " in glance and "4" in glance.split("<b>2</b>")[1].split("</span>")[0]     # a short result
+    assert '<b>3</b> <span class="qz-more">see below</span>' in glance                    # a sentence: below
+    assert "From Week04.pdf, page 3" in key and "From Lecture 14 Oct, part 1, 12:30" in key
+    assert key.index("Answers explained") < key.index("Ohm") and "That is about sums." in key
+    css = quizzes.QUIZ_CSS
+    assert ".qz-part + .qz-part { break-before: page; }" in css and "print-color-adjust: exact" in css
+
+
 def test_an_answer_misread_as_questions_is_asked_again(env):
     """Markdown read as questions with nothing to answer them by (a worked solution's numbered steps): the AI is asked
     once more, and its quiz is used."""

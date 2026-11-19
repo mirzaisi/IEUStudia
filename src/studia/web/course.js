@@ -103,7 +103,7 @@
     return `<div class="lec ${dd.transcribed ? "done" : ""}">
       <span class="lec-ico">${I("video", "sm")}</span><span class="lec-name">${label}</span><span class="lec-state">${St.oddMark(dd.anomalies)}${state}</span>
       <span class="lec-acts">${dd.any_done ? `<button class="btn ghost sm" data-act="open-day" data-day="${esc(dd.day_key)}">${I("file-text", "sm")} ${t("Read")}</button>` : ""}
-      ${(dd.live ? !dd.ready : dd.transcribed || silent) ? "" : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
+      ${(dd.live ? !dd.ready : dd.transcribed || silent) ? (silent && St.closerBtn ? St.closerBtn(dd, "btn ghost sm") : "") : `<button class="btn ghost sm" data-act="tx-day" data-day="${esc(dd.day_key)}">${I("wave", "sm")} ${t("Transcribe")}</button>`}</span></div>`;
   }
 
   // ------------------------------------------------------------------ heads-up: what the lecturer said
