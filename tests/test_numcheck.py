@@ -246,3 +246,35 @@ def test_check_key_marks_the_question():
     assert q["numeric"] and nc.reference(q).value == pytest.approx(0.001)
     q = nc.check_key({"type": "mc", "model": "4", "check": {"expr": "4"}})
     assert "numeric" not in q and "verified" not in q
+
+
+# ------------------------------------------------------------------ a study pack's worked example
+@pytest.mark.parametrize("line, check", [
+    ("[[check 12/4 = 3 mA | the current]]", {"expr": "12/4", "value": "3", "unit": "mA", "of": "the current"}),
+    ("[[check 2*pi*50 = 314,16]]", {"expr": "2*pi*50", "value": "314,16", "unit": ""}),
+    ("[[check 5*2 = 10V]]", {"expr": "5*2", "value": "10", "unit": "V"}),
+    ("[[ CHECK 3000*4=12 000 Hz|the frequency ]]", {"expr": "3000*4", "value": "12 000", "unit": "Hz",
+                                                    "of": "the frequency"}),
+    ("[[check 1/(2*pi*1000*1e-6) = 1.59e2 Ω | X_C]]", {"expr": "1/(2*pi*1000*1e-6)", "value": "1.59e2", "unit": "Ω",
+                                                      "of": "X_C"}),
+    ("[[check 5*2]]", {"expr": "5*2", "unit": ""}),
+])
+def test_a_check_line_is_read_however_the_ai_spaces_it(line, check):
+    """The line a worked example ends with carries a quiz key's fields: read into them, it goes through clean_check
+    and verify as a quiz's does, so digit groups, a decimal comma and units are read by one set of rules."""
+    assert nc.check_line(line) == check
+
+
+def test_a_check_line_without_an_expression_is_not_one():
+    assert nc.check_line("[[check = 3 V]]") is None and nc.check_line("[[check]]") is None
+    assert nc.check_line("check 2+2 = 4") is None and nc.check_line("") is None
+
+
+def test_only_the_last_result_in_its_unit_counts_when_asked():
+    """A worked example's paragraph states its steps before its result ("first $a = 6$ V, so $v = 5$ V"): with any
+    number counting, the step's 6 V confirmed a wrong 5 V; a number of another unit before it is not a result."""
+    ck = {"expr": "3*2", "unit": "V"}
+    said = "First $a = 6$ V, so $v = 5$ V."
+    assert nc.verify(ck, said) == "ok" and nc.verify(ck, said, last=1) == "bad"
+    assert nc.verify(ck, "So $v = 6$ V, and $i = 2$ A.", last=1) == "ok"
+    assert nc.verify(ck, "$v_1 = 6$ V and $v_2 = 3$ V.", last=2) == "ok"

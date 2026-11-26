@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import quote
 
-from . import aiwait, store
+from . import aiwait, numcheck, store
 from .cancel import Cancelled
 from .doclang import (WORDS_TR, code, date_text, day_text, first_upper, language_of, span_title, word, writing,
                       writing_in)
@@ -574,6 +574,7 @@ Teach it as a good textbook chapter for a student meeting these ideas for the fi
 Format (Markdown):
 - Subheadings with ### (and ####), never # or ##; don't repeat the chapter title.
 - Boxes: a line ":::kind Title", the box's text, then a line ":::". Kinds: definition, key (an important result or rule), example (a worked example: the question, then the solution), mistake (a common mistake), check (the closing questions and answers). Only for those, not around every paragraph.
+- A worked example whose result is a number ends, inside its box, with a line [[check expr = value unit | of]] right after the sentence that states the result (one line for each result when it asks for more than one): the result as a calculation the app can do to confirm it, where {numcheck.CHECK_FIELDS} (leave unit out for none). No line when the result is not one number (a formula, a proof).
 - A table where the material compares cases or lists values.
 {('- Figures: put each marker [[FIGURE id]] below on a line of its own, right after the paragraph that explains its figure, and refer to the figure in words ("the figure below"):' + chr(10) + figs) if figs else '- No figures in this chapter.'}
 {('The pages of the material with figures are attached as pictures, labelled ' + ', '.join(pictures) + ': read the circuits, values and equations on them.' + chr(10)) if pictures else ''}{written_in(outline.get("language", ""), outline.get("taught_in", ""))} Answer with the chapter's Markdown only.
@@ -617,7 +618,92 @@ def clean_section(md: str, ch: dict[str, Any]) -> str:
     if rest:
         at = md.find("\n:::check")
         md = f"{md[:at]}\n\n{rest}\n{md[at:]}" if at >= 0 else f"{md}\n\n{rest}"
-    return md
+    return confirm_examples(md)
+
+
+_UNCONFIRMED = re.compile(r"\[\[\s*UNCONFIRMED\b\s*:?\s*([^\]\n]*?)\s*\]\]", re.I)
+_BOX_OPEN = re.compile(r":::\s*(\w+)\b.*")
+
+
+def confirm_examples(md: str) -> str:
+    """A chapter's worked examples checked by the app (numcheck.verify, as a quiz's key): each "[[check …]]" line is
+    taken out, and an example whose result its calculation does not give gets a line "[[UNCONFIRMED: of]]" at the end
+    of its box, which md_html draws as a note under it. Kept in the chapter's saved Markdown, the note is drawn again
+    when the pack is laid out again without the AI (LAYOUT). A result is the last one in its unit in the paragraph
+    just before its line, not anywhere in the box: a number of a step on the way never confirms a wrong result. A
+    line just after an example's box is that example's; one anywhere else, or one the app can't read, is taken out
+    and nothing more."""
+    if not (numcheck.CHECK_LINE.search(md) or _UNCONFIRMED.search(md)):
+        return md
+    out: list[str] = []
+    box: Optional[dict[str, Any]] = None          # the box open now
+    last: Optional[dict[str, Any]] = None         # the example box closed last, when nothing came between
+    boxes: list[dict[str, Any]] = []
+    para: list[str] = []                          # the paragraph so far (in a box: its own)
+    pending: list[tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], str]] = []
+
+    def check() -> None:
+        """The lines read since the last text, each against the results stated before them: as many of the last
+        results as there are lines ("$v = 5$ V and $v_2 = 3$ V" then two lines)."""
+        for ck, target, said in pending:
+            if ck is None or target is None:
+                continue
+            try:
+                state = numcheck.verify(ck, said, last=len(pending))
+            except (ValueError, ArithmeticError):
+                state = ""
+            if state == "bad":
+                target["bad"].append(ck.get("of", ""))
+        pending.clear()
+
+    for line in md.split("\n"):
+        s = line.strip()
+        if _UNCONFIRMED.search(line):                 # only the app writes these
+            line = _UNCONFIRMED.sub("", line).rstrip()
+            if not line.strip():
+                continue
+            s = line.strip()
+        found = list(numcheck.CHECK_LINE.finditer(line))
+        text = numcheck.CHECK_LINE.sub("", line).strip() if found else s
+        if text:
+            check()
+        m = _BOX_OPEN.fullmatch(s)
+        if m and m.group(1).lower() in BOXES and box is None:
+            box = {"kind": m.group(1).lower(), "bad": [], "close": None, "said": ""}
+            boxes.append(box)
+            last, para = None, []
+            out.append(line)
+            continue
+        if s == ":::" and box is not None:
+            box["close"], box["said"] = len(out), " ".join(para)
+            last, box, para = (box if box["kind"] == "example" else None), None, []
+            out.append(line)
+            continue
+        if found:
+            if box is not None:                       # in its box: the paragraph before it (and its own line's text)
+                target = box if box["kind"] == "example" else None
+                said = " ".join(para + ([text] if text else []))
+            else:                                     # just after the box: the box's last paragraph
+                target, said = last, (last or {}).get("said", "")
+            pending.extend((numcheck.check_line(f.group(0)), target, said) for f in found)
+            if not text:
+                continue
+            line, s = numcheck.CHECK_LINE.sub("", line).rstrip(), text
+        if not s:
+            para = []
+        else:
+            para.append(s)
+            if box is None and not found:
+                last = None                           # text after the box: a line after it isn't the example's
+        out.append(line)
+    check()
+    for b in reversed(boxes):
+        if b["bad"]:
+            ofs = "; ".join(dict.fromkeys(" ".join(x.replace("[", "(").replace("]", ")").split()) for x in b["bad"]
+                                          if x.strip()))
+            at = b["close"] if b["close"] is not None else len(out)
+            out.insert(at, f"[[UNCONFIRMED: {ofs}]]" if ofs else "[[UNCONFIRMED]]")
+    return "\n".join(out).strip()
 
 
 # ------------------------------------------------------------------ figures (AI draws SVG; slides and frames as they are)
@@ -911,6 +997,16 @@ def _blocks(lines: list[str], keep: list[str], code: list[str], figure: Callable
         if s == ":::":
             i += 1
             continue
+        m = _UNCONFIRMED.fullmatch(s)
+        if m:                           # a worked example's result the app computed otherwise (confirm_examples)
+            flush()
+            note = html.escape(word("The app could not confirm this result ({of}): check it against its source.",
+                                    of="\x02") if m.group(1) else
+                               word("The app could not confirm this result: check it against its source."), quote=False)
+            note = note.replace("\x02", _inline(m.group(1), keep))     # (its formulas: "the voltage across $R_2$")
+            out.append(f'<div class="sp-src sp-unconfirmed" role="note">{note}</div>')
+            i += 1
+            continue
         m = _FIG.fullmatch(s)
         if m:
             flush()
@@ -1051,10 +1147,11 @@ CSS_FILE = Path(__file__).resolve().parent / "web" / "studypack.css"
 # How a pack's document is drawn: raised when the code draws it differently (md_html, document_body), as the
 # stylesheet's own changes are seen by itself. A finished pack laid out with another is laid out again from its
 # saved data, no AI, before its PDF is opened or saved (make_pdf).
-LAYOUT = 4           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
+LAYOUT = 5           # 2 (4.0): numbered lists keep their numbers, formulas in quotes, wide lines wrap on paper;
                      # 3 (4.0): lectures named by their day, pictures on a line of their own;
                      # 4 (4.1.2): the words IEUStudia writes and the dates in the pack's language, <html lang>
-                     # (doclang.writing_in)
+                     # (doclang.writing_in);
+                     # 5 (4.2.x): a worked example the app could not confirm says so under its box (confirm_examples)
 
 
 def layout() -> str:

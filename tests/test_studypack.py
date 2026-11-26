@@ -348,6 +348,112 @@ def test_a_chapter_is_cleaned():
     assert md.index("[[FIGURE c1f2]]") < md.index(":::check")
 
 
+_PLAIN = {"title": "RC circuits", "figures": []}
+
+
+def test_a_worked_example_the_app_confirms_loses_its_line_and_gets_no_note():
+    md = clean_section("### Discharge\n:::example RC discharge\nFind the current at $t = 0$.\n\n"
+                       "$i(0) = 12/4 = 3$ mA.\n[[check 12/4 = 3 mA | the current]]\n:::\n\nMore text.", _PLAIN)
+    assert "[[check" not in md and "UNCONFIRMED" not in md
+    assert md == "### Discharge\n:::example RC discharge\nFind the current at $t = 0$.\n\n$i(0) = 12/4 = 3$ mA.\n:::" \
+                 "\n\nMore text."
+    assert "could not confirm" not in md_html(md)
+
+
+@pytest.mark.parametrize("language, note", [
+    ("English", "The app could not confirm this result (the voltage): check it against its source."),
+    ("Turkish", "Uygulama bu sonucu doğrulayamadı (the voltage): kaynağıyla karşılaştırarak kontrol et.")])
+def test_a_worked_example_whose_result_its_calculation_does_not_give_says_so_under_its_box(language, note):
+    """The AI's arithmetic slipped (3·2 is 6, the box says 5): the box keeps its text and gets a note in the pack's
+    language, at its end, so the student checks that result against the slides."""
+    from studia.doclang import writing_in
+
+    md = clean_section(":::example Divider\nFind $v$.\n\n$v = 3 \\cdot 2 = 5$ V.\n"
+                       "[[check 3*2 = 6 V | the voltage]]\n:::", _PLAIN)
+    assert md == ":::example Divider\nFind $v$.\n\n$v = 3 \\cdot 2 = 5$ V.\n[[UNCONFIRMED: the voltage]]\n:::"
+    with writing_in(language):
+        out = md_html(md)
+    assert out.endswith(f'<div class="sp-src sp-unconfirmed" role="note">{note}</div></div>')
+    assert "UNCONFIRMED" not in out
+
+
+def test_a_number_of_a_step_on_the_way_does_not_confirm_a_wrong_result():
+    """The paragraph names 6 V on the way to the result: compared with every number in it, the wrong 5 V passed."""
+    md = clean_section(":::example Divider\nFirst $a = 6$ V, so $v = 5$ V.\n[[check 3*2 = 6 V | v]]\n:::", _PLAIN)
+    assert "[[UNCONFIRMED: v]]" in md
+    md = clean_section(":::example Divider\nFirst $a = 5$ V, so $v = 6$ V.\n[[check 3*2 = 6 V | v]]\n:::", _PLAIN)
+    assert "UNCONFIRMED" not in md
+
+
+def test_lines_after_the_box_in_the_text_and_in_other_boxes():
+    """A line written just after its box is that example's; inside a sentence it is taken out of it; in a "check"
+    box, or after text that came between, it is only taken out."""
+    md = clean_section(":::example A\nSo $p = 9$ W.\n:::\n[[check 2*5 = 10 W | the power]]\n\n"
+                       ":::example B\nSo $i = 2$ A. [[check 4/2 = 2 A]]\n:::\n\nText.\n\n[[check 1+1 = 3]]\n\n"
+                       ":::check\n1. Q? $x = 1$ [[check 1+1 = 2]]\n:::", _PLAIN)
+    assert md == (":::example A\nSo $p = 9$ W.\n[[UNCONFIRMED: the power]]\n:::\n\n:::example B\nSo $i = 2$ A.\n:::"
+                  "\n\nText.\n\n\n:::check\n1. Q? $x = 1$\n:::")
+
+
+def test_an_example_with_two_results_shows_one_note_naming_the_wrong_one():
+    md = clean_section(":::example Two\n$v_1 = 6$ V and $v_2 = 4$ V.\n[[check 3*2 = 6 V | v1]]\n"
+                       "[[check 9/3 = 3 V | v2]]\n:::", _PLAIN)
+    assert md.count("UNCONFIRMED") == 1 and "[[UNCONFIRMED: v2]]" in md
+
+
+def test_a_result_named_with_a_formula_is_named_so_in_the_note():
+    md = clean_section(":::example D\nSo $v = 5$ V.\n[[check 3*2 = 6 V | the voltage across $R_2$ <b>]]\n:::", _PLAIN)
+    assert "the voltage across $R_2$ &lt;b&gt;): check it" in md_html(md)
+
+
+def test_a_chapter_without_check_lines_and_a_saved_one_are_drawn_as_before():
+    """Old packs and examples without a line: the Markdown is not touched (a layout made again from saved data is
+    the same), and a marker only the app writes is not taken from the AI's text."""
+    from studia.studypack import confirm_examples
+
+    for md in (CHAPTER, ":::example X\nSo $v = 5$ V.\n:::\n\n[[FIGURE c1f1]]\n\n\n\nText."):
+        assert confirm_examples(md) is md
+    md = clean_section(":::example X\nSo $v = 5$ V. [[UNCONFIRMED: v]]\n:::", _PLAIN)
+    assert md == ":::example X\nSo $v = 5$ V.\n:::"
+
+
+def test_the_note_is_kept_when_the_pack_is_laid_out_again_without_the_ai():
+    """The result is in the chapter's saved Markdown (data["sections"]): assemble draws the note again with no AI."""
+    from studia.doclang import writing_in
+
+    with writing_in("English"):
+        saved = clean_section(":::example Divider\nSo $v = 5$ V.\n[[check 3*2 = 6 V | the voltage]]\n:::", _PLAIN)
+    outline = {"title": "T", "intro": "", "chapters": [{"id": "c1", "title": "RC circuits", "figures": []}]}
+    meta = {"course": "EEE 1", "span": "Week 1", "files": [], "lectures": [], "date": "26 Kas 2026",
+            "language": "Turkish"}
+    body = studypack.document_body(outline, {"c1": saved}, {}, meta, str)
+    assert "Uygulama bu sonucu doğrulayamadı (the voltage)" in body
+
+
+def test_the_chapter_prompt_asks_for_the_quiz_s_check_fields():
+    from studia import numcheck
+    from studia.plans import Scope
+
+    ch = {"id": "c1", "title": "RC circuits", "teaches": ["discharge"], "summary": "", "figures": []}
+    prompt = studypack.section_prompt({"title": "T", "chapters": [ch]}, ch, "material", Scope(kind="pack"))
+    assert "[[check expr = value unit | of]]" in prompt and numcheck.CHECK_FIELDS in prompt
+
+
+def test_the_quiz_s_check_rule_is_the_same_text_as_before_it_was_shared():
+    """The fields moved to numcheck.CHECK_FIELDS for the study pack's prompt too: the quiz's prompt must not change."""
+    from studia import quizzes
+
+    assert quizzes.CHECK_RULE == (
+        '- "check" (every worked problem, and a short answer whose answer is one number): the final result as a '
+        'calculation the app can do to confirm your answer: "expr" uses only numbers, + - * / ^ ( ), sqrt, sin, '
+        'cos, tan, asin, acos, atan (radians), exp, ln, log10, log2, abs, arg, comb, factorial, pi, e and j for '
+        'the imaginary unit (no letters for quantities, no units); "value" is its result as a number in "unit"; '
+        '"unit" like "V", "mA", "kΩ", "Hz", "%" ("" for none); "of" names that result in a few words, in the '
+        'language of your explanations (like "the voltage across R2"): the student types it in a box labelled '
+        'with it, so when the problem asks for more than one result it says which one. Your "answer" states '
+        'that same result. Leave "check" out when the answer is not one number (a formula, a proof).')
+
+
 def test_the_markdown_of_a_chapter():
     figs = []
     out = md_html(CHAPTER.replace("c1f9", "c1f1") + "\n\n| a | b |\n|---|---|\n| <x> | $a_1$ |\n\n```\n<script>$x$\n```\n"
