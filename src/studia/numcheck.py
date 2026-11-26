@@ -17,7 +17,10 @@ another) or "unknown" (not one result the app could read: the student marks it, 
 
 A quiz's key: the AI gives each worked problem (and short answer that is one number) a "check", {"expr", "value",
 "unit"}; ``check_key`` computes the expression and compares it with the result its answer states (else its value):
-"verified" when they agree, "unverified" when they don't (quizzes.run asks the AI once to solve those again)."""
+"verified" when they agree, "unverified" when they don't (quizzes.run asks the AI once to solve those again).
+
+A study pack's worked example: the same fields on a line of its own at the end of its box, "[[check expr = value unit |
+of]]" (``check_line``), checked the same way against the result the box ends with (studypack.clean_section)."""
 
 from __future__ import annotations
 
@@ -37,6 +40,13 @@ MAX_POWER = 1000        # the largest exponent
 MAX_ABS = 1e150         # the largest result
 TOL = 0.02              # two results within 2 % agree
 MIN_DIGITS = 2          # ... or rounded alike to the significant figures typed, two at least
+# what the AI is told a check's fields are, in a quiz's key (quizzes.CHECK_RULE) and a study pack's worked example
+# (studypack.section_prompt) alike: the calculation ``evaluate`` can do, and the result it is compared with
+CHECK_FIELDS = ('"expr" uses only numbers, + - * / ^ ( ), sqrt, sin, cos, tan, asin, acos, atan (radians), exp, '
+                'ln, log10, log2, abs, arg, comb, factorial, pi, e and j for the imaginary unit (no letters for '
+                'quantities, no units); "value" is its result as a number in "unit"; "unit" like "V", "mA", "kΩ", '
+                '"Hz", "%" ("" for none); "of" names that result in a few words, in the language of your explanations '
+                '(like "the voltage across R2")')
 
 # ------------------------------------------------------------------ evaluating an expression
 _CONST: dict[str, Num] = {"pi": math.pi, "e": math.e, "j": 1j, "i": 1j}
@@ -536,6 +546,27 @@ def clean_check(v: Any) -> Optional[dict[str, Any]]:
     return out
 
 
+CHECK_LINE = re.compile(r"\[\[\s*check\s+(.*?)\s*\]\]", re.I | re.S)
+_LINE_VALUE = re.compile(r"([-+]?(?:\d(?:[\d.,]|[ \u00a0\u202f](?=\d{3}(?!\d)))*|[.,]\d+)(?:\s*[eE][-+]?\d+)?)\s*(.*)",
+                         re.S)
+
+
+def check_line(text: str) -> Optional[dict[str, Any]]:
+    """A "[[check expr = value unit | of]]" line's check, as ``clean_check`` keeps it: "[[check 12/4 = 3 mA | the
+    current]]", "[[check 2*pi*50 = 314,16]]", "[[check 5*2 = 10V]]". Without a value ("[[check 5*2]]") the result its
+    box states is compared with the expression alone. None for a line it can't read."""
+    m = CHECK_LINE.fullmatch((text or "").strip())
+    if not m:
+        return None
+    body, of = m.group(1), ""
+    if "|" in body:
+        body, of = body.rsplit("|", 1)
+    expr, _, right = body.partition("=")
+    v = _LINE_VALUE.fullmatch(right.strip())
+    value, unit_ = (v.group(1).strip(), v.group(2).strip()) if v else (right.strip(), "")
+    return clean_check({"expr": expr.strip(), "value": value, "unit": unit_, "of": of.strip()})
+
+
 def _key_unit(label: str) -> Optional[Unit]:
     """The key's unit; one the app doesn't know counts as itself (so only the same words match it)."""
     if not label:
@@ -585,15 +616,20 @@ def stated(model: Any, known: tuple[str, ...] = ()) -> list[Quantity]:
     return out
 
 
-def verify(ck: Optional[dict[str, Any]], model: Any) -> str:
+def verify(ck: Optional[dict[str, Any]], model: Any, last: int = 0) -> str:
     """ "ok" when the key's expression, computed here, is the result its answer states (else its value), "bad" when
     it isn't, "" when there is nothing to compare (no expression the app can compute, nothing stated). A result
     written with a comma or dot that could group thousands ("12,000 Hz", "1.250 Ω") is the expression's when either
-    reading is: the expression says which one is meant."""
+    reading is: the expression says which one is meant. ``last``: only the last results stated in the expression's
+    unit count, that many, as in a worked example's text, whose steps state numbers of the same kind before the
+    result ("first $a = 6$ V, so $v = 5$ V")."""
     ref = _from_check(ck or {})
     if ref is None:
         return ""
     found = stated(model, _known(ref))
+    if found and last:
+        same = [q for q in found if compare(q, ref) != "unit"]
+        found = (same or found)[-last:]
     if found:
         return "ok" if any(compare(q, ref) in ("right", "maybe") for q in found) else "bad"
     val = (ck or {}).get("value")

@@ -54,13 +54,10 @@ SYSTEM = ("You are an experienced university lecturer writing practice exam ques
 # a worked problem's (and a numeric short answer's) result as an expression the app computes (numcheck.py): the key
 # is confirmed when it gives the result the answer states
 CHECK_RULE = ('- "check" (every worked problem, and a short answer whose answer is one number): the final result as a '
-              'calculation the app can do to confirm your answer: "expr" uses only numbers, + - * / ^ ( ), sqrt, sin, '
-              'cos, tan, asin, acos, atan (radians), exp, ln, log10, log2, abs, arg, comb, factorial, pi, e and j for '
-              'the imaginary unit (no letters for quantities, no units); "value" is its result as a number in "unit"; '
-              '"unit" like "V", "mA", "kΩ", "Hz", "%" ("" for none); "of" names that result in a few words, in the '
-              'language of your explanations (like "the voltage across R2"): the student types it in a box labelled '
-              'with it, so when the problem asks for more than one result it says which one. Your "answer" states '
-              'that same result. Leave "check" out when the answer is not one number (a formula, a proof).')
+              'calculation the app can do to confirm your answer: ' + numcheck.CHECK_FIELDS + ': the student types it '
+              'in a box labelled with it, so when the problem asks for more than one result it says which one. Your '
+              '"answer" states that same result. Leave "check" out when the answer is not one number (a formula, a '
+              'proof).')
 REPAIR_SYSTEM = ("You are an experienced university lecturer checking the answer key of practice problems: you solve "
                  "each one again carefully, step by step, maths in LaTeX, and never ask questions back.")
 

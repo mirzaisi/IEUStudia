@@ -130,6 +130,11 @@ WORDS_TR = {
     "see below": "aşağıda",
     "The app could not confirm this answer: check it against its source.":     # (numcheck.py: a key it computed)
         "Uygulama bu cevabı doğrulayamadı: kaynağıyla karşılaştırarak kontrol et.",
+    # a study pack's worked example whose result the app computed otherwise (studypack.clean_section)
+    "The app could not confirm this result: check it against its source.":
+        "Uygulama bu sonucu doğrulayamadı: kaynağıyla karşılaştırarak kontrol et.",
+    "The app could not confirm this result ({of}): check it against its source.":
+        "Uygulama bu sonucu doğrulayamadı ({of}): kaynağıyla karşılaştırarak kontrol et.",
 }
 _MONTHS = {"en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
            "tr": ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")}
